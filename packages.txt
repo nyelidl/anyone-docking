@@ -1,0 +1,6 @@
+openbabel
+wget
+curl
+libcairo2-dev
+libpangocairo-1.0-0
+pkg-config
