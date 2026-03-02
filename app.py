@@ -838,6 +838,7 @@ st.markdown("# 🧩 Anyone can dock, everyone can do!")
 st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")
 st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
 st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
+
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
     st.stop()
@@ -1272,7 +1273,7 @@ with tab_basic:
                     if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0
                     else None
                 ),
-                ref_lig_name  = st.session_state.get("cocrystal_rn", ""),
+                # No reference ligand in basic mode — omits comparison sentence
             )
 
     st.markdown('</div>', unsafe_allow_html=True)
