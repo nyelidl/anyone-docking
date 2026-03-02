@@ -479,6 +479,7 @@ def _poseview_ui(
     lig_smiles: str = "",
     binding_energy: float | None = None,
     ref_lig_name: str = "",
+    ref_lig_smiles: str = "",
 ):
     """Reusable PoseView block."""
     _pose_key = f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
@@ -544,6 +545,16 @@ def _poseview_ui(
         with _dc3:
             st.caption("💡 SVG is vector — scalable for publications. PNG for quick use.")
 
+        # ── PoseView protonation notice ───────────────────────────────────────
+        if lig_smiles and "[O-]" in lig_smiles or (lig_smiles and "+" in lig_smiles):
+            st.info(
+                "⚠️ **Note:** PoseView re-protonates the ligand using its own internal "
+                "algorithm and may not reflect the actual protonation state used for docking. "
+                f"The SMILES submitted was: `{lig_smiles}` — refer to the AI prompt below "
+                "for the correct charge state.",
+                icon="🧪",
+            )
+
         # ── AI Prompt for manual use ──────────────────────────────────────────
         st.markdown("---")
 
@@ -557,13 +568,35 @@ def _poseview_ui(
         _energy_str = (f"{binding_energy:.2f} kcal/mol"
                        if binding_energy is not None else "[binding energy]")
 
+        # Build reference sentence only when reference data is available
+        _has_ref = bool(ref_lig_name or ref_lig_smiles)
+        if _has_ref:
+            if ref_lig_name and ref_lig_smiles:
+                _ref_full = f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
+            elif ref_lig_name:
+                _ref_full = ref_lig_name
+            else:
+                # no name given — just show the SMILES
+                _ref_full = ref_lig_smiles
+            _ref_clause = (
+                f", and compare with the co-crystallized reference ligand "
+                f"{_ref_full} in the same binding pocket"
+            )
+        else:
+            _ref_clause = ""
+
         _prompt_text = (
             f"Analyze the attached Proteins.Plus PoseView interaction diagram "
             f"for PDB ID {_pdb_str}, docked ligand {_lig_str}, "
             f"generated using AutoDock Vina v1.2.7 with predicted binding energy "
-            f"{_energy_str}, and compare with the co-crystallized reference ligand "
-            f"{_ref_str} in the same binding pocket.\n\n"
-            f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
+            f"{_energy_str}{_ref_clause}.\n\n"
+            + (f"Note: PoseView may display the ligand in a re-protonated form. "
+               f"The actual protonation state used for docking is encoded in the SMILES above "
+               f"(e.g. [O-] denotes a deprotonated oxygen). Please interpret interactions "
+               f"accordingly.\n\n"
+               if lig_smiles and ("[O-]" in lig_smiles or "[NH2+]" in lig_smiles
+                                   or "[NH+]" in lig_smiles or "[N+]" in lig_smiles) else "")
+            + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
             f"π–π interactions, salt bridges, etc.).\n"
             f"2. List the main interacting residues and describe their roles in stabilizing the ligand.\n"
             f"3. Compare the docking pose with the reference ligand in the same pocket.\n"
@@ -1451,6 +1484,7 @@ with tab_batch:
                                 1 for m in Chem.SDMolSupplier(rd_out_sdf, sanitize=False) if m)
                         redock_result = {
                             "Name":        f"⭐ {rd_nm} (co-crystal ref)",
+                            "ref_name":    rd_nm if rd_nm != "redock" else "",
                             "SMILES":      rd_smi,
                             "Top Score":   rd_top,
                             "pose_scores": rd_pose_scores,
@@ -1713,11 +1747,14 @@ with tab_batch:
                     dl_svg_key    = "dl_pv_svg_batch",
                     label_suffix  = f"_{safe_sel_nm}",
                     # Auto-fill AI prompt
-                    pdb_id        = st.session_state.get("b_pdb_token", ""),
-                    lig_name      = safe_sel_nm,
-                    lig_smiles    = sel_res.get("SMILES", ""),
+                    pdb_id         = st.session_state.get("b_pdb_token", ""),
+                    lig_name       = safe_sel_nm,
+                    lig_smiles     = sel_res.get("SMILES", ""),
                     binding_energy = this_pose_score,
-                    ref_lig_name  = st.session_state.get("b_cocrystal_rn", ""),
+                    ref_lig_name   = (redock_result.get("ref_name", "")
+                                      if redock_result else ""),
+                    ref_lig_smiles = (redock_result.get("SMILES", "")
+                                      if redock_result else ""),
                 )
 
         st.markdown("---")
