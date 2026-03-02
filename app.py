@@ -15,7 +15,7 @@ import streamlit.components.v1 as components
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Anyone can dock",
+    page_title="anyone can dock",
     page_icon="🧩",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -480,13 +480,16 @@ def _poseview_ui(
     binding_energy: float | None = None,
     ref_lig_name: str = "",
     ref_lig_smiles: str = "",
+    ref_lig_energy: float | None = None,
+    show_header: bool = True,
 ):
     """Reusable PoseView block."""
     _pose_key = f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
     _pv_stale = st.session_state.get(pose_key_key) != _pose_key
 
-    st.markdown("---")
-    st.markdown("**🧬 2D Interaction Diagram — PoseView**")
+    if show_header:
+        st.markdown("---")
+        st.markdown("**🧬 2D Interaction Diagram — PoseView**")
 
     _ci, _cb = st.columns([3, 1])
     with _ci:
@@ -578,9 +581,11 @@ def _poseview_ui(
             else:
                 # no name given — just show the SMILES
                 _ref_full = ref_lig_smiles
+            _ref_energy_str = (f", binding energy {ref_lig_energy:.2f} kcal/mol"
+                               if ref_lig_energy is not None else "")
             _ref_clause = (
                 f", and compare with the co-crystallized reference ligand "
-                f"{_ref_full} in the same binding pocket"
+                f"{_ref_full}{_ref_energy_str} in the same binding pocket"
             )
         else:
             _ref_clause = ""
@@ -834,11 +839,10 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 # ══════════════════════════════════════════════════════════════════════════════
 #  HEADER
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown("# 🧩 Anyone can dock, everyone can do!")
+st.markdown("# 🧩 anyone can dock, everyone can do!")
 st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")
 st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
 st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
-
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
     st.stop()
@@ -1717,46 +1721,53 @@ with tab_batch:
                             file_name=f"{safe_sel_nm}_out.pdbqt", key="b_dl_pdbqt")
 
                 # ── PoseView 2D Interaction ───────────────────────────────────
-                # Write bond-order-fixed single pose from the per-ligand pv_sdf
-                pv_sdf_all = sel_res.get("pv_sdf", "")
-                sp3_pv     = str(BATCH_WORKDIR / f"{safe_sel_nm}_pose{b_pose_i+1}_pv_ready.sdf")
-                if pv_sdf_all and os.path.exists(pv_sdf_all):
-                    pv_mols_all = _load_pv_mols(pv_sdf_all)
-                    if pv_mols_all and b_pose_i < len(pv_mols_all):
-                        _write_single_pose(pv_mols_all[b_pose_i], sp3_pv)
+                with st.expander(
+                    f"🧬 2D Interaction Diagram — PoseView  ·  {safe_sel_nm}  pose {b_pose_i+1}",
+                    expanded=False,
+                ):
+                    # Write bond-order-fixed single pose from the per-ligand pv_sdf
+                    pv_sdf_all = sel_res.get("pv_sdf", "")
+                    sp3_pv     = str(BATCH_WORKDIR / f"{safe_sel_nm}_pose{b_pose_i+1}_pv_ready.sdf")
+                    if pv_sdf_all and os.path.exists(pv_sdf_all):
+                        pv_mols_all = _load_pv_mols(pv_sdf_all)
+                        if pv_mols_all and b_pose_i < len(pv_mols_all):
+                            _write_single_pose(pv_mols_all[b_pose_i], sp3_pv)
+                        else:
+                            _write_single_pose(b_mols[b_pose_i], sp3_pv)
                     else:
                         _write_single_pose(b_mols[b_pose_i], sp3_pv)
-                else:
-                    _write_single_pose(b_mols[b_pose_i], sp3_pv)
 
-                # Store SMILES for pose key derivation
-                st.session_state["_b_cur_smiles"] = sel_res.get("SMILES", sel_nm)
+                    # Store SMILES for pose key derivation
+                    st.session_state["_b_cur_smiles"] = sel_res.get("SMILES", sel_nm)
 
-                _poseview_ui(
-                    rec_key       = "b_receptor_fh",
-                    raw_sdf_key   = "b_cur_out_sdf",
-                    pv_sdf_key    = "b_cur_pv_sdf",
-                    smiles_key    = "_b_cur_smiles",
-                    pose_idx      = b_pose_i,
-                    pose_sdf_path = sp3_pv,
-                    img_url_key   = "b_pv_image_url",
-                    img_png_key   = "b_pv_image_png",
-                    img_svg_key   = "b_pv_image_svg",
-                    pose_key_key  = "b_pv_pose_key",
-                    btn_key       = "btn_pv_batch",
-                    dl_png_key    = "dl_pv_png_batch",
-                    dl_svg_key    = "dl_pv_svg_batch",
-                    label_suffix  = f"_{safe_sel_nm}",
-                    # Auto-fill AI prompt
-                    pdb_id         = st.session_state.get("b_pdb_token", ""),
-                    lig_name       = safe_sel_nm,
-                    lig_smiles     = sel_res.get("SMILES", ""),
-                    binding_energy = this_pose_score,
-                    ref_lig_name   = (redock_result.get("ref_name", "")
-                                      if redock_result else ""),
-                    ref_lig_smiles = (redock_result.get("SMILES", "")
-                                      if redock_result else ""),
-                )
+                    _poseview_ui(
+                        rec_key       = "b_receptor_fh",
+                        raw_sdf_key   = "b_cur_out_sdf",
+                        pv_sdf_key    = "b_cur_pv_sdf",
+                        smiles_key    = "_b_cur_smiles",
+                        pose_idx      = b_pose_i,
+                        pose_sdf_path = sp3_pv,
+                        img_url_key   = "b_pv_image_url",
+                        img_png_key   = "b_pv_image_png",
+                        img_svg_key   = "b_pv_image_svg",
+                        pose_key_key  = "b_pv_pose_key",
+                        btn_key       = "btn_pv_batch",
+                        dl_png_key    = "dl_pv_png_batch",
+                        dl_svg_key    = "dl_pv_svg_batch",
+                        label_suffix  = f"_{safe_sel_nm}",
+                        # Auto-fill AI prompt
+                        pdb_id         = st.session_state.get("b_pdb_token", ""),
+                        lig_name       = safe_sel_nm,
+                        lig_smiles     = sel_res.get("SMILES", ""),
+                        binding_energy = this_pose_score,
+                        ref_lig_name   = (redock_result.get("ref_name", "")
+                                          if redock_result else ""),
+                        ref_lig_smiles = (redock_result.get("SMILES", "")
+                                          if redock_result else ""),
+                        ref_lig_energy = (redock_result.get("Top Score")
+                                          if redock_result else None),
+                        show_header    = False,
+                    )
 
         st.markdown("---")
 
