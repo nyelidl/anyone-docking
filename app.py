@@ -803,11 +803,10 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 # ══════════════════════════════════════════════════════════════════════════════
 #  HEADER
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown("# 🧬 AutoDock Vina 1.2.7")
-st.markdown(
-    "Molecular docking powered by **AutoDock Vina 1.2.7**, **RDKit**, **Meeko**, and "
-    "**OpenBabel**.  **Basic** — single ligand.  **Batch** — multiple ligands."
-)
+st.markdown("# 🧩 Anyone can dock, everyone can do!")
+st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")
+st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
+st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
     st.stop()
