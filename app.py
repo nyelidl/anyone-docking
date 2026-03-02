@@ -15,8 +15,8 @@ import streamlit.components.v1 as components
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AutoDock Vina 1.2.7",
-    page_icon="🧬",
+    page_title="Anyone can dock",
+    page_icon="🧩",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -157,11 +157,18 @@ h2, h3 { font-family: 'IBM Plex Mono', monospace; color: var(--accent2); }
 }
 .stButton > button[kind="secondary"]:hover { filter: brightness(0.95); }
 .stTextInput > div > div > input,
-.stSelectbox > div > div,
-.stNumberInput > div > div > input {
-    background: var(--bg-input) !important; border: 1px solid var(--border-input) !important;
-    color: var(--text-input) !important; border-radius: 6px !important;
+.stSelectbox > div > div {
+    background: var(--bg-subtle) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    border-radius: 6px !important;
     font-family: 'IBM Plex Mono', monospace !important;
+}
+/* keep number input consistent */
+.stNumberInput > div > div > input {
+    background: var(--bg-subtle) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
 }
 .stSlider > div { color: var(--text); }
 [data-baseweb="slider"] { accent-color: var(--accent); }
@@ -472,6 +479,11 @@ def _poseview_ui(
     dl_png_key: str,
     dl_svg_key: str,
     label_suffix: str = "",
+    # ── Context for auto-filled AI prompt ────────────────────────────────────
+    pdb_id: str = "",
+    lig_name: str = "",
+    binding_energy: float | None = None,
+    ref_lig_name: str = "",
 ):
     """Reusable PoseView block."""
     _pose_key = f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
@@ -539,23 +551,35 @@ def _poseview_ui(
 
         # ── AI Prompt for manual use ──────────────────────────────────────────
         st.markdown("---")
-        st.markdown(
-            f"""### 🤖 AI Prompt for PoseView Interpretation
 
-Copy and paste the prompt below into any AI tool (GPT, Claude, Gemini, DeepSeek, etc.) together with the PoseView figure.
+        # Resolve display values — fall back to placeholders if not yet available
+        _pdb_str    = pdb_id.upper()       if pdb_id       else "[PDB ID]"
+        _lig_str    = lig_name             if lig_name     else "[ligand name]"
+        _ref_str    = ref_lig_name.upper() if ref_lig_name else "[reference ligand]"
+        _energy_str = (f"{binding_energy:.2f} kcal/mol"
+                       if binding_energy is not None else "[binding energy]")
 
-**Task:**  
-Analyze the attached **Proteins.Plus PoseView interaction diagram** for **PDB ID [____]**, docked ligand **[____]**, generated using **AutoDock Vina v1.2.7** with predicted binding energy **[____ kcal/mol]**, and compare with the **co-crystallized reference ligand [____]** in the same binding pocket.
-
-1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, π–π interactions, salt bridges, etc.).
-2. List the main interacting residues and describe their roles in stabilizing the ligand.
-3. Compare the docking pose with the reference ligand in the same pocket.
-4. Highlight similarities or differences in binding orientation and interaction patterns.
-5. Evaluate whether the interaction profile supports the predicted binding energy.
-
-Provide a **concise structural interpretation of the binding mode**.
-"""
+        _prompt_text = (
+            f"Analyze the attached Proteins.Plus PoseView interaction diagram "
+            f"for PDB ID {_pdb_str}, docked ligand {_lig_str}, "
+            f"generated using AutoDock Vina v1.2.7 with predicted binding energy "
+            f"{_energy_str}, and compare with the co-crystallized reference ligand "
+            f"{_ref_str} in the same binding pocket.\n\n"
+            f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
+            f"π–π interactions, salt bridges, etc.).\n"
+            f"2. List the main interacting residues and describe their roles in stabilizing the ligand.\n"
+            f"3. Compare the docking pose with the reference ligand in the same pocket.\n"
+            f"4. Highlight similarities or differences in binding orientation and interaction patterns.\n"
+            f"5. Evaluate whether the interaction profile supports the predicted binding energy.\n\n"
+            f"Provide a concise structural interpretation of the binding mode."
         )
+
+        st.markdown("### 🤖 AI Prompt for PoseView Interpretation")
+        st.caption(
+            "Copy and paste into any AI tool (GPT, Claude, Gemini, DeepSeek, …) "
+            "together with the PoseView figure above. Fields are auto-filled from your session."
+        )
+        st.code(_prompt_text, language=None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -723,6 +747,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 pfx+"config_txt": cfg_path,      pfx+"cx": cx,
                 pfx+"cy": cy,                    pfx+"cz": cz,
                 pfx+"ligand_pdb_path": ligand_pdb_path,
+                pfx+"cocrystal_rn": rn if ligand_sel_str else "N/A",
                 pfx+"receptor_done": True,       pfx+"receptor_log": "\n".join(log),
             })
         except Exception as e:
@@ -1208,6 +1233,15 @@ with tab_basic:
                 dl_png_key    = "dl_pv_png_basic",
                 dl_svg_key    = "dl_pv_svg_basic",
                 label_suffix  = "_basic",
+                # Auto-fill AI prompt
+                pdb_id        = st.session_state.get("pdb_token", ""),
+                lig_name      = st.session_state.get("ligand_name", ""),
+                binding_energy = (
+                    float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
+                    if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0
+                    else None
+                ),
+                ref_lig_name  = st.session_state.get("cocrystal_rn", ""),
             )
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1680,6 +1714,11 @@ with tab_batch:
                     dl_png_key    = "dl_pv_png_batch",
                     dl_svg_key    = "dl_pv_svg_batch",
                     label_suffix  = f"_{safe_sel_nm}",
+                    # Auto-fill AI prompt
+                    pdb_id        = st.session_state.get("b_pdb_token", ""),
+                    lig_name      = safe_sel_nm,
+                    binding_energy = this_pose_score,
+                    ref_lig_name  = st.session_state.get("b_cocrystal_rn", ""),
                 )
 
         st.markdown("---")
