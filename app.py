@@ -842,13 +842,18 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown(
 """
+<div style="display:flex; align-items:center; gap:12px;">
+<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="42">
 <h1 style="
-color:white;
--webkit-text-stroke:2px white;
+background: linear-gradient(90deg,#ff4b4b,#ff4fa3,#7a6cff,#21a5e9);
+-webkit-background-clip:text;
+-webkit-text-fill-color:transparent;
+margin:0;
 font-weight:700;
 ">
-🧩 anyone can dock, everyone can do!
+anyone can dock, everyone can do!
 </h1>
+</div>
 """,
 unsafe_allow_html=True
 )
