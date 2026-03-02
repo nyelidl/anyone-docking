@@ -15,8 +15,8 @@ import streamlit.components.v1 as components
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="anyone can dock",
-    page_icon="🧩",
+    page_title="Anyone Can Dock",
+    page_icon="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -840,7 +840,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 # ══════════════════════════════════════════════════════════════════════════════
 #  HEADER
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown("# 🧩 anyone can dock, everyone can do!")
+st.markdown(
+    '<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="40"> '
+    '### anyone can dock, everyone can do!',
+    unsafe_allow_html=True
+)
 st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")
 st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
 st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
