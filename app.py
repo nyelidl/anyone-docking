@@ -15,8 +15,8 @@ import streamlit.components.v1 as components
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Anyone can dock, Everyone can do!",
-    page_icon="🧩",
+    page_title="AutoDock Vina 1.2.7",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -294,8 +294,9 @@ def _bo_template(smiles: str):
 
 def _bo_fix_mol(probe, template):
     """
-    Assign bond orders from *template* onto *probe* (docked, all-single-bond
-    geometry).  Preserves 3-D coordinates and all SD-tag properties.
+    Assign bond orders AND formal charges from *template* onto *probe*
+    (docked, all-single-bond geometry).
+    Preserves 3-D coordinates and all SD-tag properties.
     """
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -307,6 +308,20 @@ def _bo_fix_mol(probe, template):
         raise RuntimeError(
             f"AssignBondOrdersFromTemplate failed (atom/connectivity mismatch): {exc}"
         ) from exc
+
+    # ── Explicitly copy formal charges from template ──────────────────────────
+    # AssignBondOrdersFromTemplate may not propagate charges reliably across
+    # RDKit versions (e.g. [O-] from Dimorphite-DL becomes neutral OH in the
+    # docked SDF).  We use the heavy-atom substructure match to copy them
+    # atom-by-atom, ensuring the prepared protonation state is preserved.
+    match = fixed.GetSubstructMatch(template)
+    if match:
+        em = Chem.RWMol(fixed)
+        for tmpl_idx, fix_idx in enumerate(match):
+            fc = template.GetAtomWithIdx(tmpl_idx).GetFormalCharge()
+            em.GetAtomWithIdx(fix_idx).SetFormalCharge(fc)
+        fixed = em.GetMol()
+
     Chem.SanitizeMol(fixed)
     # Carry over all SD properties (Vina score, RMSD, pose number …)
     for prop in probe.GetPropsAsDict():
@@ -316,7 +331,14 @@ def _bo_fix_mol(probe, template):
 
 def _fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list[str]:
     """
-    Read every pose from *raw_sdf*, fix bond orders, write to *fixed_sdf*.
+    Read every pose from *raw_sdf*, fix bond orders + formal charges,
+    write to *fixed_sdf* WITH explicit H atoms.
+
+    Explicit H are required so that PoseView correctly perceives charged atoms
+    from connectivity: O with no H neighbours → [O-], O with one H → OH.
+    Without explicit H, PoseView treats every oxygen as neutral regardless of
+    the M  CHG line in the SDF.
+
     Returns a list of log lines.  Falls back to raw molecule on per-pose error.
     """
     from rdkit import Chem
@@ -325,27 +347,34 @@ def _fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list[str]
         template = _bo_template(smiles)
     except Exception as e:
         log.append(f"⚠ Could not build template: {e} — skipping fix")
-        # Copy raw SDF verbatim as fallback
         import shutil
         shutil.copy(raw_sdf, fixed_sdf)
         return log
 
-    supplier  = Chem.SDMolSupplier(raw_sdf, sanitize=False, removeHs=False)
-    writer    = Chem.SDWriter(fixed_sdf)
-    n_ok = n_fail = 0
+    supplier = Chem.SDMolSupplier(raw_sdf, sanitize=False, removeHs=False)
+    writer  = Chem.SDWriter(fixed_sdf)
+    # Write explicit H so PoseView infers protonation from connectivity
+    writer.SetKekulize(False)
 
+    ok = err = 0
     for i, mol in enumerate(supplier):
         if mol is None:
-            log.append(f"  pose {i+1}: unreadable — skipped"); n_fail += 1; continue
+            log.append(f"⚠ Pose {i+1}: could not read mol — skipped")
+            err += 1
+            continue
         try:
             fixed = _bo_fix_mol(mol, template)
-            writer.write(fixed); n_ok += 1
+            # Add explicit H — lets PoseView distinguish [O-] (no H) from OH (has H)
+            fixed_h = Chem.AddHs(fixed, addCoords=False)
+            writer.write(fixed_h)
+            ok += 1
         except Exception as e:
-            log.append(f"  pose {i+1}: fix failed ({e}) — writing raw"); n_fail += 1
-            # Write raw mol (still usable for 3-D viewer, just wrong 2-D diagram)
-            writer.write(Chem.RemoveHs(mol, sanitize=False))
+            log.append(f"⚠ Pose {i+1}: bond-order fix failed ({e}) — writing raw")
+            writer.write(mol)
+            err += 1
+
     writer.close()
-    log.insert(0, f"✓ Bond-order fix: {n_ok} OK, {n_fail} fallback")
+    log.append(f"Bond-order + charge fix: {ok} OK, {err} fallback")
     return log
 
 
@@ -749,9 +778,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 # ══════════════════════════════════════════════════════════════════════════════
 #  HEADER
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown("# 🧩 Anyone can dock, everyone can do!")
-st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**")
-st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
+st.markdown("# 🧬 AutoDock Vina 1.2.7")
+st.markdown(
+    "Molecular docking powered by **AutoDock Vina 1.2.7**, **RDKit**, **Meeko**, and "
+    "**OpenBabel**.  **Basic** — single ligand.  **Batch** — multiple ligands."
+)
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
     st.stop()
