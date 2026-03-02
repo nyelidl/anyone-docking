@@ -212,6 +212,7 @@ _DEFAULTS = dict(
     b_confirmed_ref_score=None, b_confirmed_ref_pose=None, b_confirmed_ref_name=None,
     # Batch — PoseView
     b_pv_image_url=None, b_pv_image_png=None, b_pv_image_svg=None, b_pv_pose_key=None,
+    b_pv2_image_url=None, b_pv2_image_png=None, b_pv2_image_svg=None, b_pv2_pose_key=None,
 )
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
@@ -840,7 +841,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 #  HEADER
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("# 🧩 anyone can dock, everyone can do!")
-st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")
+st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")  
 st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
 st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
 if VINA_PATH is None:
@@ -1563,6 +1564,8 @@ with tab_batch:
             # Invalidate PoseView cache
             "b_pv_image_url": None, "b_pv_image_png": None,
             "b_pv_image_svg": None, "b_pv_pose_key":  None,
+            "b_pv2_image_url": None, "b_pv2_image_png": None,
+            "b_pv2_image_svg": None, "b_pv2_pose_key":  None,
         })
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1720,55 +1723,6 @@ with tab_batch:
                             open(sel_res["out_pdbqt"], "rb"),
                             file_name=f"{safe_sel_nm}_out.pdbqt", key="b_dl_pdbqt")
 
-                # ── PoseView 2D Interaction ───────────────────────────────────
-                with st.expander(
-                    f"🧬 2D Interaction Diagram — PoseView  ·  {safe_sel_nm}  pose {b_pose_i+1}",
-                    expanded=False,
-                ):
-                    # Write bond-order-fixed single pose from the per-ligand pv_sdf
-                    pv_sdf_all = sel_res.get("pv_sdf", "")
-                    sp3_pv     = str(BATCH_WORKDIR / f"{safe_sel_nm}_pose{b_pose_i+1}_pv_ready.sdf")
-                    if pv_sdf_all and os.path.exists(pv_sdf_all):
-                        pv_mols_all = _load_pv_mols(pv_sdf_all)
-                        if pv_mols_all and b_pose_i < len(pv_mols_all):
-                            _write_single_pose(pv_mols_all[b_pose_i], sp3_pv)
-                        else:
-                            _write_single_pose(b_mols[b_pose_i], sp3_pv)
-                    else:
-                        _write_single_pose(b_mols[b_pose_i], sp3_pv)
-
-                    # Store SMILES for pose key derivation
-                    st.session_state["_b_cur_smiles"] = sel_res.get("SMILES", sel_nm)
-
-                    _poseview_ui(
-                        rec_key       = "b_receptor_fh",
-                        raw_sdf_key   = "b_cur_out_sdf",
-                        pv_sdf_key    = "b_cur_pv_sdf",
-                        smiles_key    = "_b_cur_smiles",
-                        pose_idx      = b_pose_i,
-                        pose_sdf_path = sp3_pv,
-                        img_url_key   = "b_pv_image_url",
-                        img_png_key   = "b_pv_image_png",
-                        img_svg_key   = "b_pv_image_svg",
-                        pose_key_key  = "b_pv_pose_key",
-                        btn_key       = "btn_pv_batch",
-                        dl_png_key    = "dl_pv_png_batch",
-                        dl_svg_key    = "dl_pv_svg_batch",
-                        label_suffix  = f"_{safe_sel_nm}",
-                        # Auto-fill AI prompt
-                        pdb_id         = st.session_state.get("b_pdb_token", ""),
-                        lig_name       = safe_sel_nm,
-                        lig_smiles     = sel_res.get("SMILES", ""),
-                        binding_energy = this_pose_score,
-                        ref_lig_name   = (redock_result.get("ref_name", "")
-                                          if redock_result else ""),
-                        ref_lig_smiles = (redock_result.get("SMILES", "")
-                                          if redock_result else ""),
-                        ref_lig_energy = (redock_result.get("Top Score")
-                                          if redock_result else None),
-                        show_header    = False,
-                    )
-
         st.markdown("---")
 
         # ── Full docking log ──────────────────────────────────────────────────
@@ -1854,6 +1808,79 @@ with tab_batch:
             st.download_button("⬇ All results (.zip)", zb,
                 file_name="batch_docking_results.zip",
                 mime="application/zip", key="b_dl_zip")
+
+        # ── PoseView 2D Interaction — independent selector ────────────────────
+        st.markdown("---")
+        st.markdown("### 🧬 2D Interaction Diagram — PoseView")
+        st.caption(
+            "Select any ligand and pose independently from the Pose Browser above "
+            "to generate its 2D interaction diagram."
+        )
+
+        pv_browsable = [r for r in browsable
+                        if r.get("out_sdf") and os.path.exists(r["out_sdf"])]
+        if pv_browsable:
+            pv_sel_nm  = st.selectbox(
+                "Select ligand for 2D diagram",
+                [r["Name"] for r in pv_browsable],
+                index=0,
+                key="b_pv_lig_sel",
+            )
+            pv_sel_res  = next(r for r in pv_browsable if r["Name"] == pv_sel_nm)
+            pv_safe_nm  = pv_sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
+            pv_all_mols = [m for m in Chem.SDMolSupplier(
+                               pv_sel_res["out_sdf"], sanitize=False) if m]
+
+            if pv_all_mols:
+                pv_pose_i = st.slider(
+                    "Pose", 1, len(pv_all_mols), 1, key="b_pv_pose_sel") - 1
+
+                pv_pose_scores = pv_sel_res.get("pose_scores", [])
+                pv_score = (pv_pose_scores[pv_pose_i]
+                            if pv_pose_scores and pv_pose_i < len(pv_pose_scores)
+                            else pv_sel_res.get("Top Score"))
+
+                # Write bond-order-fixed SDF for selected pose
+                pv_sdf_all_path = pv_sel_res.get("pv_sdf", "")
+                sp_pv2 = str(BATCH_WORKDIR / f"{pv_safe_nm}_pose{pv_pose_i+1}_pv2_ready.sdf")
+                if pv_sdf_all_path and os.path.exists(pv_sdf_all_path):
+                    pv_mols2 = _load_pv_mols(pv_sdf_all_path)
+                    if pv_mols2 and pv_pose_i < len(pv_mols2):
+                        _write_single_pose(pv_mols2[pv_pose_i], sp_pv2)
+                    else:
+                        _write_single_pose(pv_all_mols[pv_pose_i], sp_pv2)
+                else:
+                    _write_single_pose(pv_all_mols[pv_pose_i], sp_pv2)
+
+                st.session_state["_b_pv2_smiles"] = pv_sel_res.get("SMILES", pv_sel_nm)
+
+                _poseview_ui(
+                    rec_key        = "b_receptor_fh",
+                    raw_sdf_key    = "b_cur_out_sdf",
+                    pv_sdf_key     = "b_cur_pv_sdf",
+                    smiles_key     = "_b_pv2_smiles",
+                    pose_idx       = pv_pose_i,
+                    pose_sdf_path  = sp_pv2,
+                    img_url_key    = "b_pv2_image_url",
+                    img_png_key    = "b_pv2_image_png",
+                    img_svg_key    = "b_pv2_image_svg",
+                    pose_key_key   = "b_pv2_pose_key",
+                    btn_key        = "btn_pv2_batch",
+                    dl_png_key     = "dl_pv2_png_batch",
+                    dl_svg_key     = "dl_pv2_svg_batch",
+                    label_suffix   = f"_pv2_{pv_safe_nm}",
+                    pdb_id         = st.session_state.get("b_pdb_token", ""),
+                    lig_name       = pv_safe_nm,
+                    lig_smiles     = pv_sel_res.get("SMILES", ""),
+                    binding_energy = pv_score,
+                    ref_lig_name   = (redock_result.get("ref_name", "")
+                                      if redock_result else ""),
+                    ref_lig_smiles = (redock_result.get("SMILES", "")
+                                      if redock_result else ""),
+                    ref_lig_energy = (redock_result.get("Top Score")
+                                      if redock_result else None),
+                    show_header    = False,
+                )
 
     st.markdown('</div>', unsafe_allow_html=True)
 
