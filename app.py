@@ -15,8 +15,8 @@ import streamlit.components.v1 as components
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Anyone can dock",
-    page_icon="🧩",
+    page_title="AutoDock Vina 1.2.7",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -47,19 +47,20 @@ st.markdown("""
 :root {
     --bg:          #FFFFFF;
     --bg-subtle:   #F6F8FA;
-    --bg-card:     #3a3f47;
-    --bg-input:    #2d3139;
+    --bg-card:     #F0F4F8;
+    --bg-input:    #FFFFFF;
     --border:      #D0D7DE;
+    --border-input:#D0D7DE;
     --text:        #24292F;
     --text-muted:  #57606A;
     --accent:      #0969DA;
     --accent2:     #0550AE;
     --success:     #1A7F37;
     --warn:        #9A6700;
-    --text-card-title:   #9ca3af;
-    --text-card-heading: #e5e7eb;
-    --text-input:        #e5e7eb;
-    --border-input:      #4b5563;
+    --text-card-title:   #57606A;
+    --text-card-heading: #24292F;
+    --text-input:        #24292F;
+    --pill-bg:     #DDF4FF;
     --pill-border: #54AEFF;
     --pill-text:   #0550AE;
     --ok-bg:       #DAFBE1;
@@ -157,18 +158,11 @@ h2, h3 { font-family: 'IBM Plex Mono', monospace; color: var(--accent2); }
 }
 .stButton > button[kind="secondary"]:hover { filter: brightness(0.95); }
 .stTextInput > div > div > input,
-.stSelectbox > div > div {
-    background: var(--bg-subtle) !important;
-    border: 1px solid var(--border) !important;
-    color: var(--text) !important;
-    border-radius: 6px !important;
-    font-family: 'IBM Plex Mono', monospace !important;
-}
-/* keep number input consistent */
+.stSelectbox > div > div,
 .stNumberInput > div > div > input {
-    background: var(--bg-subtle) !important;
-    border: 1px solid var(--border) !important;
-    color: var(--text) !important;
+    background: var(--bg-input) !important; border: 1px solid var(--border-input) !important;
+    color: var(--text-input) !important; border-radius: 6px !important;
+    font-family: 'IBM Plex Mono', monospace !important;
 }
 .stSlider > div { color: var(--text); }
 [data-baseweb="slider"] { accent-color: var(--accent); }
@@ -482,6 +476,7 @@ def _poseview_ui(
     # ── Context for auto-filled AI prompt ────────────────────────────────────
     pdb_id: str = "",
     lig_name: str = "",
+    lig_smiles: str = "",
     binding_energy: float | None = None,
     ref_lig_name: str = "",
 ):
@@ -554,7 +549,10 @@ def _poseview_ui(
 
         # Resolve display values — fall back to placeholders if not yet available
         _pdb_str    = pdb_id.upper()       if pdb_id       else "[PDB ID]"
-        _lig_str    = lig_name             if lig_name     else "[ligand name]"
+        _lig_str    = (f"{lig_name} (SMILES: {lig_smiles})"
+                       if lig_name and lig_smiles
+                       else lig_name if lig_name
+                       else "[ligand name]")
         _ref_str    = ref_lig_name.upper() if ref_lig_name else "[reference ligand]"
         _energy_str = (f"{binding_energy:.2f} kcal/mol"
                        if binding_energy is not None else "[binding energy]")
@@ -624,7 +622,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
     st.markdown(
         f'<div class="{card_cls}"><div class="step-title">{step_label}</div>'
-        f'<div class="step-heading" style="color:#FFFFFF;">📦 Receptor Preparation</div>',
+        f'<div class="step-heading">📦 Receptor Preparation</div>',
         unsafe_allow_html=True)
 
     col_a, col_b = st.columns([1.2, 1])
@@ -803,10 +801,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 # ══════════════════════════════════════════════════════════════════════════════
 #  HEADER
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown("# 🧩 Anyone can dock, everyone can do!")
-st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")
-st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
-st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
+st.markdown("# 🧬 AutoDock Vina 1.2.7")
+st.markdown(
+    "Molecular docking powered by **AutoDock Vina 1.2.7**, **RDKit**, **Meeko**, and "
+    "**OpenBabel**.  **Basic** — single ligand.  **Batch** — multiple ligands."
+)
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
     st.stop()
@@ -837,7 +836,7 @@ with tab_basic:
     card_cls = "step-card done" if st.session_state.ligand_done else "step-card"
     st.markdown(
         f'<div class="{card_cls}"><div class="step-title">Step 2 of 4</div>'
-        f'<div class="step-heading" style="color:#FFFFFF;">⚗️ Ligand Preparation</div>',
+        f'<div class="step-heading">⚗️ Ligand Preparation</div>',
         unsafe_allow_html=True)
 
     cl1, cl2 = st.columns([1.5, 1])
@@ -856,12 +855,12 @@ with tab_basic:
                                             smiles_to_rdkit_descriptors([smiles_in]))[0])
                 charged = "deprotonated (−1)" if pka_v < ph_in else "neutral (0)"
                 st.markdown(
-                    f'<div style="background:#1f6feb15;border:1px solid #1f6feb;'
+                    f'<div style="background:var(--bg-subtle);border:1px solid var(--accent);'
                     f'border-radius:8px;padding:16px;">'
                     f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.8rem;'
-                    f'color:#58a6ff">pKa = {pka_v:.2f}</div>'
-                    f'<div style="color:#8b949e;font-size:0.85rem">at pH {ph_in:.1f}: '
-                    f'likely <b style="color:#79c0ff">{charged}</b></div>'
+                    f'color:var(--accent)">pKa = {pka_v:.2f}</div>'
+                    f'<div style="color:var(--text-muted);font-size:0.85rem">at pH {ph_in:.1f}: '
+                    f'likely <b style="color:var(--accent2)">{charged}</b></div>'
                     f'</div>', unsafe_allow_html=True)
             except Exception:
                 st.info("pKa unavailable for this SMILES.")
@@ -963,12 +962,12 @@ with tab_basic:
     with cd2:
         est = max(1, exh // 8)
         st.markdown(
-            f'<div style="background:#F6F8FA;border:1px solid #D0D7DE;'
+            f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
             f'border-radius:8px;padding:16px;">'
-            f'<div style="color:#8b949e;font-size:0.8rem">ESTIMATED TIME</div>'
-            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;color:#d29922">'
+            f'<div style="color:var(--text-muted);font-size:0.8rem">ESTIMATED TIME</div>'
+            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;color:var(--warn)">'
             f'~{est}–{est*3} min</div>'
-            f'<div style="color:#8b949e;font-size:0.8rem">exhaustiveness = {exh}</div>'
+            f'<div style="color:var(--text-muted);font-size:0.8rem">exhaustiveness = {exh}</div>'
             f'</div>', unsafe_allow_html=True)
 
     if not st.session_state.ligand_done:
@@ -1235,6 +1234,7 @@ with tab_basic:
                 # Auto-fill AI prompt
                 pdb_id        = st.session_state.get("pdb_token", ""),
                 lig_name      = st.session_state.get("ligand_name", ""),
+                lig_smiles    = st.session_state.get("prot_smiles", ""),
                 binding_energy = (
                     float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
                     if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0
@@ -1716,6 +1716,7 @@ with tab_batch:
                     # Auto-fill AI prompt
                     pdb_id        = st.session_state.get("b_pdb_token", ""),
                     lig_name      = safe_sel_nm,
+                    lig_smiles    = sel_res.get("SMILES", ""),
                     binding_energy = this_pose_score,
                     ref_lig_name  = st.session_state.get("b_cocrystal_rn", ""),
                 )
