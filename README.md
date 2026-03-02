@@ -1,6 +1,6 @@
 # 🧬 Anyone Docking
 
-**Browser-based molecular docking — no installation required.**
+**Anyone can dock, everyone can do: Browser-based molecular docking — no installation required.**
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://anyone-docking.streamlit.app/)
 
