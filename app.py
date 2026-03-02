@@ -841,7 +841,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 #  HEADER
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("# 🧩 anyone can dock, everyone can do!")
-st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")  
+st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")
 st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
 st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
 if VINA_PATH is None:
@@ -1325,7 +1325,6 @@ with tab_batch:
             st.file_uploader("Upload structure file", type=["sdf", "mol2", "pdb"],
                              key="b_struct_file")
         b_ph     = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
-        b_stereo = st.checkbox("Enumerate stereocenters (use first isomer)", key="b_stereo")
 
     with col_b2:
         st.markdown("**Redocking validation**")
@@ -1404,18 +1403,6 @@ with tab_batch:
         except Exception as e:
             st.error(f"❌ Input parsing failed: {e}"); st.stop()
 
-        if st.session_state.get("b_stereo", False):
-            from rdkit.Chem.EnumerateStereoisomers import (
-                EnumerateStereoisomers, StereoEnumerationOptions)
-            expanded = []
-            for smi, nm in smiles_pairs:
-                mol = Chem.MolFromSmiles(smi)
-                if mol is None: expanded.append((smi, nm)); continue
-                isomers = list(EnumerateStereoisomers(
-                    mol, options=StereoEnumerationOptions(unique=True, maxIsomers=2)))
-                expanded.append((Chem.MolToSmiles(isomers[0]) if isomers else smi, nm))
-            smiles_pairs = expanded
-
         # ── Ligand prep helper ────────────────────────────────────────────────
         def _prep_one(smi, name, ph, wdir):
             pdbqt_path = str(wdir / f"{name}.pdbqt")
@@ -1428,6 +1415,7 @@ with tab_batch:
                 except Exception: pass
                 mol = Chem.MolFromSmiles(prot)
                 if mol is None: raise ValueError(f"Cannot parse SMILES: {smi[:50]}")
+                charge = Chem.GetFormalCharge(mol)
                 mol = Chem.AddHs(mol)
                 try:    params = AllChem.ETKDGv3()
                 except: params = AllChem.ETKDG()
@@ -1439,9 +1427,9 @@ with tab_batch:
                 else:
                     AllChem.UFFOptimizeMolecule(mol, maxIters=500)
                 _meeko_to_pdbqt(mol, pdbqt_path)
-                return pdbqt_path, None
+                return pdbqt_path, None, charge
             except Exception as e:
-                return None, str(e)
+                return None, str(e), None
 
         # ── Docking helper ────────────────────────────────────────────────────
         def _dock_one(pdbqt_in, name, exh, nm, er):
@@ -1472,7 +1460,7 @@ with tab_batch:
             rd_smi = pts[0]
             rd_nm  = (pts[1].replace(" ", "_") if len(pts) > 1 else "redock")
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
-                rd_pdbqt, rd_err = _prep_one(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR)
+                rd_pdbqt, rd_err, rd_charge = _prep_one(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR)
                 if rd_pdbqt:
                     rd_out_pdbqt, rd_out_sdf, _, rd_top, rd_pose_scores = _dock_one(
                         rd_pdbqt, "redock_" + rd_nm, b_exh, b_nm, b_er)
@@ -1492,6 +1480,7 @@ with tab_batch:
                             "Name":        f"⭐ {rd_nm} (co-crystal ref)",
                             "ref_name":    rd_nm if rd_nm != "redock" else "",
                             "SMILES":      rd_smi,
+                            "Charge":      rd_charge,
                             "Top Score":   rd_top,
                             "pose_scores": rd_pose_scores,
                             "Poses":       rd_n_poses,
@@ -1516,10 +1505,11 @@ with tab_batch:
 
         for i, (smi, name) in enumerate(smiles_pairs):
             prog.progress(i / n, text=f"Docking {name} ({i+1}/{n})…")
-            pdbqt_in, prep_err = _prep_one(smi, name, b_ph_val, BATCH_WORKDIR)
+            pdbqt_in, prep_err, charge = _prep_one(smi, name, b_ph_val, BATCH_WORKDIR)
             if pdbqt_in is None:
-                results.append({"Name": name, "SMILES": smi, "Top Score": None,
-                                 "Poses": 0, "Status": f"PREP FAILED: {prep_err}"})
+                results.append({"Name": name, "SMILES": smi, "Charge": None,
+                                 "Top Score": None, "Poses": 0,
+                                 "Status": f"PREP FAILED: {prep_err}"})
                 all_logs.append(f"[{name}] PREP ERROR: {prep_err}"); continue
 
             out_pdbqt, out_sdf, dock_log, top, pose_scores = _dock_one(
@@ -1530,8 +1520,9 @@ with tab_batch:
                 unsafe_allow_html=True)
 
             if top is None:
-                results.append({"Name": name, "SMILES": smi, "Top Score": None,
-                                 "Poses": 0, "Status": "DOCK FAILED"}); continue
+                results.append({"Name": name, "SMILES": smi, "Charge": charge,
+                                 "Top Score": None, "Poses": 0,
+                                 "Status": "DOCK FAILED"}); continue
 
             # Bond-order fix per ligand
             pv_sdf = str(BATCH_WORKDIR / f"{name}_pv_ready.sdf")
@@ -1543,7 +1534,7 @@ with tab_batch:
             if out_sdf and os.path.exists(out_sdf):
                 n_poses = sum(1 for m in Chem.SDMolSupplier(out_sdf, sanitize=False) if m)
             results.append({
-                "Name": name, "SMILES": smi, "Top Score": top,
+                "Name": name, "SMILES": smi, "Charge": charge, "Top Score": top,
                 "pose_scores": pose_scores, "Poses": n_poses,
                 "out_pdbqt": out_pdbqt, "out_sdf": out_sdf,
                 "pv_sdf": pv_sdf, "Status": "OK",
@@ -1733,8 +1724,11 @@ with tab_batch:
 
         # Score table + dot plot
         df_res = pd.DataFrame([
-            {"Name": r["Name"], "Top Score (kcal/mol)": r["Top Score"],
-             "Poses": r["Poses"], "Status": r["Status"]}
+            {"Name": r["Name"],
+             "Top Score (kcal/mol)": r["Top Score"],
+             "Charge": (f"{r['Charge']:+d}" if r.get("Charge") is not None else "—"),
+             "Poses": r["Poses"],
+             "Status": r["Status"]}
             for r in results
         ])
         ok_df = (df_res[df_res["Status"] == "OK"]
