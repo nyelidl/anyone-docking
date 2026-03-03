@@ -213,6 +213,7 @@ _DEFAULTS = dict(
     # Batch — PoseView
     b_pv_image_url=None, b_pv_image_png=None, b_pv_image_svg=None, b_pv_pose_key=None,
     b_pv2_image_url=None, b_pv2_image_png=None, b_pv2_image_svg=None, b_pv2_pose_key=None,
+    b_plot_png=None,
 )
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
@@ -1580,6 +1581,7 @@ with tab_batch:
             "b_pv_image_svg": None, "b_pv_pose_key":  None,
             "b_pv2_image_url": None, "b_pv2_image_png": None,
             "b_pv2_image_svg": None, "b_pv2_pose_key":  None,
+            "b_plot_png": None,
         })
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1792,6 +1794,11 @@ with tab_batch:
                 for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
                 ax.grid(axis="y", color=_cc["bg_sub"], linewidth=0.5)
                 fig.tight_layout()
+                _plot_buf = __import__("io").BytesIO()
+                fig.savefig(_plot_buf, format="png", dpi=150, bbox_inches="tight",
+                            facecolor=fig.get_facecolor())
+                _plot_buf.seek(0)
+                st.session_state["b_plot_png"] = _plot_buf.getvalue()
                 st.pyplot(fig, use_container_width=True); plt.close(fig)
 
         st.markdown("---")
@@ -1821,9 +1828,22 @@ with tab_batch:
                 rec_fh = st.session_state.get("b_receptor_fh")
                 if rec_fh and os.path.exists(rec_fh):
                     zf.write(rec_fh, "receptor.pdb")
+                # Score plot PNG
+                _plot_bytes = st.session_state.get("b_plot_png")
+                if _plot_bytes:
+                    zf.writestr("plots/batch_score_plot.png", _plot_bytes)
+                # PoseView 2D interaction diagrams (both sources)
+                for _sfx, _pk, _sk in [
+                    ("poseview_browser",  "b_pv_image_png",  "b_pv_image_svg"),
+                    ("poseview_selector", "b_pv2_image_png", "b_pv2_image_svg"),
+                ]:
+                    _png = st.session_state.get(_pk)
+                    _svg = st.session_state.get(_sk)
+                    if _png: zf.writestr(f"poseview/{_sfx}.png", _png)
+                    if _svg: zf.writestr(f"poseview/{_sfx}.svg", _svg)
             zb.seek(0)
-            st.download_button("⬇ All results (.zip)", zb,
-                file_name="batch_docking_results.zip",
+            st.download_button("⬇ Download ALL results (.zip) — structures + plot + 2D diagrams", zb,
+                file_name="anyone_can_dock.zip",
                 mime="application/zip", key="b_dl_zip")
 
         # ── PoseView 2D Interaction — independent selector ────────────────────
