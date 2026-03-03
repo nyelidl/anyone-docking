@@ -897,9 +897,17 @@ with tab_basic:
 
     cl1, cl2 = st.columns([1.5, 1])
     with cl1:
-        smiles_in   = st.text_input("SMILES string",
-            value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
-            key="smiles_in")
+        lig_input_mode = st.radio("Input mode",
+            ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)"],
+            horizontal=True, key="lig_input_mode")
+        if lig_input_mode == "SMILES string":
+            smiles_in = st.text_input("SMILES string",
+                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
+                key="smiles_in")
+        else:
+            smiles_in = ""
+            st.file_uploader("Upload structure file (.sdf/.mol2/.pdb)",
+                             type=["sdf", "mol2", "pdb"], key="lig_struct_file")
         lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
         ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
     with cl2:
@@ -934,7 +942,28 @@ with tab_basic:
         out_sdf   = str(WORKDIR / f"{lig_name}_3d.sdf")
         with st.spinner("Preparing ligand…"):
             try:
-                prot = smiles_in.strip()
+                _lig_mode = st.session_state.get("lig_input_mode", "SMILES string")
+                if _lig_mode == "Upload structure (.sdf/.mol2/.pdb)":
+                    _sfobj = st.session_state.get("lig_struct_file")
+                    if _sfobj is None: raise ValueError("No structure file uploaded")
+                    _ext = Path(_sfobj.name).suffix.lower()
+                    _tmp = str(WORKDIR / f"lig_upload{_ext}")
+                    with open(_tmp, "wb") as _f: _f.write(_sfobj.read())
+                    if _ext == ".sdf":
+                        _umols = [m for m in Chem.SDMolSupplier(_tmp, sanitize=True) if m]
+                        if not _umols: raise ValueError("No valid molecule in SDF")
+                        prot = Chem.MolToSmiles(_umols[0])
+                    else:
+                        _smi_tmp = _tmp + ".smi"
+                        run_cmd(f'obabel "{_tmp}" -O "{_smi_tmp}" --canonical 2>/dev/null')
+                        prot = ""
+                        for _ln in open(_smi_tmp):
+                            _pts = _ln.strip().split(None, 1)
+                            if _pts: prot = _pts[0]; break
+                        if not prot: raise ValueError("Could not convert structure to SMILES")
+                    log.append(f"✓ Structure loaded: {_sfobj.name}")
+                else:
+                    prot = smiles_in.strip()
                 try:
                     from dimorphite_dl import protonate_smiles
                     vs = protonate_smiles(prot, ph_min=ph_in, ph_max=ph_in, max_variants=1)
@@ -1322,7 +1351,7 @@ with tab_batch:
     col_b1, col_b2 = st.columns([1.6, 1])
     with col_b1:
         b_input_mode = st.radio("Input mode",
-            ["SMILES list (text)", "Upload .smi file", "Upload structure (.sdf/.mol2/.pdb)"],
+            ["SMILES list (text)", "Upload .smi file"],
             key="b_input_mode")
         if b_input_mode == "SMILES list (text)":
             st.text_area("One `SMILES [name]` per line",
@@ -1339,9 +1368,6 @@ with tab_batch:
                 height=300, key="b_smiles_text")
         elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
-        else:
-            st.file_uploader("Upload structure file", type=["sdf", "mol2", "pdb"],
-                             key="b_struct_file")
         b_ph     = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
 
     with col_b2:
@@ -1395,28 +1421,7 @@ with tab_batch:
                         pts[0],
                         pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
                     ))
-            else:
-                fobj = st.session_state.get("b_struct_file")
-                if fobj is None: raise ValueError("No structure file uploaded")
-                ext = Path(fobj.name).suffix.lower()
-                tmp = str(BATCH_WORKDIR / f"input{ext}")
-                with open(tmp, "wb") as f: f.write(fobj.read())
-                if ext == ".sdf":
-                    for i, mol in enumerate(Chem.SDMolSupplier(tmp, sanitize=True)):
-                        if mol is None: continue
-                        nm = (mol.GetProp("_Name") if mol.HasProp("_Name")
-                              else f"lig_{i+1}").replace(" ", "_")
-                        smiles_pairs.append((Chem.MolToSmiles(mol), nm))
-                else:
-                    run_cmd(f'obabel "{tmp}" -O "{tmp}.smi" --gen2D 2>/dev/null')
-                    for line in open(f"{tmp}.smi"):
-                        pts = line.strip().split(None, 1)
-                        if pts:
-                            smiles_pairs.append((
-                                pts[0],
-                                pts[1].replace(" ", "_") if len(pts) > 1
-                                else f"lig_{len(smiles_pairs)+1}"
-                            ))
+
             if not smiles_pairs: raise ValueError("No valid SMILES found")
         except Exception as e:
             st.error(f"❌ Input parsing failed: {e}"); st.stop()
