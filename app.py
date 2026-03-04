@@ -2034,24 +2034,25 @@ with tab_batch:
 
         # Score Table — drop "Pose" column if present
         _display_df = df_res.drop(columns=[c for c in ["Pose"] if c in df_res.columns])
-        st.markdown("**Score Table**")
-        st.dataframe(_display_df, hide_index=True, use_container_width=True)
 
-        st.markdown("**Top Score per Ligand**")
         if not ok_df.empty:
             _n_ligs = len(ok_df)
 
-            def _draw_plot(fw, fh):
-                fig, ax = plt.subplots(figsize=(fw, fh))
+            def _draw_plot(ax, fw_hint):
                 _cc = _chart_colors()
-                fig.patch.set_facecolor(_cc["bg"]); ax.set_facecolor(_cc["bg_sub"])
+                ax.get_figure().patch.set_facecolor(_cc["bg"])
+                ax.set_facecolor(_cc["bg_sub"])
                 scores = ok_df["Top Score (kcal/mol)"].values
                 names  = ok_df["Name"].values
                 best_i = int(np.argmin(scores))
                 colors = ["#3fb950" if i == best_i else "#58a6ff" for i in range(len(scores))]
-                ax.scatter(names, scores, color=colors, s=90, zorder=3,
+                # Use integer positions to avoid duplicate-name stacking
+                xs = list(range(_n_ligs))
+                ax.scatter(xs, scores, color=colors, s=90, zorder=3,
                            edgecolors=_cc["border"], linewidths=0.5)
-                ax.plot(names, scores, color=_cc["border"], linewidth=0.8, zorder=2)
+                ax.plot(xs, scores, color=_cc["border"], linewidth=0.8, zorder=2)
+                ax.set_xticks(xs)
+                ax.set_xticklabels(names, rotation=40, ha="right")
                 ax.set_xlim(-0.5, _n_ligs - 0.5)
                 if active_ref_score is not None:
                     ref_label = (
@@ -2066,27 +2067,44 @@ with tab_batch:
                 ax.set_ylabel("Vina score (kcal/mol)", color=_cc["muted"], fontsize=9)
                 ax.set_xlabel("Ligand",               color=_cc["muted"], fontsize=9)
                 ax.tick_params(colors=_cc["muted"], labelsize=7)
-                plt.xticks(rotation=40, ha="right")
                 for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
                 ax.grid(axis="y", color=_cc["bg_sub"], linewidth=0.5)
+
+            if _n_ligs <= 10:
+                # ≤10 ligands: original side-by-side layout
+                ct2, cp2 = st.columns([1, 1.6])
+                with ct2:
+                    st.markdown("**Score Table**")
+                    st.dataframe(_display_df, hide_index=True, use_container_width=True)
+                with cp2:
+                    st.markdown("**Top Score per Ligand**")
+                    fig, ax = plt.subplots(figsize=(max(5, _n_ligs * 0.6 + 1.5), 3.5))
+                    _draw_plot(ax, max(5, _n_ligs * 0.6 + 1.5))
+                    fig.tight_layout()
+                    _buf = __import__("io").BytesIO()
+                    fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight",
+                                facecolor=fig.get_facecolor())
+                    _buf.seek(0)
+                    st.session_state["b_plot_png"] = _buf.getvalue()
+                    st.pyplot(fig, use_container_width=True); plt.close(fig)
+            else:
+                # >10 ligands: plot full-width first, table below
+                st.markdown("**Top Score per Ligand**")
+                _fw = max(6, _n_ligs * 0.9 + 1.5)
+                fig, ax = plt.subplots(figsize=(_fw, 4))
+                _draw_plot(ax, _fw)
                 fig.tight_layout()
                 _buf = __import__("io").BytesIO()
                 fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight",
                             facecolor=fig.get_facecolor())
                 _buf.seek(0)
                 st.session_state["b_plot_png"] = _buf.getvalue()
-                return fig
-
-            if _n_ligs <= 10:
-                # ≤10 ligands: keep original side-by-side layout
-                _, _cp = st.columns([1, 1.6])
-                with _cp:
-                    fig = _draw_plot(fw=max(5, _n_ligs * 0.6 + 1.5), fh=3.5)
-                    st.pyplot(fig, use_container_width=True); plt.close(fig)
-            else:
-                # >10 ligands: full-width plot scaled to ligand count
-                fig = _draw_plot(fw=max(6, _n_ligs * 0.9 + 1.5), fh=4)
                 st.pyplot(fig, use_container_width=True); plt.close(fig)
+                st.markdown("**Score Table**")
+                st.dataframe(_display_df, hide_index=True, use_container_width=True)
+        else:
+            st.markdown("**Score Table**")
+            st.dataframe(_display_df, hide_index=True, use_container_width=True)
 
         st.markdown("---")
 
