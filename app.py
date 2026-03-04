@@ -813,7 +813,7 @@ def _poseview_ui(
                 # PoseView v1 (docked pose): only 2 interaction types shown
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
                 "  - Black dashed line       : hydrogen bond\n"
-                "  - Dark green solid line  : hydrophobic contact\n\n"
+                "  - Dark green solid line   : hydrophobic contact\n\n"
                 "Diagram legend (interaction types shown in the co-crystal reference figure):\n"
                 "  - Blue dashed line         : hydrogen bond\n"
                 "  - Pink dashed line         : ionic interaction\n"
@@ -824,7 +824,7 @@ def _poseview_ui(
                 if _has_ref else
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
                 "  - Black dashed line       : hydrogen bond\n"
-                "  - Dark green solid line  : hydrophobic contact\n\n"
+                "  - Dark green solid line   : hydrophobic contact\n\n"
             )
             + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
             f"π–π interactions, salt bridges, etc.).\n"
