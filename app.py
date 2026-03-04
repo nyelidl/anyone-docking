@@ -424,26 +424,35 @@ def _svg_to_png(svg_bytes: bytes):
     try:
         import cairosvg
         return cairosvg.svg2png(bytestring=svg_bytes, scale=2, background_color="white")
-    except Exception:
+    except ImportError:
+        st.caption("ℹ️ `cairosvg` not installed — showing SVG directly (install it for PNG export).")
+        return None
+    except Exception as e:
+        st.caption(f"ℹ️ PNG conversion failed ({e}) — showing SVG directly.")
         return None
 
 
 def _show_poseview_image(png_data, svg_data, caption):
-    """Render PoseView2 output — PNG via st.image, SVG embedded directly via components.html."""
+    """
+    Render PoseView2 output.
+    Priority: PNG via st.image (cairosvg converted) → SVG inline via components.html.
+    Caption is always shown below the image.
+    """
     if png_data:
-        st.image(png_data, caption=caption, use_container_width=True)
+        st.image(png_data, use_container_width=True)
+        st.caption(caption)
     elif svg_data:
         svg_str = svg_data.decode("utf-8") if isinstance(svg_data, bytes) else svg_data
-        # Inject width:100% so the SVG fills the column
-        svg_str = svg_str.replace("<svg ", '<svg style="width:100%;height:auto;" ', 1)
+        svg_str = svg_str.replace("<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1)
         components.html(
             f'''<div style="background:#ffffff;border-radius:8px;padding:12px;
-                           border:1px solid #D0D7DE;margin:4px 0;overflow:auto;">
+                           border:1px solid #D0D7DE;font-family:sans-serif;">
                 {svg_str}
-                <p style="text-align:center;font-size:12px;color:#57606A;
-                          margin:6px 0 0 0;">{caption}</p>
+                <p style="text-align:center;font-size:12px;color:#57606A;margin:6px 0 0 0;">
+                    {caption}
+                </p>
             </div>''',
-            height=520,
+            height=560,
             scrolling=True,
         )
     else:
