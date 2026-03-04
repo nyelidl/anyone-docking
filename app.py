@@ -572,7 +572,7 @@ _POSEVIEW_V1_LEGEND_HTML = """
     <!-- hydrogen bond -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
-        stroke="#5B9BD5" stroke-width="2" stroke-dasharray="5,3"/></svg>
+        stroke="#000000" stroke-width="2" stroke-dasharray="5,3"/></svg>
       <span>hydrogen bond</span>
     </div>
     <!-- hydrophobic contact -->
@@ -812,7 +812,7 @@ def _poseview_ui(
             + (
                 # PoseView v1 (docked pose): only 2 interaction types shown
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
-                "  - Dashed line       : hydrogen bond\n"
+                "  - Black dashed line       : hydrogen bond\n"
                 "  - Dark green solid line  : hydrophobic contact\n\n"
                 "Diagram legend (interaction types shown in the co-crystal reference figure):\n"
                 "  - Blue dashed line         : hydrogen bond\n"
