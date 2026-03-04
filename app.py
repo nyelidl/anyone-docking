@@ -812,8 +812,8 @@ def _poseview_ui(
             + (
                 # PoseView v1 (docked pose): only 2 interaction types shown
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
-                "  - Black dashed line       : hydrogen bond\n"
-                "  - Dark green solid line   : hydrophobic contact\n\n"
+                "  - Black dashed line      : hydrogen bond\n"
+                "  - Dark green solid line  : hydrophobic contact\n\n"
                 "Diagram legend (interaction types shown in the co-crystal reference figure):\n"
                 "  - Blue dashed line         : hydrogen bond\n"
                 "  - Pink dashed line         : ionic interaction\n"
@@ -823,8 +823,8 @@ def _poseview_ui(
                 "  - Dark green solid line    : hydrophobic contact\n\n"
                 if _has_ref else
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
-                "  - Black dashed line       : hydrogen bond\n"
-                "  - Dark green solid line   : hydrophobic contact\n\n"
+                "  - Black dashed line      : hydrogen bond\n"
+                "  - Dark green solid line  : hydrophobic contact\n\n"
             )
             + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
             f"π–π interactions, salt bridges, etc.).\n"
@@ -2032,14 +2032,17 @@ with tab_batch:
                  .sort_values("Top Score (kcal/mol)")
                  .reset_index(drop=True))
 
-        ct2, cp2 = st.columns([1, 1.6])
-        with ct2:
-            st.markdown("**Score Table**")
-            st.dataframe(df_res, hide_index=True, use_container_width=True)
-        with cp2:
-            st.markdown("**Top Score per Ligand**")
-            if not ok_df.empty:
-                fig, ax = plt.subplots(figsize=(max(5, len(ok_df)*0.6 + 1.5), 4))
+        # Score Table — drop "Pose" column if present
+        _display_df = df_res.drop(columns=[c for c in ["Pose"] if c in df_res.columns])
+        st.markdown("**Score Table**")
+        st.dataframe(_display_df, hide_index=True, use_container_width=True)
+
+        st.markdown("**Top Score per Ligand**")
+        if not ok_df.empty:
+            _n_ligs = len(ok_df)
+
+            def _draw_plot(fw, fh):
+                fig, ax = plt.subplots(figsize=(fw, fh))
                 _cc = _chart_colors()
                 fig.patch.set_facecolor(_cc["bg"]); ax.set_facecolor(_cc["bg_sub"])
                 scores = ok_df["Top Score (kcal/mol)"].values
@@ -2049,6 +2052,7 @@ with tab_batch:
                 ax.scatter(names, scores, color=colors, s=90, zorder=3,
                            edgecolors=_cc["border"], linewidths=0.5)
                 ax.plot(names, scores, color=_cc["border"], linewidth=0.8, zorder=2)
+                ax.set_xlim(-0.5, _n_ligs - 0.5)
                 if active_ref_score is not None:
                     ref_label = (
                         f"✓ Confirmed ref (pose {confirmed_ref_pose}): {active_ref_score:.2f} kcal/mol"
@@ -2066,11 +2070,22 @@ with tab_batch:
                 for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
                 ax.grid(axis="y", color=_cc["bg_sub"], linewidth=0.5)
                 fig.tight_layout()
-                _plot_buf = __import__("io").BytesIO()
-                fig.savefig(_plot_buf, format="png", dpi=150, bbox_inches="tight",
+                _buf = __import__("io").BytesIO()
+                fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight",
                             facecolor=fig.get_facecolor())
-                _plot_buf.seek(0)
-                st.session_state["b_plot_png"] = _plot_buf.getvalue()
+                _buf.seek(0)
+                st.session_state["b_plot_png"] = _buf.getvalue()
+                return fig
+
+            if _n_ligs <= 10:
+                # ≤10 ligands: keep original side-by-side layout
+                _, _cp = st.columns([1, 1.6])
+                with _cp:
+                    fig = _draw_plot(fw=max(5, _n_ligs * 0.6 + 1.5), fh=3.5)
+                    st.pyplot(fig, use_container_width=True); plt.close(fig)
+            else:
+                # >10 ligands: full-width plot scaled to ligand count
+                fig = _draw_plot(fw=max(6, _n_ligs * 0.9 + 1.5), fh=4)
                 st.pyplot(fig, use_container_width=True); plt.close(fig)
 
         st.markdown("---")
