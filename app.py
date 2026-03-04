@@ -766,7 +766,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         elif center_mode == "Select by atom selection (ProDy)":
             st.text_input(
                 "ProDy selection string",
-                value="resname LIG and chain A",
+                value="resid 721 820 and chain A",
                 key=pfx+"mda_sel",
                 help=(
                     "Examples:\n"
