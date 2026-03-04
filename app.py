@@ -765,7 +765,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             mz = c3.number_input("Z", value=0.0, key=pfx+"mz")
         elif center_mode == "Select by atom selection (ProDy)":
             st.text_input(
-                "ProDy selection string",
+                "Selection string",
                 value="resid 721 820 and chain A",
                 key=pfx+"mda_sel",
                 help=(
@@ -784,8 +784,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 ),
             )
             st.caption(
-                "💡 **ProDy examples:** "
-                "`resname LIG and chain A` · "
+                "💡 **Selection examples:** "
+                "`resid 721 820 and chain A` · "
                 "`resid 701 and chain A` · "
                 "`resid 84 to 100 and chain B` · "
                 "`resname ATP`"
@@ -1506,8 +1506,20 @@ with tab_batch:
 
         st.markdown("**Docking parameters**")
         b_exh = st.slider("Exhaustiveness", 4, 32, 8, 2, key="b_exh")
+        st.caption(
+            "🔍 Controls search thoroughness. Higher = more accurate but slower. "
+            "**8** is fast for screening; **16–32** for final validation."
+        )
         b_nm  = st.slider("Poses per ligand", 5, 20, 10, 1, key="b_nm")
+        st.caption(
+            "📐 Number of binding poses saved per ligand. "
+            "**10** captures diverse conformations for analysis."
+        )
         b_er  = st.slider("Energy range (kcal/mol)", 1, 5, 3, 1, key="b_er")
+        st.caption(
+            "⚡ Only poses within this range of the best score are kept. "
+            "**3 kcal/mol** balances diversity vs. relevance."
+        )
 
     if not b_rec_done:
         st.caption("⚠ Complete Step B1 first.")
