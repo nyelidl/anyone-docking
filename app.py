@@ -438,15 +438,77 @@ def _svg_to_png(svg_bytes: bytes):
         return None
 
 
+_POSEVIEW_LEGEND_HTML = """
+<div style="
+    background:#ffffff;
+    border:1px solid #D0D7DE;
+    border-radius:6px;
+    padding:10px 18px;
+    font-family:'Helvetica Neue',Arial,sans-serif;
+    font-size:13px;
+    color:#333;
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px 32px;
+    margin-top:6px;
+">
+  <!-- hydrogen bond -->
+  <div style="display:flex;align-items:center;gap:8px;">
+    <svg width="44" height="14"><line x1="0" y1="7" x2="44" y2="7"
+      stroke="#5B9BD5" stroke-width="2" stroke-dasharray="5,3"/></svg>
+    <span>hydrogen bond</span>
+  </div>
+  <!-- ionic interaction -->
+  <div style="display:flex;align-items:center;gap:8px;">
+    <svg width="44" height="14"><line x1="0" y1="7" x2="44" y2="7"
+      stroke="#E85D8A" stroke-width="2" stroke-dasharray="5,3"/></svg>
+    <span>ionic interaction</span>
+  </div>
+  <!-- metal interaction -->
+  <div style="display:flex;align-items:center;gap:8px;">
+    <svg width="44" height="14"><line x1="0" y1="7" x2="44" y2="7"
+      stroke="#F5C400" stroke-width="2" stroke-dasharray="5,3"/></svg>
+    <span>metal interaction</span>
+  </div>
+  <!-- cation-pi interaction -->
+  <div style="display:flex;align-items:center;gap:8px;">
+    <svg width="44" height="14">
+      <line x1="0" y1="7" x2="38" y2="7"
+        stroke="#AACC44" stroke-width="2" stroke-dasharray="5,3"/>
+      <circle cx="40" cy="7" r="4" fill="#44A44A"/>
+    </svg>
+    <span>cation-pi interaction</span>
+  </div>
+  <!-- pi-pi interaction -->
+  <div style="display:flex;align-items:center;gap:8px;">
+    <svg width="52" height="14">
+      <circle cx="5"  cy="7" r="4" fill="#00BCD4"/>
+      <line x1="9" y1="7" x2="43" y2="7"
+        stroke="#00BCD4" stroke-width="2" stroke-dasharray="5,3"/>
+      <circle cx="47" cy="7" r="4" fill="#00BCD4"/>
+    </svg>
+    <span>pi-pi interaction</span>
+  </div>
+  <!-- hydrophobic contact -->
+  <div style="display:flex;align-items:center;gap:8px;">
+    <svg width="44" height="14"><line x1="0" y1="7" x2="44" y2="7"
+      stroke="#2E8B57" stroke-width="2.5"/></svg>
+    <span>hydrophobic contact</span>
+  </div>
+</div>
+"""
+
+
 def _show_poseview_image(png_data, svg_data, caption):
     """
     Render PoseView2 output.
     Priority: PNG via st.image (cairosvg converted) → SVG inline via components.html.
-    Caption is always shown below the image.
+    Caption + interaction legend always shown below the image.
     """
     if png_data:
         st.image(png_data, use_container_width=True)
         st.caption(caption)
+        st.markdown(_POSEVIEW_LEGEND_HTML, unsafe_allow_html=True)
     elif svg_data:
         svg_str = svg_data.decode("utf-8") if isinstance(svg_data, bytes) else svg_data
         svg_str = svg_str.replace("<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1)
@@ -461,6 +523,7 @@ def _show_poseview_image(png_data, svg_data, caption):
             height=560,
             scrolling=True,
         )
+        st.markdown(_POSEVIEW_LEGEND_HTML, unsafe_allow_html=True)
     else:
         st.warning("No image data available.")
 
