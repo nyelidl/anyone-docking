@@ -437,58 +437,26 @@ _POSEVIEW_LEGEND_HTML = """
     color:#333;
     margin-top:8px;
 ">
-  <!-- Row 1 -->
-  <div style="display:flex;align-items:center;gap:40px;margin-bottom:10px;">
+  <div style="display:flex;align-items:center;gap:40px;">
     <!-- hydrogen bond -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
-      <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
-        stroke="#5B9BD5" stroke-width="2" stroke-dasharray="5,3"/></svg>
+      <svg width="48" height="14">
+        <line x1="0" y1="7" x2="48" y2="7"
+          stroke="#5B9BD5" stroke-width="2" stroke-dasharray="5,3"/>
+      </svg>
       <span>hydrogen bond</span>
     </div>
-    <!-- ionic interaction -->
-    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
-      <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
-        stroke="#E85D8A" stroke-width="2" stroke-dasharray="5,3"/></svg>
-      <span>ionic interaction</span>
-    </div>
-    <!-- metal interaction -->
-    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
-      <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
-        stroke="#F5C400" stroke-width="2" stroke-dasharray="5,3"/></svg>
-      <span>metal interaction</span>
-    </div>
-  </div>
-  <!-- Row 2 -->
-  <div style="display:flex;align-items:center;gap:40px;">
-    <!-- cation-pi interaction -->
-    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
-      <svg width="56" height="14">
-        <circle cx="4"  cy="7" r="4" fill="#44A44A"/>
-        <line x1="8" y1="7" x2="48" y2="7"
-          stroke="#AACC44" stroke-width="2" stroke-dasharray="5,3"/>
-        <circle cx="52" cy="7" r="4" fill="#44A44A"/>
-      </svg>
-      <span>cation-pi interaction</span>
-    </div>
-    <!-- pi-pi interaction -->
-    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
-      <svg width="56" height="14">
-        <circle cx="5"  cy="7" r="4" fill="#00BCD4"/>
-        <line x1="9" y1="7" x2="47" y2="7"
-          stroke="#00BCD4" stroke-width="2" stroke-dasharray="5,3"/>
-        <circle cx="51" cy="7" r="4" fill="#00BCD4"/>
-      </svg>
-      <span>pi-pi interaction</span>
-    </div>
+
     <!-- hydrophobic contact -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
-      <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
-        stroke="#2E8B57" stroke-width="2.5"/></svg>
+      <svg width="48" height="14">
+        <line x1="0" y1="7" x2="48" y2="7"
+          stroke="#2E8B57" stroke-width="2.5"/>
+      </svg>
       <span>hydrophobic contact</span>
     </div>
   </div>
 </div>
-"""
 
 
 def _show_poseview_image(png_data, svg_data, caption):
@@ -562,7 +530,7 @@ def _poseview_ui(
             st.caption("⚠️ Pose changed — click **Generate** to update the diagram.")
         else:
             st.caption(
-                "Sends the selected docked pose to [proteins.plus PoseView2](https://proteins.plus/) "
+                "Sends the selected docked pose to [proteins.plus PoseView](https://proteins.plus/) "
                 "and renders a 2D protein–ligand interaction map. Bond orders are "
                 "automatically corrected before submission."
             )
@@ -619,7 +587,7 @@ def _poseview_ui(
                 )
         with _dc3:
             st.caption("💡 SVG is vector — scalable for publications. PNG for quick use.")
-'''
+
         # ── PoseView protonation notice ───────────────────────────────────────
         if lig_smiles and ("[O-]" in lig_smiles or "+" in lig_smiles):
             st.info(
@@ -628,7 +596,6 @@ def _poseview_ui(
                 f"The docked SMILES was: `{lig_smiles}`",
                 icon="🧪",
             )
-'''
 
         # ── AI Prompt ─────────────────────────────────────────────────────────
         st.markdown("---")
@@ -659,7 +626,7 @@ def _poseview_ui(
             _ref_clause = ""
 
         _prompt_text = (
-            f"Analyze the attached Proteins.Plus PoseView2 interaction diagram "
+            f"Analyze the attached Proteins.Plus PoseView interaction diagram "
             f"for PDB ID {_pdb_str}, docked ligand {_lig_str}, "
             f"generated using AutoDock Vina v1.2.7 with predicted binding energy "
             f"{_energy_str}{_ref_clause}.\n\n"
@@ -673,14 +640,9 @@ def _poseview_ui(
                if lig_smiles and ("[O-]" in lig_smiles or "[NH2+]" in lig_smiles
                                    or "[NH+]" in lig_smiles or "[N+]" in lig_smiles) else "")
             + "Diagram legend (interaction types shown in the figure):\n"
-            "  - Blue dashed line         : hydrogen bond\n"
-            "  - Pink dashed line         : ionic interaction\n"
-            "  - Yellow dashed line       : metal interaction\n"
-            "  - Green dot-dashed line    : cation-pi interaction\n"
-            "  - Cyan dot-dashed line     : pi-pi interaction\n"
-            "  - Dark green solid line    : hydrophobic contact\n\n"
-            + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
-            f"π–π interactions, salt bridges, etc.).\n"
+            "  - Dashed line         : hydrogen bond\n"
+            "  - Dark green solid line    : hydrophobic contact\n"
+            + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, etc.).\n"
             f"2. List the main interacting residues and describe their roles in stabilizing the ligand.\n"
             + (
                 f"3. Compare the docking pose with the reference ligand in the same pocket.\n"
@@ -692,7 +654,7 @@ def _poseview_ui(
             + f"Provide a concise structural interpretation of the binding mode."
         )
 
-        st.markdown("### 🤖 AI Prompt for PoseView2 Interpretation")
+        st.markdown("### 🤖 AI Prompt for PoseView Interpretation")
         st.caption(
             "Copy and paste into any AI tool (GPT, Claude, Gemini, DeepSeek, …) "
             "together with the PoseView2 figure above. Fields are auto-filled from your session."
