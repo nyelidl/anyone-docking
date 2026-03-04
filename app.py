@@ -2024,7 +2024,6 @@ with tab_batch:
             {"Name": r["Name"],
              "Top Score (kcal/mol)": r["Top Score"],
              "Charge": (f"{r['Charge']:+d}" if r.get("Charge") is not None else "—"),
-             "Poses": r["Poses"],
              "Status": r["Status"]}
             for r in results
         ])
@@ -2032,21 +2031,24 @@ with tab_batch:
                  .sort_values("Top Score (kcal/mol)")
                  .reset_index(drop=True))
 
-        # Score Table — drop "Pose" column if present
-        _display_df = df_res.drop(columns=[c for c in ["Pose"] if c in df_res.columns])
+        # plot_df: OK ligands in original input order (same as Score Table)
+        plot_df = df_res[df_res["Status"] == "OK"].reset_index(drop=True)
 
-        if not ok_df.empty:
-            _n_ligs = len(ok_df)
+        # Score Table — shown as-is (Poses column already removed from df_res)
+        _display_df = df_res.copy()
+
+        if not plot_df.empty:
+            _n_ligs = len(plot_df)
+            _best_score = ok_df["Top Score (kcal/mol)"].min()
 
             def _draw_plot(ax, fw_hint):
                 _cc = _chart_colors()
                 ax.get_figure().patch.set_facecolor(_cc["bg"])
                 ax.set_facecolor(_cc["bg_sub"])
-                scores = ok_df["Top Score (kcal/mol)"].values
-                names  = ok_df["Name"].values
-                best_i = int(np.argmin(scores))
-                colors = ["#3fb950" if i == best_i else "#58a6ff" for i in range(len(scores))]
-                # Use integer positions to avoid duplicate-name stacking
+                scores = plot_df["Top Score (kcal/mol)"].values
+                names  = plot_df["Name"].values
+                colors = ["#3fb950" if s == _best_score else "#58a6ff" for s in scores]
+                # Integer x-positions → each ligand gets its own slot, duplicates stay separate
                 xs = list(range(_n_ligs))
                 ax.scatter(xs, scores, color=colors, s=90, zorder=3,
                            edgecolors=_cc["border"], linewidths=0.5)
