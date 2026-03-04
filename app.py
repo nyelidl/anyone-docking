@@ -473,6 +473,7 @@ _POSEVIEW_LEGEND_HTML = """
   <!-- cation-pi interaction -->
   <div style="display:flex;align-items:center;gap:8px;">
     <svg width="44" height="14">
+      <circle cx="-2" cy="7" r="4" fill="#44A44A"/>
       <line x1="0" y1="7" x2="38" y2="7"
         stroke="#AACC44" stroke-width="2" stroke-dasharray="5,3"/>
       <circle cx="40" cy="7" r="4" fill="#44A44A"/>
