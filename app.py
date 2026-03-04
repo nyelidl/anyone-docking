@@ -362,64 +362,52 @@ def _write_single_pose(mol, path: str) -> None:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  POSEVIEW2 REST API  (proteins.plus)
-#  POST {"poseview2": {"pdbCode": "1kzk", "ligand": "JE2_A_701"}}
-#  → poll location → GET → result_svg (SVG string)
+#  Upload receptor PDB + docked pose SDF → get 2D interaction SVG
+#  Same file-upload logic as original PoseView, updated to v2 endpoint.
 # ══════════════════════════════════════════════════════════════════════════════
-def _call_poseview2(pdb_code: str, ligand_id: str):
+def _call_poseview2(receptor_pdb: str, pose_sdf: str):
     """
-    Submit a job to the PoseView2 REST API and return (svg_bytes, error).
-
-    pdb_code  — 4-character PDB ID, e.g. "1kzk"
-    ligand_id — resname_chain_resnum, e.g. "JE2_A_701"
+    Submit receptor PDB + docked pose SDF to PoseView2 and return (svg_bytes, error).
+    Uses the proteins.plus v2 REST API with file uploads.
     """
     import requests, time
 
-    _SUBMIT = "https://proteins.plus/api/poseview2_rest"
+    _BASE   = "https://proteins.plus/api/v2/"
+    _SUBMIT = _BASE + "poseview/"
+    _JOBS   = _BASE + "poseview/jobs/"
 
     # ── Submit job ────────────────────────────────────────────────────────────
     try:
-        r = requests.post(
-            _SUBMIT,
-            json={"poseview2": {"pdbCode": pdb_code.strip().lower(),
-                                "ligand":  ligand_id.strip()}},
-            headers={"Accept": "application/json",
-                     "Content-Type": "application/json"},
-            timeout=30,
-        )
-        data = r.json()
-        if r.status_code not in (200, 202):
-            return None, f"Submission failed ({r.status_code}): {data.get('message', '')}"
-        location = data.get("location", "")
-        if not location:
-            return None, "API returned no job location."
+        with open(receptor_pdb) as rf, open(pose_sdf) as lf:
+            r = requests.post(
+                _SUBMIT,
+                files={"protein_file": rf, "ligand_file": lf},
+                timeout=30,
+            )
+        r.raise_for_status()
+        job_id = r.json()["job_id"]
     except Exception as e:
-        return None, f"Submission error: {e}"
+        return None, f"Submission failed: {e}"
 
     # ── Poll for result ───────────────────────────────────────────────────────
     for attempt in range(30):
         time.sleep(2)
         try:
-            poll = requests.get(
-                location,
-                headers={"Accept": "application/json"},
-                timeout=15,
-            ).json()
-            status = poll.get("status_code")
-            if status == 200:
-                svg_url = poll.get("result_svg", "")
-                if not svg_url:
-                    return None, "Job finished but result_svg is empty."
-                # result_svg is a URL — fetch the actual SVG bytes
-                try:
-                    svg_resp = requests.get(svg_url, timeout=20)
-                    svg_resp.raise_for_status()
-                    return svg_resp.content, None
-                except Exception as e:
-                    return None, f"Failed to download SVG from {svg_url}: {e}"
-            elif status == 202:
-                continue   # still processing
-            else:
-                return None, f"Unexpected status from poll: {status}"
+            job    = requests.get(_JOBS + job_id + "/", timeout=10).json()
+            status = job.get("status", "")
+            if status in ("done", "success"):
+                # result may be a URL or raw SVG content
+                img = job.get("image") or job.get("result") or job.get("image_url")
+                if not img:
+                    return None, "Job finished but no image returned."
+                # If it looks like a URL, fetch the bytes
+                if isinstance(img, str) and img.startswith("http"):
+                    resp = requests.get(img, timeout=20)
+                    resp.raise_for_status()
+                    return resp.content, None
+                return (img.encode() if isinstance(img, str) else img), None
+            if status not in ("pending", "running", ""):
+                return None, f"Job ended with status '{status}'"
         except Exception as e:
             return None, f"Polling error (attempt {attempt+1}): {e}"
 
@@ -537,8 +525,8 @@ def _show_poseview_image(png_data, svg_data, caption):
 # ══════════════════════════════════════════════════════════════════════════════
 def _poseview_ui(
     # ── PoseView2 API inputs ─────────────────────────────────────────────────
-    pdb_code: str,        # e.g. "1M17"
-    ligand_id: str,       # e.g. "ELR_A_900"  (resname_chain_resnum)
+    rec_key: str,         # session-state key holding receptor PDB path
+    pose_sdf_path: str,   # path to the single-pose SDF file to submit
     # ── Session-state keys for image cache ──────────────────────────────────
     smiles_key: str,
     pose_idx: int,
@@ -551,6 +539,7 @@ def _poseview_ui(
     dl_svg_key: str,
     label_suffix: str = "",
     # ── Context for auto-filled AI prompt ────────────────────────────────────
+    pdb_id: str = "",
     lig_name: str = "",
     lig_smiles: str = "",
     binding_energy: float | None = None,
@@ -559,8 +548,8 @@ def _poseview_ui(
     ref_lig_energy: float | None = None,
     show_header: bool = True,
 ):
-    """Reusable PoseView2 block. Uses pdbCode + ligand identifier."""
-    _pose_key = f"{pdb_code}_{ligand_id}_pose{pose_idx+1}{label_suffix}"
+    """Reusable PoseView2 block. Uploads receptor PDB + docked pose SDF."""
+    _pose_key = f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
     _pv_stale = st.session_state.get(pose_key_key) != _pose_key
 
     if show_header:
@@ -570,45 +559,34 @@ def _poseview_ui(
     _ci, _cb = st.columns([3, 1])
     with _ci:
         if _pv_stale and st.session_state.get(img_svg_key):
-            st.caption("⚠️ Selection changed — click **Generate** to update the diagram.")
+            st.caption("⚠️ Pose changed — click **Generate** to update the diagram.")
         else:
-            if ligand_id:
-                st.caption(
-                    f"Queries [proteins.plus PoseView2](https://proteins.plus/) "
-                    f"for **{pdb_code.upper()}** · ligand `{ligand_id}`. "
-                    f"Generates a 2D protein–ligand interaction map for the co-crystal reference."
-                )
-            else:
-                st.caption(
-                    "⚠️ No co-crystal ligand detected. Use **Auto-detect co-crystal ligand** "
-                    "in receptor preparation to enable PoseView2."
-                )
+            st.caption(
+                "Sends the selected docked pose to [proteins.plus PoseView2](https://proteins.plus/) "
+                "and renders a 2D protein–ligand interaction map. Bond orders are "
+                "automatically corrected before submission."
+            )
     with _cb:
         _run_pv = st.button(
             "🔬 Generate 2D Diagram",
             key=btn_key,
             type="primary",
-            disabled=not (pdb_code and ligand_id),
         )
 
     if _run_pv:
-        if not pdb_code:
-            st.error("PDB code not available — complete receptor preparation first.")
-        elif not ligand_id:
-            st.error(
-                "Co-crystal ligand ID not found. "
-                "Use 'Auto-detect co-crystal ligand' in receptor prep."
-            )
+        _rec = st.session_state.get(rec_key, "")
+        if not _rec or not os.path.exists(_rec):
+            st.error("Receptor PDB not found — complete receptor preparation first.")
+        elif not os.path.exists(pose_sdf_path):
+            st.error("Pose SDF not found.")
         else:
-            with st.spinner(
-                f"Submitting to PoseView2 API — {pdb_code.upper()} / {ligand_id} … (10–60 s)"
-            ):
-                _svg, _err = _call_poseview2(pdb_code, ligand_id)
+            with st.spinner("Submitting to PoseView2 API… (10–60 s)"):
+                _svg, _err = _call_poseview2(_rec, pose_sdf_path)
             if _err:
                 st.error(f"❌ PoseView2 error: {_err}")
             else:
                 _png = _svg_to_png(_svg)
-                st.session_state[img_url_key]  = None   # PoseView2 returns SVG directly
+                st.session_state[img_url_key]  = None
                 st.session_state[img_png_key]  = _png
                 st.session_state[img_svg_key]  = _svg
                 st.session_state[pose_key_key] = _pose_key
@@ -617,10 +595,11 @@ def _poseview_ui(
     if st.session_state.get(img_svg_key) and not _pv_stale:
         _png_data = st.session_state.get(img_png_key)
         _svg_data = st.session_state.get(img_svg_key)
+        _lig_label = st.session_state.get(smiles_key, "ligand")[:20]
         _show_poseview_image(
             _png_data,
             _svg_data,
-            f"PoseView2 — {pdb_code.upper()} · {ligand_id}",
+            f"PoseView2 — {_lig_label} pose {pose_idx+1}",
         )
 
         _dc1, _dc2, _dc3 = st.columns([1, 1, 2])
@@ -628,14 +607,14 @@ def _poseview_ui(
             if _png_data:
                 st.download_button(
                     "⬇ Save PNG", data=_png_data,
-                    file_name=f"poseview2_{pdb_code}_{ligand_id}.png",
+                    file_name=f"poseview2_pose{pose_idx+1}.png",
                     mime="image/png", key=dl_png_key, use_container_width=True,
                 )
         with _dc2:
             if _svg_data:
                 st.download_button(
                     "⬇ Save SVG", data=_svg_data,
-                    file_name=f"poseview2_{pdb_code}_{ligand_id}.svg",
+                    file_name=f"poseview2_pose{pose_idx+1}.svg",
                     mime="image/svg+xml", key=dl_svg_key, use_container_width=True,
                 )
         with _dc3:
@@ -653,7 +632,7 @@ def _poseview_ui(
         # ── AI Prompt ─────────────────────────────────────────────────────────
         st.markdown("---")
 
-        _pdb_str    = pdb_code.upper() if pdb_code else "[PDB ID]"
+        _pdb_str    = pdb_id.upper() if pdb_id else "[PDB ID]"
         _lig_str    = (f"{lig_name} (SMILES: {lig_smiles})"
                        if lig_name and lig_smiles
                        else lig_name if lig_name else "[ligand name]")
@@ -680,17 +659,25 @@ def _poseview_ui(
 
         _prompt_text = (
             f"Analyze the attached Proteins.Plus PoseView2 interaction diagram "
-            f"for PDB ID {_pdb_str}, co-crystal ligand `{ligand_id}`, "
-            f"alongside docked ligand {_lig_str}, "
+            f"for PDB ID {_pdb_str}, docked ligand {_lig_str}, "
             f"generated using AutoDock Vina v1.2.7 with predicted binding energy "
             f"{_energy_str}{_ref_clause}.\n\n"
-            + (f"Note: PoseView2 displays the co-crystal ligand ({ligand_id}) from the PDB entry, "
-               f"not the docked pose directly. The docked ligand SMILES was: {lig_smiles}\n\n"
-               if lig_smiles else "")
+            + (f"Note: PoseView2 may re-protonate the ligand using its own internal algorithm "
+               f"and may not reflect the actual protonation state used for docking. "
+               f"The SMILES submitted was: `{lig_smiles}` — refer to the AI prompt below "
+               f"for the correct charge state.\n\n"
+               if lig_smiles and ("[O-]" in lig_smiles or "+" in lig_smiles) else "")
             + (f"Note: The docked ligand contains charged groups. "
                f"Please interpret interactions accordingly.\n\n"
                if lig_smiles and ("[O-]" in lig_smiles or "[NH2+]" in lig_smiles
                                    or "[NH+]" in lig_smiles or "[N+]" in lig_smiles) else "")
+            + "Diagram legend (interaction types shown in the figure):\n"
+            "  - Blue dashed line         : hydrogen bond\n"
+            "  - Pink dashed line         : ionic interaction\n"
+            "  - Yellow dashed line       : metal interaction\n"
+            "  - Green dot-dashed line    : cation-pi interaction\n"
+            "  - Cyan dot-dashed line     : pi-pi interaction\n"
+            "  - Dark green solid line    : hydrophobic contact\n\n"
             + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
             f"π–π interactions, salt bridges, etc.).\n"
             f"2. List the main interacting residues and describe their roles in stabilizing the ligand.\n"
@@ -1368,9 +1355,21 @@ with tab_basic:
                         file_name="receptor.pdb", key="dl_rec")
 
             # ── PoseView2 2D Interaction ──────────────────────────────────────
+            # Write bond-order-fixed single pose SDF for PoseView2 submission
+            pv_sdf_all = st.session_state.get("output_pv_sdf", "")
+            sp_pv = str(WORKDIR / f"pose_{pose_idx+1}_pv_ready.sdf")
+            if pv_sdf_all and os.path.exists(pv_sdf_all):
+                pv_mols_all = _load_pv_mols(pv_sdf_all)
+                if pv_mols_all and pose_idx < len(pv_mols_all):
+                    _write_single_pose(pv_mols_all[pose_idx], sp_pv)
+                else:
+                    _write_single_pose(sel_mol, sp_pv)
+            else:
+                _write_single_pose(sel_mol, sp_pv)
+
             _poseview_ui(
-                pdb_code      = st.session_state.get("pdb_token", ""),
-                ligand_id     = st.session_state.get("cocrystal_ligand_id", ""),
+                rec_key       = "receptor_fh",
+                pose_sdf_path = sp_pv,
                 smiles_key    = "ligand_name",
                 pose_idx      = pose_idx,
                 img_url_key   = "pv_image_url",
@@ -1381,6 +1380,7 @@ with tab_basic:
                 dl_png_key    = "dl_pv_png_basic",
                 dl_svg_key    = "dl_pv_svg_basic",
                 label_suffix  = "_basic",
+                pdb_id        = st.session_state.get("pdb_token", ""),
                 lig_name      = st.session_state.get("ligand_name", ""),
                 lig_smiles    = st.session_state.get("prot_smiles", ""),
                 binding_energy = (
@@ -1924,9 +1924,21 @@ with tab_batch:
 
                 st.session_state["_b_pv2_smiles"] = pv_sel_res.get("SMILES", pv_sel_nm)
 
+                # Write bond-order-fixed single pose SDF for PoseView2 submission
+                pv_sdf_all_path = pv_sel_res.get("pv_sdf", "")
+                sp_pv2 = str(BATCH_WORKDIR / f"{pv_safe_nm}_pose{pv_pose_i+1}_pv2_ready.sdf")
+                if pv_sdf_all_path and os.path.exists(pv_sdf_all_path):
+                    pv_mols2 = _load_pv_mols(pv_sdf_all_path)
+                    if pv_mols2 and pv_pose_i < len(pv_mols2):
+                        _write_single_pose(pv_mols2[pv_pose_i], sp_pv2)
+                    else:
+                        _write_single_pose(pv_all_mols[pv_pose_i], sp_pv2)
+                else:
+                    _write_single_pose(pv_all_mols[pv_pose_i], sp_pv2)
+
                 _poseview_ui(
-                    pdb_code       = st.session_state.get("b_pdb_token", ""),
-                    ligand_id      = st.session_state.get("b_cocrystal_ligand_id", ""),
+                    rec_key        = "b_receptor_fh",
+                    pose_sdf_path  = sp_pv2,
                     smiles_key     = "_b_pv2_smiles",
                     pose_idx       = pv_pose_i,
                     img_url_key    = "b_pv2_image_url",
@@ -1937,6 +1949,7 @@ with tab_batch:
                     dl_png_key     = "dl_pv2_png_batch",
                     dl_svg_key     = "dl_pv2_svg_batch",
                     label_suffix   = f"_pv2_{pv_safe_nm}",
+                    pdb_id         = st.session_state.get("b_pdb_token", ""),
                     lig_name       = pv_safe_nm,
                     lig_smiles     = pv_sel_res.get("SMILES", ""),
                     binding_energy = pv_score,
