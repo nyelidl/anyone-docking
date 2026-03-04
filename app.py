@@ -443,58 +443,61 @@ _POSEVIEW_LEGEND_HTML = """
     background:#ffffff;
     border:1px solid #D0D7DE;
     border-radius:6px;
-    padding:10px 18px;
+    padding:12px 20px;
     font-family:'Helvetica Neue',Arial,sans-serif;
     font-size:13px;
     color:#333;
-    display:flex;
-    flex-wrap:wrap;
-    gap:6px 32px;
-    margin-top:6px;
+    margin-top:8px;
 ">
-  <!-- hydrogen bond -->
-  <div style="display:flex;align-items:center;gap:8px;">
-    <svg width="44" height="14"><line x1="0" y1="7" x2="44" y2="7"
-      stroke="#5B9BD5" stroke-width="2" stroke-dasharray="5,3"/></svg>
-    <span>hydrogen bond</span>
+  <!-- Row 1 -->
+  <div style="display:flex;align-items:center;gap:40px;margin-bottom:10px;">
+    <!-- hydrogen bond -->
+    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+      <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
+        stroke="#5B9BD5" stroke-width="2" stroke-dasharray="5,3"/></svg>
+      <span>hydrogen bond</span>
+    </div>
+    <!-- ionic interaction -->
+    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+      <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
+        stroke="#E85D8A" stroke-width="2" stroke-dasharray="5,3"/></svg>
+      <span>ionic interaction</span>
+    </div>
+    <!-- metal interaction -->
+    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+      <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
+        stroke="#F5C400" stroke-width="2" stroke-dasharray="5,3"/></svg>
+      <span>metal interaction</span>
+    </div>
   </div>
-  <!-- ionic interaction -->
-  <div style="display:flex;align-items:center;gap:8px;">
-    <svg width="44" height="14"><line x1="0" y1="7" x2="44" y2="7"
-      stroke="#E85D8A" stroke-width="2" stroke-dasharray="5,3"/></svg>
-    <span>ionic interaction</span>
-  </div>
-  <!-- metal interaction -->
-  <div style="display:flex;align-items:center;gap:8px;">
-    <svg width="44" height="14"><line x1="0" y1="7" x2="44" y2="7"
-      stroke="#F5C400" stroke-width="2" stroke-dasharray="5,3"/></svg>
-    <span>metal interaction</span>
-  </div>
-  <!-- cation-pi interaction -->
-  <div style="display:flex;align-items:center;gap:8px;">
-    <svg width="44" height="14">
-      <circle cx="2" cy="7" r="4" fill="#44A44A"/>
-      <line x1="0" y1="7" x2="38" y2="7"
-        stroke="#AACC44" stroke-width="2" stroke-dasharray="5,3"/>
-      <circle cx="40" cy="7" r="4" fill="#44A44A"/>
-    </svg>
-    <span>cation-pi interaction</span>
-  </div>
-  <!-- pi-pi interaction -->
-  <div style="display:flex;align-items:center;gap:8px;">
-    <svg width="54" height="14">
-      <circle cx="5"  cy="7" r="4" fill="#00BCD4"/>
-      <line x1="9" y1="7" x2="43" y2="7"
-        stroke="#00BCD4" stroke-width="2" stroke-dasharray="5,3"/>
-      <circle cx="47" cy="7" r="4" fill="#00BCD4"/>
-    </svg>
-    <span>pi-pi interaction</span>
-  </div>
-  <!-- hydrophobic contact -->
-  <div style="display:flex;align-items:center;gap:8px;">
-    <svg width="44" height="14"><line x1="0" y1="7" x2="44" y2="7"
-      stroke="#2E8B57" stroke-width="2.5"/></svg>
-    <span>hydrophobic contact</span>
+  <!-- Row 2 -->
+  <div style="display:flex;align-items:center;gap:40px;">
+    <!-- cation-pi interaction -->
+    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+      <svg width="56" height="14">
+        <circle cx="4"  cy="7" r="4" fill="#44A44A"/>
+        <line x1="8" y1="7" x2="48" y2="7"
+          stroke="#AACC44" stroke-width="2" stroke-dasharray="5,3"/>
+        <circle cx="52" cy="7" r="4" fill="#44A44A"/>
+      </svg>
+      <span>cation-pi interaction</span>
+    </div>
+    <!-- pi-pi interaction -->
+    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+      <svg width="56" height="14">
+        <circle cx="5"  cy="7" r="4" fill="#00BCD4"/>
+        <line x1="9" y1="7" x2="47" y2="7"
+          stroke="#00BCD4" stroke-width="2" stroke-dasharray="5,3"/>
+        <circle cx="51" cy="7" r="4" fill="#00BCD4"/>
+      </svg>
+      <span>pi-pi interaction</span>
+    </div>
+    <!-- hydrophobic contact -->
+    <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
+      <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
+        stroke="#2E8B57" stroke-width="2.5"/></svg>
+      <span>hydrophobic contact</span>
+    </div>
   </div>
 </div>
 """
