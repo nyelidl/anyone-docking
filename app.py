@@ -406,10 +406,16 @@ def _call_poseview2(pdb_code: str, ligand_id: str):
             ).json()
             status = poll.get("status_code")
             if status == 200:
-                svg = poll.get("result_svg", "")
-                if not svg:
+                svg_url = poll.get("result_svg", "")
+                if not svg_url:
                     return None, "Job finished but result_svg is empty."
-                return svg.encode() if isinstance(svg, str) else svg, None
+                # result_svg is a URL — fetch the actual SVG bytes
+                try:
+                    svg_resp = requests.get(svg_url, timeout=20)
+                    svg_resp.raise_for_status()
+                    return svg_resp.content, None
+                except Exception as e:
+                    return None, f"Failed to download SVG from {svg_url}: {e}"
             elif status == 202:
                 continue   # still processing
             else:
