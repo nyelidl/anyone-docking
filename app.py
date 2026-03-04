@@ -619,7 +619,7 @@ def _poseview_ui(
                 )
         with _dc3:
             st.caption("💡 SVG is vector — scalable for publications. PNG for quick use.")
-
+'''
         # ── PoseView protonation notice ───────────────────────────────────────
         if lig_smiles and ("[O-]" in lig_smiles or "+" in lig_smiles):
             st.info(
@@ -628,6 +628,7 @@ def _poseview_ui(
                 f"The docked SMILES was: `{lig_smiles}`",
                 icon="🧪",
             )
+'''
 
         # ── AI Prompt ─────────────────────────────────────────────────────────
         st.markdown("---")
