@@ -681,10 +681,14 @@ def _poseview_ui(
             + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
             f"π–π interactions, salt bridges, etc.).\n"
             f"2. List the main interacting residues and describe their roles in stabilizing the ligand.\n"
-            f"3. Compare the docking pose with the reference ligand in the same pocket.\n"
-            f"4. Highlight similarities or differences in binding orientation and interaction patterns.\n"
-            f"5. Evaluate whether the interaction profile supports the predicted binding energy.\n\n"
-            f"Provide a concise structural interpretation of the binding mode."
+            + (
+                f"3. Compare the docking pose with the reference ligand in the same pocket.\n"
+                f"4. Highlight similarities or differences in binding orientation and interaction patterns.\n"
+                f"5. Evaluate whether the interaction profile supports the predicted binding energy.\n\n"
+                if _has_ref else
+                f"3. Evaluate whether the interaction profile supports the predicted binding energy.\n\n"
+            )
+            + f"Provide a concise structural interpretation of the binding mode."
         )
 
         st.markdown("### 🤖 AI Prompt for PoseView2 Interpretation")
