@@ -911,7 +911,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             mx = c1.number_input("X", value=0.0, key=pfx+"mx")
             my = c2.number_input("Y", value=0.0, key=pfx+"my")
             mz = c3.number_input("Z", value=0.0, key=pfx+"mz")
-        elif center_mode == "Select by atom selection":
+        elif center_mode == "Select by atom selection (Prody)":
             st.text_input(
                 "ProDy selection string",
                 value="resid 703 820 and chain A",
