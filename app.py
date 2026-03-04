@@ -429,24 +429,25 @@ def _svg_to_png(svg_bytes: bytes):
 
 
 def _show_poseview_image(png_data, svg_data, caption):
-    """Render PoseView2 output — PNG preferred, SVG fallback."""
-    import base64 as _b64
+    """Render PoseView2 output — PNG via st.image, SVG embedded directly via components.html."""
     if png_data:
-        img_src = f"data:image/png;base64,{_b64.b64encode(png_data).decode()}"
+        st.image(png_data, caption=caption, use_container_width=True)
     elif svg_data:
-        img_src = f"data:image/svg+xml;base64,{_b64.b64encode(svg_data).decode()}"
+        svg_str = svg_data.decode("utf-8") if isinstance(svg_data, bytes) else svg_data
+        # Inject width:100% so the SVG fills the column
+        svg_str = svg_str.replace("<svg ", '<svg style="width:100%;height:auto;" ', 1)
+        components.html(
+            f'''<div style="background:#ffffff;border-radius:8px;padding:12px;
+                           border:1px solid #D0D7DE;margin:4px 0;overflow:auto;">
+                {svg_str}
+                <p style="text-align:center;font-size:12px;color:#57606A;
+                          margin:6px 0 0 0;">{caption}</p>
+            </div>''',
+            height=520,
+            scrolling=True,
+        )
     else:
         st.warning("No image data available.")
-        return
-    st.markdown(
-        f'''<div style="background:#ffffff;border-radius:8px;padding:12px;
-                       border:1px solid #D0D7DE;margin:8px 0;">
-            <img src="{img_src}" style="width:100%;height:auto;display:block;" />
-            <div style="text-align:center;font-size:0.78rem;color:#57606A;
-                        margin-top:6px;">{caption}</div>
-        </div>''',
-        unsafe_allow_html=True,
-    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
