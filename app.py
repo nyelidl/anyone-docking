@@ -823,7 +823,7 @@ def _poseview_ui(
                 "  - Dark green solid line    : hydrophobic contact\n\n"
                 if _has_ref else
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
-                "  - Blue dashed line       : hydrogen bond\n"
+                "  - Black dashed line       : hydrogen bond\n"
                 "  - Dark green solid line  : hydrophobic contact\n\n"
             )
             + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
