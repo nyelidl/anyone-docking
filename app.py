@@ -2,7 +2,8 @@
 """
 AutoDock Vina 1.2.7 — Streamlit Docking Interface
 Tabs: Basic (single ligand) | Batch (multiple ligands)
-Bond-order correction applied automatically before PoseView submission.
+Bond-order correction applied automatically before PoseView2 submission.
+PoseView2 REST API: pdbCode + ligand identifier (resname_chain_resnum).
 """
 
 import streamlit as st
@@ -194,23 +195,25 @@ _DEFAULTS = dict(
     pdb_token=None, raw_pdb=None, receptor_fh=None, receptor_pdbqt=None,
     box_pdb=None, config_txt=None, cx=None, cy=None, cz=None,
     ligand_pdb_path=None, receptor_done=False, receptor_log="",
+    cocrystal_ligand_id="",  # NEW: e.g. "ELR_A_701"
     # Basic — ligand
     ligand_pdbqt=None, ligand_sdf=None, ligand_name="ELR",
     prot_smiles=None, ligand_done=False, ligand_log="",
     # Basic — docking
     output_pdbqt=None, output_sdf=None, output_pv_sdf=None, dock_base=None,
     docking_done=False, docking_log="", score_df=None, pose_mols=None,
-    # Basic — PoseView
+    # Basic — PoseView2
     pv_image_url=None, pv_image_png=None, pv_image_svg=None, pv_pose_key=None,
     # Batch — receptor
     b_pdb_token=None, b_raw_pdb=None, b_receptor_fh=None, b_receptor_pdbqt=None,
     b_box_pdb=None, b_config_txt=None, b_cx=None, b_cy=None, b_cz=None,
     b_ligand_pdb_path=None, b_receptor_done=False, b_receptor_log="",
+    b_cocrystal_ligand_id="",  # NEW
     # Batch — results
     b_batch_done=False, b_batch_results=None, b_batch_log="",
     b_redock_score=None, b_redock_result=None,
     b_confirmed_ref_score=None, b_confirmed_ref_pose=None, b_confirmed_ref_name=None,
-    # Batch — PoseView
+    # Batch — PoseView2
     b_pv_image_url=None, b_pv_image_png=None, b_pv_image_svg=None, b_pv_pose_key=None,
     b_pv2_image_url=None, b_pv2_image_png=None, b_pv2_image_svg=None, b_pv2_pose_key=None,
     b_plot_png=None,
@@ -275,18 +278,8 @@ def _meeko_to_pdbqt(mol, out_path):
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  BOND ORDER CORRECTION
-#  PDBQT strips all bond orders; obabel reconstructs them heuristically.
-#  For conjugated/aromatic systems (flavones, purines, etc.) this is often
-#  wrong.  We fix it by grafting bond orders from the reference SMILES onto
-#  the docked 3-D geometry using AssignBondOrdersFromTemplate.
 # ══════════════════════════════════════════════════════════════════════════════
 def _bo_template(smiles: str):
-    """
-    Build a kekulised template from SMILES.
-    AssignBondOrdersFromTemplate requires explicit SINGLE/DOUBLE/TRIPLE
-    bonds on the template side — NOT the AROMATIC bond type — otherwise
-    fused ring systems (chromone, purine, indole …) raise a RuntimeError.
-    """
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -296,14 +289,8 @@ def _bo_template(smiles: str):
 
 
 def _bo_fix_mol(probe, template):
-    """
-    Assign bond orders AND formal charges from *template* onto *probe*
-    (docked, all-single-bond geometry).
-    Preserves 3-D coordinates and all SD-tag properties.
-    """
     from rdkit import Chem
     from rdkit.Chem import AllChem
-    # Strip explicit Hs added by obabel — they break the heavy-atom count match
     probe_noH = Chem.RemoveHs(probe, sanitize=False)
     try:
         fixed = AllChem.AssignBondOrdersFromTemplate(template, probe_noH)
@@ -312,11 +299,6 @@ def _bo_fix_mol(probe, template):
             f"AssignBondOrdersFromTemplate failed (atom/connectivity mismatch): {exc}"
         ) from exc
 
-    # ── Explicitly copy formal charges from template ──────────────────────────
-    # AssignBondOrdersFromTemplate may not propagate charges reliably across
-    # RDKit versions (e.g. [O-] from Dimorphite-DL becomes neutral OH in the
-    # docked SDF).  We use the heavy-atom substructure match to copy them
-    # atom-by-atom, ensuring the prepared protonation state is preserved.
     match = fixed.GetSubstructMatch(template)
     if match:
         em = Chem.RWMol(fixed)
@@ -326,24 +308,12 @@ def _bo_fix_mol(probe, template):
         fixed = em.GetMol()
 
     Chem.SanitizeMol(fixed)
-    # Carry over all SD properties (Vina score, RMSD, pose number …)
     for prop in probe.GetPropsAsDict():
         fixed.SetProp(prop, probe.GetProp(prop))
     return fixed
 
 
 def _fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list[str]:
-    """
-    Read every pose from *raw_sdf*, fix bond orders + formal charges,
-    write to *fixed_sdf* WITH explicit H atoms.
-
-    Explicit H are required so that PoseView correctly perceives charged atoms
-    from connectivity: O with no H neighbours → [O-], O with one H → OH.
-    Without explicit H, PoseView treats every oxygen as neutral regardless of
-    the M  CHG line in the SDF.
-
-    Returns a list of log lines.  Falls back to raw molecule on per-pose error.
-    """
     from rdkit import Chem
     log = []
     try:
@@ -356,7 +326,6 @@ def _fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list[str]
 
     supplier = Chem.SDMolSupplier(raw_sdf, sanitize=False, removeHs=False)
     writer  = Chem.SDWriter(fixed_sdf)
-    # Write explicit H so PoseView infers protonation from connectivity
     writer.SetKekulize(False)
 
     ok = err = 0
@@ -367,7 +336,6 @@ def _fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list[str]
             continue
         try:
             fixed = _bo_fix_mol(mol, template)
-            # Add explicit H — lets PoseView distinguish [O-] (no H) from OH (has H)
             fixed_h = Chem.AddHs(fixed, addCoords=False)
             writer.write(fixed_h)
             ok += 1
@@ -382,7 +350,6 @@ def _fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list[str]
 
 
 def _load_pv_mols(pv_sdf: str):
-    """Load fixed-SDF poses with full sanitisation (safe after bond-order fix)."""
     from rdkit import Chem
     return [m for m in Chem.SDMolSupplier(pv_sdf, sanitize=True, removeHs=False) if m]
 
@@ -394,37 +361,63 @@ def _write_single_pose(mol, path: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  AI POSEVIEW ANALYSIS  (Claude claude-sonnet-4-20250514 via Anthropic API)
+#  POSEVIEW2 REST API  (proteins.plus)
+#  POST {"poseview2": {"pdbCode": "1kzk", "ligand": "JE2_A_701"}}
+#  → poll location → GET → result_svg (SVG string)
+# ══════════════════════════════════════════════════════════════════════════════
+def _call_poseview2(pdb_code: str, ligand_id: str):
+    """
+    Submit a job to the PoseView2 REST API and return (svg_bytes, error).
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  POSEVIEW HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-def _call_poseview(receptor_pdb: str, pose_sdf: str):
-    """Submit to proteins.plus PoseView API. Returns (image_url, error)."""
+    pdb_code  — 4-character PDB ID, e.g. "1kzk"
+    ligand_id — resname_chain_resnum, e.g. "JE2_A_701"
+    """
     import requests, time
-    _BASE   = "https://proteins.plus/api/v2/"
-    _SUBMIT = _BASE + "poseview/"
-    _JOBS   = _BASE + "poseview/jobs/"
+
+    _SUBMIT = "https://proteins.plus/api/poseview2_rest"
+
+    # ── Submit job ────────────────────────────────────────────────────────────
     try:
-        with open(receptor_pdb) as rf, open(pose_sdf) as lf:
-            r = requests.post(_SUBMIT, files={"protein_file": rf, "ligand_file": lf}, timeout=30)
-        r.raise_for_status()
-        job_id = r.json()["job_id"]
+        r = requests.post(
+            _SUBMIT,
+            json={"poseview2": {"pdbCode": pdb_code.strip().lower(),
+                                "ligand":  ligand_id.strip()}},
+            headers={"Accept": "application/json",
+                     "Content-Type": "application/json"},
+            timeout=30,
+        )
+        data = r.json()
+        if r.status_code not in (200, 202):
+            return None, f"Submission failed ({r.status_code}): {data.get('message', '')}"
+        location = data.get("location", "")
+        if not location:
+            return None, "API returned no job location."
     except Exception as e:
-        return None, f"Submission failed: {e}"
-    for _ in range(30):
-        try:
-            job    = requests.get(_JOBS + job_id + "/", timeout=10).json()
-            status = job.get("status", "")
-            if status in ("done", "success"):
-                img = job.get("image") or job.get("result") or job.get("image_url")
-                return (img, None) if img else (None, "Job finished but no image URL returned.")
-            if status not in ("pending", "running"):
-                return None, f"Job ended with status '{status}'"
-        except Exception as e:
-            return None, f"Polling error: {e}"
+        return None, f"Submission error: {e}"
+
+    # ── Poll for result ───────────────────────────────────────────────────────
+    for attempt in range(30):
         time.sleep(2)
-    return None, "Timed out waiting for PoseView (60 s)."
+        try:
+            poll = requests.get(
+                location,
+                headers={"Accept": "application/json"},
+                timeout=15,
+            ).json()
+            status = poll.get("status_code")
+            if status == 200:
+                svg = poll.get("result_svg", "")
+                if not svg:
+                    return None, "Job finished but result_svg is empty."
+                return svg.encode() if isinstance(svg, str) else svg, None
+            elif status == 202:
+                continue   # still processing
+            else:
+                return None, f"Unexpected status from poll: {status}"
+        except Exception as e:
+            return None, f"Polling error (attempt {attempt+1}): {e}"
+
+    return None, "Timed out waiting for PoseView2 result (60 s)."
 
 
 def _svg_to_png(svg_bytes: bytes):
@@ -435,20 +428,16 @@ def _svg_to_png(svg_bytes: bytes):
         return None
 
 
-# PoseView legend (base64-embedded PNG)
-_POSEVIEW_LEGEND_B64 = (
-    "/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJTEUAAQEAAAHIAAAAAAQwAABtbnRyUkdC"
-    "IFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADT"
-    "LQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-)
-
-def _show_poseview_image(png_data, url, caption):
+def _show_poseview_image(png_data, svg_data, caption):
+    """Render PoseView2 output — PNG preferred, SVG fallback."""
     import base64 as _b64
-    img_src = (f"data:image/png;base64,{_b64.b64encode(png_data).decode()}"
-               if png_data else url)
+    if png_data:
+        img_src = f"data:image/png;base64,{_b64.b64encode(png_data).decode()}"
+    elif svg_data:
+        img_src = f"data:image/svg+xml;base64,{_b64.b64encode(svg_data).decode()}"
+    else:
+        st.warning("No image data available.")
+        return
     st.markdown(
         f'''<div style="background:#ffffff;border-radius:8px;padding:12px;
                        border:1px solid #D0D7DE;margin:8px 0;">
@@ -460,13 +449,16 @@ def _show_poseview_image(png_data, url, caption):
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  POSEVIEW2 UI BLOCK  (reusable)
+# ══════════════════════════════════════════════════════════════════════════════
 def _poseview_ui(
-    rec_key: str,
-    raw_sdf_key: str,
-    pv_sdf_key: str,
+    # ── PoseView2 API inputs ─────────────────────────────────────────────────
+    pdb_code: str,        # e.g. "1M17"
+    ligand_id: str,       # e.g. "ELR_A_900"  (resname_chain_resnum)
+    # ── Session-state keys for image cache ──────────────────────────────────
     smiles_key: str,
     pose_idx: int,
-    pose_sdf_path: str,
     img_url_key: str,
     img_png_key: str,
     img_svg_key: str,
@@ -476,7 +468,6 @@ def _poseview_ui(
     dl_svg_key: str,
     label_suffix: str = "",
     # ── Context for auto-filled AI prompt ────────────────────────────────────
-    pdb_id: str = "",
     lig_name: str = "",
     lig_smiles: str = "",
     binding_energy: float | None = None,
@@ -485,95 +476,108 @@ def _poseview_ui(
     ref_lig_energy: float | None = None,
     show_header: bool = True,
 ):
-    """Reusable PoseView block."""
-    _pose_key = f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
+    """Reusable PoseView2 block. Uses pdbCode + ligand identifier."""
+    _pose_key = f"{pdb_code}_{ligand_id}_pose{pose_idx+1}{label_suffix}"
     _pv_stale = st.session_state.get(pose_key_key) != _pose_key
 
     if show_header:
         st.markdown("---")
-        st.markdown("**🧬 2D Interaction Diagram — PoseView**")
+        st.markdown("**🧬 2D Interaction Diagram — PoseView2**")
 
     _ci, _cb = st.columns([3, 1])
     with _ci:
-        if _pv_stale and st.session_state.get(img_url_key):
-            st.caption("⚠️ Pose changed — click **Generate** to update the diagram.")
+        if _pv_stale and st.session_state.get(img_svg_key):
+            st.caption("⚠️ Selection changed — click **Generate** to update the diagram.")
         else:
-            st.caption(
-                "Sends the selected pose to [proteins.plus PoseView](https://proteins.plus/) "
-                "and renders a 2D protein–ligand interaction map. Bond orders are "
-                "automatically corrected before submission."
-            )
+            if ligand_id:
+                st.caption(
+                    f"Queries [proteins.plus PoseView2](https://proteins.plus/) "
+                    f"for **{pdb_code.upper()}** · ligand `{ligand_id}`. "
+                    f"Generates a 2D protein–ligand interaction map for the co-crystal reference."
+                )
+            else:
+                st.caption(
+                    "⚠️ No co-crystal ligand detected. Use **Auto-detect co-crystal ligand** "
+                    "in receptor preparation to enable PoseView2."
+                )
     with _cb:
-        _run_pv = st.button("🔬 Generate 2D Diagram", key=btn_key, type="primary")
+        _run_pv = st.button(
+            "🔬 Generate 2D Diagram",
+            key=btn_key,
+            type="primary",
+            disabled=not (pdb_code and ligand_id),
+        )
 
     if _run_pv:
-        _rec = st.session_state.get(rec_key, "")
-        if not _rec or not os.path.exists(_rec):
-            st.error("Receptor PDB not found — complete receptor preparation first.")
-        elif not os.path.exists(pose_sdf_path):
-            st.error("Pose SDF not found.")
+        if not pdb_code:
+            st.error("PDB code not available — complete receptor preparation first.")
+        elif not ligand_id:
+            st.error(
+                "Co-crystal ligand ID not found. "
+                "Use 'Auto-detect co-crystal ligand' in receptor prep."
+            )
         else:
-            with st.spinner("Submitting to PoseView API… (10–60 s)"):
-                _url, _err = _call_poseview(_rec, pose_sdf_path)
+            with st.spinner(
+                f"Submitting to PoseView2 API — {pdb_code.upper()} / {ligand_id} … (10–60 s)"
+            ):
+                _svg, _err = _call_poseview2(pdb_code, ligand_id)
             if _err:
-                st.error(f"❌ PoseView error: {_err}")
+                st.error(f"❌ PoseView2 error: {_err}")
             else:
-                import requests as _rq
-                _raw = _rq.get(_url, timeout=20).content
-                _png = _svg_to_png(_raw)
-                st.session_state[img_url_key]  = _url
+                _png = _svg_to_png(_svg)
+                st.session_state[img_url_key]  = None   # PoseView2 returns SVG directly
                 st.session_state[img_png_key]  = _png
-                st.session_state[img_svg_key]  = _raw
+                st.session_state[img_svg_key]  = _svg
                 st.session_state[pose_key_key] = _pose_key
                 st.rerun()
 
-    if st.session_state.get(img_url_key) and not _pv_stale:
+    if st.session_state.get(img_svg_key) and not _pv_stale:
         _png_data = st.session_state.get(img_png_key)
         _svg_data = st.session_state.get(img_svg_key)
-        lig_label = st.session_state.get(smiles_key, "ligand")[:20]
         _show_poseview_image(
             _png_data,
-            st.session_state[img_url_key],
-            f"PoseView — {lig_label} pose {pose_idx+1}",
+            _svg_data,
+            f"PoseView2 — {pdb_code.upper()} · {ligand_id}",
         )
+
         _dc1, _dc2, _dc3 = st.columns([1, 1, 2])
         with _dc1:
             if _png_data:
-                st.download_button("⬇ Save PNG", data=_png_data,
-                    file_name=f"poseview_pose{pose_idx+1}.png", mime="image/png",
-                    key=dl_png_key, use_container_width=True)
+                st.download_button(
+                    "⬇ Save PNG", data=_png_data,
+                    file_name=f"poseview2_{pdb_code}_{ligand_id}.png",
+                    mime="image/png", key=dl_png_key, use_container_width=True,
+                )
         with _dc2:
             if _svg_data:
-                st.download_button("⬇ Save SVG", data=_svg_data,
-                    file_name=f"poseview_pose{pose_idx+1}.svg", mime="image/svg+xml",
-                    key=dl_svg_key, use_container_width=True)
+                st.download_button(
+                    "⬇ Save SVG", data=_svg_data,
+                    file_name=f"poseview2_{pdb_code}_{ligand_id}.svg",
+                    mime="image/svg+xml", key=dl_svg_key, use_container_width=True,
+                )
         with _dc3:
             st.caption("💡 SVG is vector — scalable for publications. PNG for quick use.")
 
         # ── PoseView protonation notice ───────────────────────────────────────
-        if lig_smiles and "[O-]" in lig_smiles or (lig_smiles and "+" in lig_smiles):
+        if lig_smiles and ("[O-]" in lig_smiles or "+" in lig_smiles):
             st.info(
-                "⚠️ **Note:** PoseView re-protonates the ligand using its own internal "
-                "algorithm and may not reflect the actual protonation state used for docking. "
-                f"The SMILES submitted was: `{lig_smiles}` — refer to the AI prompt below "
-                "for the correct charge state.",
+                "⚠️ **Note:** PoseView2 uses its own protonation algorithm and may not "
+                "reflect the exact protonation state used for docking. "
+                f"The docked SMILES was: `{lig_smiles}`",
                 icon="🧪",
             )
 
-        # ── AI Prompt for manual use ──────────────────────────────────────────
+        # ── AI Prompt ─────────────────────────────────────────────────────────
         st.markdown("---")
 
-        # Resolve display values — fall back to placeholders if not yet available
-        _pdb_str    = pdb_id.upper()       if pdb_id       else "[PDB ID]"
+        _pdb_str    = pdb_code.upper() if pdb_code else "[PDB ID]"
         _lig_str    = (f"{lig_name} (SMILES: {lig_smiles})"
                        if lig_name and lig_smiles
-                       else lig_name if lig_name
-                       else "[ligand name]")
+                       else lig_name if lig_name else "[ligand name]")
         _ref_str    = ref_lig_name.upper() if ref_lig_name else "[reference ligand]"
         _energy_str = (f"{binding_energy:.2f} kcal/mol"
                        if binding_energy is not None else "[binding energy]")
 
-        # Build reference sentence only when reference data is available
         _has_ref = bool(ref_lig_name or ref_lig_smiles)
         if _has_ref:
             if ref_lig_name and ref_lig_smiles:
@@ -581,7 +585,6 @@ def _poseview_ui(
             elif ref_lig_name:
                 _ref_full = ref_lig_name
             else:
-                # no name given — just show the SMILES
                 _ref_full = ref_lig_smiles
             _ref_energy_str = (f", binding energy {ref_lig_energy:.2f} kcal/mol"
                                if ref_lig_energy is not None else "")
@@ -593,14 +596,16 @@ def _poseview_ui(
             _ref_clause = ""
 
         _prompt_text = (
-            f"Analyze the attached Proteins.Plus PoseView interaction diagram "
-            f"for PDB ID {_pdb_str}, docked ligand {_lig_str}, "
+            f"Analyze the attached Proteins.Plus PoseView2 interaction diagram "
+            f"for PDB ID {_pdb_str}, co-crystal ligand `{ligand_id}`, "
+            f"alongside docked ligand {_lig_str}, "
             f"generated using AutoDock Vina v1.2.7 with predicted binding energy "
             f"{_energy_str}{_ref_clause}.\n\n"
-            + (f"Note: PoseView may display the ligand in a re-protonated form. "
-               f"The actual protonation state used for docking is encoded in the SMILES above "
-               f"(e.g. [O-] denotes a deprotonated oxygen). Please interpret interactions "
-               f"accordingly.\n\n"
+            + (f"Note: PoseView2 displays the co-crystal ligand ({ligand_id}) from the PDB entry, "
+               f"not the docked pose directly. The docked ligand SMILES was: {lig_smiles}\n\n"
+               if lig_smiles else "")
+            + (f"Note: The docked ligand contains charged groups. "
+               f"Please interpret interactions accordingly.\n\n"
                if lig_smiles and ("[O-]" in lig_smiles or "[NH2+]" in lig_smiles
                                    or "[NH+]" in lig_smiles or "[N+]" in lig_smiles) else "")
             + f"1. Identify key ligand–protein interactions (hydrogen bonds, hydrophobic contacts, "
@@ -612,10 +617,10 @@ def _poseview_ui(
             f"Provide a concise structural interpretation of the binding mode."
         )
 
-        st.markdown("### 🤖 AI Prompt for PoseView Interpretation")
+        st.markdown("### 🤖 AI Prompt for PoseView2 Interpretation")
         st.caption(
             "Copy and paste into any AI tool (GPT, Claude, Gemini, DeepSeek, …) "
-            "together with the PoseView figure above. Fields are auto-filled from your session."
+            "together with the PoseView2 figure above. Fields are auto-filled from your session."
         )
         st.code(_prompt_text, language=None)
 
@@ -720,6 +725,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             ligand_pdb_path = None
             cx = cy = cz   = 0.0
             ligand_sel_str  = None
+            rn = ch = ""
+            ri = 0
 
             if center_mode == "Auto-detect co-crystal ligand":
                 het = atoms.select("hetero and not water")
@@ -736,8 +743,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                         ligand_pdb_path = str(wdir / "LIG.pdb")
                         writePDB(ligand_pdb_path, lig_atoms)
                         cx, cy, cz = (float(v) for v in calcCenter(lig_atoms))
-                        log.append(f"✓ Ligand: {rn} chain {ch} ({lig_atoms.numAtoms()} atoms)")
+                        log.append(f"✓ Ligand: {rn} chain {ch} resnum {ri} ({lig_atoms.numAtoms()} atoms)")
                         log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+                        log.append(f"🔑 PoseView2 ligand ID: {rn}_{ch}_{ri}")
                     else:
                         log.append("⚠ No co-crystal ligand found after filtering")
             else:
@@ -779,6 +787,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                         f"size_x = {sx}\nsize_y = {sy}\nsize_z = {sz}\n")
             log.append("✓ Box + config written")
 
+            # ── Build PoseView2 ligand identifier: resname_chain_resnum ──────
+            cocrystal_ligand_id = f"{rn}_{ch}_{ri}" if ligand_sel_str else ""
+
             st.session_state.update({
                 pfx+"raw_pdb": raw_path,         pfx+"receptor_fh": rec_fh,
                 pfx+"receptor_pdbqt": rec_pdbqt, pfx+"box_pdb": box_pdb,
@@ -786,7 +797,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 pfx+"cy": cy,                    pfx+"cz": cz,
                 pfx+"ligand_pdb_path": ligand_pdb_path,
                 pfx+"cocrystal_rn": rn if ligand_sel_str else "N/A",
-                pfx+"receptor_done": True,       pfx+"receptor_log": "\n".join(log),
+                pfx+"cocrystal_ligand_id": cocrystal_ligand_id,  # NEW
+                pfx+"receptor_done": True,        pfx+"receptor_log": "\n".join(log),
             })
         except Exception as e:
             st.error(f"❌ Receptor preparation failed: {e}")
@@ -794,17 +806,19 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             st.session_state[pfx+"receptor_log"]  = "\n".join(log) + f"\nERROR: {e}"
 
     if st.session_state.get(pfx+"receptor_done"):
-        token = st.session_state.get(pfx+"pdb_token", "")
-        cx_v  = st.session_state.get(pfx+"cx", 0)
-        cy_v  = st.session_state.get(pfx+"cy", 0)
-        cz_v  = st.session_state.get(pfx+"cz", 0)
-        _sx   = st.session_state.get(pfx+"sx", 16)
-        _sy   = st.session_state.get(pfx+"sy", 16)
-        _sz   = st.session_state.get(pfx+"sz", 16)
+        token     = st.session_state.get(pfx+"pdb_token", "")
+        cx_v      = st.session_state.get(pfx+"cx", 0)
+        cy_v      = st.session_state.get(pfx+"cy", 0)
+        cz_v      = st.session_state.get(pfx+"cz", 0)
+        _sx       = st.session_state.get(pfx+"sx", 16)
+        _sy       = st.session_state.get(pfx+"sy", 16)
+        _sz       = st.session_state.get(pfx+"sz", 16)
+        _lig_id   = st.session_state.get(pfx+"cocrystal_ligand_id", "")
         st.markdown(
             f"{_pill('Receptor ready ✓', 'success')} {_pill(token)} "
             f"{_pill(f'Center ({cx_v:.2f}, {cy_v:.2f}, {cz_v:.2f})')} "
-            f"{_pill(f'Box {_sx}×{_sy}×{_sz} Å')}",
+            f"{_pill(f'Box {_sx}×{_sy}×{_sz} Å')}"
+            + (f" {_pill(f'PoseView2 ligand: {_lig_id}')}" if _lig_id else ""),
             unsafe_allow_html=True)
         with st.expander("📋 Preparation log", expanded=False):
             st.markdown(
@@ -828,10 +842,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 v3.addModel(open(lig_p).read(), "pdb")
                 v3.setStyle({"model": mi},
                              {"stick": {"colorscheme": "magentaCarbon", "radius": 0.25}})
-            # Zoom to full protein, then pan to ligand/grid center
             v3.zoomTo()
             if lig_p and os.path.exists(lig_p):
-                v3.center({"model": mi})   # pan only; zoom unchanged
+                v3.center({"model": mi})
             show3d(v3, height=480)
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -860,7 +873,7 @@ nyone can dock, everyone can do!
 """,
 unsafe_allow_html=True
 )
-st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView 2D interaction**.")
+st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Cloud**, and **PoseView2 2D interaction**.")
 st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
 st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
 if VINA_PATH is None:
@@ -1077,18 +1090,14 @@ with tab_basic:
                 st.error(f"❌ Vina failed (exit {rc})\n{vlog[:500]}")
                 st.session_state.docking_done = False
             else:
-                # Raw SDF from obabel (all-single-bond — used for 3-D viewer)
                 run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" 2>/dev/null')
 
-                # ── Bond-order-corrected SDF for PoseView ────────────────────
                 pv_log = _fix_sdf_bond_orders(
                     out_sdf, st.session_state.prot_smiles, pv_sdf)
                 vlog += "\n\n── Bond-order fix ──\n" + "\n".join(pv_log)
-                # Fall back to raw SDF if correction produced nothing
                 if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
                     pv_sdf = out_sdf
 
-                # Parse scores from PDBQT
                 data = []; cur = None
                 for line in open(out_pdbqt):
                     ln = line.strip()
@@ -1107,9 +1116,6 @@ with tab_basic:
                       .sort_values("Affinity (kcal/mol)")
                       .reset_index(drop=True)) if data else None
 
-                # Load pose molecules:
-                # • 3-D viewer: raw SDF with sanitize=False (tolerates broken valences)
-                # • PoseView:   fixed SDF with sanitize=True
                 from rdkit import Chem
                 mols = ([m for m in Chem.SDMolSupplier(out_sdf, sanitize=False) if m]
                         if os.path.exists(out_sdf) else [])
@@ -1119,7 +1125,6 @@ with tab_basic:
                     output_pv_sdf=pv_sdf,   dock_base=base,
                     docking_done=True,       docking_log=vlog,
                     score_df=df,             pose_mols=mols,
-                    # Invalidate any cached PoseView image
                     pv_image_url=None, pv_image_png=None,
                     pv_image_svg=None, pv_pose_key=None,
                 ))
@@ -1158,7 +1163,6 @@ with tab_basic:
         df   = st.session_state.score_df
         mols = st.session_state.pose_mols or []
 
-        # Score table + bar chart
         ct, cc = st.columns([1, 1.4])
         with ct:
             st.markdown("**Score Table**")
@@ -1188,7 +1192,6 @@ with tab_basic:
 
         st.markdown("---")
 
-        # Animated viewer
         st.markdown("**🎬 Animated Pose Viewer**")
         anim_spd = st.slider("Interval (ms)", 500, 3000, 1500, 250, key="anim_spd")
         if st.session_state.output_sdf and os.path.exists(st.session_state.output_sdf):
@@ -1208,13 +1211,11 @@ with tab_basic:
             va.addModelsAsFrames(sdf_txt)
             va.setStyle({"model": mai}, {"stick": {"colorscheme": "greenCarbon", "radius": 0.25}})
             va.animate({"interval": anim_spd, "loop": "forward"})
-            # Show surface on binding-pocket residues (within 5 Å of any docked pose)
             va.addSurface("SES",
                 {"opacity": 0.18, "color": "lightblue"},
-                {"model": 0},           # receptor model
-                {"model": mai},         # near docked ligand
+                {"model": 0},
+                {"model": mai},
             )
-            # Zoom to whole protein, then pan to the docked ligand
             va.zoomTo()
             va.center({"model": mai})
             va.rotate(30)
@@ -1222,7 +1223,6 @@ with tab_basic:
 
         st.markdown("---")
 
-        # Interactive pose selector
         st.markdown("**🔎 Interactive Pose Selector**")
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
@@ -1254,13 +1254,11 @@ with tab_basic:
                     v2.addModel(Chem.MolToMolBlock(sel_mol), "mol")
                     v2.setStyle({"model": mi2},
                                  {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                    # Pocket surface on receptor residues near the selected pose
                     v2.addSurface("SES",
                         {"opacity": 0.2, "color": "lightblue"},
                         {"model": 0},
                         {"model": mi2},
                     )
-                    # Zoom to whole protein, then pan to selected docked pose
                     v2.zoomTo()
                     v2.center({"model": mi2})
                     show3d(v2, height=400)
@@ -1269,12 +1267,10 @@ with tab_basic:
 
             with cdl:
                 st.markdown("**Download**")
-                # Raw pose (3-D coords, broken bond orders — for Vina/tools)
                 sp_raw = str(WORKDIR / f"pose_{pose_idx+1}_raw.sdf")
                 _write_single_pose(sel_mol, sp_raw)
                 st.download_button(f"⬇ Pose {pose_idx+1} (.sdf)", open(sp_raw, "rb"),
                     file_name=f"pose_{pose_idx+1}.sdf", key=f"dl_p_{pose_idx}")
-
                 st.download_button("⬇ All poses (.pdbqt)",
                     open(st.session_state.output_pdbqt, "rb"),
                     file_name=f"{st.session_state.dock_base}_out.pdbqt", key="dl_pdbqt")
@@ -1288,27 +1284,12 @@ with tab_basic:
                         open(st.session_state.receptor_fh, "rb"),
                         file_name="receptor.pdb", key="dl_rec")
 
-            # ── PoseView 2D Interaction ───────────────────────────────────────
-            # Write the BOND-ORDER-FIXED single pose for PoseView submission
-            pv_sdf_all = st.session_state.get("output_pv_sdf", "")
-            sp_pv      = str(WORKDIR / f"pose_{pose_idx+1}_pv_ready.sdf")
-            if pv_sdf_all and os.path.exists(pv_sdf_all):
-                pv_mols_all = _load_pv_mols(pv_sdf_all)
-                if pv_mols_all and pose_idx < len(pv_mols_all):
-                    _write_single_pose(pv_mols_all[pose_idx], sp_pv)
-                else:
-                    # fallback: use raw mol
-                    _write_single_pose(sel_mol, sp_pv)
-            else:
-                _write_single_pose(sel_mol, sp_pv)
-
+            # ── PoseView2 2D Interaction ──────────────────────────────────────
             _poseview_ui(
-                rec_key       = "receptor_fh",
-                raw_sdf_key   = "output_sdf",
-                pv_sdf_key    = "output_pv_sdf",
+                pdb_code      = st.session_state.get("pdb_token", ""),
+                ligand_id     = st.session_state.get("cocrystal_ligand_id", ""),
                 smiles_key    = "ligand_name",
                 pose_idx      = pose_idx,
-                pose_sdf_path = sp_pv,
                 img_url_key   = "pv_image_url",
                 img_png_key   = "pv_image_png",
                 img_svg_key   = "pv_image_svg",
@@ -1317,8 +1298,6 @@ with tab_basic:
                 dl_png_key    = "dl_pv_png_basic",
                 dl_svg_key    = "dl_pv_svg_basic",
                 label_suffix  = "_basic",
-                # Auto-fill AI prompt
-                pdb_id        = st.session_state.get("pdb_token", ""),
                 lig_name      = st.session_state.get("ligand_name", ""),
                 lig_smiles    = st.session_state.get("prot_smiles", ""),
                 binding_energy = (
@@ -1326,7 +1305,6 @@ with tab_basic:
                     if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0
                     else None
                 ),
-                # No reference ligand in basic mode — omits comparison sentence
             )
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1337,10 +1315,9 @@ with tab_basic:
 # ╚════════════════════════════════════════════════════════════════════════════╝
 with tab_batch:
 
-    # Step B1: Receptor
     _receptor_section(pfx="b_", wdir=BATCH_WORKDIR, step_label="Step B1 of B3")
 
-    # ── Step B2: Ligand Input + Run ───────────────────────────────────────────
+    # ── Step B2 ───────────────────────────────────────────────────────────────
     b_rec_done   = st.session_state.get("b_receptor_done", False)
     b_batch_done = st.session_state.get("b_batch_done", False)
     card_cls = "step-card done" if b_batch_done else "step-card"
@@ -1361,7 +1338,7 @@ with tab_batch:
                        "CC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)O Osimertinib\n"
                        "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)O Luteolin\n"
                        "CC(C)OC1=C(C=C2C(=C1)N=CN2)NC3=CC=CC(=C3)C#C Gefitinib\n"
-                       "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)OC Kaempferol\n"
+                       "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)OC)O Kaempferol\n"
                        "CCOC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)F Lapatinib\n"
                        "CC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)Cl Afatinib\n"
                        "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)OC)O Galangin\n"
@@ -1369,7 +1346,7 @@ with tab_batch:
                 height=300, key="b_smiles_text")
         elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
-        b_ph     = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
+        b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
 
     with col_b2:
         st.markdown("**Redocking validation**")
@@ -1398,7 +1375,6 @@ with tab_batch:
         config    = st.session_state.get("b_config_txt")
         b_ph_val  = st.session_state.get("b_ph", 7.4)
 
-        # ── Parse SMILES ──────────────────────────────────────────────────────
         smiles_pairs = []
         try:
             mode = st.session_state.get("b_input_mode", "SMILES list (text)")
@@ -1422,12 +1398,10 @@ with tab_batch:
                         pts[0],
                         pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
                     ))
-
             if not smiles_pairs: raise ValueError("No valid SMILES found")
         except Exception as e:
             st.error(f"❌ Input parsing failed: {e}"); st.stop()
 
-        # ── Ligand prep helper ────────────────────────────────────────────────
         def _prep_one(smi, name, ph, wdir):
             pdbqt_path = str(wdir / f"{name}.pdbqt")
             try:
@@ -1455,7 +1429,6 @@ with tab_batch:
             except Exception as e:
                 return None, str(e), None
 
-        # ── Docking helper ────────────────────────────────────────────────────
         def _dock_one(pdbqt_in, name, exh, nm, er):
             out_pdbqt = str(BATCH_WORKDIR / f"{name}_out.pdbqt")
             out_sdf   = str(BATCH_WORKDIR / f"{name}_out.sdf")
@@ -1475,7 +1448,6 @@ with tab_batch:
             top = pose_scores[0] if pose_scores else None
             return out_pdbqt, out_sdf, log, top, pose_scores
 
-        # ── Redocking ─────────────────────────────────────────────────────────
         redock_score  = None
         redock_result = None
         if st.session_state.get("b_do_redock", False):
@@ -1490,7 +1462,6 @@ with tab_batch:
                         rd_pdbqt, "redock_" + rd_nm, b_exh, b_nm, b_er)
                     if rd_top is not None:
                         redock_score = rd_top
-                        # Bond-order fix for redock reference
                         rd_pv_sdf = str(BATCH_WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
                         _fix_sdf_bond_orders(rd_out_sdf, rd_smi, rd_pv_sdf)
                         if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
@@ -1520,7 +1491,6 @@ with tab_batch:
                 else:
                     st.warning(f"⚠ Reference ligand prep failed: {rd_err}")
 
-        # ── Main batch loop ───────────────────────────────────────────────────
         results  = []
         n        = len(smiles_pairs)
         prog     = st.progress(0, text=f"Docking 0/{n}…")
@@ -1548,7 +1518,6 @@ with tab_batch:
                                  "Top Score": None, "Poses": 0,
                                  "Status": "DOCK FAILED"}); continue
 
-            # Bond-order fix per ligand
             pv_sdf = str(BATCH_WORKDIR / f"{name}_pv_ready.sdf")
             _fix_sdf_bond_orders(out_sdf, smi, pv_sdf)
             if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
@@ -1576,7 +1545,6 @@ with tab_batch:
             "b_confirmed_ref_score": None,
             "b_confirmed_ref_pose":  None,
             "b_confirmed_ref_name":  None,
-            # Invalidate PoseView cache
             "b_pv_image_url": None, "b_pv_image_png": None,
             "b_pv_image_svg": None, "b_pv_pose_key":  None,
             "b_pv2_image_url": None, "b_pv2_image_png": None,
@@ -1617,7 +1585,6 @@ with tab_batch:
             + (f" {_pill(f'{n_fail} failed', 'warn')}" if n_fail else ""),
             unsafe_allow_html=True)
 
-        # ── Pose Browser ──────────────────────────────────────────────────────
         st.markdown("**🔎 Pose Browser**")
         ok_results = [r for r in results
                       if r["Status"] == "OK"
@@ -1689,13 +1656,11 @@ with tab_batch:
                         vb.addModel(Chem.MolToMolBlock(b_mols[b_pose_i]), "mol")
                         vb.setStyle({"model": bmi},
                                      {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                        # Pocket surface on receptor residues near the docked pose
                         vb.addSurface("SES",
                             {"opacity": 0.2, "color": "lightblue"},
                             {"model": 0},
                             {"model": bmi},
                         )
-                        # Zoom to whole protein, then pan to docked pose
                         vb.zoomTo()
                         vb.center({"model": bmi})
                         show3d(vb, height=420)
@@ -1741,13 +1706,11 @@ with tab_batch:
 
         st.markdown("---")
 
-        # ── Full docking log ──────────────────────────────────────────────────
         with st.expander("📋 Full docking log", expanded=False):
             st.markdown(
                 f'<div class="log-box">{st.session_state.get("b_batch_log","")}</div>',
                 unsafe_allow_html=True)
 
-        # Score table + dot plot
         df_res = pd.DataFrame([
             {"Name": r["Name"],
              "Top Score (kcal/mol)": r["Top Score"],
@@ -1803,7 +1766,6 @@ with tab_batch:
 
         st.markdown("---")
 
-        # Bulk downloads
         st.markdown("**⬇ Download All Results**")
         c_csv, c_zip = st.columns(2)
         with c_csv:
@@ -1828,37 +1790,36 @@ with tab_batch:
                 rec_fh = st.session_state.get("b_receptor_fh")
                 if rec_fh and os.path.exists(rec_fh):
                     zf.write(rec_fh, "receptor.pdb")
-                # Score plot PNG
                 _plot_bytes = st.session_state.get("b_plot_png")
                 if _plot_bytes:
                     zf.writestr("plots/batch_score_plot.png", _plot_bytes)
-                # PoseView 2D interaction diagrams (both sources)
                 for _sfx, _pk, _sk in [
-                    ("poseview_browser",  "b_pv_image_png",  "b_pv_image_svg"),
-                    ("poseview_selector", "b_pv2_image_png", "b_pv2_image_svg"),
+                    ("poseview2_browser",  "b_pv_image_png",  "b_pv_image_svg"),
+                    ("poseview2_selector", "b_pv2_image_png", "b_pv2_image_svg"),
                 ]:
                     _png = st.session_state.get(_pk)
                     _svg = st.session_state.get(_sk)
-                    if _png: zf.writestr(f"poseview/{_sfx}.png", _png)
-                    if _svg: zf.writestr(f"poseview/{_sfx}.svg", _svg)
+                    if _png: zf.writestr(f"poseview2/{_sfx}.png", _png)
+                    if _svg: zf.writestr(f"poseview2/{_sfx}.svg", _svg)
             zb.seek(0)
             st.download_button("⬇ Download ALL results (.zip) — structures + plot + 2D diagrams", zb,
                 file_name="anyone_can_dock.zip",
                 mime="application/zip", key="b_dl_zip")
 
-        # ── PoseView 2D Interaction — independent selector ────────────────────
+        # ── PoseView2 2D Interaction — independent selector ───────────────────
         st.markdown("---")
-        st.markdown("### 🧬 2D Interaction Diagram — PoseView")
+        st.markdown("### 🧬 2D Interaction Diagram — PoseView2")
         st.caption(
-            "Select any ligand and pose independently from the Pose Browser above "
-            "to generate its 2D interaction diagram."
+            "Generates a 2D interaction map for the co-crystal ligand from the PDB entry "
+            "using the PoseView2 REST API (pdbCode + ligand identifier). "
+            "Select any docked ligand below to associate context for the AI prompt."
         )
 
         pv_browsable = [r for r in browsable
                         if r.get("out_sdf") and os.path.exists(r["out_sdf"])]
         if pv_browsable:
             pv_sel_nm  = st.selectbox(
-                "Select ligand for 2D diagram",
+                "Associate docked ligand (for AI prompt context)",
                 [r["Name"] for r in pv_browsable],
                 index=0,
                 key="b_pv_lig_sel",
@@ -1870,34 +1831,21 @@ with tab_batch:
 
             if pv_all_mols:
                 pv_pose_i = st.slider(
-                    "Pose", 1, len(pv_all_mols), 1, key="b_pv_pose_sel") - 1
+                    "Pose (for AI prompt context)", 1, len(pv_all_mols), 1,
+                    key="b_pv_pose_sel") - 1
 
                 pv_pose_scores = pv_sel_res.get("pose_scores", [])
                 pv_score = (pv_pose_scores[pv_pose_i]
                             if pv_pose_scores and pv_pose_i < len(pv_pose_scores)
                             else pv_sel_res.get("Top Score"))
 
-                # Write bond-order-fixed SDF for selected pose
-                pv_sdf_all_path = pv_sel_res.get("pv_sdf", "")
-                sp_pv2 = str(BATCH_WORKDIR / f"{pv_safe_nm}_pose{pv_pose_i+1}_pv2_ready.sdf")
-                if pv_sdf_all_path and os.path.exists(pv_sdf_all_path):
-                    pv_mols2 = _load_pv_mols(pv_sdf_all_path)
-                    if pv_mols2 and pv_pose_i < len(pv_mols2):
-                        _write_single_pose(pv_mols2[pv_pose_i], sp_pv2)
-                    else:
-                        _write_single_pose(pv_all_mols[pv_pose_i], sp_pv2)
-                else:
-                    _write_single_pose(pv_all_mols[pv_pose_i], sp_pv2)
-
                 st.session_state["_b_pv2_smiles"] = pv_sel_res.get("SMILES", pv_sel_nm)
 
                 _poseview_ui(
-                    rec_key        = "b_receptor_fh",
-                    raw_sdf_key    = "b_cur_out_sdf",
-                    pv_sdf_key     = "b_cur_pv_sdf",
+                    pdb_code       = st.session_state.get("b_pdb_token", ""),
+                    ligand_id      = st.session_state.get("b_cocrystal_ligand_id", ""),
                     smiles_key     = "_b_pv2_smiles",
                     pose_idx       = pv_pose_i,
-                    pose_sdf_path  = sp_pv2,
                     img_url_key    = "b_pv2_image_url",
                     img_png_key    = "b_pv2_image_png",
                     img_svg_key    = "b_pv2_image_svg",
@@ -1906,7 +1854,6 @@ with tab_batch:
                     dl_png_key     = "dl_pv2_png_batch",
                     dl_svg_key     = "dl_pv2_svg_batch",
                     label_suffix   = f"_pv2_{pv_safe_nm}",
-                    pdb_id         = st.session_state.get("b_pdb_token", ""),
                     lig_name       = pv_safe_nm,
                     lig_smiles     = pv_sel_res.get("SMILES", ""),
                     binding_energy = pv_score,
