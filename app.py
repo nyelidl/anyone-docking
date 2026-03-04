@@ -756,13 +756,40 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             pdb_id     = None
 
         center_mode = st.radio("Grid center",
-            ["Auto-detect co-crystal ligand", "Enter XYZ manually"],
+            ["Auto-detect co-crystal ligand", "Enter XYZ manually", "Select by atom selection (ProDy)"],
             horizontal=True, key=pfx+"center_mode")
         if center_mode == "Enter XYZ manually":
             c1, c2, c3 = st.columns(3)
             mx = c1.number_input("X", value=0.0, key=pfx+"mx")
             my = c2.number_input("Y", value=0.0, key=pfx+"my")
             mz = c3.number_input("Z", value=0.0, key=pfx+"mz")
+        elif center_mode == "Select by atom selection (ProDy)":
+            st.text_input(
+                "ProDy selection string",
+                value="resname LIG and chain A",
+                key=pfx+"mda_sel",
+                help=(
+                    "Examples:\n"
+                    "  resid 701 and segid A\n"
+                    "  resname ELR and segid A\n"
+                    "  resid 900:905 and segid B\n"
+                    "  resname ATP\n"
+                    "Uses ProDy selection syntax (same as used throughout this app).\n\n"
+                    "Examples:\n"
+                    "  resname ATP                  - by ligand residue name\n"
+                    "  resname ATP and chain A       - ligand in specific chain\n"
+                    "  resid 84 86 134 and chain A   - specific protein residues\n"
+                    "  resid 84 to 100 and chain B   - residue range\n\n"
+                    "Grid center = geometric center of all matched atoms."
+                ),
+            )
+            st.caption(
+                "💡 **ProDy examples:** "
+                "`resname LIG and chain A` · "
+                "`resid 701 and chain A` · "
+                "`resid 84 to 100 and chain B` · "
+                "`resname ATP`"
+            )
 
     with col_b:
         st.markdown("**Search box size (Å)**")
@@ -822,9 +849,41 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                         log.append(f"🔑 PoseView2 ligand ID: {rn}_{ch}_{ri}")
                     else:
                         log.append("⚠ No co-crystal ligand found after filtering")
-            else:
+            elif center_mode == "Enter XYZ manually":
                 cx, cy, cz = mx, my, mz
-                log.append(f"🛠 Manual center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+                log.append(f"🛠 Manual XYZ center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+            else:  # ProDy atom selection
+                _prody_sel_str = st.session_state.get(pfx+"mda_sel", "").strip()
+                if not _prody_sel_str:
+                    raise ValueError("ProDy selection string is empty.")
+                _ref_atoms = atoms.select(_prody_sel_str)
+                if _ref_atoms is None or _ref_atoms.numAtoms() == 0:
+                    raise ValueError(
+                        f"ProDy selection '{_prody_sel_str}' matched 0 atoms. "
+                        "Check resname / resid / chain and try again."
+                    )
+                cx, cy, cz = (float(v) for v in calcCenter(_ref_atoms))
+                log.append(f"🔬 ProDy selection: '{_prody_sel_str}' → {_ref_atoms.numAtoms()} atoms")
+                log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+                # Extract resname/chain/resid for PoseView2 ligand ID (same logic as Colab 1.1)
+                _resnames = list(dict.fromkeys(_ref_atoms.getResnames()))
+                _resids   = list(dict.fromkeys(_ref_atoms.getResnums()))
+                _chains   = list(dict.fromkeys(_ref_atoms.getChids()))
+                if len(_resnames) == 1 and len(_resids) == 1:
+                    rn = _resnames[0]
+                    ri = int(_resids[0])
+                    ch = _chains[0] if _chains else "A"
+                    ligand_sel_str  = f"resname {rn} and resid {ri} and chain {ch}"
+                    ligand_pdb_path = str(wdir / "LIG.pdb")
+                    writePDB(ligand_pdb_path, _ref_atoms)
+                    log.append(f"✓ Ligand: {rn} chain {ch} resnum {ri} ({_ref_atoms.numAtoms()} atoms)")
+                    log.append(f"🔑 PoseView2 ligand ID: {rn}_{ch}_{ri}")
+                else:
+                    # Multi-residue selection (e.g. binding site) — centers correctly, no PoseView2 ID
+                    ligand_pdb_path = str(wdir / "LIG_ref.pdb")
+                    writePDB(ligand_pdb_path, _ref_atoms)
+                    log.append(f"⚠ Multi-residue selection ({len(_resnames)} resnames, {len(_resids)} resids) — PoseView2 ligand ID not set")
+                    log.append(f"✓ Reference atoms written to LIG_ref.pdb for 3D viewer")
 
             sel_str = (f"not ({ligand_sel_str}) and not water"
                        if ligand_sel_str else "not water")
