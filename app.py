@@ -1429,6 +1429,41 @@ with tab_basic:
             if smiles_in:
                 st.caption(f"✅ SMILES: `{smiles_in}`")
 
+            # ── Force iframe scrolling — Streamlit hardcodes scrolling="no" ──
+            # We override it by patching the DOM attribute directly from JS.
+            components.html("""
+<script>
+(function forceKetcherScroll() {
+    try {
+        var pdoc = window.parent.document;
+        var wrappers = pdoc.querySelectorAll(
+            'div[data-testid="stCustomComponentV1"]');
+        wrappers.forEach(function(wrap) {
+            // The wrapper itself must clip and scroll
+            wrap.style.overflowX = 'auto';
+            wrap.style.webkitOverflowScrolling = 'touch';
+            wrap.style.maxWidth  = '100%';
+
+            var iframe = wrap.querySelector('iframe');
+            if (!iframe) return;
+
+            // *** Key fix: remove Streamlit's scrolling="no" ***
+            iframe.setAttribute('scrolling', 'yes');
+            iframe.style.overflow  = 'auto';
+            iframe.style.minWidth  = '860px';
+            iframe.style.maxWidth  = 'none';
+            iframe.style.display   = 'block';
+        });
+    } catch(e) {}
+    // Retry — Streamlit may re-render and reset the attribute
+    setTimeout(forceKetcherScroll, 300);
+    setTimeout(forceKetcherScroll, 900);
+    setTimeout(forceKetcherScroll, 2000);
+    setTimeout(forceKetcherScroll, 4000);
+})();
+</script>
+""", height=0)
+
         except ImportError:
             st.error(
                 "❌ `streamlit-ketcher` is not installed. "
