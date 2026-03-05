@@ -1439,23 +1439,30 @@ with tab_basic:
         var wrappers = pdoc.querySelectorAll(
             'div[data-testid="stCustomComponentV1"]');
         wrappers.forEach(function(wrap) {
-            // The wrapper itself must clip and scroll
-            wrap.style.overflowX = 'auto';
+            // Wrapper: clip at viewport width, scroll horizontally
+            wrap.style.overflowX = 'scroll';
+            wrap.style.overflowY = 'hidden';
             wrap.style.webkitOverflowScrolling = 'touch';
             wrap.style.maxWidth  = '100%';
+            wrap.style.display   = 'block';
+            wrap.style.scrollbarWidth = 'thin';
 
             var iframe = wrap.querySelector('iframe');
             if (!iframe) return;
 
-            // *** Key fix: remove Streamlit's scrolling="no" ***
-            iframe.setAttribute('scrolling', 'yes');
-            iframe.style.overflow  = 'auto';
-            iframe.style.minWidth  = '860px';
-            iframe.style.maxWidth  = 'none';
-            iframe.style.display   = 'block';
+            // Remove Streamlit's scrolling="no" so browser respects overflow
+            iframe.setAttribute('scrolling', 'no');
+
+            // *** KEY FIX: give iframe a FIXED wider width ***
+            // Ketcher fills 100% of iframe width — if iframe = 100% = 390px
+            // there is nothing to scroll. Force it to 900px so the wrapper
+            // has 510px of hidden content to reveal on swipe.
+            iframe.style.width   = '900px';
+            iframe.style.minWidth = '900px';
+            iframe.style.maxWidth = 'none';
+            iframe.style.display = 'block';
         });
     } catch(e) {}
-    // Retry — Streamlit may re-render and reset the attribute
     setTimeout(forceKetcherScroll, 300);
     setTimeout(forceKetcherScroll, 900);
     setTimeout(forceKetcherScroll, 2000);
