@@ -1,4 +1,4 @@
- #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 AutoDock Vina 1.2.7 — Streamlit Docking Interface
 Tabs: Basic (single ligand) | Batch (multiple ligands)
@@ -190,6 +190,33 @@ button[data-testid="ketcher-apply"],
 .ketcher-container button[type="submit"],
 .ketcher-container button.apply,
 #ketcher-apply-btn { background: var(--success) !important; color: white !important; }
+
+/* ── Ketcher mobile: make iframe container horizontally scrollable ── */
+[data-testid="stCustomComponentV1"],
+iframe[title*="streamlit_ketcher"],
+div[data-testid="element-container"]:has(> iframe[src*="ketcher"]) {
+    width: 100% !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+}
+.ketcher-mobile-wrap {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+@media (max-width: 768px) {
+    /* Shrink Ketcher to fit viewport width on phones */
+    [data-testid="stCustomComponentV1"] iframe,
+    iframe[src*="ketcher"] {
+        transform-origin: top left;
+        transform: scale(0.72);
+        width: 138.9% !important;   /* 1/0.72 to compensate */
+        height: 556px !important;   /* 400 * 1/0.72 */
+        margin-bottom: -112px;      /* reclaim scaled-away bottom space */
+    }
+}
 
 """, unsafe_allow_html=True)
 
@@ -1367,9 +1394,40 @@ with tab_basic:
     else:  # Draw structure (Ketcher)
         try:
             from streamlit_ketcher import st_ketcher
+            # Mobile hint
+            st.caption("📱 On mobile: swipe left/right inside the canvas to reach hidden controls.")
+            # Inject JS to find and patch the Ketcher iframe container for mobile scrolling
+            components.html("""
+<script>
+(function patchKetcher() {
+    var iframes = parent.document.querySelectorAll('iframe');
+    iframes.forEach(function(f) {
+        var src = f.getAttribute('src') || '';
+        if (src.includes('ketcher') || (f.parentElement && f.parentElement.getAttribute('title') || '').includes('ketcher')) {
+            var wrap = f.closest('[data-testid="element-container"]') || f.parentElement;
+            if (wrap) {
+                wrap.style.overflowX = 'auto';
+                wrap.style.webkitOverflowScrolling = 'touch';
+            }
+            // On narrow screens scale down
+            if (window.innerWidth < 768) {
+                var scale = (window.innerWidth - 32) / 800;
+                scale = Math.min(scale, 1);
+                f.style.transformOrigin = 'top left';
+                f.style.transform = 'scale(' + scale + ')';
+                f.style.width = (100 / scale) + '%';
+                f.style.height = (420 / scale) + 'px';
+                f.style.marginBottom = (-420 * (1 - scale)) + 'px';
+            }
+        }
+    });
+    setTimeout(patchKetcher, 800);
+})();
+</script>
+""", height=0)
             _ketch_smi = st_ketcher(
                 st.session_state.get("ketcher_smi", ""),
-                height=400,
+                height=420,
                 key="ketcher_widget",
             )
             if _ketch_smi:
