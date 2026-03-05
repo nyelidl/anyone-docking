@@ -191,23 +191,21 @@ button[data-testid="ketcher-apply"],
 .ketcher-container button.apply,
 #ketcher-apply-btn { background: var(--success) !important; color: white !important; }
 
-/* ── Ketcher mobile: scrollable container so toolbar is reachable ── */
-/* The component wrapper must clip and scroll, not overflow */
-div[data-testid="stCustomComponentV1"] {
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch !important;
-    width: 100% !important;
-    max-width: 100% !important;
-    display: block !important;
-}
-/* The iframe stays at its natural Ketcher width — user scrolls to it */
-div[data-testid="stCustomComponentV1"] > iframe {
-    min-width: 860px !important;
-    max-width: none !important;
-    display: block !important;
-}
-
 """, unsafe_allow_html=True)
+
+# ── Inject screen-width detector — writes ?sw=NNN into URL so Streamlit can read it ──
+components.html("""
+<script>
+(function() {
+    var w = window.innerWidth || screen.width || 900;
+    var url = new URL(window.parent.location.href);
+    if (url.searchParams.get('sw') !== String(w)) {
+        url.searchParams.set('sw', w);
+        window.parent.history.replaceState({}, '', url.toString());
+    }
+})();
+</script>
+""", height=0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -244,10 +242,19 @@ _DEFAULTS = dict(
     b_pv2_image_url=None, b_pv2_image_png=None, b_pv2_image_svg=None, b_pv2_pose_key=None,
     b_pv2_ref_png=None, b_pv2_ref_svg=None,
     b_plot_png=None,
+    _screen_width=900,   # assume desktop until JS reports otherwise
 )
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# Read screen width injected by JS via query param (set on first load)
+_qp = st.query_params
+if "sw" in _qp:
+    try:
+        st.session_state["_screen_width"] = int(_qp["sw"])
+    except Exception:
+        pass
 
 # ─── Working Directories ──────────────────────────────────────────────────────
 if st.session_state.workdir is None:
@@ -1369,7 +1376,7 @@ with tab_basic:
         unsafe_allow_html=True)
 
     lig_input_mode = st.radio("Input mode",
-        ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+        ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)", "Draw structure (Ketcher)"],
         horizontal=True, key="lig_input_mode")
 
     smiles_in = ""
@@ -1377,54 +1384,52 @@ with tab_basic:
         smiles_in = st.text_input("SMILES string",
             value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
             key="smiles_in")
-    elif lig_input_mode == "Upload structure (.pdb)":
-        st.file_uploader("Upload structure file (.pdb)",
+    elif lig_input_mode == "Upload structure (.sdf/.mol2/.pdb)":
+        st.file_uploader("Upload structure file (.sdf/.mol2/.pdb)",
                          type=["sdf", "mol2", "pdb"], key="lig_struct_file")
     else:  # Draw structure (Ketcher)
         try:
             from streamlit_ketcher import st_ketcher
-            # Mobile hint
-            st.caption("📱 On mobile: swipe ← → inside the sketcher to reach all toolbar buttons.")
-            # JS: walk up the Streamlit component tree and force overflow-x: auto
-            components.html("""
-<script>
-(function fix() {
-    try {
-        var doc = window.parent.document;
-        var nodes = doc.querySelectorAll('div[data-testid="stCustomComponentV1"]');
-        nodes.forEach(function(n) {
-            n.style.overflowX = 'auto';
-            n.style.webkitOverflowScrolling = 'touch';
-            n.style.maxWidth = '100%';
-            var iframe = n.querySelector('iframe');
-            if (iframe) {
-                iframe.style.minWidth = '860px';
-                iframe.style.maxWidth = 'none';
-            }
-        });
-    } catch(e) {}
-    setTimeout(fix, 600);
-})();
-</script>
-""", height=0)
-            _ketch_smi = st_ketcher(
-                st.session_state.get("ketcher_smi", ""),
-                height=420,
-                key="ketcher_widget",
-            )
-            if _ketch_smi:
-                st.session_state["ketcher_smi"] = _ketch_smi
-                smiles_in = _ketch_smi
-                st.markdown(
-                    f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
-                    f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
-                    f'color:var(--text-muted)">SMILES: </span>'
-                    f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
-                    f'color:var(--text)">{_ketch_smi}</span></div>',
-                    unsafe_allow_html=True)
+
+            _is_mobile = st.session_state.get("_screen_width", 900) < 700
+
+            if not _is_mobile:
+                # ── Desktop: full Ketcher canvas ───────────────────────────
+                _ketch_smi = st_ketcher(
+                    st.session_state.get("ketcher_smi", ""),
+                    height=420,
+                    key="ketcher_widget",
+                )
+                if _ketch_smi:
+                    st.session_state["ketcher_smi"] = _ketch_smi
+                    smiles_in = _ketch_smi
+                else:
+                    smiles_in = st.session_state.get("ketcher_smi", "")
+
+                # Show resulting SMILES
+                if smiles_in:
+                    st.caption(f"✅ SMILES from sketch: `{smiles_in}`")
+
             else:
-                smiles_in = st.session_state.get("ketcher_smi", "")
+                # ── Mobile: clean SMILES paste UI + external Ketcher link ──
+                st.info(
+                    "📱 **Mobile detected** — Ketcher canvas requires a wider screen.\n\n"
+                    "**Option 1 (recommended):** Open "
+                    "[Ketcher online ↗](https://lifescience.opensource.epam.com/KetcherDemoSA/index.html) "
+                    "in a new tab → draw your molecule → tap **Get SMILES** → copy → paste below.\n\n"
+                    "**Option 2:** Switch to **SMILES string** input mode and type/paste directly.",
+                    icon="✏️")
+                _manual_smi = st.text_input(
+                    "Paste SMILES here",
+                    value=st.session_state.get("ketcher_smi", ""),
+                    key="ketcher_smi_manual",
+                    placeholder="Paste SMILES copied from Ketcher online…")
+                if _manual_smi:
+                    st.session_state["ketcher_smi"] = _manual_smi
+                    smiles_in = _manual_smi
+                else:
+                    smiles_in = st.session_state.get("ketcher_smi", "")
+
         except ImportError:
             st.error(
                 "❌ `streamlit-ketcher` is not installed. "
@@ -1451,7 +1456,7 @@ with tab_basic:
         with st.spinner("Preparing ligand…"):
             try:
                 _lig_mode = st.session_state.get("lig_input_mode", "SMILES string")
-                if _lig_mode == "Upload structure (.pdb)":
+                if _lig_mode == "Upload structure (.sdf/.mol2/.pdb)":
                     _sfobj = st.session_state.get("lig_struct_file")
                     if _sfobj is None: raise ValueError("No structure file uploaded")
                     _ext = Path(_sfobj.name).suffix.lower()
