@@ -18,8 +18,9 @@ import streamlit.components.v1 as components
 st.set_page_config(
     page_title="anyone can dock",
     page_icon="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
-
 
 # ─── Theme Helper ─────────────────────────────────────────────────────────────
 import streamlit.components.v1 as _comps
