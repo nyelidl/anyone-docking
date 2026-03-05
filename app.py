@@ -363,6 +363,59 @@ def _write_single_pose(mol, path: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  INTERACTION HELPERS — distance-based residue highlight + docking grid box
+# ══════════════════════════════════════════════════════════════════════════════
+def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 4.5):
+    """
+    Return protein residues within `cutoff` Å of any ligand heavy atom.
+    Each entry: {'chain': str, 'resi': int, 'resn': str}.
+    Uses ProDy for fast coordinate parsing of the receptor.
+    """
+    try:
+        import numpy as np
+        from prody import parsePDB
+        conf    = lig_mol.GetConformer()
+        lig_xyz = np.array([
+            [conf.GetAtomPosition(i).x,
+             conf.GetAtomPosition(i).y,
+             conf.GetAtomPosition(i).z]
+            for i in range(lig_mol.GetNumAtoms())
+        ])
+        rec      = parsePDB(receptor_pdb)
+        r_xyz    = rec.getCoords()
+        chains   = rec.getChids()
+        resids   = rec.getResnums()
+        resnames = rec.getResnames()
+        seen: dict = {}
+        for j in range(len(r_xyz)):
+            if np.linalg.norm(lig_xyz - r_xyz[j], axis=1).min() <= cutoff:
+                key = (str(chains[j]), int(resids[j]))
+                if key not in seen:
+                    seen[key] = str(resnames[j])
+        return [{"chain": k[0], "resi": k[1], "resn": v} for k, v in seen.items()]
+    except Exception:
+        return []
+
+
+def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
+    """
+    Add a docking search-space grid box to a py3Dmol view.
+    Renders a translucent filled volume plus a solid cyan wireframe outline.
+    """
+    try:
+        _c = {"x": float(cx), "y": float(cy), "z": float(cz)}
+        _d = {"w": float(sx), "h": float(sy), "d": float(sz)}
+        # Faint filled interior
+        view.addBox({"center": _c, "dimensions": _d,
+                     "color": "blue", "opacity": 0.07, "wireframe": False})
+        # Crisp wireframe outline
+        view.addBox({"center": _c, "dimensions": _d,
+                     "color": "cyan", "opacity": 0.90, "wireframe": True})
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  POSEVIEW REST API v1  (proteins.plus)
 #  Upload receptor PDB + docked pose SDF → 2D interaction SVG of the docked pose
 #  NOTE: PoseView2 (/api/poseview2_rest) only accepts pdbCode+ligandID and always
@@ -779,6 +832,11 @@ def _poseview_ui(
                        if binding_energy is not None else "[binding energy]")
 
         _has_ref = bool(ref_lig_name or ref_lig_smiles)
+        # Show co-crystal reference legend only when BOTH diagrams were actually generated
+        _both_diagrams = bool(
+            st.session_state.get(img_svg_key) and ref_svg_key
+            and st.session_state.get(ref_svg_key)
+        )
         if _has_ref:
             if ref_lig_name and ref_lig_smiles:
                 _ref_full = f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
@@ -810,7 +868,7 @@ def _poseview_ui(
                if lig_smiles and ("[O-]" in lig_smiles or "[NH2+]" in lig_smiles
                                    or "[NH+]" in lig_smiles or "[N+]" in lig_smiles) else "")
             + (
-                # PoseView v1 (docked pose): only 2 interaction types shown
+                # Both diagrams generated — show legend for each separately
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
                 "  - Black dashed line      : hydrogen bond\n"
                 "  - Dark green solid line  : hydrophobic contact\n\n"
@@ -821,7 +879,8 @@ def _poseview_ui(
                 "  - Green dot-dashed line    : cation-pi interaction\n"
                 "  - Cyan dot-dashed line     : pi-pi interaction\n"
                 "  - Dark green solid line    : hydrophobic contact\n\n"
-                if _has_ref else
+                if _both_diagrams else
+                # Only docked pose diagram available
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
                 "  - Black dashed line      : hydrogen bond\n"
                 "  - Dark green solid line  : hydrophobic contact\n\n"
@@ -1126,6 +1185,14 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             v3.zoomTo()
             if lig_p and os.path.exists(lig_p):
                 v3.center({"model": mi})
+            # ── Docking grid box overlay ──────────────────────────────────
+            _add_box_to_view(v3,
+                st.session_state.get(pfx+"cx", 0),
+                st.session_state.get(pfx+"cy", 0),
+                st.session_state.get(pfx+"cz", 0),
+                st.session_state.get(pfx+"sx", 16),
+                st.session_state.get(pfx+"sy", 16),
+                st.session_state.get(pfx+"sz", 16))
             show3d(v3, height=480)
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1507,6 +1574,9 @@ with tab_basic:
         st.markdown("**🔎 Interactive Pose Selector**")
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
+            _show_res_labels = st.checkbox(
+                "Show residue labels", value=True, key="show_res_labels",
+                help="Toggle yellow residue-name labels on the interacting residues (≤4.5 Å from ligand).")
             sel_mol  = mols[pose_idx]
             if df is not None:
                 row = df[df["Pose"] == pose_idx + 1]
@@ -1540,6 +1610,29 @@ with tab_basic:
                         {"model": 0},
                         {"model": mi2},
                     )
+                    # ── Interacting residues — distance-based highlight ────────
+                    if (st.session_state.receptor_fh
+                            and os.path.exists(st.session_state.receptor_fh)):
+                        _ir_v2 = _get_interacting_residues(
+                            st.session_state.receptor_fh, sel_mol)
+                        for _rv2 in _ir_v2:
+                            v2.setStyle(
+                                {"model": 0, "chain": _rv2["chain"],
+                                 "resi": _rv2["resi"]},
+                                {"cartoon": {"color": "spectrum", "opacity": 0.5},
+                                 "stick":   {"colorscheme": "orangeCarbon",
+                                             "radius": 0.18}},
+                            )
+                            if _show_res_labels:
+                                v2.addLabel(
+                                    f"{_rv2['resn']}{_rv2['resi']}",
+                                    {"fontSize": 10, "fontColor": "yellow",
+                                     "backgroundColor": "black",
+                                     "backgroundOpacity": 0.7,
+                                     "inFront": True, "showBackground": True},
+                                    {"model": 0, "chain": _rv2["chain"],
+                                     "resi": _rv2["resi"]},
+                                )
                     v2.zoomTo()
                     v2.center({"model": mi2})
                     show3d(v2, height=400)
