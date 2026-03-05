@@ -84,6 +84,7 @@ If you use this tool in research, please cite the following software and resourc
 
 ---
 
-## 📝 License
+## 📜 License
 
-MIT
+This project is licensed under the MIT License.  
+See the LICENSE file for details.
