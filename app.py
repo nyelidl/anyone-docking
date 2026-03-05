@@ -1288,7 +1288,7 @@ with tab_basic:
     cl1, cl2 = st.columns([2, 1])
     with cl1:
         lig_input_mode = st.radio("Input mode",
-            ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+            ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)", "Draw structure (Ketcher)"],
             horizontal=True, key="lig_input_mode")
 
         smiles_in = ""
@@ -1296,14 +1296,14 @@ with tab_basic:
             smiles_in = st.text_input("SMILES string",
                 value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
                 key="smiles_in")
-        elif lig_input_mode == "Upload structure (.pdb)":
-            st.file_uploader("Upload structure file (.pdb)",
+        elif lig_input_mode == "Upload structure (.sdf/.mol2/.pdb)":
+            st.file_uploader("Upload structure file (.sdf/.mol2/.pdb)",
                              type=["sdf", "mol2", "pdb"], key="lig_struct_file")
         else:  # Draw structure (Ketcher)
             try:
                 from streamlit_ketcher import st_ketcher
                 _ketch_smi = st_ketcher(
-                    molecule=st.session_state.get("ketcher_smi", ""),
+                    st.session_state.get("ketcher_smi", ""),
                     height=400,
                     key="ketcher_widget",
                 )
@@ -1344,7 +1344,7 @@ with tab_basic:
         with st.spinner("Preparing ligand…"):
             try:
                 _lig_mode = st.session_state.get("lig_input_mode", "SMILES string")
-                if _lig_mode == "Upload structure (.pdb)":
+                if _lig_mode == "Upload structure (.sdf/.mol2/.pdb)":
                     _sfobj = st.session_state.get("lig_struct_file")
                     if _sfobj is None: raise ValueError("No structure file uploaded")
                     _ext = Path(_sfobj.name).suffix.lower()
