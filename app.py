@@ -429,7 +429,7 @@ def _write_single_pose(mol, path: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 #  INTERACTION HELPERS — distance-based residue highlight + docking grid box
 # ══════════════════════════════════════════════════════════════════════════════
-def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 4.5):
+def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.0):
     """
     Return protein residues within `cutoff` Å of any ligand heavy atom.
     Each entry: {'chain': str, 'resi': int, 'resn': str}.
@@ -1831,7 +1831,7 @@ with tab_basic:
             _bp_ctrl_l, _bp_ctrl_r = st.columns([2, 1])
             with _bp_ctrl_l:
                 _bp_cutoff = st.slider(
-                    "Residue distance cutoff (Å)", 3.0, 5.0, 4.5, 0.1,
+                    "Residue distance cutoff (Å)", 2.0, 5.0, 3.0, 0.1,
                     key="bp_cutoff",
                     help="Show protein residues within this distance of any ligand atom. "
                          "Updates instantly when you change pose or cutoff.")
