@@ -14,6 +14,36 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import streamlit.components.v1 as components
 
+# ─── Patch Ketcher iframe for mobile horizontal scroll ────────────────────────
+# Streamlit Cloud re-installs packages on each deploy, so we patch at runtime.
+@st.cache_resource
+def _patch_ketcher_mobile():
+    """Inject overflow-x:auto into Ketcher's own index.html so the canvas
+    scrolls horizontally inside the iframe on mobile devices."""
+    try:
+        import importlib, pathlib
+        spec = importlib.util.find_spec("streamlit_ketcher")
+        if spec and spec.origin:
+            _html = pathlib.Path(spec.origin).parent / "frontend" / "index.html"
+            if _html.exists():
+                _src = _html.read_text()
+                _css = (
+                    "<style>"
+                    "body,#root{"
+                    "overflow-x:auto;"
+                    "-webkit-overflow-scrolling:touch;"
+                    "min-width:860px;"
+                    "touch-action:pan-x pan-y;"
+                    "}"
+                    "</style>"
+                )
+                if _css not in _src:
+                    _html.write_text(_src.replace("</head>", _css + "</head>"))
+    except Exception:
+        pass
+
+_patch_ketcher_mobile()
+
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="anyone can dock",
@@ -1398,56 +1428,6 @@ with tab_basic:
 
             if smiles_in:
                 st.caption(f"✅ SMILES: `{smiles_in}`")
-
-            # ── Make Ketcher iframe horizontally scrollable on mobile ──────
-            # Walk every ancestor of the iframe and un-clip overflow so
-            # the user can swipe left/right to reach the full toolbar.
-            components.html("""
-<script>
-(function enableKetcherScroll() {
-    try {
-        var pdoc = window.parent.document;
-
-        // Find the Ketcher component wrapper
-        var nodes = pdoc.querySelectorAll(
-            'div[data-testid="stCustomComponentV1"]');
-
-        nodes.forEach(function(node) {
-            // Make the direct wrapper scrollable at Ketcher's natural width
-            node.style.overflowX        = 'scroll';
-            node.style.webkitOverflowScrolling = 'touch';
-            node.style.maxWidth         = '100%';
-            node.style.scrollbarWidth   = 'thin'; // Firefox
-
-            // Give the iframe room to breathe
-            var iframe = node.querySelector('iframe');
-            if (iframe) {
-                iframe.style.minWidth = '860px';
-                iframe.style.maxWidth = 'none';
-                iframe.style.display  = 'block';
-            }
-
-            // Walk every ancestor up to <body> and remove overflow:hidden
-            var el = node.parentElement;
-            while (el && el !== pdoc.body) {
-                var ov = window.parent.getComputedStyle(el).overflow;
-                var ox = window.parent.getComputedStyle(el).overflowX;
-                if (ov === 'hidden' || ox === 'hidden') {
-                    el.style.overflow  = 'visible';
-                    el.style.overflowX = 'visible';
-                }
-                el = el.parentElement;
-            }
-        });
-    } catch(e) {}
-
-    // Re-run until Ketcher mounts (Streamlit renders async)
-    setTimeout(enableKetcherScroll, 400);
-    setTimeout(enableKetcherScroll, 1200);
-    setTimeout(enableKetcherScroll, 2500);
-})();
-</script>
-""", height=0)
 
         except ImportError:
             st.error(
