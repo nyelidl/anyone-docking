@@ -191,6 +191,7 @@ hr { border-color: var(--border); }
 # ══════════════════════════════════════════════════════════════════════════════
 _DEFAULTS = dict(
     workdir=None,
+    ketcher_smi="",          # Ketcher sketcher last SMILES output
     # Basic — receptor
     pdb_token=None, raw_pdb=None, receptor_fh=None, receptor_pdbqt=None,
     box_pdb=None, config_txt=None, cx=None, cy=None, cz=None,
@@ -1193,6 +1194,33 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 st.session_state.get(pfx+"sx", 16),
                 st.session_state.get(pfx+"sy", 16),
                 st.session_state.get(pfx+"sz", 16))
+            # ── Simple XYZ axis arrows from box center ─────────────────────
+            try:
+                _ocx = float(st.session_state.get(pfx+"cx", 0))
+                _ocy = float(st.session_state.get(pfx+"cy", 0))
+                _ocz = float(st.session_state.get(pfx+"cz", 0))
+                _ax_len = 8.0
+                for _ax_end, _ax_col, _ax_lbl in [
+                    ({"x": _ocx+_ax_len, "y": _ocy,         "z": _ocz        }, "red",   "X"),
+                    ({"x": _ocx,         "y": _ocy+_ax_len, "z": _ocz        }, "green", "Y"),
+                    ({"x": _ocx,         "y": _ocy,         "z": _ocz+_ax_len}, "blue",  "Z"),
+                ]:
+                    v3.addArrow({
+                        "start":  {"x": _ocx, "y": _ocy, "z": _ocz},
+                        "end":    _ax_end,
+                        "radius": 0.15,
+                        "color":  _ax_col,
+                        "radiusRatio": 3.0,
+                    })
+                    v3.addLabel(
+                        _ax_lbl,
+                        {"fontSize": 14, "fontColor": _ax_col,
+                         "backgroundColor": "black", "backgroundOpacity": 0.6,
+                         "inFront": True, "showBackground": True},
+                        _ax_end,
+                    )
+            except Exception:
+                pass
             show3d(v3, height=480)
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1257,39 +1285,50 @@ with tab_basic:
         f'<div class="step-heading">⚗️ Ligand Preparation</div>',
         unsafe_allow_html=True)
 
-    cl1, cl2 = st.columns([1.5, 1])
+    cl1, cl2 = st.columns([2, 1])
     with cl1:
         lig_input_mode = st.radio("Input mode",
-            ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)"],
+            ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)", "Draw structure (Ketcher)"],
             horizontal=True, key="lig_input_mode")
+
+        smiles_in = ""
         if lig_input_mode == "SMILES string":
             smiles_in = st.text_input("SMILES string",
                 value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
                 key="smiles_in")
-        else:
-            smiles_in = ""
+        elif lig_input_mode == "Upload structure (.sdf/.mol2/.pdb)":
             st.file_uploader("Upload structure file (.sdf/.mol2/.pdb)",
                              type=["sdf", "mol2", "pdb"], key="lig_struct_file")
+        else:  # Draw structure (Ketcher)
+            try:
+                from streamlit_ketcher import st_ketcher
+                _ketch_smi = st_ketcher(
+                    molecule=st.session_state.get("ketcher_smi", ""),
+                    height=400,
+                    key="ketcher_widget",
+                )
+                if _ketch_smi:
+                    st.session_state["ketcher_smi"] = _ketch_smi
+                    smiles_in = _ketch_smi
+                    st.markdown(
+                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
+                        f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                        f'color:var(--text-muted)">SMILES: </span>'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                        f'color:var(--text)">{_ketch_smi}</span></div>',
+                        unsafe_allow_html=True)
+                else:
+                    smiles_in = st.session_state.get("ketcher_smi", "")
+            except ImportError:
+                st.error(
+                    "❌ `streamlit-ketcher` is not installed. "
+                    "Add `streamlit-ketcher` to your `requirements.txt` and restart the app.")
+                smiles_in = ""
+
+    with cl2:
         lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
         ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
-    with cl2:
-        st.markdown("**pKa prediction**")
-        if PKA_MODEL and smiles_in:
-            try:
-                from pkapredict import smiles_to_rdkit_descriptors, predict_pKa
-                pka_v   = float(predict_pKa(PKA_MODEL,
-                                            smiles_to_rdkit_descriptors([smiles_in]))[0])
-                charged = "deprotonated (−1)" if pka_v < ph_in else "neutral (0)"
-                st.markdown(
-                    f'<div style="background:var(--bg-subtle);border:1px solid var(--accent);'
-                    f'border-radius:8px;padding:16px;">'
-                    f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.8rem;'
-                    f'color:var(--accent)">pKa = {pka_v:.2f}</div>'
-                    f'<div style="color:var(--text-muted);font-size:0.85rem">at pH {ph_in:.1f}: '
-                    f'likely <b style="color:var(--accent2)">{charged}</b></div>'
-                    f'</div>', unsafe_allow_html=True)
-            except Exception:
-                st.info("pKa unavailable for this SMILES.")
 
     if not st.session_state.receptor_done:
         st.caption("⚠ Complete Step 1 first.")
@@ -1324,6 +1363,10 @@ with tab_basic:
                             if _pts: prot = _pts[0]; break
                         if not prot: raise ValueError("Could not convert structure to SMILES")
                     log.append(f"✓ Structure loaded: {_sfobj.name}")
+                elif _lig_mode == "Draw structure (Ketcher)":
+                    prot = st.session_state.get("ketcher_smi", "").strip()
+                    if not prot: raise ValueError("No molecule drawn in Ketcher — draw a structure first")
+                    log.append("✓ Structure from Ketcher sketcher")
                 else:
                     prot = smiles_in.strip()
                 try:
@@ -1574,9 +1617,6 @@ with tab_basic:
         st.markdown("**🔎 Interactive Pose Selector**")
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
-            _show_res_labels = st.checkbox(
-                "Show residue labels", value=True, key="show_res_labels",
-                help="Toggle yellow residue-name labels on the interacting residues (≤4.5 Å from ligand).")
             sel_mol  = mols[pose_idx]
             if df is not None:
                 row = df[df["Pose"] == pose_idx + 1]
@@ -1610,29 +1650,6 @@ with tab_basic:
                         {"model": 0},
                         {"model": mi2},
                     )
-                    # ── Interacting residues — distance-based highlight ────────
-                    if (st.session_state.receptor_fh
-                            and os.path.exists(st.session_state.receptor_fh)):
-                        _ir_v2 = _get_interacting_residues(
-                            st.session_state.receptor_fh, sel_mol)
-                        for _rv2 in _ir_v2:
-                            v2.setStyle(
-                                {"model": 0, "chain": _rv2["chain"],
-                                 "resi": _rv2["resi"]},
-                                {"cartoon": {"color": "spectrum", "opacity": 0.5},
-                                 "stick":   {"colorscheme": "orangeCarbon",
-                                             "radius": 0.18}},
-                            )
-                            if _show_res_labels:
-                                v2.addLabel(
-                                    f"{_rv2['resn']}{_rv2['resi']}",
-                                    {"fontSize": 10, "fontColor": "yellow",
-                                     "backgroundColor": "black",
-                                     "backgroundOpacity": 0.7,
-                                     "inFront": True, "showBackground": True},
-                                    {"model": 0, "chain": _rv2["chain"],
-                                     "resi": _rv2["resi"]},
-                                )
                     v2.zoomTo()
                     v2.center({"model": mi2})
                     show3d(v2, height=400)
@@ -1657,6 +1674,56 @@ with tab_basic:
                     st.download_button("⬇ Receptor (.pdb)",
                         open(st.session_state.receptor_fh, "rb"),
                         file_name="receptor.pdb", key="dl_rec")
+
+            # ── Binding Pocket View — residues within 4.5 Å of selected pose ──
+            st.markdown("---")
+            st.markdown("**🔬 Binding Pocket View**")
+            st.caption(
+                "Protein residues within **4.5 Å** of the selected docked pose "
+                "(orange sticks). Co-crystal ligand excluded.")
+            _bp_show_labels = st.checkbox(
+                "Show residue labels", value=True, key="bp_show_labels",
+                help="Toggle yellow residue-name + resid labels on interacting residues.")
+            try:
+                vbp = py3Dmol.view(width="100%", height=440)
+                vbp.setBackgroundColor(_viewer_bg())
+                mbp = 0
+                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
+                    vbp.addModel(open(st.session_state.receptor_fh).read(), "pdb")
+                    # Full receptor: faint cartoon only (sticks off by default)
+                    vbp.setStyle({"model": mbp},
+                                  {"cartoon": {"color": "spectrum", "opacity": 0.45}}); mbp += 1
+
+                # Docked pose — cyan sticks
+                vbp.addModel(Chem.MolToMolBlock(sel_mol), "mol")
+                _lig_bp_model = mbp
+                vbp.setStyle({"model": _lig_bp_model},
+                              {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
+
+                # Interacting residues — orange sticks + optional labels
+                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
+                    _ir_bp = _get_interacting_residues(
+                        st.session_state.receptor_fh, sel_mol, cutoff=4.5)
+                    for _rb in _ir_bp:
+                        vbp.setStyle(
+                            {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
+                            {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}},
+                        )
+                        if _bp_show_labels:
+                            vbp.addLabel(
+                                f"{_rb['resn']}{_rb['resi']}",
+                                {"fontSize": 11, "fontColor": "yellow",
+                                 "backgroundColor": "black", "backgroundOpacity": 0.65,
+                                 "inFront": True, "showBackground": True},
+                                {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
+                            )
+                    _n_res = len(_ir_bp)
+                    st.caption(f"🔸 {_n_res} interacting residue{'s' if _n_res != 1 else ''} found within 4.5 Å")
+
+                vbp.zoomTo({"model": _lig_bp_model})
+                show3d(vbp, height=440)
+            except Exception as _e_bp:
+                st.info(f"Binding pocket viewer error: {_e_bp}")
 
             # ── PoseView2 2D Interaction ──────────────────────────────────────
             # Write bond-order-fixed single pose SDF for PoseView2 submission
