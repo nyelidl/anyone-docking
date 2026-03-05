@@ -178,11 +178,19 @@ hr { border-color: var(--border); }
     color: var(--text-muted); background: transparent; border-radius: 6px 6px 0 0;
     padding: 10px 20px;
 }
-[data-testid="stTabs"] [aria-selected="true"] {
-    color: var(--accent) !important; background: var(--bg) !important;
-    border-bottom: 2px solid var(--accent) !important;
-}
-</style>
+/* ── Hide Streamlit iframe close/fullscreen toolbar (py3Dmol viewers) ── */
+iframe { border: none !important; }
+[data-testid="stIFrame"] > div > div:first-child,
+div[class*="toolbar"],
+div[class*="FrameToolbar"] { display: none !important; }
+
+/* ── Ketcher Apply button — match primary green ── */
+.ketcher-apply-button,
+button[data-testid="ketcher-apply"],
+.ketcher-container button[type="submit"],
+.ketcher-container button.apply,
+#ketcher-apply-btn { background: var(--success) !important; color: white !important; }
+
 """, unsafe_allow_html=True)
 
 
@@ -243,8 +251,18 @@ def show3d(view, height=480):
     except ImportError:
         raw  = view._make_html()
         resp = _re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', raw)
-        components.html(f'<div style="width:100%;overflow:hidden">{resp}</div>',
-                        height=height, scrolling=False)
+        # Inject CSS to remove any close/X toolbar Streamlit adds around iframes
+        _no_x_css = (
+            "<style>"
+            "button[title='Close'],button[aria-label='Close'],"
+            "div[data-testid='stToolbar'],div[class*='toolbar'],"
+            ".stComponentContainer > div > div:first-child{"
+            "display:none!important}"
+            "</style>"
+        )
+        components.html(
+            f'<div style="width:100%;overflow:hidden">{_no_x_css}{resp}</div>',
+            height=height, scrolling=False)
 
 def _pill(text, kind="info"):
     cls = {"info": "result-pill", "success": "success-pill", "warn": "warn-pill"}.get(kind, "result-pill")
@@ -1288,7 +1306,7 @@ with tab_basic:
     cl1, cl2 = st.columns([2, 1])
     with cl1:
         lig_input_mode = st.radio("Input mode",
-            ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+            ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)", "Draw structure (Ketcher)"],
             horizontal=True, key="lig_input_mode")
 
         smiles_in = ""
@@ -1296,8 +1314,8 @@ with tab_basic:
             smiles_in = st.text_input("SMILES string",
                 value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
                 key="smiles_in")
-        elif lig_input_mode == "Upload structure (.pdb)":
-            st.file_uploader("Upload structure file (.pdb)",
+        elif lig_input_mode == "Upload structure (.sdf/.mol2/.pdb)":
+            st.file_uploader("Upload structure file (.sdf/.mol2/.pdb)",
                              type=["sdf", "mol2", "pdb"], key="lig_struct_file")
         else:  # Draw structure (Ketcher)
             try:
@@ -1344,7 +1362,7 @@ with tab_basic:
         with st.spinner("Preparing ligand…"):
             try:
                 _lig_mode = st.session_state.get("lig_input_mode", "SMILES string")
-                if _lig_mode == "Upload structure (.pdb)":
+                if _lig_mode == "Upload structure (.sdf/.mol2/.pdb)":
                     _sfobj = st.session_state.get("lig_struct_file")
                     if _sfobj is None: raise ValueError("No structure file uploaded")
                     _ext = Path(_sfobj.name).suffix.lower()
@@ -1675,22 +1693,32 @@ with tab_basic:
                         open(st.session_state.receptor_fh, "rb"),
                         file_name="receptor.pdb", key="dl_rec")
 
-            # ── Binding Pocket View — residues within 4.5 Å of selected pose ──
+            # ── Binding Pocket View — residues within user-defined Å of selected pose ──
             st.markdown("---")
             st.markdown("**🔬 Binding Pocket View**")
+
+            _bp_ctrl_l, _bp_ctrl_r = st.columns([2, 1])
+            with _bp_ctrl_l:
+                _bp_cutoff = st.slider(
+                    "Residue distance cutoff (Å)", 3.0, 5.0, 4.5, 0.1,
+                    key="bp_cutoff",
+                    help="Show protein residues within this distance of any ligand atom. "
+                         "Updates instantly when you change pose or cutoff.")
+            with _bp_ctrl_r:
+                _bp_show_labels = st.checkbox(
+                    "Show residue labels", value=True, key="bp_show_labels",
+                    help="Toggle yellow residue-name + resid labels on interacting residues.")
+
             st.caption(
-                "Protein residues within **4.5 Å** of the selected docked pose "
-                "(orange sticks). Co-crystal ligand excluded.")
-            _bp_show_labels = st.checkbox(
-                "Show residue labels", value=True, key="bp_show_labels",
-                help="Toggle yellow residue-name + resid labels on interacting residues.")
+                f"Protein residues within **{_bp_cutoff:.1f} Å** of "
+                f"**pose {pose_idx + 1}** (orange sticks). Co-crystal ligand excluded.")
+
             try:
                 vbp = py3Dmol.view(width="100%", height=440)
                 vbp.setBackgroundColor(_viewer_bg())
                 mbp = 0
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                     vbp.addModel(open(st.session_state.receptor_fh).read(), "pdb")
-                    # Full receptor: faint cartoon only (sticks off by default)
                     vbp.setStyle({"model": mbp},
                                   {"cartoon": {"color": "spectrum", "opacity": 0.45}}); mbp += 1
 
@@ -1700,10 +1728,10 @@ with tab_basic:
                 vbp.setStyle({"model": _lig_bp_model},
                               {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
 
-                # Interacting residues — orange sticks + optional labels
+                # Interacting residues — reactive to pose_idx + _bp_cutoff
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                     _ir_bp = _get_interacting_residues(
-                        st.session_state.receptor_fh, sel_mol, cutoff=4.5)
+                        st.session_state.receptor_fh, sel_mol, cutoff=_bp_cutoff)
                     for _rb in _ir_bp:
                         vbp.setStyle(
                             {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
@@ -1718,7 +1746,13 @@ with tab_basic:
                                 {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
                             )
                     _n_res = len(_ir_bp)
-                    st.caption(f"🔸 {_n_res} interacting residue{'s' if _n_res != 1 else ''} found within 4.5 Å")
+                    _res_label = f"{_n_res} residue{'s' if _n_res != 1 else ''}"
+                    _res_kind  = "success" if _n_res else "warn"
+                    st.markdown(
+                        f"{_pill(f'Pose {pose_idx+1}')} "
+                        f"{_pill(f'{_bp_cutoff:.1f} Å cutoff')} "
+                        f"{_pill(_res_label, _res_kind)}",
+                        unsafe_allow_html=True)
 
                 vbp.zoomTo({"model": _lig_bp_model})
                 show3d(vbp, height=440)
