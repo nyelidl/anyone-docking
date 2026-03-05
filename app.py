@@ -17,12 +17,12 @@ import streamlit.components.v1 as components
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="anyone can dock",
-    page_icon="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.png",
+    page_icon="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg",
 )
 
 st.markdown(
 """
-<link rel="apple-touch-icon" href="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.png">
+<link rel="apple-touch-icon" href="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-png.png">
 <meta name="apple-mobile-web-app-title" content="Anyone Dock">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
