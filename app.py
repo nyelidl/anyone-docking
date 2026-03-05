@@ -1429,44 +1429,46 @@ with tab_basic:
             if smiles_in:
                 st.caption(f"✅ SMILES: `{smiles_in}`")
 
-            # ── Force iframe scrolling — Streamlit hardcodes scrolling="no" ──
-            # We override it by patching the DOM attribute directly from JS.
+            # ── Scrollable box: iframe fixed at 900px, wrapper scrolls ────
             components.html("""
 <script>
-(function forceKetcherScroll() {
+(function ketcherScrollBox() {
     try {
         var pdoc = window.parent.document;
         var wrappers = pdoc.querySelectorAll(
             'div[data-testid="stCustomComponentV1"]');
         wrappers.forEach(function(wrap) {
-            // Wrapper: clip at viewport width, scroll horizontally
-            wrap.style.overflowX = 'scroll';
-            wrap.style.overflowY = 'hidden';
-            wrap.style.webkitOverflowScrolling = 'touch';
-            wrap.style.maxWidth  = '100%';
-            wrap.style.display   = 'block';
-            wrap.style.scrollbarWidth = 'thin';
-
             var iframe = wrap.querySelector('iframe');
             if (!iframe) return;
 
-            // Remove Streamlit's scrolling="no" so browser respects overflow
-            iframe.setAttribute('scrolling', 'no');
+            // 1. Fix iframe at Ketcher's natural width
+            iframe.style.width     = '900px';
+            iframe.style.minWidth  = '900px';
+            iframe.style.maxWidth  = 'none';
+            iframe.style.display   = 'block';
 
-            // *** KEY FIX: give iframe a FIXED wider width ***
-            // Ketcher fills 100% of iframe width — if iframe = 100% = 390px
-            // there is nothing to scroll. Force it to 900px so the wrapper
-            // has 510px of hidden content to reveal on swipe.
-            iframe.style.width   = '900px';
-            iframe.style.minWidth = '900px';
-            iframe.style.maxWidth = 'none';
-            iframe.style.display = 'block';
+            // 2. Walk up and un-clip any overflow:hidden ancestor
+            var el = wrap;
+            while (el && el !== pdoc.body) {
+                var cs = window.parent.getComputedStyle(el);
+                if (cs.overflowX === 'hidden') {
+                    el.style.overflowX = 'visible';
+                }
+                el = el.parentElement;
+            }
+
+            // 3. Make the direct wrapper the scroll container
+            wrap.style.overflowX               = 'scroll';
+            wrap.style.overflowY               = 'hidden';
+            wrap.style.webkitOverflowScrolling = 'touch';
+            wrap.style.maxWidth                = '100%';
+            wrap.style.display                 = 'block';
+            wrap.style.scrollbarWidth          = 'thin';
         });
     } catch(e) {}
-    setTimeout(forceKetcherScroll, 300);
-    setTimeout(forceKetcherScroll, 900);
-    setTimeout(forceKetcherScroll, 2000);
-    setTimeout(forceKetcherScroll, 4000);
+    setTimeout(ketcherScrollBox, 200);
+    setTimeout(ketcherScrollBox, 700);
+    setTimeout(ketcherScrollBox, 1800);
 })();
 </script>
 """, height=0)
