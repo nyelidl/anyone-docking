@@ -191,31 +191,20 @@ button[data-testid="ketcher-apply"],
 .ketcher-container button.apply,
 #ketcher-apply-btn { background: var(--success) !important; color: white !important; }
 
-/* ── Ketcher mobile: make iframe container horizontally scrollable ── */
-[data-testid="stCustomComponentV1"],
-iframe[title*="streamlit_ketcher"],
-div[data-testid="element-container"]:has(> iframe[src*="ketcher"]) {
-    width: 100% !important;
+/* ── Ketcher mobile: scrollable container so toolbar is reachable ── */
+/* The component wrapper must clip and scroll, not overflow */
+div[data-testid="stCustomComponentV1"] {
     overflow-x: auto !important;
     -webkit-overflow-scrolling: touch !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    display: block !important;
 }
-.ketcher-mobile-wrap {
-    width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-}
-@media (max-width: 768px) {
-    /* Shrink Ketcher to fit viewport width on phones */
-    [data-testid="stCustomComponentV1"] iframe,
-    iframe[src*="ketcher"] {
-        transform-origin: top left;
-        transform: scale(0.72);
-        width: 138.9% !important;   /* 1/0.72 to compensate */
-        height: 556px !important;   /* 400 * 1/0.72 */
-        margin-bottom: -112px;      /* reclaim scaled-away bottom space */
-    }
+/* The iframe stays at its natural Ketcher width — user scrolls to it */
+div[data-testid="stCustomComponentV1"] > iframe {
+    min-width: 860px !important;
+    max-width: none !important;
+    display: block !important;
 }
 
 """, unsafe_allow_html=True)
@@ -1395,33 +1384,26 @@ with tab_basic:
         try:
             from streamlit_ketcher import st_ketcher
             # Mobile hint
-            st.caption("📱 On mobile: swipe left/right inside the canvas to reach hidden controls.")
-            # Inject JS to find and patch the Ketcher iframe container for mobile scrolling
+            st.caption("📱 On mobile: swipe ← → inside the sketcher to reach all toolbar buttons.")
+            # JS: walk up the Streamlit component tree and force overflow-x: auto
             components.html("""
 <script>
-(function patchKetcher() {
-    var iframes = parent.document.querySelectorAll('iframe');
-    iframes.forEach(function(f) {
-        var src = f.getAttribute('src') || '';
-        if (src.includes('ketcher') || (f.parentElement && f.parentElement.getAttribute('title') || '').includes('ketcher')) {
-            var wrap = f.closest('[data-testid="element-container"]') || f.parentElement;
-            if (wrap) {
-                wrap.style.overflowX = 'auto';
-                wrap.style.webkitOverflowScrolling = 'touch';
+(function fix() {
+    try {
+        var doc = window.parent.document;
+        var nodes = doc.querySelectorAll('div[data-testid="stCustomComponentV1"]');
+        nodes.forEach(function(n) {
+            n.style.overflowX = 'auto';
+            n.style.webkitOverflowScrolling = 'touch';
+            n.style.maxWidth = '100%';
+            var iframe = n.querySelector('iframe');
+            if (iframe) {
+                iframe.style.minWidth = '860px';
+                iframe.style.maxWidth = 'none';
             }
-            // On narrow screens scale down
-            if (window.innerWidth < 768) {
-                var scale = (window.innerWidth - 32) / 800;
-                scale = Math.min(scale, 1);
-                f.style.transformOrigin = 'top left';
-                f.style.transform = 'scale(' + scale + ')';
-                f.style.width = (100 / scale) + '%';
-                f.style.height = (420 / scale) + 'px';
-                f.style.marginBottom = (-420 * (1 - scale)) + 'px';
-            }
-        }
-    });
-    setTimeout(patchKetcher, 800);
+        });
+    } catch(e) {}
+    setTimeout(fix, 600);
 })();
 </script>
 """, height=0)
