@@ -14,36 +14,6 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import streamlit.components.v1 as components
 
-# ─── Patch Ketcher iframe for mobile horizontal scroll ────────────────────────
-# Streamlit Cloud re-installs packages on each deploy, so we patch at runtime.
-@st.cache_resource
-def _patch_ketcher_mobile():
-    """Inject overflow-x:auto into Ketcher's own index.html so the canvas
-    scrolls horizontally inside the iframe on mobile devices."""
-    try:
-        import importlib, pathlib
-        spec = importlib.util.find_spec("streamlit_ketcher")
-        if spec and spec.origin:
-            _html = pathlib.Path(spec.origin).parent / "frontend" / "index.html"
-            if _html.exists():
-                _src = _html.read_text()
-                _css = (
-                    "<style>"
-                    "body,#root{"
-                    "overflow-x:auto;"
-                    "-webkit-overflow-scrolling:touch;"
-                    "min-width:860px;"
-                    "touch-action:pan-x pan-y;"
-                    "}"
-                    "</style>"
-                )
-                if _css not in _src:
-                    _html.write_text(_src.replace("</head>", _css + "</head>"))
-    except Exception:
-        pass
-
-_patch_ketcher_mobile()
-
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="anyone can dock",
@@ -223,20 +193,6 @@ button[data-testid="ketcher-apply"],
 
 """, unsafe_allow_html=True)
 
-# ── Inject screen-width detector — writes ?sw=NNN into URL so Streamlit can read it ──
-components.html("""
-<script>
-(function() {
-    var w = window.innerWidth || screen.width || 900;
-    var url = new URL(window.parent.location.href);
-    if (url.searchParams.get('sw') !== String(w)) {
-        url.searchParams.set('sw', w);
-        window.parent.history.replaceState({}, '', url.toString());
-    }
-})();
-</script>
-""", height=0)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SESSION STATE
@@ -272,7 +228,6 @@ _DEFAULTS = dict(
     b_pv2_image_url=None, b_pv2_image_png=None, b_pv2_image_svg=None, b_pv2_pose_key=None,
     b_pv2_ref_png=None, b_pv2_ref_svg=None,
     b_plot_png=None,
-    _screen_width=900,
 )
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
@@ -429,7 +384,7 @@ def _write_single_pose(mol, path: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 #  INTERACTION HELPERS — distance-based residue highlight + docking grid box
 # ══════════════════════════════════════════════════════════════════════════════
-def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 4.5):
+def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5):
     """
     Return protein residues within `cutoff` Å of any ligand heavy atom.
     Each entry: {'chain': str, 'resi': int, 'resn': str}.
@@ -780,98 +735,49 @@ def _poseview_ui(
         st.markdown("---")
         st.markdown("**🧬 2D Interaction Diagrams**")
 
-    if _pv_stale and st.session_state.get(img_svg_key):
-        st.caption("⚠️ Pose changed — click **Generate** to update.")
-    else:
-        _ref_note = (f" · PoseView2 co-crystal reference: **{pdb_id.upper()}** `{cocrystal_ligand_id}`"
-                     if _has_ref else " · No co-crystal ID detected — only docked pose diagram will be generated.")
-        st.caption(
-            "**Left:** PoseView v1 — docked pose (file upload) · "
-            "**Right:** PoseView2 — co-crystal reference (PDB)" + _ref_note
-        )
+    _ci, _cb = st.columns([3, 1])
+    with _ci:
+        if _pv_stale and st.session_state.get(img_svg_key):
+            st.caption("⚠️ Pose changed — click **Generate** to update.")
+        else:
+            _ref_note = (f" · PoseView2 co-crystal reference: **{pdb_id.upper()}** `{cocrystal_ligand_id}`"
+                         if _has_ref else " · No co-crystal ID detected — only docked pose diagram will be generated.")
+            st.caption(
+                "**Left:** PoseView v1 — docked pose (file upload) · "
+                "**Right:** PoseView2 — co-crystal reference (PDB)" + _ref_note
+            )
+    with _cb:
+        _run_pv = st.button("🔬 Generate 2D Diagrams", key=btn_key, type="primary")
 
-    _btn_col1, _btn_col2, _btn_col3 = st.columns([1, 1, 2])
-    with _btn_col1:
-        _run_pv1 = st.button("🧪 Docked Pose (v1)", key=btn_key,
-                             type="primary", use_container_width=True,
-                             help="Submit receptor + docked pose SDF to PoseView v1 API")
-    with _btn_col2:
-        _run_pv2 = st.button("🔬 Co-Crystal Ref", key=btn_key + "_ref2",
-                             type="primary", use_container_width=True,
-                             disabled=not _has_ref,
-                             help="Fetch co-crystal reference diagram from PoseView2 API")
-    with _btn_col3:
-        st.caption("Run independently — useful when one service is temporarily down.")
-
-    # ── PoseView v1 — docked pose ─────────────────────────────────────────────
-    if _run_pv1:
+    if _run_pv:
         _rec = st.session_state.get(rec_key, "")
         if not _rec or not os.path.exists(_rec):
             st.error("Receptor PDB not found — complete receptor preparation first.")
         elif not os.path.exists(pose_sdf_path):
             st.error("Pose SDF not found.")
         else:
-            with st.spinner("⏳ PoseView v1 — submitting docked pose… (10–60 s)"):
+            # ── Left: PoseView v1 — docked pose ──────────────────────────────
+            with st.spinner("⏳ PoseView v1 — docked pose… (10–60 s)"):
                 _svg, _err = _call_poseview2(_rec, pose_sdf_path)
             if _err:
-                st.error(
-                    "❌ **PoseView v1 appears to be down or unreachable.** "
-                    "This is a third-party service — please try again in a few minutes.",
-                    icon="🔌")
-                st.markdown(
-                    "**Manual fallback:** Download your pose SDF below and submit it "
-                    "directly at "
-                    "[proteins.plus/poseview](https://proteins.plus/) → "
-                    "*PoseView → Upload files*. "
-                    "Then upload the resulting SVG/PNG using the uploader that appears below.")
-                if os.path.exists(pose_sdf_path):
-                    st.download_button(
-                        "⬇ Download pose SDF (for manual submission)",
-                        data=open(pose_sdf_path, "rb"),
-                        file_name=f"pose_{pose_idx+1}_for_poseview.sdf",
-                        mime="chemical/x-mdl-sdfile",
-                        key=btn_key + "_dl_sdf")
-                st.session_state[btn_key + "_v1_failed"] = True
+                st.error(f"❌ PoseView (docked pose) error: {_err}")
             else:
                 _png = _svg_to_png(_svg)
                 st.session_state[img_url_key]  = None
                 st.session_state[img_png_key]  = _png
                 st.session_state[img_svg_key]  = _svg
                 st.session_state[pose_key_key] = _pose_key
-                st.session_state.pop(btn_key + "_v1_failed", None)
-                st.rerun()
 
-    # ── PoseView2 — co-crystal reference (runs independently) ─────────────────
-    if _run_pv2 and _has_ref and ref_png_key and ref_svg_key:
-        with st.spinner(f"⏳ PoseView2 — co-crystal {pdb_id.upper()} / {cocrystal_ligand_id}… (10–60 s)"):
-            _ref_svg, _ref_err = _call_poseview2_ref(pdb_id, cocrystal_ligand_id)
-        if _ref_err:
-            st.warning(f"⚠️ PoseView2 (co-crystal) error: {_ref_err}")
-        else:
-            st.session_state[ref_png_key] = _svg_to_png(_ref_svg)
-            st.session_state[ref_svg_key] = _ref_svg
-            st.rerun()
+            # ── Right: PoseView2 — co-crystal reference ───────────────────────
+            if _has_ref and ref_png_key and ref_svg_key:
+                with st.spinner(f"⏳ PoseView2 — co-crystal reference {pdb_id.upper()} / {cocrystal_ligand_id}… (10–60 s)"):
+                    _ref_svg, _ref_err = _call_poseview2_ref(pdb_id, cocrystal_ligand_id)
+                if _ref_err:
+                    st.warning(f"⚠️ PoseView2 (co-crystal) error: {_ref_err}")
+                else:
+                    st.session_state[ref_png_key] = _svg_to_png(_ref_svg)
+                    st.session_state[ref_svg_key] = _ref_svg
 
-    # ── Manual upload fallback (shown when v1 has failed) ─────────────────────
-    if st.session_state.get(btn_key + "_v1_failed"):
-        st.markdown("**📤 Upload PoseView diagram manually**")
-        _manual_file = st.file_uploader(
-            "Upload the SVG or PNG you downloaded from proteins.plus",
-            type=["svg", "png"],
-            key=btn_key + "_manual_upload",
-            help="After submitting your SDF manually on proteins.plus, "
-                 "download the result and upload it here.")
-        if _manual_file is not None:
-            _manual_bytes = _manual_file.read()
-            if _manual_file.name.endswith(".svg"):
-                st.session_state[img_svg_key]  = _manual_bytes
-                st.session_state[img_png_key]  = _svg_to_png(_manual_bytes)
-            else:
-                st.session_state[img_png_key]  = _manual_bytes
-                st.session_state[img_svg_key]  = None
-            st.session_state[img_url_key]  = None
-            st.session_state[pose_key_key] = _pose_key
-            st.session_state.pop(btn_key + "_v1_failed", None)
             st.rerun()
 
     # ── Display side-by-side ──────────────────────────────────────────────────
@@ -1397,93 +1303,50 @@ with tab_basic:
         f'<div class="step-heading">⚗️ Ligand Preparation</div>',
         unsafe_allow_html=True)
 
-    lig_input_mode = st.radio("Input mode",
-        ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)", "Draw structure (Ketcher)"],
-        horizontal=True, key="lig_input_mode")
+    cl1, cl2 = st.columns([2, 1])
+    with cl1:
+        lig_input_mode = st.radio("Input mode",
+            ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+            horizontal=True, key="lig_input_mode")
 
-    smiles_in = ""
-    if lig_input_mode == "SMILES string":
-        smiles_in = st.text_input("SMILES string",
-            value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
-            key="smiles_in")
-    elif lig_input_mode == "Upload structure (.sdf/.mol2/.pdb)":
-        st.file_uploader("Upload structure file (.sdf/.mol2/.pdb)",
-                         type=["sdf", "mol2", "pdb"], key="lig_struct_file")
-    else:  # Draw structure (Ketcher)
-        try:
-            from streamlit_ketcher import st_ketcher
+        smiles_in = ""
+        if lig_input_mode == "SMILES string":
+            smiles_in = st.text_input("SMILES string",
+                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
+                key="smiles_in")
+        elif lig_input_mode == "Upload structure (.pdb)":
+            st.file_uploader("Upload structure file (.pdb)",
+                             type=["sdf", "mol2", "pdb"], key="lig_struct_file")
+        else:  # Draw structure (Ketcher)
+            try:
+                from streamlit_ketcher import st_ketcher
+                _ketch_smi = st_ketcher(
+                    st.session_state.get("ketcher_smi", ""),
+                    height=400,
+                    key="ketcher_widget",
+                )
+                if _ketch_smi:
+                    st.session_state["ketcher_smi"] = _ketch_smi
+                    smiles_in = _ketch_smi
+                    st.markdown(
+                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
+                        f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                        f'color:var(--text-muted)">SMILES: </span>'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                        f'color:var(--text)">{_ketch_smi}</span></div>',
+                        unsafe_allow_html=True)
+                else:
+                    smiles_in = st.session_state.get("ketcher_smi", "")
+            except ImportError:
+                st.error(
+                    "❌ `streamlit-ketcher` is not installed. "
+                    "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
+                smiles_in = ""
 
-            st.caption("📱 Mobile: swipe ← → inside the sketcher to reach all toolbar buttons.")
-
-            _ketch_smi = st_ketcher(
-                st.session_state.get("ketcher_smi", ""),
-                height=420,
-                key="ketcher_widget",
-            )
-            if _ketch_smi:
-                st.session_state["ketcher_smi"] = _ketch_smi
-                smiles_in = _ketch_smi
-            else:
-                smiles_in = st.session_state.get("ketcher_smi", "")
-
-            if smiles_in:
-                st.caption(f"✅ SMILES: `{smiles_in}`")
-
-            # ── Scrollable box: iframe fixed at 900px, wrapper scrolls ────
-            components.html("""
-<script>
-(function ketcherScrollBox() {
-    try {
-        var pdoc = window.parent.document;
-        var wrappers = pdoc.querySelectorAll(
-            'div[data-testid="stCustomComponentV1"]');
-        wrappers.forEach(function(wrap) {
-            var iframe = wrap.querySelector('iframe');
-            if (!iframe) return;
-
-            // 1. Fix iframe at Ketcher's natural width
-            iframe.style.width     = '900px';
-            iframe.style.minWidth  = '900px';
-            iframe.style.maxWidth  = 'none';
-            iframe.style.display   = 'block';
-
-            // 2. Walk up and un-clip any overflow:hidden ancestor
-            var el = wrap;
-            while (el && el !== pdoc.body) {
-                var cs = window.parent.getComputedStyle(el);
-                if (cs.overflowX === 'hidden') {
-                    el.style.overflowX = 'visible';
-                }
-                el = el.parentElement;
-            }
-
-            // 3. Make the direct wrapper the scroll container
-            wrap.style.overflowX               = 'scroll';
-            wrap.style.overflowY               = 'hidden';
-            wrap.style.webkitOverflowScrolling = 'touch';
-            wrap.style.maxWidth                = '100%';
-            wrap.style.display                 = 'block';
-            wrap.style.scrollbarWidth          = 'thin';
-        });
-    } catch(e) {}
-    setTimeout(ketcherScrollBox, 200);
-    setTimeout(ketcherScrollBox, 700);
-    setTimeout(ketcherScrollBox, 1800);
-})();
-</script>
-""", height=0)
-
-        except ImportError:
-            st.error(
-                "❌ `streamlit-ketcher` is not installed. "
-                "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
-            smiles_in = ""
-
-    _cname, _cpH = st.columns([1, 1])
-    with _cname:
+    with cl2:
         lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
-    with _cpH:
-        ph_in = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
+        ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
     if not st.session_state.receptor_done:
         st.caption("⚠ Complete Step 1 first.")
@@ -1499,7 +1362,7 @@ with tab_basic:
         with st.spinner("Preparing ligand…"):
             try:
                 _lig_mode = st.session_state.get("lig_input_mode", "SMILES string")
-                if _lig_mode == "Upload structure (.sdf/.mol2/.pdb)":
+                if _lig_mode == "Upload structure (.pdb)":
                     _sfobj = st.session_state.get("lig_struct_file")
                     if _sfobj is None: raise ValueError("No structure file uploaded")
                     _ext = Path(_sfobj.name).suffix.lower()
@@ -1837,7 +1700,7 @@ with tab_basic:
             _bp_ctrl_l, _bp_ctrl_r = st.columns([2, 1])
             with _bp_ctrl_l:
                 _bp_cutoff = st.slider(
-                    "Residue distance cutoff (Å)", 3.0, 5.0, 4.5, 0.1,
+                    "Residue distance cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
                     key="bp_cutoff",
                     help="Show protein residues within this distance of any ligand atom. "
                          "Updates instantly when you change pose or cutoff.")
