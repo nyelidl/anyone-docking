@@ -1,20 +1,125 @@
-Third-Party Software License Declaration
-Project: Molecular Docking Web Application (app_poseview2.py)
-Generated: 2026-03-05   |   This document lists all Python packages, system tools, and external web services used in this application, together with their verified license types.
+# Third-Party Software License Declaration
 
-License Compatibility Summary
-✅ Permissive (Apache 2.0, MIT, BSD, PSF, CC0, MPL-2.0)
-No restrictions on use, modification, or distribution. Attribution required for some. Safe for all deployment scenarios including commercial.
-⚠ LGPL-2.1 / LGPL-3.0 (Meeko, CairoSVG)
-You may use these libraries without disclosing your source code, provided they are dynamically linked (the default for pip installs). No action required for typical deployment.
-⚠ GPL-2.0 (OpenBabel / obabel)
-OpenBabel is called as an external subprocess (command-line tool), not imported as a Python library. The prevailing interpretation is that subprocess invocation does not trigger GPL copyleft on the calling application. However, if you plan to distribute or commercially license this application, consult a legal advisor to confirm your deployment qualifies as "use" rather than "linking".
-ℹ proteins.plus (PoseView / PoseView2)
-The web service is freely available for academic and commercial use. Results are accessed via REST API; the tool itself is not bundled or redistributed. Citation is required in any publication.
-Required Citations
-AutoDock Vina 1.2.7: Eberhardt et al. (2021), J. Chem. Inf. Model., DOI: 10.1021/acs.jcim.1c00203
-ProteinsPlus / PoseView: Schöning-Stierand et al. (2022), Nucleic Acids Research, DOI: 10.1093/nar/gkac258
-RDKit: Landrum, G. (2023). RDKit: Open-source cheminformatics. https://www.rdkit.org
-ProDy: Bakan et al. (2011), Bioinformatics, DOI: 10.1093/bioinformatics/btr168
-stmol: Nápoles-Duarte et al. (2022), Front. Mol. Biosci., DOI: 10.3389/fmolb.2022.990846
-Dimorphite-DL: Ropp et al. (2019), J. Cheminform., DOI: 10.1186/s13321-019-0336-9
+**Project:** Molecular Docking Web Application (`app_poseview2.py`)  
+**Generated:** 2026-03-05  
+
+This document lists all Python packages, system tools, and external web services used in this application, together with their verified license types.
+
+---
+
+## Framework
+
+| Package / Tool | Version | License | Used For | Notes |
+|---|---|---|---|---|
+| Streamlit | ≥1.35 | Apache 2.0 | Web application framework | Permissive; commercial use allowed |
+| NumPy | ≥1.24 | BSD 3-Clause | Numerical arrays | Permissive |
+| pandas | ≥2.0 | BSD 3-Clause | Data tables and results | Permissive |
+| Matplotlib | ≥3.7 | PSF (BSD-compatible) | Plot generation | Attribution recommended |
+| requests | ≥2.28 | Apache 2.0 | HTTP API calls | Permissive |
+
+---
+
+## Chemistry Libraries
+
+| Package / Tool | Version | License | Used For | Notes |
+|---|---|---|---|---|
+| RDKit | ≥2023.03 | BSD 3-Clause | Cheminformatics, SMILES, 2D depiction | Permissive |
+| ProDy | ≥2.4 | MIT | PDB parsing, ligand detection, grid center | Permissive |
+| Meeko | ≥0.5 | LGPL-2.1 | Ligand preparation for AutoDock Vina | Dynamic linking allowed |
+| Dimorphite-DL | ≥1.3 | Apache 2.0 | Protonation state prediction | Permissive |
+| pKaPredict | ≥0.2 | MIT | pKa-based protonation | Permissive |
+| gemmi | ≥0.6 | MPL-2.0 | mmCIF / PDB structure handling | File-level copyleft |
+| CairoSVG | ≥2.7 | LGPL-3.0 | SVG → PNG conversion | Dynamic linking allowed |
+
+---
+
+## Visualization
+
+| Package / Tool | Version | License | Used For |
+|---|---|---|---|
+| py3Dmol | ≥2.0 | MIT | Browser-based 3D structure viewer |
+| stmol | ≥0.0.9 | MIT | Streamlit wrapper for py3Dmol |
+
+---
+
+## System Tools
+
+| Tool | Version | License | Used For | Notes |
+|---|---|---|---|---|
+| OpenBabel (`obabel`) | ≥3.1 | GPL-2.0 | Structure conversion and hydrogen addition | Invoked as CLI subprocess |
+| AutoDock Vina | 1.2.7 | Apache 2.0 | Molecular docking engine | Permissive |
+
+---
+
+## External Web Services
+
+| Service | Access | License | Used For |
+|---|---|---|---|
+| proteins.plus (PoseView / PoseView2) | REST API | Free (academic & commercial) | 2D interaction diagrams |
+| RCSB Protein Data Bank | REST API | CC0 / Open Access | Protein structure retrieval |
+
+---
+
+# License Compatibility Summary
+
+## Permissive Licenses
+**Apache 2.0, MIT, BSD, PSF, CC0, MPL-2.0**
+
+These licenses allow use, modification, and redistribution, including commercial use. Attribution may be required.
+
+---
+
+## LGPL-2.1 / LGPL-3.0
+(Meeko, CairoSVG)
+
+These libraries can be used without releasing your source code provided they are dynamically linked (standard `pip` usage).
+
+---
+
+## GPL-2.0 (OpenBabel)
+
+OpenBabel is executed as an external command-line subprocess rather than imported as a Python library.
+
+Common interpretation: subprocess usage does **not trigger GPL copyleft** for the calling application.  
+If distributing commercially, legal review is recommended.
+
+---
+
+## proteins.plus (PoseView / PoseView2)
+
+The service is accessed through a REST API.  
+The tool itself is **not redistributed**.  
+
+Usage is free for academic and commercial purposes, but **citation is required**.
+
+---
+
+# Required Citations
+
+- **AutoDock Vina 1.2.7**  
+  Eberhardt et al., *Journal of Chemical Information and Modeling*, 2021  
+  DOI: https://doi.org/10.1021/acs.jcim.1c00203  
+
+- **ProteinsPlus / PoseView**  
+  Schöning-Stierand et al., *Nucleic Acids Research*, 2022  
+  DOI: https://doi.org/10.1093/nar/gkac258  
+
+- **RDKit**  
+  Landrum, G. (2023). RDKit: Open-source cheminformatics.  
+  https://www.rdkit.org  
+
+- **ProDy**  
+  Bakan et al., *Bioinformatics*, 2011  
+  DOI: https://doi.org/10.1093/bioinformatics/btr168  
+
+- **stmol**  
+  Nápoles-Duarte et al., *Frontiers in Molecular Biosciences*, 2022  
+  DOI: https://doi.org/10.3389/fmolb.2022.990846  
+
+- **Dimorphite-DL**  
+  Ropp et al., *Journal of Cheminformatics*, 2019  
+  DOI: https://doi.org/10.1186/s13321-019-0336-9
+
+- **pKaNET Cloud**
+  Hengphasatporn, K. et al., *J. Chem. Inf. Model.* 2026, **66** (4), 1955–1963  
+  DOI: https://doi.org/10.1021/acs.jcim.5c02852
