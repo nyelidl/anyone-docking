@@ -1,4 +1,4 @@
-# 🧬 Anyone Docking
+# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> nyone can dock!
 
 **Anyone can dock, everyone can do: Browser-based molecular docking — no installation required.**
 
@@ -52,9 +52,35 @@ streamlit run app.py
 
 ## 📄 Citation
 
-If you use this tool in research, please cite AutoDock Vina:
+If you use this tool in research, please cite the following software and resources used in this workflow:
 
-> Eberhardt et al. (2021) *J. Chem. Inf. Model.* 61(8), 3891–3898. https://doi.org/10.1021/acs.jcim.1c00203
+> **AutoDock Vina 1.2.7**  
+> Eberhardt et al., *Journal of Chemical Information and Modeling*, 2021  
+> DOI: https://doi.org/10.1021/acs.jcim.1c00203  
+
+> **ProteinsPlus / PoseView**  
+> Schöning-Stierand et al., *Nucleic Acids Research*, 2022  
+> DOI: https://doi.org/10.1093/nar/gkac258  
+
+> **RDKit**  
+> Landrum, G. (2023). RDKit: Open-source cheminformatics.  
+> https://www.rdkit.org  
+
+> **ProDy**  
+> Bakan et al., *Bioinformatics*, 2011  
+> DOI: https://doi.org/10.1093/bioinformatics/btr168  
+
+> **stmol**  
+> Nápoles-Duarte et al., *Frontiers in Molecular Biosciences*, 2022  
+> DOI: https://doi.org/10.3389/fmolb.2022.990846  
+
+> **Dimorphite-DL**  
+> Ropp et al., *Journal of Cheminformatics*, 2019  
+> DOI: https://doi.org/10.1186/s13321-019-0336-9  
+
+> **pKaNET Cloud**  
+> Hengphasatporn, K. et al., *J. Chem. Inf. Model.* 2026, **66** (4), 1955–1963  
+> DOI: https://doi.org/10.1021/acs.jcim.5c02852
 
 ---
 
