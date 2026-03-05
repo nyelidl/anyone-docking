@@ -21,7 +21,7 @@
 | 🔬 | **Single & batch docking** via AutoDock Vina 1.2.7 |
 | 🏗️ | **Automatic receptor prep** — download any PDB, strip solvent, add hydrogens |
 | 🎯 | **Auto grid detection** from co-crystal ligand centroid with XYZ axis & box overlay |
-| ✏️ | **3-way ligand input** — SMILES text, file upload (.sdf/.mol2/.pdb), or **draw in Ketcher** |
+| ✏️ | **3-way ligand input** — SMILES text, file upload (.pdb), or **draw in Ketcher** |
 | ♻️ | **Redocking validation** with reference score line in batch plot |
 | 🧪 | **Bond-order correction** — fixes PDBQT aromaticity artifacts before visualization |
 | 🗺️ | **2D interaction diagrams** — docked pose via PoseView v1 + co-crystal reference via PoseView2, side-by-side (PNG + SVG download) |
@@ -37,7 +37,7 @@
 | Mode | Description |
 |---|---|
 | **SMILES string** | Type or paste any valid SMILES |
-| **Upload file** | `.sdf`, `.mol2`, or `.pdb` — converted automatically |
+| **Upload file** | `.pdb` — converted automatically |
 | **Draw in Ketcher** | Full 2D chemical sketcher in the browser → SMILES exported automatically |
 
 ---
@@ -51,11 +51,6 @@
 | **Interactive pose selector** | Single selected pose · protein cartoon + surface · co-crystal overlay |
 | **Binding pocket view** | Faint full-protein cartoon · docked pose (cyan) · interacting residues ≤4.5 Å (orange sticks) · optional residue labels |
 
----
-
-## 🛠️ Stack
-
-`AutoDock Vina 1.2.7` · `Streamlit` · `RDKit` · `Meeko` · `OpenBabel` · `py3Dmol` · `Proteins.Plus` · `Ketcher` · `ProDy` · `CairoSVG`
 
 ---
 
