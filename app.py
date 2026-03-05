@@ -242,19 +242,11 @@ _DEFAULTS = dict(
     b_pv2_image_url=None, b_pv2_image_png=None, b_pv2_image_svg=None, b_pv2_pose_key=None,
     b_pv2_ref_png=None, b_pv2_ref_svg=None,
     b_plot_png=None,
-    _screen_width=900,   # assume desktop until JS reports otherwise
+    _screen_width=900,
 )
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
-
-# Read screen width injected by JS via query param (set on first load)
-_qp = st.query_params
-if "sw" in _qp:
-    try:
-        st.session_state["_screen_width"] = int(_qp["sw"])
-    except Exception:
-        pass
 
 # ─── Working Directories ──────────────────────────────────────────────────────
 if st.session_state.workdir is None:
@@ -1391,44 +1383,71 @@ with tab_basic:
         try:
             from streamlit_ketcher import st_ketcher
 
-            _is_mobile = st.session_state.get("_screen_width", 900) < 700
+            st.caption("📱 Mobile: swipe ← → inside the sketcher to reach all toolbar buttons.")
 
-            if not _is_mobile:
-                # ── Desktop: full Ketcher canvas ───────────────────────────
-                _ketch_smi = st_ketcher(
-                    st.session_state.get("ketcher_smi", ""),
-                    height=420,
-                    key="ketcher_widget",
-                )
-                if _ketch_smi:
-                    st.session_state["ketcher_smi"] = _ketch_smi
-                    smiles_in = _ketch_smi
-                else:
-                    smiles_in = st.session_state.get("ketcher_smi", "")
-
-                # Show resulting SMILES
-                if smiles_in:
-                    st.caption(f"✅ SMILES from sketch: `{smiles_in}`")
-
+            _ketch_smi = st_ketcher(
+                st.session_state.get("ketcher_smi", ""),
+                height=420,
+                key="ketcher_widget",
+            )
+            if _ketch_smi:
+                st.session_state["ketcher_smi"] = _ketch_smi
+                smiles_in = _ketch_smi
             else:
-                # ── Mobile: clean SMILES paste UI + external Ketcher link ──
-                st.info(
-                    "📱 **Mobile detected** — Ketcher canvas requires a wider screen.\n\n"
-                    "**Option 1 (recommended):** Open "
-                    "[Ketcher online ↗](https://lifescience.opensource.epam.com/KetcherDemoSA/index.html) "
-                    "in a new tab → draw your molecule → tap **Get SMILES** → copy → paste below.\n\n"
-                    "**Option 2:** Switch to **SMILES string** input mode and type/paste directly.",
-                    icon="✏️")
-                _manual_smi = st.text_input(
-                    "Paste SMILES here",
-                    value=st.session_state.get("ketcher_smi", ""),
-                    key="ketcher_smi_manual",
-                    placeholder="Paste SMILES copied from Ketcher online…")
-                if _manual_smi:
-                    st.session_state["ketcher_smi"] = _manual_smi
-                    smiles_in = _manual_smi
-                else:
-                    smiles_in = st.session_state.get("ketcher_smi", "")
+                smiles_in = st.session_state.get("ketcher_smi", "")
+
+            if smiles_in:
+                st.caption(f"✅ SMILES: `{smiles_in}`")
+
+            # ── Make Ketcher iframe horizontally scrollable on mobile ──────
+            # Walk every ancestor of the iframe and un-clip overflow so
+            # the user can swipe left/right to reach the full toolbar.
+            components.html("""
+<script>
+(function enableKetcherScroll() {
+    try {
+        var pdoc = window.parent.document;
+
+        // Find the Ketcher component wrapper
+        var nodes = pdoc.querySelectorAll(
+            'div[data-testid="stCustomComponentV1"]');
+
+        nodes.forEach(function(node) {
+            // Make the direct wrapper scrollable at Ketcher's natural width
+            node.style.overflowX        = 'scroll';
+            node.style.webkitOverflowScrolling = 'touch';
+            node.style.maxWidth         = '100%';
+            node.style.scrollbarWidth   = 'thin'; // Firefox
+
+            // Give the iframe room to breathe
+            var iframe = node.querySelector('iframe');
+            if (iframe) {
+                iframe.style.minWidth = '860px';
+                iframe.style.maxWidth = 'none';
+                iframe.style.display  = 'block';
+            }
+
+            // Walk every ancestor up to <body> and remove overflow:hidden
+            var el = node.parentElement;
+            while (el && el !== pdoc.body) {
+                var ov = window.parent.getComputedStyle(el).overflow;
+                var ox = window.parent.getComputedStyle(el).overflowX;
+                if (ov === 'hidden' || ox === 'hidden') {
+                    el.style.overflow  = 'visible';
+                    el.style.overflowX = 'visible';
+                }
+                el = el.parentElement;
+            }
+        });
+    } catch(e) {}
+
+    // Re-run until Ketcher mounts (Streamlit renders async)
+    setTimeout(enableKetcherScroll, 400);
+    setTimeout(enableKetcherScroll, 1200);
+    setTimeout(enableKetcherScroll, 2500);
+})();
+</script>
+""", height=0)
 
         except ImportError:
             st.error(
