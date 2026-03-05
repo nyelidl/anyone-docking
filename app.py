@@ -20,15 +20,33 @@ st.set_page_config(
     page_icon="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg",
 )
 
-st.markdown(
+import streamlit.components.v1 as components
+
+components.html(
 """
-<link rel="apple-touch-icon" href="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-png.png">
-<meta name="apple-mobile-web-app-title" content="Anyone Dock">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+var link = document.createElement("link");
+link.rel = "apple-touch-icon";
+link.href = "https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-png.png";
+document.head.appendChild(link);
+
+var meta1 = document.createElement("meta");
+meta1.name = "apple-mobile-web-app-capable";
+meta1.content = "yes";
+document.head.appendChild(meta1);
+
+var meta2 = document.createElement("meta");
+meta2.name = "apple-mobile-web-app-title";
+meta2.content = "Anyone Dock";
+document.head.appendChild(meta2);
+
+var meta3 = document.createElement("meta");
+meta3.name = "apple-mobile-web-app-status-bar-style";
+meta3.content = "black-translucent";
+document.head.appendChild(meta3);
+</script>
 """,
-unsafe_allow_html=True
+height=0,
 )
 
 # ─── Theme Helper ─────────────────────────────────────────────────────────────
