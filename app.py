@@ -440,45 +440,88 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
 
 
 def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
-    """Heavy-atom RMSD (Å) between docked pose and co-crystal PDB.
-    Uses MCS so atom-order differences are handled. Returns float or None."""
+    """Heavy-atom RMSD (Å) between a docked pose (RDKit Mol from SDF) and the
+    co-crystal ligand (PDB written by ProDy).
+
+    Key design decisions
+    --------------------
+    * Atom NAMES are never used — matching is done by element + bond topology
+      via MCS (Maximum Common Substructure).  This handles the fact that Vina
+      SDF and ProDy PDB always have different atom-name / atom-order schemes.
+    * All valid MCS mappings are tried (GetSubstructMatches, not just the first)
+      so symmetric molecules (e.g. phenyl rings) get the correct minimum RMSD.
+    * No superposition — both structures are already in the crystal coordinate
+      frame, so raw Euclidean distance is meaningful.
+    * Returns float (Å) or None on any failure.
+    """
     try:
         from rdkit import Chem
         from rdkit.Chem import rdFMCS
         import numpy as np, os
+
         if not os.path.exists(crystal_pdb_path):
             return None
-        cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True, removeHs=True)
+
+        # ── Load crystal ligand ───────────────────────────────────────────────
+        cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True,  removeHs=True)
         if cryst is None:
             cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=False, removeHs=True)
         if cryst is None or cryst.GetNumConformers() == 0:
             return None
+
+        # ── Strip H from docked pose ──────────────────────────────────────────
         pose = Chem.RemoveHs(pose_mol, sanitize=False)
-        try: Chem.SanitizeMol(pose)
-        except Exception: pass
-        n_p, n_c = pose.GetNumAtoms(), cryst.GetNumAtoms()
-        if n_p == n_c:                              # fast path
-            pc, cc = pose.GetConformer(), cryst.GetConformer()
-            sq = sum((pc.GetAtomPosition(i).x - cc.GetAtomPosition(i).x)**2 +
-                     (pc.GetAtomPosition(i).y - cc.GetAtomPosition(i).y)**2 +
-                     (pc.GetAtomPosition(i).z - cc.GetAtomPosition(i).z)**2
-                     for i in range(n_p))
-            return float(np.sqrt(sq / n_p))
-        mcs = rdFMCS.FindMCS([pose, cryst], timeout=5,           # general path
-                             bondCompare=rdFMCS.BondCompare.CompareAny,
-                             atomCompare=rdFMCS.AtomCompare.CompareElements,
-                             completeRingsOnly=False)
-        if mcs.numAtoms < 3: return None
+        try:
+            Chem.SanitizeMol(pose)
+        except Exception:
+            pass
+        if pose.GetNumConformers() == 0:
+            return None
+
+        # ── MCS matching by element + topology (atom names completely ignored) ─
+        mcs = rdFMCS.FindMCS(
+            [pose, cryst],
+            timeout=10,
+            bondCompare=rdFMCS.BondCompare.CompareAny,
+            atomCompare=rdFMCS.AtomCompare.CompareElements,
+            completeRingsOnly=False,
+            matchValences=False,
+        )
+        if mcs.numAtoms < 3:
+            return None
+
         mcs_mol = Chem.MolFromSmarts(mcs.smartsString)
-        pm = pose.GetSubstructMatch(mcs_mol)
-        cm = cryst.GetSubstructMatch(mcs_mol)
-        if not pm or not cm: return None
-        pc, cc = pose.GetConformer(), cryst.GetConformer()
-        sq = sum((pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x)**2 +
-                 (pc.GetAtomPosition(pi).y - cc.GetAtomPosition(ci).y)**2 +
-                 (pc.GetAtomPosition(pi).z - cc.GetAtomPosition(ci).z)**2
-                 for pi, ci in zip(pm, cm))
-        return float(np.sqrt(sq / len(pm)))
+        if mcs_mol is None:
+            return None
+
+        # GetSubstructMatches returns ALL valid mappings — important for
+        # symmetric molecules where multiple mappings exist (e.g. phenyl ring).
+        # We compute RMSD for every pose→crystal mapping and return the minimum.
+        pose_matches  = pose.GetSubstructMatches(mcs_mol,  uniquify=False)
+        cryst_matches = cryst.GetSubstructMatches(mcs_mol, uniquify=False)
+        if not pose_matches or not cryst_matches:
+            return None
+
+        pc = pose.GetConformer()
+        cc = cryst.GetConformer()
+
+        def _rmsd_for_mapping(pm, cm):
+            sq = sum(
+                (pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x) ** 2 +
+                (pc.GetAtomPosition(pi).y - cc.GetAtomPosition(ci).y) ** 2 +
+                (pc.GetAtomPosition(pi).z - cc.GetAtomPosition(ci).z) ** 2
+                for pi, ci in zip(pm, cm)
+            )
+            return float(np.sqrt(sq / len(pm)))
+
+        # Try all combinations of pose mapping × crystal mapping, return minimum
+        best = min(
+            _rmsd_for_mapping(pm, cm)
+            for pm in pose_matches
+            for cm in cryst_matches
+        )
+        return best
+
     except Exception:
         return None
 
