@@ -193,8 +193,12 @@ iframe { border: none !important; }
 div[class*="toolbar"],
 div[class*="FrameToolbar"] { display: none !important; }
 
-/* ── JSME sketcher ── */
-.jsme-container iframe { border-radius: 6px !important; }
+/* ── Ketcher Apply button — match primary green ── */
+.ketcher-apply-button,
+button[data-testid="ketcher-apply"],
+.ketcher-container button[type="submit"],
+.ketcher-container button.apply,
+#ketcher-apply-btn { background: var(--success) !important; color: white !important; }
 
 """, unsafe_allow_html=True)
 
@@ -204,7 +208,7 @@ div[class*="FrameToolbar"] { display: none !important; }
 # ══════════════════════════════════════════════════════════════════════════════
 _DEFAULTS = dict(
     workdir=None,
-    jsme_smi="",             # JSME sketcher last SMILES output
+    ketcher_smi="",          # Ketcher sketcher last SMILES output
     # Basic — receptor
     pdb_token=None, raw_pdb=None, receptor_fh=None, receptor_pdbqt=None,
     box_pdb=None, config_txt=None, cx=None, cy=None, cz=None,
@@ -440,45 +444,61 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
 
 
 def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
-    """Heavy-atom RMSD (Å) between a docked pose (RDKit Mol from SDF) and the
-    co-crystal ligand (PDB written by ProDy).
+    """Heavy-atom RMSD (Å): docked SDF pose vs ProDy-written co-crystal PDB.
 
-    Key design decisions
-    --------------------
-    * Atom NAMES are never used — matching is done by element + bond topology
-      via MCS (Maximum Common Substructure).  This handles the fact that Vina
-      SDF and ProDy PDB always have different atom-name / atom-order schemes.
-    * All valid MCS mappings are tried (GetSubstructMatches, not just the first)
-      so symmetric molecules (e.g. phenyl rings) get the correct minimum RMSD.
-    * No superposition — both structures are already in the crystal coordinate
-      frame, so raw Euclidean distance is meaningful.
-    * Returns float (Å) or None on any failure.
+    Key design:
+    - Atom names / order completely ignored — pure MCS element+topology matching
+    - All symmetry mappings tried; minimum RMSD returned
+    - Requires MCS to cover >=60% of the smaller molecule to reject garbage
+      RMSD between unrelated molecules
+    - Multiple PDB reading strategies to handle ProDy files (no CONECT records)
+    Returns float (Å) or None on any failure.
     """
     try:
         from rdkit import Chem
         from rdkit.Chem import rdFMCS
-        import numpy as np, os
+        import numpy as np, os, tempfile
 
         if not os.path.exists(crystal_pdb_path):
             return None
 
-        # ── Load crystal ligand ───────────────────────────────────────────────
-        cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True,  removeHs=True)
-        if cryst is None:
-            cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=False, removeHs=True)
+        # ── Read crystal ligand — try several strategies ──────────────────────
+        cryst = None
+        for sanitize, removeHs, proxBonding in [
+            (True,  True, True),
+            (False, True, True),
+            (True,  True, False),
+            (False, True, False),
+        ]:
+            try:
+                cryst = Chem.MolFromPDBFile(
+                    crystal_pdb_path,
+                    sanitize=sanitize,
+                    removeHs=removeHs,
+                    proximityBonding=proxBonding,
+                )
+                if cryst is not None and cryst.GetNumConformers() > 0:
+                    if sanitize is False:
+                        try: Chem.SanitizeMol(cryst)
+                        except Exception: pass
+                    break
+                cryst = None
+            except Exception:
+                cryst = None
+
         if cryst is None or cryst.GetNumConformers() == 0:
             return None
 
         # ── Strip H from docked pose ──────────────────────────────────────────
         pose = Chem.RemoveHs(pose_mol, sanitize=False)
-        try:
-            Chem.SanitizeMol(pose)
-        except Exception:
-            pass
+        try: Chem.SanitizeMol(pose)
+        except Exception: pass
         if pose.GetNumConformers() == 0:
             return None
 
-        # ── MCS matching by element + topology (atom names completely ignored) ─
+        n_smaller = min(pose.GetNumAtoms(), cryst.GetNumAtoms())
+
+        # ── MCS by element + topology (names ignored) ─────────────────────────
         mcs = rdFMCS.FindMCS(
             [pose, cryst],
             timeout=10,
@@ -487,25 +507,25 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
             completeRingsOnly=False,
             matchValences=False,
         )
-        if mcs.numAtoms < 3:
+
+        # Require MCS to cover >=60% of the smaller molecule
+        # (rejects RMSD for completely unrelated docked ligands)
+        if mcs.numAtoms < 3 or mcs.numAtoms < 0.6 * n_smaller:
             return None
 
         mcs_mol = Chem.MolFromSmarts(mcs.smartsString)
         if mcs_mol is None:
             return None
 
-        # GetSubstructMatches returns ALL valid mappings — important for
-        # symmetric molecules where multiple mappings exist (e.g. phenyl ring).
-        # We compute RMSD for every pose→crystal mapping and return the minimum.
+        # All valid symmetry mappings — take minimum RMSD
         pose_matches  = pose.GetSubstructMatches(mcs_mol,  uniquify=False)
         cryst_matches = cryst.GetSubstructMatches(mcs_mol, uniquify=False)
         if not pose_matches or not cryst_matches:
             return None
 
-        pc = pose.GetConformer()
-        cc = cryst.GetConformer()
+        pc, cc = pose.GetConformer(), cryst.GetConformer()
 
-        def _rmsd_for_mapping(pm, cm):
+        def _r(pm, cm):
             sq = sum(
                 (pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x) ** 2 +
                 (pc.GetAtomPosition(pi).y - cc.GetAtomPosition(ci).y) ** 2 +
@@ -514,35 +534,10 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
             )
             return float(np.sqrt(sq / len(pm)))
 
-        # Try all combinations of pose mapping × crystal mapping, return minimum
-        best = min(
-            _rmsd_for_mapping(pm, cm)
-            for pm in pose_matches
-            for cm in cryst_matches
-        )
-        return best
+        return min(_r(pm, cm) for pm in pose_matches for cm in cryst_matches)
 
     except Exception:
         return None
-
-
-def _is_same_ligand(smiles: str, crystal_pdb_path: str) -> bool:
-    """True when the docked SMILES and co-crystal PDB represent the same molecule
-    (canonical SMILES comparison, stereo/charges stripped for leniency)."""
-    try:
-        import os
-        from rdkit import Chem
-        if not smiles or not crystal_pdb_path or not os.path.exists(crystal_pdb_path):
-            return False
-        ms = Chem.MolFromSmiles(smiles)
-        mc = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True, removeHs=True)
-        if ms is None or mc is None: return False
-        def _can(m):
-            try: return Chem.MolToSmiles(Chem.RemoveHs(m), isomericSmiles=False, canonical=True)
-            except: return ""
-        return _can(ms) == _can(mc)
-    except Exception:
-        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1417,7 +1412,7 @@ with tab_basic:
     cl1, cl2 = st.columns([2, 1])
     with cl1:
         lig_input_mode = st.radio("Input mode",
-            ["SMILES string", "Upload structure (.pdb)", "Draw structure (JSME)"],
+            ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
             horizontal=True, key="lig_input_mode")
 
         smiles_in = ""
@@ -1428,29 +1423,41 @@ with tab_basic:
         elif lig_input_mode == "Upload structure (.pdb)":
             st.file_uploader("Upload structure file (.pdb)",
                              type=["sdf", "mol2", "pdb"], key="lig_struct_file")
-        else:  # Draw structure (JSME)
+        else:  # Draw structure (Ketcher)
             try:
-                from StreamJSME import StreamJSME
-                _jsme_smi = StreamJSME(smiles=st.session_state.get("jsme_smi", ""),
-                                       height=310, key="jsme_widget")
-                if _jsme_smi:
-                    st.session_state["jsme_smi"] = _jsme_smi
-                    smiles_in = _jsme_smi
+                from streamlit_ketcher import st_ketcher
+                _ketch_smi = st_ketcher(
+                    st.session_state.get("ketcher_smi", ""),
+                    height=400,
+                    key="ketcher_widget",
+                )
+                if _ketch_smi:
+                    st.session_state["ketcher_smi"] = _ketch_smi
+                    smiles_in = _ketch_smi
+                    st.markdown(
+                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
+                        f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                        f'color:var(--text-muted)">SMILES: </span>'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                        f'color:var(--text)">{_ketch_smi}</span></div>',
+                        unsafe_allow_html=True)
                 else:
-                    smiles_in = st.session_state.get("jsme_smi", "")
+                    smiles_in = st.session_state.get("ketcher_smi", "")
             except ImportError:
-                st.error("❌ `StreamJSME` not installed — run `pip install StreamJSME`.")
+                st.error(
+                    "❌ `streamlit-ketcher` is not installed. "
+                    "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
                 smiles_in = ""
 
     with cl2:
         lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
         ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
-        # ── Live 2D preview — updates as user draws / types ────────────────────
-        _prev_smi = (st.session_state.get("jsme_smi", "").strip()
-                     if lig_input_mode == "Draw structure (JSME)"
-                     else smiles_in.strip()
-                     if lig_input_mode == "SMILES string" else "")
+        # ── Live 2D preview — updates as user draws in Ketcher / types SMILES ──
+        _prev_smi = (smiles_in.strip()
+                     if lig_input_mode in ("SMILES string", "Draw structure (Ketcher)")
+                     else "")
         if _prev_smi:
             try:
                 from rdkit import Chem
@@ -1464,16 +1471,8 @@ with tab_basic:
                     _b = _b64.b64encode(_buf.getvalue()).decode()
                     st.markdown("**2D Preview**")
                     st.markdown(
-                        f'<img src="data:image/png;base64,{_b}"'
-                        ' style="width:100%;height:auto;border-radius:6px;">',
-                        unsafe_allow_html=True)
-                    st.markdown(
-                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
-                        f'border-radius:6px;padding:6px 12px;margin-top:2px;">'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
-                        f'color:var(--text-muted);">SMILES<br></span>'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
-                        f'color:var(--text);word-break:break-all;">{_prev_smi}</span></div>',
+                        f'<img src="data:image/png;base64,{_b}" '
+                        'style="width:100%;height:auto;border-radius:6px;">',
                         unsafe_allow_html=True)
                 else:
                     st.caption("⚠️ Invalid SMILES")
@@ -1513,10 +1512,10 @@ with tab_basic:
                             if _pts: prot = _pts[0]; break
                         if not prot: raise ValueError("Could not convert structure to SMILES")
                     log.append(f"✓ Structure loaded: {_sfobj.name}")
-                elif _lig_mode == "Draw structure (JSME)":
-                    prot = st.session_state.get("jsme_smi", "").strip()
-                    if not prot: raise ValueError("No molecule drawn in JSME — draw a structure first")
-                    log.append("✓ Structure from JSME sketcher")
+                elif _lig_mode == "Draw structure (Ketcher)":
+                    prot = st.session_state.get("ketcher_smi", "").strip()
+                    if not prot: raise ValueError("No molecule drawn in Ketcher — draw a structure first")
+                    log.append("✓ Structure from Ketcher sketcher")
                 else:
                     prot = smiles_in.strip()
                 try:
@@ -1768,13 +1767,10 @@ with tab_basic:
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
             sel_mol  = mols[pose_idx]
-            # RMSD: show only when docked ligand == co-crystal molecule
-            _cryst_pdb_s = st.session_state.get("ligand_pdb_path", "")
-            _dock_smi_s  = st.session_state.get("prot_smiles", "")
-            _show_rmsd_s = bool(
-                _cryst_pdb_s and os.path.exists(_cryst_pdb_s)
-                and _dock_smi_s and _is_same_ligand(_dock_smi_s, _cryst_pdb_s)
-            )
+            # RMSD: show when co-crystal ligand PDB exists (set during receptor prep)
+            # _calc_rmsd_heavy rejects unrelated molecules via 60% MCS coverage guard
+            _cryst_pdb_s = st.session_state.get("ligand_pdb_path") or ""
+            _show_rmsd_s = bool(_cryst_pdb_s and os.path.exists(_cryst_pdb_s))
 
             if df is not None:
                 row = df[df["Pose"] == pose_idx + 1]
@@ -2266,9 +2262,9 @@ with tab_batch:
                 if pose_scores_list and b_pose_i > 0 and len(pose_scores_list) > 1:
                     delta = this_pose_score - pose_scores_list[0]
                     row_pills += f' {_pill(f"Δ {delta:+.2f} vs pose 1")}'
-                # RMSD pill — only for the redocking reference ligand
+                # RMSD: gated by is_redock_sel (user-tagged co-crystal reference)
                 if is_redock_sel:
-                    _cryst_pdb_b = st.session_state.get("b_ligand_pdb_path", "")
+                    _cryst_pdb_b = st.session_state.get("b_ligand_pdb_path") or ""
                     if _cryst_pdb_b and os.path.exists(_cryst_pdb_b):
                         _rmsd_b = _calc_rmsd_heavy(b_mols[b_pose_i], _cryst_pdb_b)
                         if _rmsd_b is not None:
