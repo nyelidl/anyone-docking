@@ -1,8 +1,7 @@
 # AutoDock Vina Streamlit App — Python Dependencies
 # Install with: pip install -r requirements.txt
-
 streamlit>=1.35
-streamlit-ketcher==0.0.1
+StreamJSME>=0.1          # JSME molecule sketcher (replaces streamlit-ketcher)
 prody>=2.4
 rdkit>=2023.3
 meeko==0.7.1
@@ -13,9 +12,9 @@ pkapredict>=0.1
 pandas>=2.0
 matplotlib>=3.7
 numpy>=1.24
+Pillow>=10.0             # PNG label stamping on PoseView images (_stamp_png)
 gemmi>=0.6
 cairosvg>=2.7.1
-
 # ── PoseView + Gemini (added for 2D interaction diagram & AI explanation) ──
-requests>=2.31          # PoseView API calls (also used by Streamlit internally)
+requests>=2.31           # PoseView API calls (also used by Streamlit internally)
 google-generativeai>=0.7 # Gemini 1.5 Flash / Pro API
