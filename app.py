@@ -928,17 +928,97 @@ def _poseview_ui(
 # ══════════════════════════════════════════════════════════════════════════════
 #  VINA BINARY + pKa MODEL
 # ══════════════════════════════════════════════════════════════════════════════
-@st.cache_resource(show_spinner="⬇ Downloading AutoDock Vina 1.2.7…")
+@st.cache_resource(show_spinner="🔍 Locating AutoDock Vina 1.2.7…")
 def _get_vina():
-    path = "/tmp/vina_1.2.7"
-    if not os.path.exists(path) or os.path.getsize(path) < 100_000:
-        rc, out = run_cmd(["wget", "-q",
-            "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/"
-            "v1.2.7/vina_1.2.7_linux_x86_64", "-O", path])
-        if rc != 0:
-            return None, out
-    os.chmod(path, 0o755)
-    return path, "ok"
+    """Locate or download AutoDock Vina 1.2.7.
+
+    Resolution order:
+      1. PATH / shutil.which  — picks up system-installed vina on any OS
+      2. Well-known install paths per OS
+      3. Auto-download correct binary for Linux / macOS via urllib (no wget needed)
+         Cached to ~/.autodock_vina/ so it survives reboots and is never re-downloaded.
+         Windows users with no system install get a clear manual-install message.
+
+    Returns (path_str, info_msg) or (None, error_msg).
+    """
+    import platform, shutil, stat, urllib.request
+
+    system  = platform.system().lower()   # 'linux' | 'darwin' | 'windows'
+    machine = platform.machine().lower()  # 'x86_64' | 'amd64' | 'arm64' | 'aarch64'
+
+    # ── 1. Already on PATH? ───────────────────────────────────────────────────
+    for name in ("vina", "vina_1.2.7", "vina_1.2.7_linux_x86_64",
+                 "vina_1.2.7_mac_x86_64", "vina_1.2.7_mac_arm64"):
+        found = shutil.which(name)
+        if found:
+            return found, f"found on PATH ({found})"
+
+    # ── 2. Common install locations ───────────────────────────────────────────
+    _common = {
+        "linux":   ["/usr/local/bin/vina", "/usr/bin/vina",
+                    "/opt/vina/vina", "/opt/autodock/vina"],
+        "darwin":  ["/usr/local/bin/vina", "/opt/homebrew/bin/vina",
+                    "/opt/local/bin/vina"],
+        "windows": [
+            r"C:\Program Files\AutoDock Vina\vina.exe",
+            r"C:\AutoDock-Vina\vina.exe",
+            r"C:\vina\vina.exe",
+        ],
+    }
+    for candidate in _common.get(system, []):
+        if os.path.isfile(candidate):
+            return candidate, f"found at {candidate}"
+
+    # ── 3. Auto-download (Linux / macOS only) ─────────────────────────────────
+    # Normalise arm variants
+    arch = "arm64" if machine in ("arm64", "aarch64") else machine.replace("amd64", "x86_64")
+    _release_map = {
+        ("linux",  "x86_64"): "vina_1.2.7_linux_x86_64",
+        ("linux",  "arm64"):  "vina_1.2.7_linux_aarch64",
+        ("darwin", "x86_64"): "vina_1.2.7_mac_x86_64",
+        ("darwin", "arm64"):  "vina_1.2.7_mac_arm64",
+    }
+    fname = _release_map.get((system, arch))
+
+    if fname is None:
+        guide = {
+            "windows": (
+                "**Windows detected.** Download `vina_1.2.7_win.exe` from "
+                "[AutoDock-Vina releases](https://github.com/ccsb-scripps/"
+                "AutoDock-Vina/releases/tag/v1.2.7), rename it to `vina.exe`, "
+                "and add its folder to your PATH (or place it next to this script)."
+            ),
+        }.get(system,
+            f"**Unsupported platform ({system}/{machine}).** Download Vina manually from "
+            "https://github.com/ccsb-scripps/AutoDock-Vina/releases/tag/v1.2.7 "
+            "and add it to your PATH.")
+        return None, guide
+
+    # Persistent cache — survives reboots, never re-downloaded
+    cache_dir = Path.home() / ".autodock_vina"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    local_path = str(cache_dir / fname)
+
+    if not os.path.isfile(local_path) or os.path.getsize(local_path) < 100_000:
+        url = ("https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/"
+               f"v1.2.7/{fname}")
+        try:
+            urllib.request.urlretrieve(url, local_path)
+        except Exception as exc:
+            return None, (
+                f"Auto-download failed: {exc}\n\n"
+                f"Download manually from https://github.com/ccsb-scripps/AutoDock-Vina/releases/tag/v1.2.7 "
+                f"and place the binary on your PATH (or in `~/.autodock_vina/{fname}`)."
+            )
+
+    # Make executable (no-op on Windows)
+    try:
+        os.chmod(local_path,
+                 os.stat(local_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    except OSError:
+        pass
+
+    return local_path, f"downloaded to {local_path}"
 
 @st.cache_resource(show_spinner="Loading pKa model…")
 def _get_pka_model():
@@ -949,6 +1029,31 @@ def _get_pka_model():
         return None
 
 VINA_PATH, _vina_err = _get_vina()
+
+# ── Sidebar: manual Vina path override (useful for local installs) ─────────
+with st.sidebar:
+    st.markdown("### ⚙️ Vina Settings")
+    _manual_vina = st.text_input(
+        "Custom Vina binary path",
+        value="",
+        placeholder="/usr/local/bin/vina  or  C:\\vina\\vina.exe",
+        help=(
+            "Override the auto-detected Vina binary. "
+            "Useful if Vina is installed but not on PATH. "
+            "Leave blank to use auto-detection."
+        ),
+        key="manual_vina_path",
+    )
+    if _manual_vina.strip():
+        _manual_vina = _manual_vina.strip()
+        if os.path.isfile(_manual_vina):
+            VINA_PATH = _manual_vina
+            _vina_err = f"manual override ({_manual_vina})"
+            st.success("✅ Custom path found")
+        else:
+            st.error(f"❌ File not found: {_manual_vina}")
+    if VINA_PATH:
+        st.caption(f"Active: `{VINA_PATH}`")
 PKA_MODEL             = _get_pka_model()
 
 # ─── Ligand exclusion lists ───────────────────────────────────────────────────
@@ -1271,10 +1376,18 @@ st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **pKaNET Clou
 st.markdown("**Basic** — single ligand.  **Batch** — multiple ligands.")
 st.markdown("**☁️ Cloud-ready | 📱 iPad and smartphone-compatible**")
 if VINA_PATH is None:
-    st.error(f"❌ Could not download Vina binary: {_vina_err}")
+    st.error("❌ AutoDock Vina 1.2.7 not found")
+    st.markdown(_vina_err, unsafe_allow_html=False)
+    st.info(
+        "**Quick fix for local runs:** "
+        "Set the path to your Vina binary in the sidebar, or install Vina and "
+        "ensure it is on your system PATH, then refresh the page.",
+        icon="💡",
+    )
     st.stop()
 
-st.markdown(_pill("Vina 1.2.7 ready ✓", "success"), unsafe_allow_html=True)
+_vina_source = "on PATH" if "PATH" in _vina_err else ("at known location" if "known" in _vina_err else "downloaded")
+st.markdown(_pill(f"Vina 1.2.7 ready ✓  ({_vina_source})", "success"), unsafe_allow_html=True)
 
 st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 
@@ -1303,39 +1416,50 @@ with tab_basic:
         f'<div class="step-heading">⚗️ Ligand Preparation</div>',
         unsafe_allow_html=True)
 
-    lig_input_mode = st.radio("Input mode",
-        ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
-        horizontal=True, key="lig_input_mode")
+    cl1, cl2 = st.columns([2, 1])
+    with cl1:
+        lig_input_mode = st.radio("Input mode",
+            ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+            horizontal=True, key="lig_input_mode")
 
-    smiles_in = ""
-    if lig_input_mode == "SMILES string":
-        smiles_in = st.text_input("SMILES string",
-            value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
-            key="smiles_in")
-    elif lig_input_mode == "Upload structure (.pdb)":
-        st.file_uploader("Upload structure file (.pdb)",
-                         type=["sdf", "mol2", "pdb"], key="lig_struct_file")
-    else:  # Draw structure (Ketcher)
-        try:
-            from streamlit_ketcher import st_ketcher
-            _ketch_smi = st_ketcher(
-                st.session_state.get("ketcher_smi", ""),
-                height=400,
-                key="ketcher_widget",
-            )
-            if _ketch_smi:
-                st.session_state["ketcher_smi"] = _ketch_smi
-                smiles_in = _ketch_smi
-            else:
-                smiles_in = st.session_state.get("ketcher_smi", "")
-        except ImportError:
-            st.error(
-                "❌ `streamlit-ketcher` is not installed. "
-                "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
-            smiles_in = ""
+        smiles_in = ""
+        if lig_input_mode == "SMILES string":
+            smiles_in = st.text_input("SMILES string",
+                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
+                key="smiles_in")
+        elif lig_input_mode == "Upload structure (.pdb)":
+            st.file_uploader("Upload structure file (.pdb)",
+                             type=["sdf", "mol2", "pdb"], key="lig_struct_file")
+        else:  # Draw structure (Ketcher)
+            try:
+                from streamlit_ketcher import st_ketcher
+                _ketch_smi = st_ketcher(
+                    st.session_state.get("ketcher_smi", ""),
+                    height=400,
+                    key="ketcher_widget",
+                )
+                if _ketch_smi:
+                    st.session_state["ketcher_smi"] = _ketch_smi
+                    smiles_in = _ketch_smi
+                    st.markdown(
+                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
+                        f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                        f'color:var(--text-muted)">SMILES: </span>'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                        f'color:var(--text)">{_ketch_smi}</span></div>',
+                        unsafe_allow_html=True)
+                else:
+                    smiles_in = st.session_state.get("ketcher_smi", "")
+            except ImportError:
+                st.error(
+                    "❌ `streamlit-ketcher` is not installed. "
+                    "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
+                smiles_in = ""
 
-    lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
-    ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
+    with cl2:
+        lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
+        ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
     if not st.session_state.receptor_done:
         st.caption("⚠ Complete Step 1 first.")
