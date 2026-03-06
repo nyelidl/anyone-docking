@@ -40,6 +40,15 @@ def _chart_colors():
 def _viewer_bg():
     return _chart_colors()["bg"]
 
+
+def _png_to_b64_img(png_bytes, style="width:100%;height:auto;display:block;border-radius:6px;"):
+    """Embed PNG as base64 <img>. Avoids Streamlit MediaFileStorage expiry on reruns."""
+    import base64
+    b64 = base64.b64encode(png_bytes).decode()
+    st.markdown(f'<img src="data:image/png;base64,{b64}" style="{style}">',
+                unsafe_allow_html=True)
+
+
 # ─── Global CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -184,7 +193,7 @@ iframe { border: none !important; }
 div[class*="toolbar"],
 div[class*="FrameToolbar"] { display: none !important; }
 
-/* ── JSME sketcher — border radius to match card style ── */
+/* ── JSME sketcher ── */
 .jsme-container iframe { border-radius: 6px !important; }
 
 """, unsafe_allow_html=True)
@@ -431,75 +440,64 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
 
 
 def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
-    """Heavy-atom RMSD (no H) between a docked pose and the co-crystal PDB.
-    Uses MCS matching so atom-order differences are handled correctly.
-    Returns float (Å) or None on any failure."""
+    """Heavy-atom RMSD (Å) between docked pose and co-crystal PDB.
+    Uses MCS so atom-order differences are handled. Returns float or None."""
     try:
         from rdkit import Chem
         from rdkit.Chem import rdFMCS
-        import numpy as np
-
+        import numpy as np, os
+        if not os.path.exists(crystal_pdb_path):
+            return None
         cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True, removeHs=True)
         if cryst is None:
             cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=False, removeHs=True)
         if cryst is None or cryst.GetNumConformers() == 0:
             return None
-
         pose = Chem.RemoveHs(pose_mol, sanitize=False)
         try: Chem.SanitizeMol(pose)
         except Exception: pass
-
         n_p, n_c = pose.GetNumAtoms(), cryst.GetNumAtoms()
-
-        # Fast path — same count
-        if n_p == n_c:
+        if n_p == n_c:                              # fast path
             pc, cc = pose.GetConformer(), cryst.GetConformer()
-            sq = sum(
-                (pc.GetAtomPosition(i).x - cc.GetAtomPosition(i).x)**2 +
-                (pc.GetAtomPosition(i).y - cc.GetAtomPosition(i).y)**2 +
-                (pc.GetAtomPosition(i).z - cc.GetAtomPosition(i).z)**2
-                for i in range(n_p))
+            sq = sum((pc.GetAtomPosition(i).x - cc.GetAtomPosition(i).x)**2 +
+                     (pc.GetAtomPosition(i).y - cc.GetAtomPosition(i).y)**2 +
+                     (pc.GetAtomPosition(i).z - cc.GetAtomPosition(i).z)**2
+                     for i in range(n_p))
             return float(np.sqrt(sq / n_p))
-
-        # General path — MCS
-        mcs = rdFMCS.FindMCS([pose, cryst], timeout=5,
+        mcs = rdFMCS.FindMCS([pose, cryst], timeout=5,           # general path
                              bondCompare=rdFMCS.BondCompare.CompareAny,
                              atomCompare=rdFMCS.AtomCompare.CompareElements,
                              completeRingsOnly=False)
-        if mcs.numAtoms < 3:
-            return None
+        if mcs.numAtoms < 3: return None
         mcs_mol = Chem.MolFromSmarts(mcs.smartsString)
         pm = pose.GetSubstructMatch(mcs_mol)
         cm = cryst.GetSubstructMatch(mcs_mol)
-        if not pm or not cm:
-            return None
+        if not pm or not cm: return None
         pc, cc = pose.GetConformer(), cryst.GetConformer()
-        sq = sum(
-            (pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x)**2 +
-            (pc.GetAtomPosition(pi).y - cc.GetAtomPosition(ci).y)**2 +
-            (pc.GetAtomPosition(pi).z - cc.GetAtomPosition(ci).z)**2
-            for pi, ci in zip(pm, cm))
+        sq = sum((pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x)**2 +
+                 (pc.GetAtomPosition(pi).y - cc.GetAtomPosition(ci).y)**2 +
+                 (pc.GetAtomPosition(pi).z - cc.GetAtomPosition(ci).z)**2
+                 for pi, ci in zip(pm, cm))
         return float(np.sqrt(sq / len(pm)))
     except Exception:
         return None
 
 
 def _is_same_ligand(smiles: str, crystal_pdb_path: str) -> bool:
-    """True when canonical SMILES of docked ligand matches the co-crystal PDB molecule.
-    Strips stereo/charges for a lenient comparison. Returns False on any error."""
+    """True when the docked SMILES and co-crystal PDB represent the same molecule
+    (canonical SMILES comparison, stereo/charges stripped for leniency)."""
     try:
         import os
         from rdkit import Chem
         if not smiles or not crystal_pdb_path or not os.path.exists(crystal_pdb_path):
             return False
-        mol_smi   = Chem.MolFromSmiles(smiles)
-        mol_cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True, removeHs=True)
-        if mol_smi is None or mol_cryst is None:
-            return False
+        ms = Chem.MolFromSmiles(smiles)
+        mc = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True, removeHs=True)
+        if ms is None or mc is None: return False
         def _can(m):
             try: return Chem.MolToSmiles(Chem.RemoveHs(m), isomericSmiles=False, canonical=True)
             except: return ""
-        return _can(mol_smi) == _can(mol_cryst)
+        return _can(ms) == _can(mc)
     except Exception:
         return False
 
@@ -736,7 +734,7 @@ def _show_poseview_image(png_data, svg_data, caption, is_poseview2: bool = False
     """
     _legend = _POSEVIEW_LEGEND_HTML if is_poseview2 else _POSEVIEW_V1_LEGEND_HTML
     if png_data:
-        st.image(png_data, use_container_width=True)
+        _png_to_b64_img(png_data)
         st.caption(caption)
         st.markdown(_legend, unsafe_allow_html=True)
     elif svg_data:
@@ -869,12 +867,12 @@ def _poseview_ui(
                     st.download_button("⬇ PNG", data=_png_data,
                                        file_name=f"pose{pose_idx+1}_docked.png",
                                        mime="image/png", key=dl_png_key,
-                                       use_container_width=True)
+                                       width='stretch')
             with _dl2:
                 st.download_button("⬇ SVG", data=_pose_svg,
                                    file_name=f"pose{pose_idx+1}_docked.svg",
                                    mime="image/svg+xml", key=dl_svg_key,
-                                   use_container_width=True)
+                                   width='stretch')
 
         with col_r:
             st.markdown("##### 🔬 Co-Crystal Reference (PoseView2)")
@@ -890,13 +888,13 @@ def _poseview_ui(
                                            file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
                                            mime="image/png",
                                            key=dl_png_key + "_ref",
-                                           use_container_width=True)
+                                           width='stretch')
                 with _dr2:
                     st.download_button("⬇ SVG", data=_ref_svg2,
                                        file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
                                        mime="image/svg+xml",
                                        key=dl_svg_key + "_ref",
-                                       use_container_width=True)
+                                       width='stretch')
             elif _has_ref:
                 st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
             else:
@@ -1390,54 +1388,49 @@ with tab_basic:
         else:  # Draw structure (JSME)
             try:
                 from StreamJSME import StreamJSME
-                _jsme_smi = StreamJSME(
-                    smiles=st.session_state.get("jsme_smi", ""),
-                    height=310,
-                    key="jsme_widget",
-                )
+                _jsme_smi = StreamJSME(smiles=st.session_state.get("jsme_smi", ""),
+                                       height=310, key="jsme_widget")
                 if _jsme_smi:
                     st.session_state["jsme_smi"] = _jsme_smi
                     smiles_in = _jsme_smi
                 else:
                     smiles_in = st.session_state.get("jsme_smi", "")
             except ImportError:
-                st.error(
-                    "❌ `StreamJSME` is not installed. "
-                    "Run `pip install StreamJSME` or add it to `requirements.txt` and restart.")
+                st.error("❌ `StreamJSME` not installed — run `pip install StreamJSME`.")
                 smiles_in = ""
 
     with cl2:
         lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
         ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
-        # ── Live 2D preview — updates as user draws/types ──────────────────────
-        _prev_smi = (
-            st.session_state.get("jsme_smi", "").strip()
-            if lig_input_mode == "Draw structure (JSME)"
-            else smiles_in.strip()
-            if lig_input_mode == "SMILES string"
-            else ""
-        )
+        # ── Live 2D preview — updates as user draws / types ────────────────────
+        _prev_smi = (st.session_state.get("jsme_smi", "").strip()
+                     if lig_input_mode == "Draw structure (JSME)"
+                     else smiles_in.strip()
+                     if lig_input_mode == "SMILES string" else "")
         if _prev_smi:
             try:
                 from rdkit import Chem
                 from rdkit.Chem import AllChem, Draw
-                import io as _io
+                import io as _io, base64 as _b64
                 _pm = Chem.MolFromSmiles(_prev_smi)
                 if _pm:
                     AllChem.Compute2DCoords(_pm)
                     _buf = _io.BytesIO()
                     Draw.MolToImage(_pm, size=(300, 230)).save(_buf, format="PNG")
+                    _b = _b64.b64encode(_buf.getvalue()).decode()
                     st.markdown("**2D Preview**")
-                    st.image(_buf.getvalue(), use_container_width=True)
+                    st.markdown(
+                        f'<img src="data:image/png;base64,{_b}"'
+                        ' style="width:100%;height:auto;border-radius:6px;">',
+                        unsafe_allow_html=True)
                     st.markdown(
                         f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
                         f'border-radius:6px;padding:6px 12px;margin-top:2px;">'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;'
-                        f'font-size:0.72rem;color:var(--text-muted);">SMILES<br></span>'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;'
-                        f'font-size:0.72rem;color:var(--text);word-break:break-all;">'
-                        f'{_prev_smi}</span></div>',
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
+                        f'color:var(--text-muted);">SMILES<br></span>'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
+                        f'color:var(--text);word-break:break-all;">{_prev_smi}</span></div>',
                         unsafe_allow_html=True)
                 else:
                     st.caption("⚠️ Invalid SMILES")
@@ -1534,7 +1527,7 @@ with tab_basic:
                 AllChem.Compute2DCoords(m2)
                 buf = io.BytesIO()
                 Draw.MolToImage(m2, size=(320, 260)).save(buf, format="PNG")
-                st.image(buf.getvalue(), width=320)
+                _png_to_b64_img(buf.getvalue(), style="width:100%;max-width:320px;height:auto;border-radius:6px;")
             except Exception as e:
                 st.info(f"2D unavailable: {e}")
         with c3d:
@@ -1676,7 +1669,7 @@ with tab_basic:
                     df.style.background_gradient(
                         cmap="RdYlGn", subset=["Affinity (kcal/mol)"],
                         gmap=-df["Affinity (kcal/mol)"]),
-                    hide_index=True, use_container_width=True)
+                    hide_index=True, width='stretch')
         with cc:
             st.markdown("**Affinity by Pose**")
             if df is not None:
@@ -1693,7 +1686,7 @@ with tab_basic:
                 ax.tick_params(colors=_cc["muted"], labelsize=8)
                 for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
                 fig.tight_layout()
-                st.pyplot(fig, use_container_width=True); plt.close(fig)
+                st.pyplot(fig, width='stretch'); plt.close(fig)
 
         st.markdown("---")
 
@@ -1732,12 +1725,12 @@ with tab_basic:
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
             sel_mol  = mols[pose_idx]
-            # Decide once if RMSD should be shown (ligand == co-crystal)
+            # RMSD: show only when docked ligand == co-crystal molecule
             _cryst_pdb_s = st.session_state.get("ligand_pdb_path", "")
             _dock_smi_s  = st.session_state.get("prot_smiles", "")
             _show_rmsd_s = bool(
-                _cryst_pdb_s and os.path.exists(_cryst_pdb_s) and _dock_smi_s
-                and _is_same_ligand(_dock_smi_s, _cryst_pdb_s)
+                _cryst_pdb_s and os.path.exists(_cryst_pdb_s)
+                and _dock_smi_s and _is_same_ligand(_dock_smi_s, _cryst_pdb_s)
             )
 
             if df is not None:
@@ -2301,14 +2294,14 @@ with tab_batch:
                                      else f"📌 Use pose {b_pose_i+1} as reference")
                         if st.button(btn_label, key="b_confirm_ref_btn",
                                      type="primary" if not already_confirmed else "secondary",
-                                     use_container_width=True):
+                                     width='stretch'):
                             st.session_state["b_confirmed_ref_score"] = this_pose_score
                             st.session_state["b_confirmed_ref_pose"]  = b_pose_i + 1
                             st.session_state["b_confirmed_ref_name"]  = sel_nm
                             st.rerun()
                         if confirmed_ref_score is not None and not already_confirmed:
                             if st.button("🔄 Reset reference", key="b_reset_ref_btn",
-                                         use_container_width=True):
+                                         width='stretch'):
                                 st.session_state["b_confirmed_ref_score"] = None
                                 st.session_state["b_confirmed_ref_pose"]  = None
                                 st.session_state["b_confirmed_ref_name"]  = None
@@ -2389,7 +2382,7 @@ with tab_batch:
                 ct2, cp2 = st.columns([1, 1.6])
                 with ct2:
                     st.markdown("**Score Table**")
-                    st.dataframe(_display_df, hide_index=True, use_container_width=True)
+                    st.dataframe(_display_df, hide_index=True, width='stretch')
                 with cp2:
                     st.markdown("**Top Score per Ligand**")
                     fig, ax = plt.subplots(figsize=(max(5, _n_ligs * 0.6 + 1.5), 3.5))
@@ -2400,7 +2393,7 @@ with tab_batch:
                                 facecolor=fig.get_facecolor())
                     _buf.seek(0)
                     st.session_state["b_plot_png"] = _buf.getvalue()
-                    st.pyplot(fig, use_container_width=True); plt.close(fig)
+                    st.pyplot(fig, width='stretch'); plt.close(fig)
             else:
                 # >10 ligands: plot full-width first, table below
                 st.markdown("**Top Score per Ligand**")
@@ -2413,12 +2406,12 @@ with tab_batch:
                             facecolor=fig.get_facecolor())
                 _buf.seek(0)
                 st.session_state["b_plot_png"] = _buf.getvalue()
-                st.pyplot(fig, use_container_width=True); plt.close(fig)
+                st.pyplot(fig, width='stretch'); plt.close(fig)
                 st.markdown("**Score Table**")
-                st.dataframe(_display_df, hide_index=True, use_container_width=True)
+                st.dataframe(_display_df, hide_index=True, width='stretch')
         else:
             st.markdown("**Score Table**")
-            st.dataframe(_display_df, hide_index=True, use_container_width=True)
+            st.dataframe(_display_df, hide_index=True, width='stretch')
 
         st.markdown("---")
 
