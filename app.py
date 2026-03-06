@@ -13,9 +13,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 import streamlit.components.v1 as components
-import py3Dmol
-from rdkit import Chem
-from rdkit.Chem import AllChem, Draw
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -26,6 +23,7 @@ st.set_page_config(
 )
 
 # ─── Theme Helper ─────────────────────────────────────────────────────────────
+import streamlit.components.v1 as _comps
 
 def _chart_colors():
     theme = st.get_option("theme.base") if hasattr(st, "get_option") else "light"
@@ -41,15 +39,6 @@ def _chart_colors():
 
 def _viewer_bg():
     return _chart_colors()["bg"]
-
-
-def _png_to_b64_img(png_bytes, style="width:100%;height:auto;display:block;border-radius:6px;"):
-    """Embed PNG as base64 <img>. Avoids Streamlit MediaFileStorage expiry on reruns."""
-    import base64
-    b64 = base64.b64encode(png_bytes).decode()
-    st.markdown(f'<img src="data:image/png;base64,{b64}" style="{style}">',
-                unsafe_allow_html=True)
-
 
 # ─── Global CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
@@ -402,6 +391,7 @@ def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5):
     Uses ProDy for fast coordinate parsing of the receptor.
     """
     try:
+        import numpy as np
         from prody import parsePDB
         conf    = lig_mol.GetConformer()
         lig_xyz = np.array([
@@ -442,85 +432,6 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
                      "color": "cyan", "opacity": 0.90, "wireframe": True})
     except Exception:
         pass
-
-
-def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
-    """Heavy-atom RMSD (Å): docked SDF pose vs ProDy-written co-crystal PDB.
-    - Atom names/order ignored — pure MCS element+topology matching
-    - All symmetry mappings tried; minimum RMSD returned
-    - Requires MCS coverage >=60% of smaller mol to reject unrelated scaffolds
-    - Multiple PDB reading strategies to handle ProDy files (no CONECT records)
-    Returns float (Å) or None on any failure.
-    """
-    try:
-        from rdkit.Chem import rdFMCS
-        import numpy as np, os
-
-        if not os.path.exists(crystal_pdb_path):
-            return None
-
-        cryst = None
-        for sanitize, removeHs, proxBonding in [
-            (True,  True, True),
-            (False, True, True),
-            (True,  True, False),
-            (False, True, False),
-        ]:
-            try:
-                cryst = Chem.MolFromPDBFile(
-                    crystal_pdb_path,
-                    sanitize=sanitize,
-                    removeHs=removeHs,
-                    proximityBonding=proxBonding,
-                )
-                if cryst is not None and cryst.GetNumConformers() > 0:
-                    if not sanitize:
-                        try: Chem.SanitizeMol(cryst)
-                        except Exception: pass
-                    break
-                cryst = None
-            except Exception:
-                cryst = None
-
-        if cryst is None or cryst.GetNumConformers() == 0:
-            return None
-
-        pose = Chem.RemoveHs(pose_mol, sanitize=False)
-        try: Chem.SanitizeMol(pose)
-        except Exception: pass
-        if pose.GetNumConformers() == 0:
-            return None
-
-        n_smaller = min(pose.GetNumAtoms(), cryst.GetNumAtoms())
-        mcs = rdFMCS.FindMCS([pose, cryst], timeout=10,
-                             bondCompare=rdFMCS.BondCompare.CompareAny,
-                             atomCompare=rdFMCS.AtomCompare.CompareElements,
-                             completeRingsOnly=False, matchValences=False)
-        if mcs.numAtoms < 3 or mcs.numAtoms < 0.6 * n_smaller:
-            return None
-
-        mcs_mol = Chem.MolFromSmarts(mcs.smartsString)
-        if mcs_mol is None:
-            return None
-
-        pose_matches  = pose.GetSubstructMatches(mcs_mol,  uniquify=False)
-        cryst_matches = cryst.GetSubstructMatches(mcs_mol, uniquify=False)
-        if not pose_matches or not cryst_matches:
-            return None
-
-        pc, cc = pose.GetConformer(), cryst.GetConformer()
-        def _r(pm, cm):
-            sq = sum(
-                (pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x) ** 2 +
-                (pc.GetAtomPosition(pi).y - cc.GetAtomPosition(ci).y) ** 2 +
-                (pc.GetAtomPosition(pi).z - cc.GetAtomPosition(ci).z) ** 2
-                for pi, ci in zip(pm, cm)
-            )
-            return float(np.sqrt(sq / len(pm)))
-
-        return min(_r(pm, cm) for pm in pose_matches for cm in cryst_matches)
-    except Exception:
-        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -755,7 +666,7 @@ def _show_poseview_image(png_data, svg_data, caption, is_poseview2: bool = False
     """
     _legend = _POSEVIEW_LEGEND_HTML if is_poseview2 else _POSEVIEW_V1_LEGEND_HTML
     if png_data:
-        _png_to_b64_img(png_data)
+        st.image(png_data, use_container_width=True)
         st.caption(caption)
         st.markdown(_legend, unsafe_allow_html=True)
     elif svg_data:
@@ -888,12 +799,12 @@ def _poseview_ui(
                     st.download_button("⬇ PNG", data=_png_data,
                                        file_name=f"pose{pose_idx+1}_docked.png",
                                        mime="image/png", key=dl_png_key,
-                                       width='stretch')
+                                       use_container_width=True)
             with _dl2:
                 st.download_button("⬇ SVG", data=_pose_svg,
                                    file_name=f"pose{pose_idx+1}_docked.svg",
                                    mime="image/svg+xml", key=dl_svg_key,
-                                   width='stretch')
+                                   use_container_width=True)
 
         with col_r:
             st.markdown("##### 🔬 Co-Crystal Reference (PoseView2)")
@@ -909,13 +820,13 @@ def _poseview_ui(
                                            file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
                                            mime="image/png",
                                            key=dl_png_key + "_ref",
-                                           width='stretch')
+                                           use_container_width=True)
                 with _dr2:
                     st.download_button("⬇ SVG", data=_ref_svg2,
                                        file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
                                        mime="image/svg+xml",
                                        key=dl_svg_key + "_ref",
-                                       width='stretch')
+                                       use_container_width=True)
             elif _has_ref:
                 st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
             else:
@@ -1392,79 +1303,47 @@ with tab_basic:
         f'<div class="step-heading">⚗️ Ligand Preparation</div>',
         unsafe_allow_html=True)
 
-    cl1, cl2 = st.columns([2, 1])
-    with cl1:
-        lig_input_mode = st.radio("Input mode",
-            ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
-            horizontal=True, key="lig_input_mode")
+    lig_input_mode = st.radio("Input mode",
+        ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+        horizontal=True, key="lig_input_mode")
 
-        smiles_in = ""
-        if lig_input_mode == "SMILES string":
-            smiles_in = st.text_input("SMILES string",
-                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
-                key="smiles_in")
-        elif lig_input_mode == "Upload structure (.pdb)":
-            st.file_uploader("Upload structure file (.pdb)",
-                             type=["sdf", "mol2", "pdb"], key="lig_struct_file")
-        else:  # Draw structure (Ketcher)
-            try:
-                from streamlit_ketcher import st_ketcher
-                _ketch_smi = st_ketcher(
-                    st.session_state.get("ketcher_smi", ""),
-                    height=400,
-                    key="ketcher_widget",
-                )
-                if _ketch_smi:
-                    st.session_state["ketcher_smi"] = _ketch_smi
-                    smiles_in = _ketch_smi
-                    st.markdown(
-                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
-                        f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
-                        f'color:var(--text-muted)">SMILES: </span>'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
-                        f'color:var(--text)">{_ketch_smi}</span></div>',
-                        unsafe_allow_html=True)
-                else:
-                    smiles_in = st.session_state.get("ketcher_smi", "")
-            except ImportError:
-                st.error(
-                    "❌ `streamlit-ketcher` is not installed. "
-                    "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
-                smiles_in = ""
+    smiles_in = ""
+    if lig_input_mode == "SMILES string":
+        smiles_in = st.text_input("SMILES string",
+            value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
+            key="smiles_in")
+    elif lig_input_mode == "Upload structure (.pdb)":
+        st.file_uploader("Upload structure file (.pdb)",
+                         type=["sdf", "mol2", "pdb"], key="lig_struct_file")
+    else:  # Draw structure (Ketcher)
+        try:
+            from streamlit_ketcher import st_ketcher
+            _ketch_smi = st_ketcher(
+                st.session_state.get("ketcher_smi", ""),
+                height=400,
+                key="ketcher_widget",
+            )
+            if _ketch_smi:
+                st.session_state["ketcher_smi"] = _ketch_smi
+                smiles_in = _ketch_smi
+            else:
+                smiles_in = st.session_state.get("ketcher_smi", "")
+        except ImportError:
+            st.error(
+                "❌ `streamlit-ketcher` is not installed. "
+                "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
+            smiles_in = ""
 
-    with cl2:
-        lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
-        ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
-
-        # ── Live 2D preview (updates as user draws / types SMILES) ──────────────
-        _prev_smi = (smiles_in.strip()
-                     if lig_input_mode in ("SMILES string", "Draw structure (Ketcher)")
-                     else "")
-        if _prev_smi:
-            try:
-                _pm = Chem.MolFromSmiles(_prev_smi)
-                if _pm:
-                    AllChem.Compute2DCoords(_pm)
-                    import io as _io, base64 as _b64
-                    _buf = _io.BytesIO()
-                    Draw.MolToImage(_pm, size=(300, 230)).save(_buf, format="PNG")
-                    _b = _b64.b64encode(_buf.getvalue()).decode()
-                    st.markdown("**2D Preview**")
-                    st.markdown(
-                        f'<img src="data:image/png;base64,{_b}" '
-                        'style="width:100%;height:auto;border-radius:6px;">',
-                        unsafe_allow_html=True)
-                else:
-                    st.caption("⚠️ Invalid SMILES")
-            except Exception:
-                pass
+    lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
+    ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
     if not st.session_state.receptor_done:
         st.caption("⚠ Complete Step 1 first.")
     if st.button("▶ Prepare Ligand", key="btn_ligand", type="primary",
                  disabled=not st.session_state.receptor_done):
         _rdkit_six_patch()
+        from rdkit import Chem
+        from rdkit.Chem import AllChem, Draw
         log      = []
         lig_name = lig_name_in.strip() or "LIG"
         out_pdbqt = str(WORKDIR / f"{lig_name}.pdbqt")
@@ -1531,6 +1410,9 @@ with tab_basic:
                 st.session_state.ligand_log  = "\n".join(log) + f"\nERROR: {e}"
 
     if st.session_state.ligand_done:
+        import py3Dmol
+        from rdkit import Chem
+        from rdkit.Chem import AllChem, Draw
         st.markdown(
             f"{_pill('Ligand ready ✓', 'success')} {_pill(st.session_state.ligand_name)}",
             unsafe_allow_html=True)
@@ -1545,7 +1427,7 @@ with tab_basic:
                 AllChem.Compute2DCoords(m2)
                 buf = io.BytesIO()
                 Draw.MolToImage(m2, size=(320, 260)).save(buf, format="PNG")
-                _png_to_b64_img(buf.getvalue(), style="width:100%;max-width:320px;height:auto;border-radius:6px;")
+                st.image(buf.getvalue(), width=320)
             except Exception as e:
                 st.info(f"2D unavailable: {e}")
         with c3d:
@@ -1632,6 +1514,7 @@ with tab_basic:
                       .sort_values("Affinity (kcal/mol)")
                       .reset_index(drop=True)) if data else None
 
+                from rdkit import Chem
                 mols = ([m for m in Chem.SDMolSupplier(out_sdf, sanitize=False) if m]
                         if os.path.exists(out_sdf) else [])
 
@@ -1673,6 +1556,8 @@ with tab_basic:
     if not st.session_state.docking_done:
         st.info("Complete Step 3 to see results here.")
     else:
+        import py3Dmol
+        from rdkit import Chem
         df   = st.session_state.score_df
         mols = st.session_state.pose_mols or []
 
@@ -1684,7 +1569,7 @@ with tab_basic:
                     df.style.background_gradient(
                         cmap="RdYlGn", subset=["Affinity (kcal/mol)"],
                         gmap=-df["Affinity (kcal/mol)"]),
-                    hide_index=True, width='stretch')
+                    hide_index=True, use_container_width=True)
         with cc:
             st.markdown("**Affinity by Pose**")
             if df is not None:
@@ -1701,7 +1586,7 @@ with tab_basic:
                 ax.tick_params(colors=_cc["muted"], labelsize=8)
                 for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
                 fig.tight_layout()
-                st.pyplot(fig, width='stretch'); plt.close(fig)
+                st.pyplot(fig, use_container_width=True); plt.close(fig)
 
         st.markdown("---")
 
@@ -1740,23 +1625,14 @@ with tab_basic:
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
             sel_mol  = mols[pose_idx]
-            _cryst_pdb_s = st.session_state.get("ligand_pdb_path") or ""
-            _show_rmsd_s = bool(_cryst_pdb_s and os.path.exists(_cryst_pdb_s))
-
             if df is not None:
                 row = df[df["Pose"] == pose_idx + 1]
                 if len(row):
                     aff = row.iloc[0]["Affinity (kcal/mol)"]
-                    _pills_s = (
+                    st.markdown(
                         f'{_pill(f"Pose {pose_idx+1}/{len(mols)}")} '
-                        f'{_pill(f"Affinity: {aff:.2f} kcal/mol", "success" if aff < -8 else "warn")}'
-                    )
-                    if _show_rmsd_s:
-                        _rmsd_s = _calc_rmsd_heavy(sel_mol, _cryst_pdb_s)
-                        if _rmsd_s is not None:
-                            _rk_s = "success" if _rmsd_s <= 2.0 else ("warn" if _rmsd_s <= 3.0 else "info")
-                            _pills_s += f' {_pill(f"RMSD {_rmsd_s:.2f} Å vs crystal", _rk_s)}'
-                    st.markdown(_pills_s, unsafe_allow_html=True)
+                        f'{_pill(f"Affinity: {aff:.2f} kcal/mol", "success" if aff < -8 else "warn")}',
+                        unsafe_allow_html=True)
 
             cpv, cdl = st.columns([3, 1])
             with cpv:
@@ -1984,6 +1860,8 @@ with tab_batch:
     if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary",
                  disabled=not b_rec_done):
         _rdkit_six_patch()
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
 
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
@@ -2180,6 +2058,8 @@ with tab_batch:
     if not b_batch_done:
         st.info("Complete Step B2 to see batch results here.")
     else:
+        import py3Dmol
+        from rdkit import Chem
         results             = st.session_state.get("b_batch_results", [])
         redock_score        = st.session_state.get("b_redock_score")
         redock_result       = st.session_state.get("b_redock_result")
@@ -2229,13 +2109,6 @@ with tab_batch:
                 if pose_scores_list and b_pose_i > 0 and len(pose_scores_list) > 1:
                     delta = this_pose_score - pose_scores_list[0]
                     row_pills += f' {_pill(f"Δ {delta:+.2f} vs pose 1")}'
-                if is_redock_sel:
-                    _cryst_pdb_b = st.session_state.get("b_ligand_pdb_path") or ""
-                    if _cryst_pdb_b and os.path.exists(_cryst_pdb_b):
-                        _rmsd_b = _calc_rmsd_heavy(b_mols[b_pose_i], _cryst_pdb_b)
-                        if _rmsd_b is not None:
-                            _rk_b = "success" if _rmsd_b <= 2.0 else ("warn" if _rmsd_b <= 3.0 else "info")
-                            row_pills += f' {_pill(f"RMSD {_rmsd_b:.2f} Å vs crystal", _rk_b)}'
 
                 if is_redock_sel:
                     st.markdown(
@@ -2299,14 +2172,14 @@ with tab_batch:
                                      else f"📌 Use pose {b_pose_i+1} as reference")
                         if st.button(btn_label, key="b_confirm_ref_btn",
                                      type="primary" if not already_confirmed else "secondary",
-                                     width='stretch'):
+                                     use_container_width=True):
                             st.session_state["b_confirmed_ref_score"] = this_pose_score
                             st.session_state["b_confirmed_ref_pose"]  = b_pose_i + 1
                             st.session_state["b_confirmed_ref_name"]  = sel_nm
                             st.rerun()
                         if confirmed_ref_score is not None and not already_confirmed:
                             if st.button("🔄 Reset reference", key="b_reset_ref_btn",
-                                         width='stretch'):
+                                         use_container_width=True):
                                 st.session_state["b_confirmed_ref_score"] = None
                                 st.session_state["b_confirmed_ref_pose"]  = None
                                 st.session_state["b_confirmed_ref_name"]  = None
@@ -2387,7 +2260,7 @@ with tab_batch:
                 ct2, cp2 = st.columns([1, 1.6])
                 with ct2:
                     st.markdown("**Score Table**")
-                    st.dataframe(_display_df, hide_index=True, width='stretch')
+                    st.dataframe(_display_df, hide_index=True, use_container_width=True)
                 with cp2:
                     st.markdown("**Top Score per Ligand**")
                     fig, ax = plt.subplots(figsize=(max(5, _n_ligs * 0.6 + 1.5), 3.5))
@@ -2398,7 +2271,7 @@ with tab_batch:
                                 facecolor=fig.get_facecolor())
                     _buf.seek(0)
                     st.session_state["b_plot_png"] = _buf.getvalue()
-                    st.pyplot(fig, width='stretch'); plt.close(fig)
+                    st.pyplot(fig, use_container_width=True); plt.close(fig)
             else:
                 # >10 ligands: plot full-width first, table below
                 st.markdown("**Top Score per Ligand**")
@@ -2411,12 +2284,12 @@ with tab_batch:
                             facecolor=fig.get_facecolor())
                 _buf.seek(0)
                 st.session_state["b_plot_png"] = _buf.getvalue()
-                st.pyplot(fig, width='stretch'); plt.close(fig)
+                st.pyplot(fig, use_container_width=True); plt.close(fig)
                 st.markdown("**Score Table**")
-                st.dataframe(_display_df, hide_index=True, width='stretch')
+                st.dataframe(_display_df, hide_index=True, use_container_width=True)
         else:
             st.markdown("**Score Table**")
-            st.dataframe(_display_df, hide_index=True, width='stretch')
+            st.dataframe(_display_df, hide_index=True, use_container_width=True)
 
         st.markdown("---")
 
