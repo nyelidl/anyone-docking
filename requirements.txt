@@ -1,7 +1,7 @@
 # AutoDock Vina Streamlit App — Python Dependencies
 # Install with: pip install -r requirements.txt
 streamlit>=1.35
-StreamJSME>=0.1          # JSME molecule sketcher (replaces streamlit-ketcher)
+streamlit-ketcher==0.0.1
 prody>=2.4
 rdkit>=2023.3
 meeko==0.7.1
