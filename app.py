@@ -433,104 +433,79 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
     except Exception:
         pass
 
-def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str) -> "float | None":
-    """
-    Heavy-atom RMSD between a docked pose (RDKit Mol) and the co-crystal
-    ligand PDB.  Hydrogens are excluded from both sides.
-    Atom matching uses MCS so index-order differences are handled correctly.
-    Returns RMSD in Å, or None on any failure.
-    """
+
+def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
+    """Heavy-atom RMSD (no H) between a docked pose and the co-crystal PDB.
+    Uses MCS matching so atom-order differences are handled correctly.
+    Returns float (Å) or None on any failure."""
     try:
         from rdkit import Chem
         from rdkit.Chem import rdFMCS
         import numpy as np
 
-        cryst_mol = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True,  removeHs=True)
-        if cryst_mol is None:
-            cryst_mol = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=False, removeHs=True)
-        if cryst_mol is None or cryst_mol.GetNumConformers() == 0:
+        cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True, removeHs=True)
+        if cryst is None:
+            cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=False, removeHs=True)
+        if cryst is None or cryst.GetNumConformers() == 0:
             return None
 
-        pose_noH = Chem.RemoveHs(pose_mol, sanitize=False)
-        try:
-            Chem.SanitizeMol(pose_noH)
-        except Exception:
-            pass
+        pose = Chem.RemoveHs(pose_mol, sanitize=False)
+        try: Chem.SanitizeMol(pose)
+        except Exception: pass
 
-        n_pose  = pose_noH.GetNumAtoms()
-        n_cryst = cryst_mol.GetNumAtoms()
+        n_p, n_c = pose.GetNumAtoms(), cryst.GetNumAtoms()
 
-        # Fast path — same count, match by order
-        if n_pose == n_cryst:
-            pc = pose_noH.GetConformer()
-            cc = cryst_mol.GetConformer()
+        # Fast path — same count
+        if n_p == n_c:
+            pc, cc = pose.GetConformer(), cryst.GetConformer()
             sq = sum(
-                (pc.GetAtomPosition(i).x - cc.GetAtomPosition(i).x) ** 2 +
-                (pc.GetAtomPosition(i).y - cc.GetAtomPosition(i).y) ** 2 +
-                (pc.GetAtomPosition(i).z - cc.GetAtomPosition(i).z) ** 2
-                for i in range(n_pose)
-            )
-            return float(np.sqrt(sq / n_pose))
+                (pc.GetAtomPosition(i).x - cc.GetAtomPosition(i).x)**2 +
+                (pc.GetAtomPosition(i).y - cc.GetAtomPosition(i).y)**2 +
+                (pc.GetAtomPosition(i).z - cc.GetAtomPosition(i).z)**2
+                for i in range(n_p))
+            return float(np.sqrt(sq / n_p))
 
-        # General path — MCS matching
-        mcs = rdFMCS.FindMCS(
-            [pose_noH, cryst_mol], timeout=5,
-            bondCompare=rdFMCS.BondCompare.CompareAny,
-            atomCompare=rdFMCS.AtomCompare.CompareElements,
-            completeRingsOnly=False,
-        )
+        # General path — MCS
+        mcs = rdFMCS.FindMCS([pose, cryst], timeout=5,
+                             bondCompare=rdFMCS.BondCompare.CompareAny,
+                             atomCompare=rdFMCS.AtomCompare.CompareElements,
+                             completeRingsOnly=False)
         if mcs.numAtoms < 3:
             return None
         mcs_mol = Chem.MolFromSmarts(mcs.smartsString)
-        pm = pose_noH.GetSubstructMatch(mcs_mol)
-        cm = cryst_mol.GetSubstructMatch(mcs_mol)
+        pm = pose.GetSubstructMatch(mcs_mol)
+        cm = cryst.GetSubstructMatch(mcs_mol)
         if not pm or not cm:
             return None
-        pc = pose_noH.GetConformer()
-        cc = cryst_mol.GetConformer()
+        pc, cc = pose.GetConformer(), cryst.GetConformer()
         sq = sum(
-            (pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x) ** 2 +
-            (pc.GetAtomPosition(pi).y - cc.GetAtomPosition(ci).y) ** 2 +
-            (pc.GetAtomPosition(pi).z - cc.GetAtomPosition(ci).z) ** 2
-            for pi, ci in zip(pm, cm)
-        )
+            (pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x)**2 +
+            (pc.GetAtomPosition(pi).y - cc.GetAtomPosition(ci).y)**2 +
+            (pc.GetAtomPosition(pi).z - cc.GetAtomPosition(ci).z)**2
+            for pi, ci in zip(pm, cm))
         return float(np.sqrt(sq / len(pm)))
     except Exception:
         return None
 
 
 def _is_same_ligand(smiles: str, crystal_pdb_path: str) -> bool:
-    """
-    Return True when the canonical SMILES of the docked ligand matches the
-    canonical SMILES of the molecule loaded from the co-crystal PDB.
-    Used to decide whether to show RMSD in the single-ligand pose selector.
-    Falls back to False on any error.
-    """
+    """True when canonical SMILES of docked ligand matches the co-crystal PDB molecule.
+    Strips stereo/charges for a lenient comparison. Returns False on any error."""
     try:
-        from rdkit import Chem
-        if not smiles or not crystal_pdb_path:
-            return False
         import os
-        if not os.path.exists(crystal_pdb_path):
+        from rdkit import Chem
+        if not smiles or not crystal_pdb_path or not os.path.exists(crystal_pdb_path):
             return False
-
         mol_smi   = Chem.MolFromSmiles(smiles)
         mol_cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True, removeHs=True)
         if mol_smi is None or mol_cryst is None:
             return False
-
-        # Strip stereo / charges for a lenient comparison
-        def _canonical(m):
-            try:
-                return Chem.MolToSmiles(Chem.RemoveHs(m), isomericSmiles=False, canonical=True)
-            except Exception:
-                return ""
-
-        return _canonical(mol_smi) == _canonical(mol_cryst)
+        def _can(m):
+            try: return Chem.MolToSmiles(Chem.RemoveHs(m), isomericSmiles=False, canonical=True)
+            except: return ""
+        return _can(mol_smi) == _can(mol_cryst)
     except Exception:
         return False
-
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1735,33 +1710,28 @@ with tab_basic:
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
             sel_mol  = mols[pose_idx]
-
-            # Pre-compute whether the docked ligand matches the co-crystal —
-            # used to decide if RMSD should be shown (silently skipped otherwise)
-            _cryst_pdb_single  = st.session_state.get("ligand_pdb_path", "")
-            _docked_smiles     = st.session_state.get("prot_smiles", "")
-            _show_rmsd_single  = bool(
-                _cryst_pdb_single
-                and os.path.exists(_cryst_pdb_single)
-                and _docked_smiles
-                and _is_same_ligand(_docked_smiles, _cryst_pdb_single)
+            # Decide once if RMSD should be shown (ligand == co-crystal)
+            _cryst_pdb_s = st.session_state.get("ligand_pdb_path", "")
+            _dock_smi_s  = st.session_state.get("prot_smiles", "")
+            _show_rmsd_s = bool(
+                _cryst_pdb_s and os.path.exists(_cryst_pdb_s) and _dock_smi_s
+                and _is_same_ligand(_dock_smi_s, _cryst_pdb_s)
             )
 
             if df is not None:
                 row = df[df["Pose"] == pose_idx + 1]
                 if len(row):
                     aff = row.iloc[0]["Affinity (kcal/mol)"]
-                    _pills_single = (
+                    _pills_s = (
                         f'{_pill(f"Pose {pose_idx+1}/{len(mols)}")} '
                         f'{_pill(f"Affinity: {aff:.2f} kcal/mol", "success" if aff < -8 else "warn")}'
                     )
-                    # RMSD pill — only when ligand matches co-crystal
-                    if _show_rmsd_single:
-                        _rmsd_s = _calc_rmsd_heavy(sel_mol, _cryst_pdb_single)
+                    if _show_rmsd_s:
+                        _rmsd_s = _calc_rmsd_heavy(sel_mol, _cryst_pdb_s)
                         if _rmsd_s is not None:
                             _rk_s = "success" if _rmsd_s <= 2.0 else ("warn" if _rmsd_s <= 3.0 else "info")
-                            _pills_single += f' {_pill(f"RMSD {_rmsd_s:.2f} Å vs crystal", _rk_s)}'
-                    st.markdown(_pills_single, unsafe_allow_html=True)
+                            _pills_s += f' {_pill(f"RMSD {_rmsd_s:.2f} Å vs crystal", _rk_s)}'
+                    st.markdown(_pills_s, unsafe_allow_html=True)
 
             cpv, cdl = st.columns([3, 1])
             with cpv:
@@ -2238,6 +2208,14 @@ with tab_batch:
                 if pose_scores_list and b_pose_i > 0 and len(pose_scores_list) > 1:
                     delta = this_pose_score - pose_scores_list[0]
                     row_pills += f' {_pill(f"Δ {delta:+.2f} vs pose 1")}'
+                # RMSD pill — only for the redocking reference ligand
+                if is_redock_sel:
+                    _cryst_pdb_b = st.session_state.get("b_ligand_pdb_path", "")
+                    if _cryst_pdb_b and os.path.exists(_cryst_pdb_b):
+                        _rmsd_b = _calc_rmsd_heavy(b_mols[b_pose_i], _cryst_pdb_b)
+                        if _rmsd_b is not None:
+                            _rk_b = "success" if _rmsd_b <= 2.0 else ("warn" if _rmsd_b <= 3.0 else "info")
+                            row_pills += f' {_pill(f"RMSD {_rmsd_b:.2f} Å vs crystal", _rk_b)}'
 
                 if is_redock_sel:
                     st.markdown(
