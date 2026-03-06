@@ -13,6 +13,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 import streamlit.components.v1 as components
+import py3Dmol
+from rdkit import Chem
+from rdkit.Chem import AllChem, Draw
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -23,7 +26,6 @@ st.set_page_config(
 )
 
 # ─── Theme Helper ─────────────────────────────────────────────────────────────
-import streamlit.components.v1 as _comps
 
 def _chart_colors():
     theme = st.get_option("theme.base") if hasattr(st, "get_option") else "light"
@@ -400,7 +402,6 @@ def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5):
     Uses ProDy for fast coordinate parsing of the receptor.
     """
     try:
-        import numpy as np
         from prody import parsePDB
         conf    = lig_mol.GetConformer()
         lig_xyz = np.array([
@@ -445,24 +446,19 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
 
 def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
     """Heavy-atom RMSD (Å): docked SDF pose vs ProDy-written co-crystal PDB.
-
-    Key design:
-    - Atom names / order completely ignored — pure MCS element+topology matching
+    - Atom names/order ignored — pure MCS element+topology matching
     - All symmetry mappings tried; minimum RMSD returned
-    - Requires MCS to cover >=60% of the smaller molecule to reject garbage
-      RMSD between unrelated molecules
+    - Requires MCS coverage >=60% of smaller mol to reject unrelated scaffolds
     - Multiple PDB reading strategies to handle ProDy files (no CONECT records)
     Returns float (Å) or None on any failure.
     """
     try:
-        from rdkit import Chem
         from rdkit.Chem import rdFMCS
-        import numpy as np, os, tempfile
+        import numpy as np, os
 
         if not os.path.exists(crystal_pdb_path):
             return None
 
-        # ── Read crystal ligand — try several strategies ──────────────────────
         cryst = None
         for sanitize, removeHs, proxBonding in [
             (True,  True, True),
@@ -478,7 +474,7 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
                     proximityBonding=proxBonding,
                 )
                 if cryst is not None and cryst.GetNumConformers() > 0:
-                    if sanitize is False:
+                    if not sanitize:
                         try: Chem.SanitizeMol(cryst)
                         except Exception: pass
                     break
@@ -489,7 +485,6 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
         if cryst is None or cryst.GetNumConformers() == 0:
             return None
 
-        # ── Strip H from docked pose ──────────────────────────────────────────
         pose = Chem.RemoveHs(pose_mol, sanitize=False)
         try: Chem.SanitizeMol(pose)
         except Exception: pass
@@ -497,19 +492,10 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
             return None
 
         n_smaller = min(pose.GetNumAtoms(), cryst.GetNumAtoms())
-
-        # ── MCS by element + topology (names ignored) ─────────────────────────
-        mcs = rdFMCS.FindMCS(
-            [pose, cryst],
-            timeout=10,
-            bondCompare=rdFMCS.BondCompare.CompareAny,
-            atomCompare=rdFMCS.AtomCompare.CompareElements,
-            completeRingsOnly=False,
-            matchValences=False,
-        )
-
-        # Require MCS to cover >=60% of the smaller molecule
-        # (rejects RMSD for completely unrelated docked ligands)
+        mcs = rdFMCS.FindMCS([pose, cryst], timeout=10,
+                             bondCompare=rdFMCS.BondCompare.CompareAny,
+                             atomCompare=rdFMCS.AtomCompare.CompareElements,
+                             completeRingsOnly=False, matchValences=False)
         if mcs.numAtoms < 3 or mcs.numAtoms < 0.6 * n_smaller:
             return None
 
@@ -517,14 +503,12 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
         if mcs_mol is None:
             return None
 
-        # All valid symmetry mappings — take minimum RMSD
         pose_matches  = pose.GetSubstructMatches(mcs_mol,  uniquify=False)
         cryst_matches = cryst.GetSubstructMatches(mcs_mol, uniquify=False)
         if not pose_matches or not cryst_matches:
             return None
 
         pc, cc = pose.GetConformer(), cryst.GetConformer()
-
         def _r(pm, cm):
             sq = sum(
                 (pc.GetAtomPosition(pi).x - cc.GetAtomPosition(ci).x) ** 2 +
@@ -535,7 +519,6 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
             return float(np.sqrt(sq / len(pm)))
 
         return min(_r(pm, cm) for pm in pose_matches for cm in cryst_matches)
-
     except Exception:
         return None
 
@@ -1454,18 +1437,16 @@ with tab_basic:
         lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
         ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
-        # ── Live 2D preview — updates as user draws in Ketcher / types SMILES ──
+        # ── Live 2D preview (updates as user draws / types SMILES) ──────────────
         _prev_smi = (smiles_in.strip()
                      if lig_input_mode in ("SMILES string", "Draw structure (Ketcher)")
                      else "")
         if _prev_smi:
             try:
-                from rdkit import Chem
-                from rdkit.Chem import AllChem, Draw
-                import io as _io, base64 as _b64
                 _pm = Chem.MolFromSmiles(_prev_smi)
                 if _pm:
                     AllChem.Compute2DCoords(_pm)
+                    import io as _io, base64 as _b64
                     _buf = _io.BytesIO()
                     Draw.MolToImage(_pm, size=(300, 230)).save(_buf, format="PNG")
                     _b = _b64.b64encode(_buf.getvalue()).decode()
@@ -1484,8 +1465,6 @@ with tab_basic:
     if st.button("▶ Prepare Ligand", key="btn_ligand", type="primary",
                  disabled=not st.session_state.receptor_done):
         _rdkit_six_patch()
-        from rdkit import Chem
-        from rdkit.Chem import AllChem, Draw
         log      = []
         lig_name = lig_name_in.strip() or "LIG"
         out_pdbqt = str(WORKDIR / f"{lig_name}.pdbqt")
@@ -1552,9 +1531,6 @@ with tab_basic:
                 st.session_state.ligand_log  = "\n".join(log) + f"\nERROR: {e}"
 
     if st.session_state.ligand_done:
-        import py3Dmol
-        from rdkit import Chem
-        from rdkit.Chem import AllChem, Draw
         st.markdown(
             f"{_pill('Ligand ready ✓', 'success')} {_pill(st.session_state.ligand_name)}",
             unsafe_allow_html=True)
@@ -1656,7 +1632,6 @@ with tab_basic:
                       .sort_values("Affinity (kcal/mol)")
                       .reset_index(drop=True)) if data else None
 
-                from rdkit import Chem
                 mols = ([m for m in Chem.SDMolSupplier(out_sdf, sanitize=False) if m]
                         if os.path.exists(out_sdf) else [])
 
@@ -1698,8 +1673,6 @@ with tab_basic:
     if not st.session_state.docking_done:
         st.info("Complete Step 3 to see results here.")
     else:
-        import py3Dmol
-        from rdkit import Chem
         df   = st.session_state.score_df
         mols = st.session_state.pose_mols or []
 
@@ -1767,8 +1740,6 @@ with tab_basic:
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
             sel_mol  = mols[pose_idx]
-            # RMSD: show when co-crystal ligand PDB exists (set during receptor prep)
-            # _calc_rmsd_heavy rejects unrelated molecules via 60% MCS coverage guard
             _cryst_pdb_s = st.session_state.get("ligand_pdb_path") or ""
             _show_rmsd_s = bool(_cryst_pdb_s and os.path.exists(_cryst_pdb_s))
 
@@ -2013,8 +1984,6 @@ with tab_batch:
     if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary",
                  disabled=not b_rec_done):
         _rdkit_six_patch()
-        from rdkit import Chem
-        from rdkit.Chem import AllChem
 
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
@@ -2211,8 +2180,6 @@ with tab_batch:
     if not b_batch_done:
         st.info("Complete Step B2 to see batch results here.")
     else:
-        import py3Dmol
-        from rdkit import Chem
         results             = st.session_state.get("b_batch_results", [])
         redock_score        = st.session_state.get("b_redock_score")
         redock_result       = st.session_state.get("b_redock_result")
@@ -2262,7 +2229,6 @@ with tab_batch:
                 if pose_scores_list and b_pose_i > 0 and len(pose_scores_list) > 1:
                     delta = this_pose_score - pose_scores_list[0]
                     row_pills += f' {_pill(f"Δ {delta:+.2f} vs pose 1")}'
-                # RMSD: gated by is_redock_sel (user-tagged co-crystal reference)
                 if is_redock_sel:
                     _cryst_pdb_b = st.session_state.get("b_ligand_pdb_path") or ""
                     if _cryst_pdb_b and os.path.exists(_cryst_pdb_b):
