@@ -184,12 +184,8 @@ iframe { border: none !important; }
 div[class*="toolbar"],
 div[class*="FrameToolbar"] { display: none !important; }
 
-/* ── Ketcher Apply button — match primary green ── */
-.ketcher-apply-button,
-button[data-testid="ketcher-apply"],
-.ketcher-container button[type="submit"],
-.ketcher-container button.apply,
-#ketcher-apply-btn { background: var(--success) !important; color: white !important; }
+/* ── JSME sketcher — border radius to match card style ── */
+.jsme-container iframe { border-radius: 6px !important; }
 
 """, unsafe_allow_html=True)
 
@@ -199,7 +195,7 @@ button[data-testid="ketcher-apply"],
 # ══════════════════════════════════════════════════════════════════════════════
 _DEFAULTS = dict(
     workdir=None,
-    ketcher_smi="",          # Ketcher sketcher last SMILES output
+    jsme_smi="",             # JSME sketcher last SMILES output
     # Basic — receptor
     pdb_token=None, raw_pdb=None, receptor_fh=None, receptor_pdbqt=None,
     box_pdb=None, config_txt=None, cx=None, cy=None, cz=None,
@@ -1380,7 +1376,7 @@ with tab_basic:
     cl1, cl2 = st.columns([2, 1])
     with cl1:
         lig_input_mode = st.radio("Input mode",
-            ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+            ["SMILES string", "Upload structure (.pdb)", "Draw structure (JSME)"],
             horizontal=True, key="lig_input_mode")
 
         smiles_in = ""
@@ -1391,36 +1387,62 @@ with tab_basic:
         elif lig_input_mode == "Upload structure (.pdb)":
             st.file_uploader("Upload structure file (.pdb)",
                              type=["sdf", "mol2", "pdb"], key="lig_struct_file")
-        else:  # Draw structure (Ketcher)
+        else:  # Draw structure (JSME)
             try:
-                from streamlit_ketcher import st_ketcher
-                _ketch_smi = st_ketcher(
-                    st.session_state.get("ketcher_smi", ""),
-                    height=400,
-                    key="ketcher_widget",
+                from StreamJSME import StreamJSME
+                _jsme_smi = StreamJSME(
+                    smiles=st.session_state.get("jsme_smi", ""),
+                    height=310,
+                    key="jsme_widget",
                 )
-                if _ketch_smi:
-                    st.session_state["ketcher_smi"] = _ketch_smi
-                    smiles_in = _ketch_smi
-                    st.markdown(
-                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
-                        f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
-                        f'color:var(--text-muted)">SMILES: </span>'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
-                        f'color:var(--text)">{_ketch_smi}</span></div>',
-                        unsafe_allow_html=True)
+                if _jsme_smi:
+                    st.session_state["jsme_smi"] = _jsme_smi
+                    smiles_in = _jsme_smi
                 else:
-                    smiles_in = st.session_state.get("ketcher_smi", "")
+                    smiles_in = st.session_state.get("jsme_smi", "")
             except ImportError:
                 st.error(
-                    "❌ `streamlit-ketcher` is not installed. "
-                    "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
+                    "❌ `StreamJSME` is not installed. "
+                    "Run `pip install StreamJSME` or add it to `requirements.txt` and restart.")
                 smiles_in = ""
 
     with cl2:
         lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
         ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
+
+        # ── Live 2D preview — updates as user draws/types ──────────────────────
+        _prev_smi = (
+            st.session_state.get("jsme_smi", "").strip()
+            if lig_input_mode == "Draw structure (JSME)"
+            else smiles_in.strip()
+            if lig_input_mode == "SMILES string"
+            else ""
+        )
+        if _prev_smi:
+            try:
+                from rdkit import Chem
+                from rdkit.Chem import AllChem, Draw
+                import io as _io
+                _pm = Chem.MolFromSmiles(_prev_smi)
+                if _pm:
+                    AllChem.Compute2DCoords(_pm)
+                    _buf = _io.BytesIO()
+                    Draw.MolToImage(_pm, size=(300, 230)).save(_buf, format="PNG")
+                    st.markdown("**2D Preview**")
+                    st.image(_buf.getvalue(), use_container_width=True)
+                    st.markdown(
+                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
+                        f'border-radius:6px;padding:6px 12px;margin-top:2px;">'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;'
+                        f'font-size:0.72rem;color:var(--text-muted);">SMILES<br></span>'
+                        f'<span style="font-family:\'IBM Plex Mono\',monospace;'
+                        f'font-size:0.72rem;color:var(--text);word-break:break-all;">'
+                        f'{_prev_smi}</span></div>',
+                        unsafe_allow_html=True)
+                else:
+                    st.caption("⚠️ Invalid SMILES")
+            except Exception:
+                pass
 
     if not st.session_state.receptor_done:
         st.caption("⚠ Complete Step 1 first.")
@@ -1455,10 +1477,10 @@ with tab_basic:
                             if _pts: prot = _pts[0]; break
                         if not prot: raise ValueError("Could not convert structure to SMILES")
                     log.append(f"✓ Structure loaded: {_sfobj.name}")
-                elif _lig_mode == "Draw structure (Ketcher)":
-                    prot = st.session_state.get("ketcher_smi", "").strip()
-                    if not prot: raise ValueError("No molecule drawn in Ketcher — draw a structure first")
-                    log.append("✓ Structure from Ketcher sketcher")
+                elif _lig_mode == "Draw structure (JSME)":
+                    prot = st.session_state.get("jsme_smi", "").strip()
+                    if not prot: raise ValueError("No molecule drawn in JSME — draw a structure first")
+                    log.append("✓ Structure from JSME sketcher")
                 else:
                     prot = smiles_in.strip()
                 try:
