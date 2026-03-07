@@ -1357,7 +1357,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 st.markdown(
 """
 <div style="display:flex; align-items:flex-start; gap:12px;">
-<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/anyD-H.png" width="70">
+<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-D.svg" width="70">
 
 <h1 style="
 background: linear-gradient(90deg,#ff4b4b,#ff4fa3,#7a6cff,#21a5e9);
