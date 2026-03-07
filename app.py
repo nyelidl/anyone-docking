@@ -695,31 +695,32 @@ def _stamp_png(png_bytes: bytes, text: str) -> bytes:
         if font is None:
             font = ImageFont.load_default()
 
-        bbox = draw.textbbox((0, 0), text, font=font)
+        bbox = draw.textbbox((0, 0), text, font=font, anchor="lt")
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-        pad_x, pad_y = 32, 14          # generous horizontal / vertical padding
+        pad_x, pad_y = 36, 16          # horizontal / vertical padding inside pill
         pill_w = tw + pad_x * 2
         pill_h = th + pad_y * 2
-        pill_r = pill_h // 2           # full-round ends (stadium shape)
+        pill_r = pill_h // 2           # full-round stadium shape
 
-        # Horizontally centered, 24 px above the bottom edge
+        # Pill horizontally centered on image, 28 px above bottom edge
         px = (img.width - pill_w) // 2
-        py = img.height - pill_h - 24
+        py = img.height - pill_h - 28
 
-        # Light gray pill  (slight transparency so it blends over white bg)
+        # Light gray pill
         draw.rounded_rectangle(
             [px, py, px + pill_w, py + pill_h],
             radius=pill_r,
             fill=(232, 232, 232, 230),
         )
 
-        # Dark text centered inside pill
+        # Text centered inside pill — anchor="mm" places text at exact midpoint
         draw.text(
-            (px + pad_x - bbox[0], py + pad_y - bbox[1]),
+            (px + pill_w // 2, py + pill_h // 2),
             text,
             font=font,
             fill=(26, 26, 26, 255),
+            anchor="mm",
         )
 
         buf = _io.BytesIO()
