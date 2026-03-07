@@ -1364,7 +1364,7 @@ background: linear-gradient(90deg,#ff4b4b,#ff4fa3,#7a6cff,#21a5e9);
 -webkit-text-fill-color:transparent;
 margin:0;
 font-weight:700;
-padding-top:16px;
+padding-top:8px;
 ">
 nyone can dock, everyone can do!
 </h1>
