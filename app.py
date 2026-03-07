@@ -670,28 +670,58 @@ def _svg_to_png(svg_bytes: bytes):
 
 
 def _stamp_png(png_bytes: bytes, text: str) -> bytes:
-    """Burn a text label into the bottom-left corner of a PNG."""
+    """
+    Burn a text label into the bottom-center of a PNG.
+    Style: light gray pill (#E8E8E8), dark text (#1A1A1A), large radius — matches the
+    reference screenshot.
+    """
     try:
         from PIL import Image, ImageDraw, ImageFont
         import io as _io
         img = Image.open(_io.BytesIO(png_bytes)).convert("RGBA")
         draw = ImageDraw.Draw(img)
-        # Try a monospaced font; fall back to default
-        try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 22)
-        except Exception:
+
+        # Try clean sans-serif fonts in order of preference
+        font = None
+        for _fp, _sz in [
+            ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",  28),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",                  28),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",         26),
+        ]:
+            try:
+                font = ImageFont.truetype(_fp, _sz); break
+            except Exception:
+                pass
+        if font is None:
             font = ImageFont.load_default()
-        margin = 10
+
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        x = margin
-        y = img.height - th - margin * 2
-        # Semi-transparent dark pill background
+
+        pad_x, pad_y = 32, 14          # generous horizontal / vertical padding
+        pill_w = tw + pad_x * 2
+        pill_h = th + pad_y * 2
+        pill_r = pill_h // 2           # full-round ends (stadium shape)
+
+        # Horizontally centered, 24 px above the bottom edge
+        px = (img.width - pill_w) // 2
+        py = img.height - pill_h - 24
+
+        # Light gray pill  (slight transparency so it blends over white bg)
         draw.rounded_rectangle(
-            [x - 6, y - 4, x + tw + 6, y + th + 4],
-            radius=6, fill=(30, 30, 30, 180))
-        draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+            [px, py, px + pill_w, py + pill_h],
+            radius=pill_r,
+            fill=(232, 232, 232, 230),
+        )
+
+        # Dark text centered inside pill
+        draw.text(
+            (px + pad_x - bbox[0], py + pad_y - bbox[1]),
+            text,
+            font=font,
+            fill=(26, 26, 26, 255),
+        )
+
         buf = _io.BytesIO()
         img.convert("RGB").save(buf, format="PNG")
         return buf.getvalue()
@@ -810,23 +840,27 @@ def _show_poseview_image(png_data, svg_data, caption, is_poseview2: bool = False
     elif svg_data:
         svg_str = svg_data.decode("utf-8") if isinstance(svg_data, bytes) else svg_data
         if stamp:
-            # Inject stamp as an SVG <text> element near bottom-left
+            # Inject a centered light-gray pill stamp at the bottom of the SVG.
+            # Uses a foreignObject so CSS border-radius works reliably across viewers.
             _esc = stamp.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            _char_w = 8  # approximate px per character at font-size 13
-            _pill_w = len(stamp) * _char_w + 16
             _svg_stamp = (
-                f'<g transform="translate(10, -10)">'
-                f'<rect y="-16" width="{_pill_w}" height="22" rx="5" '
-                f'fill="rgba(30,30,30,0.72)"/>'
-                f'<text y="0" font-family="monospace" font-size="13" '
-                f'fill="white" x="8">{_esc}</text>'
-                f'</g>'
+                '<g class="pv-stamp">'
+                '<foreignObject x="5%" y="92%" width="90%" height="40">'
+                '<div xmlns="http://www.w3.org/1999/xhtml" style="'
+                'display:flex;justify-content:center;align-items:center;height:100%;">'
+                f'<span style="'
+                'background:#E8E8E8;color:#1A1A1A;'
+                'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;'
+                'font-size:15px;font-weight:400;'
+                'padding:6px 28px;border-radius:999px;'
+                'white-space:nowrap;display:inline-block;">'
+                f'{_esc}'
+                '</span>'
+                '</div>'
+                '</foreignObject>'
+                '</g>'
             )
-            # Anchor the group to the bottom of the SVG viewBox
-            svg_str = svg_str.replace(
-                "</svg>",
-                f'<g style="transform:translateY(calc(100% - 30px))">{_svg_stamp}</g></svg>'
-            )
+            svg_str = svg_str.replace("</svg>", f"{_svg_stamp}</svg>")
         svg_str = svg_str.replace("<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1)
         components.html(
             f'''<div style="background:#ffffff;border-radius:8px;padding:12px;
@@ -1416,7 +1450,7 @@ background: linear-gradient(90deg,#ff4b4b,#ff4fa3,#7a6cff,#21a5e9);
 -webkit-text-fill-color:transparent;
 margin:0;
 font-weight:700;
-padding-top:27px;
+padding-top:29px;
 ">
 nyone can dock, everyone can do!
 </h1>
