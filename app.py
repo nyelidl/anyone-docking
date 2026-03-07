@@ -669,6 +669,36 @@ def _svg_to_png(svg_bytes: bytes):
         return None
 
 
+def _stamp_png(png_bytes: bytes, text: str) -> bytes:
+    """Burn a text label into the bottom-left corner of a PNG."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io as _io
+        img = Image.open(_io.BytesIO(png_bytes)).convert("RGBA")
+        draw = ImageDraw.Draw(img)
+        # Try a monospaced font; fall back to default
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 22)
+        except Exception:
+            font = ImageFont.load_default()
+        margin = 10
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = margin
+        y = img.height - th - margin * 2
+        # Semi-transparent dark pill background
+        draw.rounded_rectangle(
+            [x - 6, y - 4, x + tw + 6, y + th + 4],
+            radius=6, fill=(30, 30, 30, 180))
+        draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+        buf = _io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return png_bytes  # silently return original if stamping fails
+
+
 # Full legend — used for PoseView2 (co-crystal reference, all interaction types)
 _POSEVIEW_LEGEND_HTML = """
 <div style="
@@ -764,19 +794,39 @@ _POSEVIEW_V1_LEGEND_HTML = """
 """
 
 
-def _show_poseview_image(png_data, svg_data, caption, is_poseview2: bool = False):
+def _show_poseview_image(png_data, svg_data, caption, is_poseview2: bool = False, stamp: str = ""):
     """
     Render a PoseView diagram.
     is_poseview2=True  → full 6-interaction legend (co-crystal reference)
     is_poseview2=False → reduced legend: hydrogen bond + hydrophobic contact only (docked pose)
+    stamp              → text burned into bottom-left corner of the figure
     """
     _legend = _POSEVIEW_LEGEND_HTML if is_poseview2 else _POSEVIEW_V1_LEGEND_HTML
     if png_data:
-        _png_to_b64_img(png_data)
+        _display_png = _stamp_png(png_data, stamp) if stamp else png_data
+        _png_to_b64_img(_display_png)
         st.caption(caption)
         st.markdown(_legend, unsafe_allow_html=True)
     elif svg_data:
         svg_str = svg_data.decode("utf-8") if isinstance(svg_data, bytes) else svg_data
+        if stamp:
+            # Inject stamp as an SVG <text> element near bottom-left
+            _esc = stamp.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            _char_w = 8  # approximate px per character at font-size 13
+            _pill_w = len(stamp) * _char_w + 16
+            _svg_stamp = (
+                f'<g transform="translate(10, -10)">'
+                f'<rect y="-16" width="{_pill_w}" height="22" rx="5" '
+                f'fill="rgba(30,30,30,0.72)"/>'
+                f'<text y="0" font-family="monospace" font-size="13" '
+                f'fill="white" x="8">{_esc}</text>'
+                f'</g>'
+            )
+            # Anchor the group to the bottom of the SVG viewBox
+            svg_str = svg_str.replace(
+                "</svg>",
+                f'<g style="transform:translateY(calc(100% - 30px))">{_svg_stamp}</g></svg>'
+            )
         svg_str = svg_str.replace("<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1)
         components.html(
             f'''<div style="background:#ffffff;border-radius:8px;padding:12px;
@@ -898,7 +948,8 @@ def _poseview_ui(
             _png_data = st.session_state.get(img_png_key)
             _show_poseview_image(_png_data, _pose_svg,
                                  f"Docked pose {pose_idx+1} — {_lig_label}",
-                                 is_poseview2=False)
+                                 is_poseview2=False,
+                                 stamp=f"Pose {pose_idx+1}  ·  {_lig_label}")
             _dl1, _dl2 = st.columns(2)
             with _dl1:
                 if _png_data:
@@ -918,7 +969,8 @@ def _poseview_ui(
                 _ref_png2 = st.session_state.get(ref_png_key) if ref_png_key else None
                 _show_poseview_image(_ref_png2, _ref_svg2,
                                      f"Co-crystal: {pdb_id.upper()} · {cocrystal_ligand_id}",
-                                     is_poseview2=True)
+                                     is_poseview2=True,
+                                     stamp=f"{pdb_id.upper()}  ·  {cocrystal_ligand_id}")
                 _dr1, _dr2 = st.columns(2)
                 with _dr1:
                     if _ref_png2:
@@ -1364,7 +1416,7 @@ background: linear-gradient(90deg,#ff4b4b,#ff4fa3,#7a6cff,#21a5e9);
 -webkit-text-fill-color:transparent;
 margin:0;
 font-weight:700;
-padding-top:28px;
+padding-top:27px;
 ">
 nyone can dock, everyone can do!
 </h1>
