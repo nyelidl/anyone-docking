@@ -1357,7 +1357,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 st.markdown(
 """
 <div style="display:flex; align-items:flex-start; gap:12px;">
-<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-D.svg" width="70">
+<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="70">
 
 <h1 style="
 background: linear-gradient(90deg,#ff4b4b,#ff4fa3,#7a6cff,#21a5e9);
@@ -1409,75 +1409,47 @@ with tab_basic:
         f'<div class="step-heading">⚗️ Ligand Preparation</div>',
         unsafe_allow_html=True)
 
-    cl1, cl2 = st.columns([2, 1])
-    with cl1:
-        lig_input_mode = st.radio("Input mode",
-            ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
-            horizontal=True, key="lig_input_mode")
+    lig_input_mode = st.radio("Input mode",
+        ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+        horizontal=True, key="lig_input_mode")
 
-        smiles_in = ""
-        if lig_input_mode == "SMILES string":
-            smiles_in = st.text_input("SMILES string",
-                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
-                key="smiles_in")
-        elif lig_input_mode == "Upload structure (.pdb)":
-            st.file_uploader("Upload structure file (.pdb)",
-                             type=["sdf", "mol2", "pdb"], key="lig_struct_file")
-        else:  # Draw structure (Ketcher)
-            try:
-                from streamlit_ketcher import st_ketcher
-                _ketch_smi = st_ketcher(
-                    st.session_state.get("ketcher_smi", ""),
-                    height=400,
-                    key="ketcher_widget",
-                )
-                if _ketch_smi:
-                    st.session_state["ketcher_smi"] = _ketch_smi
-                    smiles_in = _ketch_smi
-                    st.markdown(
-                        f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
-                        f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
-                        f'color:var(--text-muted)">SMILES: </span>'
-                        f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
-                        f'color:var(--text)">{_ketch_smi}</span></div>',
-                        unsafe_allow_html=True)
-                else:
-                    smiles_in = st.session_state.get("ketcher_smi", "")
-            except ImportError:
-                st.error(
-                    "❌ `streamlit-ketcher` is not installed. "
-                    "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
-                smiles_in = ""
+    smiles_in = ""
+    if lig_input_mode == "SMILES string":
+        smiles_in = st.text_input("SMILES string",
+            value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
+            key="smiles_in")
+    elif lig_input_mode == "Upload structure (.pdb)":
+        st.file_uploader("Upload structure file (.pdb)",
+                         type=["sdf", "mol2", "pdb"], key="lig_struct_file")
+    else:  # Draw structure (Ketcher)
+        try:
+            from streamlit_ketcher import st_ketcher
+            _ketch_smi = st_ketcher(
+                st.session_state.get("ketcher_smi", ""),
+                height=400,
+                key="ketcher_widget",
+            )
+            if _ketch_smi:
+                st.session_state["ketcher_smi"] = _ketch_smi
+                smiles_in = _ketch_smi
+                st.markdown(
+                    f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
+                    f'border-radius:6px;padding:8px 14px;margin-top:6px;">'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                    f'color:var(--text-muted)">SMILES: </span>'
+                    f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.8rem;'
+                    f'color:var(--text)">{_ketch_smi}</span></div>',
+                    unsafe_allow_html=True)
+            else:
+                smiles_in = st.session_state.get("ketcher_smi", "")
+        except ImportError:
+            st.error(
+                "❌ `streamlit-ketcher` is not installed. "
+                "Add `streamlit-ketcher==0.0.1` to your `requirements.txt` and restart the app.")
+            smiles_in = ""
 
-    with cl2:
-        lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
-        ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
-
-        # ── Live 2D preview — updates as user draws in Ketcher / types SMILES ──
-        _prev_smi = (smiles_in.strip()
-                     if lig_input_mode in ("SMILES string", "Draw structure (Ketcher)")
-                     else "")
-        if _prev_smi:
-            try:
-                from rdkit import Chem
-                from rdkit.Chem import AllChem, Draw
-                import io as _io, base64 as _b64
-                _pm = Chem.MolFromSmiles(_prev_smi)
-                if _pm:
-                    AllChem.Compute2DCoords(_pm)
-                    _buf = _io.BytesIO()
-                    Draw.MolToImage(_pm, size=(300, 230)).save(_buf, format="PNG")
-                    _b = _b64.b64encode(_buf.getvalue()).decode()
-                    st.markdown("**2D Preview**")
-                    st.markdown(
-                        f'<img src="data:image/png;base64,{_b}" '
-                        'style="width:100%;height:auto;border-radius:6px;">',
-                        unsafe_allow_html=True)
-                else:
-                    st.caption("⚠️ Invalid SMILES")
-            except Exception:
-                pass
+    lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
+    ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
     if not st.session_state.receptor_done:
         st.caption("⚠ Complete Step 1 first.")
@@ -1810,8 +1782,7 @@ with tab_basic:
                         {"model": 0},
                         {"model": mi2},
                     )
-                    v2.zoomTo()
-                    v2.center({"model": mi2})
+                    v2.zoomTo({"model": mi2})
                     show3d(v2, height=400)
                 except Exception as e:
                     st.info(f"Viewer error: {e}")
