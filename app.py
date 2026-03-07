@@ -1358,17 +1358,16 @@ st.markdown(
 """
 <div style="display:flex; align-items:flex-start; gap:12px;">
 <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="70">
-
 <h1 style="
 background: linear-gradient(90deg,#ff4b4b,#ff4fa3,#7a6cff,#21a5e9);
 -webkit-background-clip:text;
 -webkit-text-fill-color:transparent;
 margin:0;
 font-weight:700;
+padding-top:16px;
 ">
 nyone can dock, everyone can do!
 </h1>
-
 </div>
 """,
 unsafe_allow_html=True
