@@ -1390,8 +1390,7 @@ with tab_batch:
             key="b_input_mode",
         )
         if b_input_mode == "SMILES list (text)":
-            st.text_area(
-                "One `SMILES [name]` per line",
+            st.text_area("One `SMILES [name]` per line",
                 value=("C1=CC(=CC=C1C2=CC(=O)C3=C(C=C(C=C3O2)O)O)O Apigenin\n"
                        "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)O Baicalein\n"
                        "CC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)O Osimertinib\n"
@@ -1403,7 +1402,6 @@ with tab_batch:
                        "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)OC)O Galangin\n"
                        "CC1=C(C=C(C=C1)NC2=NC=NC3=C2C=CC=C3)OC Imatinib"),
                 height=300, key="b_smiles_text")
-            )
         else:
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
