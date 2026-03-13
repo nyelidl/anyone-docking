@@ -17,24 +17,18 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-# ── Import all science from core ──────────────────────────────────────────────
 from core import (
-    # receptor
     prepare_receptor,
-    # ligand
     prepare_ligand,
     smiles_from_file,
-    # docking
     run_vina,
     get_vina_binary,
-    # post-processing
+    check_obabel,
     fix_sdf_bond_orders,
     load_mols_from_sdf,
     write_single_pose,
-    # analysis
     get_interacting_residues,
     calc_rmsd_heavy,
-    # poseview
     call_poseview_v1,
     call_poseview2_ref,
     svg_to_png,
@@ -54,6 +48,7 @@ st.set_page_config(
 # ══════════════════════════════════════════════════════════════════════════════
 #  THEME + COLOUR HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+
 def _chart_colors():
     theme = st.get_option("theme.base") if hasattr(st, "get_option") else "light"
     dark  = (theme == "dark")
@@ -72,10 +67,17 @@ def _viewer_bg():
 def _png_to_b64_img(png_bytes, style="width:100%;height:auto;display:block;border-radius:6px;"):
     import base64
     b64 = base64.b64encode(png_bytes).decode()
-    st.markdown(f'<img src="data:image/png;base64,{b64}" style="{style}">', unsafe_allow_html=True)
+    st.markdown(
+        f'<img src="data:image/png;base64,{b64}" style="{style}">',
+        unsafe_allow_html=True,
+    )
 
 def _pill(text, kind="info"):
-    cls = {"info": "result-pill", "success": "success-pill", "warn": "warn-pill"}.get(kind, "result-pill")
+    cls = {
+        "info":    "result-pill",
+        "success": "success-pill",
+        "warn":    "warn-pill",
+    }.get(kind, "result-pill")
     return f'<span class="{cls}">{text}</span>'
 
 
@@ -154,7 +156,10 @@ h2, h3 { font-family: 'IBM Plex Mono', monospace; color: var(--accent2); }
     font-size: 0.78rem; color: var(--text-muted);
     max-height: 220px; overflow-y: auto; white-space: pre-wrap;
 }
-.score-best { font-family: 'IBM Plex Mono', monospace; font-size: 2.4rem; color: var(--success); font-weight: 600; }
+.score-best {
+    font-family: 'IBM Plex Mono', monospace; font-size: 2.4rem;
+    color: var(--success); font-weight: 600;
+}
 .score-unit { font-size: 1rem; color: var(--text-muted); }
 .stButton > button {
     background: var(--success); color: white; border: none; border-radius: 6px;
@@ -234,18 +239,25 @@ BATCH_WORKDIR.mkdir(exist_ok=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  VINA BINARY (cached)
+#  TOOL CHECKS (cached — run once per session)
 # ══════════════════════════════════════════════════════════════════════════════
+
 @st.cache_resource(show_spinner="⬇ Downloading AutoDock Vina 1.2.7…")
 def _cached_vina():
     return get_vina_binary()
 
-VINA_PATH, _vina_err = _cached_vina()
+@st.cache_resource(show_spinner=False)
+def _cached_obabel():
+    return check_obabel()
+
+VINA_PATH, _vina_err      = _cached_vina()
+_OBABEL_OK, _OBABEL_VER   = _cached_obabel()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  3D VIEWER HELPER
 # ══════════════════════════════════════════════════════════════════════════════
+
 def show3d(view, height=480):
     try:
         from stmol import showmol
@@ -262,8 +274,10 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
     try:
         _c = {"x": float(cx), "y": float(cy), "z": float(cz)}
         _d = {"w": float(sx), "h": float(sy), "d": float(sz)}
-        view.addBox({"center": _c, "dimensions": _d, "color": "blue",  "opacity": 0.07, "wireframe": False})
-        view.addBox({"center": _c, "dimensions": _d, "color": "cyan",  "opacity": 0.90, "wireframe": True})
+        view.addBox({"center": _c, "dimensions": _d,
+                     "color": "blue",  "opacity": 0.07, "wireframe": False})
+        view.addBox({"center": _c, "dimensions": _d,
+                     "color": "cyan",  "opacity": 0.90, "wireframe": True})
     except Exception:
         pass
 
@@ -271,6 +285,7 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
 # ══════════════════════════════════════════════════════════════════════════════
 #  POSEVIEW LEGEND HTML
 # ══════════════════════════════════════════════════════════════════════════════
+
 _LEGEND_FULL = """
 <div style="background:#fff;border:1px solid #D0D7DE;border-radius:6px;
      padding:12px 20px;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;color:#333;margin-top:8px;">
@@ -290,12 +305,12 @@ _LEGEND_FULL = """
       <svg width="56" height="14"><circle cx="4" cy="7" r="4" fill="#44A44A"/>
         <line x1="8" y1="7" x2="48" y2="7" stroke="#AACC44" stroke-width="2" stroke-dasharray="5,3"/>
         <circle cx="52" cy="7" r="4" fill="#44A44A"/></svg>
-      <span>cation-π</span></div>
+      <span>cation-&#960;</span></div>
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="56" height="14"><circle cx="5" cy="7" r="4" fill="#00BCD4"/>
         <line x1="9" y1="7" x2="47" y2="7" stroke="#00BCD4" stroke-width="2" stroke-dasharray="5,3"/>
         <circle cx="51" cy="7" r="4" fill="#00BCD4"/></svg>
-      <span>π-π</span></div>
+      <span>&#960;-&#960;</span></div>
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7" stroke="#2E8B57" stroke-width="2.5"/></svg>
       <span>hydrophobic</span></div>
@@ -326,20 +341,29 @@ def _show_poseview_image(png_data, svg_data, caption, full_legend=False, stamp="
     elif svg_data:
         svg_str = svg_data.decode("utf-8") if isinstance(svg_data, bytes) else svg_data
         if stamp:
-            _esc = stamp.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            _esc = (stamp
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;"))
             _svg_stamp = (
                 '<g><foreignObject x="5%" y="92%" width="90%" height="40">'
-                '<div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;justify-content:center;align-items:center;height:100%;">'
+                '<div xmlns="http://www.w3.org/1999/xhtml" '
+                'style="display:flex;justify-content:center;align-items:center;height:100%;">'
                 f'<span style="background:#E8E8E8;color:#1A1A1A;font-family:sans-serif;'
-                f'font-size:15px;padding:6px 28px;border-radius:999px;white-space:nowrap;">{_esc}</span>'
+                f'font-size:15px;padding:6px 28px;border-radius:999px;white-space:nowrap;">'
+                f'{_esc}</span>'
                 '</div></foreignObject></g>'
             )
             svg_str = svg_str.replace("</svg>", f"{_svg_stamp}</svg>")
-        svg_str = svg_str.replace("<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1)
+        svg_str = svg_str.replace(
+            "<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1
+        )
         components.html(
-            f'<div style="background:#fff;border-radius:8px;padding:12px;border:1px solid #D0D7DE;">'
+            f'<div style="background:#fff;border-radius:8px;padding:12px;'
+            f'border:1px solid #D0D7DE;">'
             f'{svg_str}'
-            f'<p style="text-align:center;font-size:12px;color:#57606A;margin:6px 0 0 0;">{caption}</p>'
+            f'<p style="text-align:center;font-size:12px;color:#57606A;'
+            f'margin:6px 0 0 0;">{caption}</p>'
             f'</div>',
             height=560, scrolling=True,
         )
@@ -351,6 +375,7 @@ def _show_poseview_image(png_data, svg_data, caption, full_legend=False, stamp="
 # ══════════════════════════════════════════════════════════════════════════════
 #  POSEVIEW UI BLOCK (reusable)
 # ══════════════════════════════════════════════════════════════════════════════
+
 def _poseview_ui(
     rec_key, pose_sdf_path,
     pdb_id="", cocrystal_ligand_id="",
@@ -363,10 +388,12 @@ def _poseview_ui(
     ref_lig_name="", ref_lig_smiles="", ref_lig_energy=None,
     show_header=True,
 ):
-    _pose_key = f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
-    _stale    = st.session_state.get(pose_key_key) != _pose_key
-    _has_ref  = bool(pdb_id and cocrystal_ligand_id)
-    _lbl      = st.session_state.get(smiles_key, "ligand")[:20]
+    _pose_key = (
+        f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
+    )
+    _stale   = st.session_state.get(pose_key_key) != _pose_key
+    _has_ref = bool(pdb_id and cocrystal_ligand_id)
+    _lbl     = st.session_state.get(smiles_key, "ligand")[:20]
 
     if show_header:
         st.markdown("---")
@@ -382,7 +409,10 @@ def _poseview_ui(
                 if _has_ref else
                 " · No co-crystal ID — only docked pose diagram will be generated."
             )
-            st.caption("**Left:** PoseView v1 — docked pose · **Right:** PoseView2 — co-crystal" + _ref_note)
+            st.caption(
+                "**Left:** PoseView v1 — docked pose"
+                " · **Right:** PoseView2 — co-crystal" + _ref_note
+            )
     with _cb:
         _run = st.button("🔬 Generate 2D Diagrams", key=btn_key, type="primary")
 
@@ -404,7 +434,9 @@ def _poseview_ui(
                 st.session_state[pose_key_key] = _pose_key
 
             if _has_ref and ref_png_key and ref_svg_key:
-                with st.spinner(f"⏳ PoseView2 — {pdb_id.upper()} / {cocrystal_ligand_id}… (10–60 s)"):
+                with st.spinner(
+                    f"⏳ PoseView2 — {pdb_id.upper()} / {cocrystal_ligand_id}… (10–60 s)"
+                ):
                     _ref_svg, _ref_err = call_poseview2_ref(pdb_id, cocrystal_ligand_id)
                 if _ref_err:
                     st.warning(f"⚠️ PoseView2 error: {_ref_err}")
@@ -430,13 +462,17 @@ def _poseview_ui(
             _d1, _d2 = st.columns(2)
             with _d1:
                 if _png_data:
-                    st.download_button("⬇ PNG", data=_png_data,
-                        file_name=f"pose{pose_idx+1}_docked.png", mime="image/png",
-                        key=dl_png_key, width="stretch")
+                    st.download_button(
+                        "⬇ PNG", data=_png_data,
+                        file_name=f"pose{pose_idx+1}_docked.png",
+                        mime="image/png", key=dl_png_key, use_container_width=True,
+                    )
             with _d2:
-                st.download_button("⬇ SVG", data=_pose_svg,
-                    file_name=f"pose{pose_idx+1}_docked.svg", mime="image/svg+xml",
-                    key=dl_svg_key, width="stretch")
+                st.download_button(
+                    "⬇ SVG", data=_pose_svg,
+                    file_name=f"pose{pose_idx+1}_docked.svg",
+                    mime="image/svg+xml", key=dl_svg_key, use_container_width=True,
+                )
 
         with col_r:
             st.markdown("##### 🔬 Co-Crystal Reference (PoseView2)")
@@ -451,48 +487,78 @@ def _poseview_ui(
                 _r1, _r2 = st.columns(2)
                 with _r1:
                     if _ref_png2:
-                        st.download_button("⬇ PNG", data=_ref_png2,
+                        st.download_button(
+                            "⬇ PNG", data=_ref_png2,
                             file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
-                            mime="image/png", key=dl_png_key + "_ref", width="stretch")
+                            mime="image/png",
+                            key=dl_png_key + "_ref",
+                            use_container_width=True,
+                        )
                 with _r2:
-                    st.download_button("⬇ SVG", data=_ref_svg2,
+                    st.download_button(
+                        "⬇ SVG", data=_ref_svg2,
                         file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
-                        mime="image/svg+xml", key=dl_svg_key + "_ref", width="stretch")
+                        mime="image/svg+xml",
+                        key=dl_svg_key + "_ref",
+                        use_container_width=True,
+                    )
             elif _has_ref:
                 st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
             else:
-                st.caption("⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation.")
+                st.caption(
+                    "⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation."
+                )
 
-        # AI Prompt
+        # AI analysis prompt
         st.markdown("---")
-        _energy_str = f"{binding_energy:.2f} kcal/mol" if binding_energy is not None else "[binding energy]"
-        _lig_str    = f"{lig_name} (SMILES: {lig_smiles})" if lig_name and lig_smiles else lig_name or "[ligand]"
-        _has_ref_b  = bool(ref_lig_name or ref_lig_smiles)
-        _both       = bool(_pose_svg and _ref_svg2)
+        _energy_str = (
+            f"{binding_energy:.2f} kcal/mol"
+            if binding_energy is not None else "[binding energy]"
+        )
+        _lig_str = (
+            f"{lig_name} (SMILES: {lig_smiles})"
+            if lig_name and lig_smiles else lig_name or "[ligand]"
+        )
+        _has_ref_b = bool(ref_lig_name or ref_lig_smiles)
+        _both      = bool(_pose_svg and _ref_svg2)
 
         _ref_clause = ""
         if _has_ref_b:
-            _rf  = f"{ref_lig_name} (SMILES: {ref_lig_smiles})" if ref_lig_name and ref_lig_smiles else ref_lig_name or ref_lig_smiles
-            _re_ = f", binding energy {ref_lig_energy:.2f} kcal/mol" if ref_lig_energy is not None else ""
+            _rf  = (
+                f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
+                if ref_lig_name and ref_lig_smiles
+                else ref_lig_name or ref_lig_smiles
+            )
+            _re_ = (
+                f", binding energy {ref_lig_energy:.2f} kcal/mol"
+                if ref_lig_energy is not None else ""
+            )
             _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
 
         _prompt = (
-            f"Analyze the PoseView2 interaction diagram for PDB ID {pdb_id.upper() or '[PDB ID]'}, "
-            f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, binding energy {_energy_str}{_ref_clause}.\n\n"
+            f"Analyze the PoseView2 interaction diagram for PDB ID "
+            f"{pdb_id.upper() or '[PDB ID]'}, "
+            f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
+            f"binding energy {_energy_str}{_ref_clause}.\n\n"
             + (
-                "Legend (docked pose): Black dashed = H-bond · Dark green solid = hydrophobic\n"
-                "Legend (co-crystal):  Blue dashed = H-bond · Pink dashed = ionic · Yellow dashed = metal\n"
-                "  Green dot-dash = cation-π · Cyan dot-dash = π-π · Dark green solid = hydrophobic\n\n"
+                "Legend (docked pose): Black dashed = H-bond"
+                " · Dark green solid = hydrophobic\n"
+                "Legend (co-crystal):  Blue dashed = H-bond"
+                " · Pink dashed = ionic · Yellow dashed = metal\n"
+                "  Green dot-dash = cation-pi · Cyan dot-dash = pi-pi"
+                " · Dark green solid = hydrophobic\n\n"
                 if _both else
                 "Legend: Black dashed = H-bond · Dark green solid = hydrophobic\n\n"
             )
-            + "1. Identify key ligand–protein interactions.\n"
+            + "1. Identify key ligand-protein interactions.\n"
             + "2. List main interacting residues and their roles.\n"
-            + ("3. Compare docked pose with the reference ligand.\n"
-               "4. Highlight similarities/differences in binding orientation.\n"
-               "5. Evaluate whether interactions support the predicted binding energy.\n\n"
-               if _has_ref_b else
-               "3. Evaluate whether interactions support the predicted binding energy.\n\n")
+            + (
+                "3. Compare docked pose with the reference ligand.\n"
+                "4. Highlight similarities/differences in binding orientation.\n"
+                "5. Evaluate whether interactions support the predicted binding energy.\n\n"
+                if _has_ref_b else
+                "3. Evaluate whether interactions support the predicted binding energy.\n\n"
+            )
             + "Provide a concise structural interpretation of the binding mode."
         )
         st.markdown("### 🤖 AI Prompt")
@@ -503,8 +569,11 @@ def _poseview_ui(
 # ══════════════════════════════════════════════════════════════════════════════
 #  SHARED: RECEPTOR PREPARATION SECTION
 # ══════════════════════════════════════════════════════════════════════════════
+
 def _receptor_section(pfx: str, wdir: Path, step_label: str):
     import py3Dmol
+    from core import run_cmd as _run_cmd
+
     done     = st.session_state.get(pfx + "receptor_done", False)
     card_cls = "step-card done" if done else "step-card"
 
@@ -516,8 +585,10 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
     col_a, col_b = st.columns([1.2, 1])
     with col_a:
-        src = st.radio("PDB source", ["Download from RCSB", "Upload PDB file"],
-                       horizontal=True, key=pfx + "src_mode")
+        src = st.radio(
+            "PDB source", ["Download from RCSB", "Upload PDB file"],
+            horizontal=True, key=pfx + "src_mode",
+        )
         if src == "Download from RCSB":
             pdb_id     = st.text_input("PDB ID", value="1M17", max_chars=4, key=pfx + "pdb_id")
             upload_pdb = None
@@ -527,19 +598,34 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
         center_mode = st.radio(
             "Grid center",
-            ["Auto-detect co-crystal ligand", "Enter XYZ manually", "Select by atom selection (ProDy)"],
+            [
+                "Auto-detect co-crystal ligand",
+                "Enter XYZ manually",
+                "Select by atom selection (ProDy)",
+            ],
             horizontal=True, key=pfx + "center_mode",
         )
         if center_mode == "Enter XYZ manually":
             c1, c2, c3 = st.columns(3)
-            mx = c1.number_input("X", value=0.0, key=pfx + "mx")
-            my = c2.number_input("Y", value=0.0, key=pfx + "my")
-            mz = c3.number_input("Z", value=0.0, key=pfx + "mz")
+            c1.number_input("X", value=0.0, key=pfx + "mx")
+            c2.number_input("Y", value=0.0, key=pfx + "my")
+            c3.number_input("Z", value=0.0, key=pfx + "mz")
         elif center_mode == "Select by atom selection (ProDy)":
-            st.text_input("ProDy selection string",
-                          value="resid 702 820 and chain A", key=pfx + "mda_sel",
-                          help="e.g. resname ATP · resid 84 86 134 and chain A · resname LIG and chain A")
-            st.caption("💡 `resname LIG and chain A` · `resid 701 and chain A` · `resid 84 to 100 and chain B`")
+            st.text_input(
+                "ProDy selection string",
+                value="resid 702 820 and chain A",
+                key=pfx + "mda_sel",
+                help=(
+                    "e.g. resname ATP"
+                    " · resid 84 86 134 and chain A"
+                    " · resname LIG and chain A"
+                ),
+            )
+            st.caption(
+                "💡 `resname LIG and chain A`"
+                " · `resid 701 and chain A`"
+                " · `resid 84 to 100 and chain B`"
+            )
 
     with col_b:
         st.markdown("**Search box size (Å)**")
@@ -549,31 +635,33 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         st.markdown(f"Box volume: **{sx*sy*sz:,} Å³**")
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
-        from core import run_cmd as _run_cmd
-
         raw_path = str(wdir / "raw.pdb")
 
         if src == "Download from RCSB":
             token = pdb_id.strip().upper()
-            rc, _ = _run_cmd(["curl", "-sf",
-                f"https://files.rcsb.org/download/{token}.pdb", "-o", raw_path])
+            rc, _ = _run_cmd([
+                "curl", "-sf",
+                f"https://files.rcsb.org/download/{token}.pdb",
+                "-o", raw_path,
+            ])
             if rc != 0 or not os.path.exists(raw_path) or os.path.getsize(raw_path) < 200:
-                st.error(f"❌ Download failed for {token}"); st.stop()
+                st.error(f"❌ Download failed for {token}")
+                st.stop()
             st.session_state[pfx + "pdb_token"] = token
         else:
             if upload_pdb is None:
-                st.error("Please upload a PDB file first."); st.stop()
+                st.error("Please upload a PDB file first.")
+                st.stop()
             with open(raw_path, "wb") as f:
                 f.write(upload_pdb.read())
             st.session_state[pfx + "pdb_token"] = Path(upload_pdb.name).stem
 
-        # Map UI mode to core.py center_mode string
         _mode_map = {
-            "Auto-detect co-crystal ligand":         "auto",
-            "Enter XYZ manually":                    "manual",
-            "Select by atom selection (ProDy)":      "selection",
+            "Auto-detect co-crystal ligand":      "auto",
+            "Enter XYZ manually":                 "manual",
+            "Select by atom selection (ProDy)":   "selection",
         }
-        _core_mode = _mode_map[center_mode]
+        _core_mode  = _mode_map[center_mode]
         _manual_xyz = (
             st.session_state.get(pfx + "mx", 0.0),
             st.session_state.get(pfx + "my", 0.0),
@@ -593,20 +681,20 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
         if result["success"]:
             st.session_state.update({
-                pfx + "receptor_fh":              result["rec_fh"],
-                pfx + "receptor_pdbqt":           result["rec_pdbqt"],
-                pfx + "box_pdb":                  result["box_pdb"],
-                pfx + "config_txt":               result["config_txt"],
-                pfx + "cx":                       result["cx"],
-                pfx + "cy":                       result["cy"],
-                pfx + "cz":                       result["cz"],
-                pfx + "sx":                       result["sx"],
-                pfx + "sy":                       result["sy"],
-                pfx + "sz":                       result["sz"],
-                pfx + "ligand_pdb_path":          result["ligand_pdb_path"],
-                pfx + "cocrystal_ligand_id":      result["cocrystal_ligand_id"],
-                pfx + "receptor_done":            True,
-                pfx + "receptor_log":             "\n".join(result["log"]),
+                pfx + "receptor_fh":         result["rec_fh"],
+                pfx + "receptor_pdbqt":      result["rec_pdbqt"],
+                pfx + "box_pdb":             result["box_pdb"],
+                pfx + "config_txt":          result["config_txt"],
+                pfx + "cx":                  result["cx"],
+                pfx + "cy":                  result["cy"],
+                pfx + "cz":                  result["cz"],
+                pfx + "sx":                  result["sx"],
+                pfx + "sy":                  result["sy"],
+                pfx + "sz":                  result["sz"],
+                pfx + "ligand_pdb_path":     result["ligand_pdb_path"],
+                pfx + "cocrystal_ligand_id": result["cocrystal_ligand_id"],
+                pfx + "receptor_done":       True,
+                pfx + "receptor_log":        "\n".join(result["log"]),
             })
         else:
             st.error(f"❌ Receptor preparation failed: {result['error']}")
@@ -623,48 +711,58 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         _sz     = st.session_state.get(pfx + "sz", 16)
         _lig_id = st.session_state.get(pfx + "cocrystal_ligand_id", "")
 
+        _center_pill = f"Center ({cx_v:.2f}, {cy_v:.2f}, {cz_v:.2f})"
+        _box_pill    = f"Box {_sx}x{_sy}x{_sz} A"
         st.markdown(
-            f"{_pill('Receptor ready ✓', 'success')} {_pill(token)} "
-            f"{_pill(f'Center ({cx_v:.2f}, {cy_v:.2f}, {cz_v:.2f})')} "
-            f"{_pill(f'Box {_sx}×{_sy}×{_sz} Å')}"
-            + (f" {_pill(f'PoseView2 ligand: {_lig_id}')}" if _lig_id else ""),
+            f"{_pill('Receptor ready', 'success')} {_pill(token)} "
+            f"{_pill(_center_pill)} {_pill(_box_pill)}"
+            + (f" {_pill('PoseView2: ' + _lig_id)}" if _lig_id else ""),
             unsafe_allow_html=True,
         )
         with st.expander("📋 Preparation log", expanded=False):
             st.markdown(
-                f'<div class="log-box">{st.session_state.get(pfx + "receptor_log", "")}</div>',
+                f'<div class="log-box">'
+                f'{st.session_state.get(pfx + "receptor_log", "")}'
+                f'</div>',
                 unsafe_allow_html=True,
             )
         with st.expander("🔭 3D: Receptor + Docking Box", expanded=True):
             v3 = py3Dmol.view(width="100%", height=480)
             v3.setBackgroundColor(_viewer_bg())
             mi = 0
-            for path, style in [
+            for _path, _style in [
                 (st.session_state.get(pfx + "receptor_fh"),
                  {"cartoon": {"color": "spectrum", "opacity": 0.65}}),
                 (st.session_state.get(pfx + "box_pdb"),
                  {"stick": {"radius": 0.2, "color": "gray"}}),
             ]:
-                if path and os.path.exists(path):
-                    v3.addModel(open(path).read(), "pdb")
-                    v3.setStyle({"model": mi}, style)
+                if _path and os.path.exists(_path):
+                    v3.addModel(open(_path).read(), "pdb")
+                    v3.setStyle({"model": mi}, _style)
                     mi += 1
             lig_p = st.session_state.get(pfx + "ligand_pdb_path")
             if lig_p and os.path.exists(lig_p):
                 v3.addModel(open(lig_p).read(), "pdb")
-                v3.setStyle({"model": mi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.25}})
+                v3.setStyle({"model": mi}, {
+                    "stick": {"colorscheme": "magentaCarbon", "radius": 0.25}
+                })
             _add_box_to_view(v3, cx_v, cy_v, cz_v, _sx, _sy, _sz)
             try:
                 for _end, _col, _lbl in [
-                    ({"x": cx_v+8, "y": cy_v,   "z": cz_v  }, "red",   "X"),
-                    ({"x": cx_v,   "y": cy_v+8, "z": cz_v  }, "green", "Y"),
-                    ({"x": cx_v,   "y": cy_v,   "z": cz_v+8}, "blue",  "Z"),
+                    ({"x": cx_v+8, "y": cy_v,   "z": cz_v},   "red",   "X"),
+                    ({"x": cx_v,   "y": cy_v+8,  "z": cz_v},   "green", "Y"),
+                    ({"x": cx_v,   "y": cy_v,    "z": cz_v+8}, "blue",  "Z"),
                 ]:
-                    v3.addArrow({"start": {"x": cx_v, "y": cy_v, "z": cz_v},
-                                 "end": _end, "radius": 0.15, "color": _col, "radiusRatio": 3.0})
-                    v3.addLabel(_lbl, {"fontSize": 14, "fontColor": _col,
-                                       "backgroundColor": "black", "backgroundOpacity": 0.6,
-                                       "inFront": True, "showBackground": True}, _end)
+                    _st = {"x": cx_v, "y": cy_v, "z": cz_v}
+                    v3.addArrow({
+                        "start": _st, "end": _end,
+                        "radius": 0.15, "color": _col, "radiusRatio": 3.0,
+                    })
+                    v3.addLabel(_lbl, {
+                        "fontSize": 14, "fontColor": _col,
+                        "backgroundColor": "black", "backgroundOpacity": 0.6,
+                        "inFront": True, "showBackground": True,
+                    }, _end)
             except Exception:
                 pass
             v3.zoomTo()
@@ -685,20 +783,42 @@ st.markdown("""
 margin:0;font-weight:700;padding-top:29px;">nyone can dock, everyone can do!</h1>
 </div>""", unsafe_allow_html=True)
 
-st.markdown("Molecular docking powered by **AutoDock Vina 1.2.7**, **Dimorphite-DL**, and **PoseView2**.")
-st.markdown("**Basic** — single ligand. **Batch** — multiple ligands. **☁️ Cloud-ready | 📱 Mobile-compatible**")
+st.markdown(
+    "Molecular docking powered by **AutoDock Vina 1.2.7**, "
+    "**Dimorphite-DL**, and **PoseView2**."
+)
+st.markdown(
+    "**Basic** — single ligand. **Batch** — multiple ligands. "
+    "**☁️ Cloud-ready | 📱 Mobile-compatible**"
+)
 
+# Tool availability banners
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
     st.stop()
-st.markdown(_pill("Vina 1.2.7 ready ✓", "success"), unsafe_allow_html=True)
+
+if not _OBABEL_OK:
+    st.error(
+        "❌ OpenBabel not found. "
+        "Add `openbabel` to your `packages.txt` file and redeploy."
+    )
+    st.stop()
+
+st.markdown(
+    f"{_pill('Vina 1.2.7 ready', 'success')} "
+    f"{_pill('OpenBabel ready', 'success')}",
+    unsafe_allow_html=True,
+)
 st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════════
-tab_basic, tab_batch = st.tabs(["🧪  Basic — single ligand", "🔬  Batch — multiple ligands"])
+tab_basic, tab_batch = st.tabs([
+    "🧪  Basic — single ligand",
+    "🔬  Batch — multiple ligands",
+])
 
 
 # ╔════════════════════════════════════════════════════════════════════════════╗
@@ -717,21 +837,31 @@ with tab_basic:
         unsafe_allow_html=True,
     )
 
-    lig_input_mode = st.radio("Input mode",
+    lig_input_mode = st.radio(
+        "Input mode",
         ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)", "Draw structure (Ketcher)"],
-        horizontal=True, key="lig_input_mode")
+        horizontal=True, key="lig_input_mode",
+    )
 
     smiles_in = ""
     if lig_input_mode == "SMILES string":
-        smiles_in = st.text_input("SMILES string",
+        smiles_in = st.text_input(
+            "SMILES string",
             value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
-            key="smiles_in")
+            key="smiles_in",
+        )
     elif lig_input_mode == "Upload structure (.sdf/.mol2/.pdb)":
-        st.file_uploader("Upload structure file", type=["sdf", "mol2", "pdb"], key="lig_struct_file")
+        st.file_uploader(
+            "Upload structure file", type=["sdf", "mol2", "pdb"],
+            key="lig_struct_file",
+        )
     else:
         try:
             from streamlit_ketcher import st_ketcher
-            _k = st_ketcher(st.session_state.get("ketcher_smi", ""), height=400, key="ketcher_widget")
+            _k = st_ketcher(
+                st.session_state.get("ketcher_smi", ""),
+                height=400, key="ketcher_widget",
+            )
             if _k:
                 st.session_state["ketcher_smi"] = _k
                 smiles_in = _k
@@ -746,29 +876,33 @@ with tab_basic:
 
     if not st.session_state.receptor_done:
         st.caption("⚠ Complete Step 1 first.")
-    if st.button("▶ Prepare Ligand", key="btn_ligand", type="primary",
-                 disabled=not st.session_state.receptor_done):
+    if st.button(
+        "▶ Prepare Ligand", key="btn_ligand", type="primary",
+        disabled=not st.session_state.receptor_done,
+    ):
         lig_name = lig_name_in.strip() or "LIG"
         with st.spinner("Preparing ligand…"):
             _mode = st.session_state.get("lig_input_mode", "SMILES string")
 
-            # Resolve SMILES
             if "Upload" in _mode:
                 _sfobj = st.session_state.get("lig_struct_file")
                 if _sfobj is None:
-                    st.error("No structure file uploaded"); st.stop()
-                _ext  = Path(_sfobj.name).suffix.lower()
-                _tmp  = str(WORKDIR / f"lig_upload{_ext}")
+                    st.error("No structure file uploaded")
+                    st.stop()
+                _ext = Path(_sfobj.name).suffix.lower()
+                _tmp = str(WORKDIR / f"lig_upload{_ext}")
                 with open(_tmp, "wb") as _f:
                     _f.write(_sfobj.read())
                 try:
                     smiles_in = smiles_from_file(_tmp, WORKDIR)
                 except Exception as e:
-                    st.error(f"❌ Could not read structure: {e}"); st.stop()
+                    st.error(f"❌ Could not read structure: {e}")
+                    st.stop()
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
-                    st.error("No molecule drawn in Ketcher."); st.stop()
+                    st.error("No molecule drawn in Ketcher.")
+                    st.stop()
 
             result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
 
@@ -791,10 +925,15 @@ with tab_basic:
         from rdkit import Chem
         from rdkit.Chem import AllChem, Draw
 
-        st.markdown(f"{_pill('Ligand ready ✓', 'success')} {_pill(st.session_state.ligand_name)}",
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"{_pill('Ligand ready', 'success')} {_pill(st.session_state.ligand_name)}",
+            unsafe_allow_html=True,
+        )
         with st.expander("📋 Preparation log", expanded=False):
-            st.markdown(f'<div class="log-box">{st.session_state.ligand_log}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="log-box">{st.session_state.ligand_log}</div>',
+                unsafe_allow_html=True,
+            )
 
         c2d, c3d = st.columns(2)
         with c2d:
@@ -804,7 +943,10 @@ with tab_basic:
                 AllChem.Compute2DCoords(m2)
                 buf = io.BytesIO()
                 Draw.MolToImage(m2, size=(320, 260)).save(buf, format="PNG")
-                _png_to_b64_img(buf.getvalue(), style="width:100%;max-width:320px;height:auto;border-radius:6px;")
+                _png_to_b64_img(
+                    buf.getvalue(),
+                    style="width:100%;max-width:320px;height:auto;border-radius:6px;",
+                )
             except Exception as e:
                 st.info(f"2D unavailable: {e}")
         with c3d:
@@ -841,51 +983,65 @@ with tab_basic:
             f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
             f'border-radius:8px;padding:16px;">'
             f'<div style="color:var(--text-muted);font-size:0.8rem">ESTIMATED TIME</div>'
-            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;color:var(--warn)">'
-            f'~{est}–{est*3} min</div>'
-            f'<div style="color:var(--text-muted);font-size:0.8rem">exhaustiveness = {exh}</div>'
-            f'</div>', unsafe_allow_html=True,
+            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;'
+            f'color:var(--warn)">~{est}&#8211;{est*3} min</div>'
+            f'<div style="color:var(--text-muted);font-size:0.8rem">'
+            f'exhaustiveness = {exh}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
         )
 
     if not st.session_state.ligand_done:
         st.caption("⚠ Complete Steps 1 & 2 first.")
-    if st.button("▶ Run Docking", key="btn_dock", type="primary",
-                 disabled=not st.session_state.ligand_done):
+    if st.button(
+        "▶ Run Docking", key="btn_dock", type="primary",
+        disabled=not st.session_state.ligand_done,
+    ):
         base   = st.session_state.ligand_name
         pv_sdf = str(WORKDIR / f"{base}_pv_ready.sdf")
 
         with st.spinner(f"Running Vina (exhaustiveness={exh})… ⏳"):
             dock = run_vina(
-                receptor_pdbqt  = st.session_state.receptor_pdbqt,
-                ligand_pdbqt    = st.session_state.ligand_pdbqt,
-                config_txt      = st.session_state.config_txt,
-                vina_path       = VINA_PATH,
-                exhaustiveness  = exh,
-                n_modes         = nm,
-                energy_range    = er,
-                wdir            = WORKDIR,
-                out_name        = base,
+                receptor_pdbqt = st.session_state.receptor_pdbqt,
+                ligand_pdbqt   = st.session_state.ligand_pdbqt,
+                config_txt     = st.session_state.config_txt,
+                vina_path      = VINA_PATH,
+                exhaustiveness = exh,
+                n_modes        = nm,
+                energy_range   = er,
+                wdir           = WORKDIR,
+                out_name       = base,
             )
 
         if not dock["success"]:
             st.error(f"❌ Vina failed: {dock['error']}\n{dock['log'][:400]}")
             st.session_state.docking_done = False
         else:
-            pv_log = fix_sdf_bond_orders(dock["out_sdf"], st.session_state.prot_smiles, pv_sdf)
+            pv_log = fix_sdf_bond_orders(
+                dock["out_sdf"], st.session_state.prot_smiles, pv_sdf
+            )
             if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
                 pv_sdf = dock["out_sdf"]
 
-            df = pd.DataFrame([{
-                "Pose":              s["pose"],
-                "Affinity (kcal/mol)": s["affinity"],
-                "RMSD lb":           s["rmsd_lb"],
-                "RMSD ub":           s["rmsd_ub"],
-            } for s in dock["scores"]]).sort_values("Affinity (kcal/mol)").reset_index(drop=True) \
-                if dock["scores"] else None
+            df = (
+                pd.DataFrame([{
+                    "Pose":                  s["pose"],
+                    "Affinity (kcal/mol)":   s["affinity"],
+                    "RMSD lb":               s["rmsd_lb"],
+                    "RMSD ub":               s["rmsd_ub"],
+                } for s in dock["scores"]])
+                .sort_values("Affinity (kcal/mol)")
+                .reset_index(drop=True)
+            ) if dock["scores"] else None
 
-            mols = load_mols_from_sdf(dock["out_sdf"], sanitize=False) if os.path.exists(dock["out_sdf"]) else []
+            mols = (
+                load_mols_from_sdf(dock["out_sdf"], sanitize=False)
+                if os.path.exists(dock["out_sdf"]) else []
+            )
 
-            _full_log = dock["log"] + "\n\n── Bond-order fix ──\n" + "\n".join(pv_log)
+            _full_log = (
+                dock["log"] + "\n\n── Bond-order fix ──\n" + "\n".join(pv_log)
+            )
             st.session_state.update({
                 "output_pdbqt":  dock["out_pdbqt"],
                 "output_sdf":    dock["out_sdf"],
@@ -901,15 +1057,24 @@ with tab_basic:
             })
 
     if st.session_state.docking_done:
-        st.markdown(_pill("Docking complete ✓", "success"), unsafe_allow_html=True)
+        st.markdown(_pill("Docking complete", "success"), unsafe_allow_html=True)
         with st.expander("📋 Vina output log", expanded=False):
-            st.markdown(f'<div class="log-box">{st.session_state.docking_log}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="log-box">{st.session_state.docking_log}</div>',
+                unsafe_allow_html=True,
+            )
         if st.session_state.score_df is not None:
             best = st.session_state.score_df["Affinity (kcal/mol)"].min()
-            cls  = "Very strong" if best < -11 else "Strong" if best < -9 else "Moderate" if best < -7 else "Weak"
+            cls  = (
+                "Very strong" if best < -11 else
+                "Strong"      if best < -9  else
+                "Moderate"    if best < -7  else "Weak"
+            )
             st.markdown(
-                f'<div class="score-best">{best:.2f} <span class="score-unit">kcal/mol</span></div>'
-                f'<div style="color:#8b949e;font-size:0.9rem;margin-bottom:12px">Best pose — {cls} predicted binding</div>',
+                f'<div class="score-best">{best:.2f} '
+                f'<span class="score-unit">kcal/mol</span></div>'
+                f'<div style="color:#8b949e;font-size:0.9rem;margin-bottom:12px">'
+                f'Best pose — {cls} predicted binding</div>',
                 unsafe_allow_html=True,
             )
 
@@ -933,60 +1098,79 @@ with tab_basic:
         df   = st.session_state.score_df
         mols = st.session_state.pose_mols or []
 
-        # Score table + bar chart
+        # ── Score table + bar chart ───────────────────────────────────────────
         ct, cc = st.columns([1, 1.4])
         with ct:
             st.markdown("**Score Table**")
             if df is not None:
                 st.dataframe(
-                    df.style.background_gradient(cmap="RdYlGn",
-                        subset=["Affinity (kcal/mol)"], gmap=-df["Affinity (kcal/mol)"]),
-                    hide_index=True, width="stretch",
+                    df.style.background_gradient(
+                        cmap="RdYlGn",
+                        subset=["Affinity (kcal/mol)"],
+                        gmap=-df["Affinity (kcal/mol)"],
+                    ),
+                    hide_index=True, use_container_width=True,
                 )
         with cc:
             st.markdown("**Affinity by Pose**")
             if df is not None:
                 _cc = _chart_colors()
                 fig, ax = plt.subplots(figsize=(6, 3.5))
-                fig.patch.set_facecolor(_cc["bg"]); ax.set_facecolor(_cc["bg_sub"])
-                cols = ["#3fb950" if v == df["Affinity (kcal/mol)"].min() else "#58a6ff"
-                        for v in df["Affinity (kcal/mol)"]]
-                ax.bar(df["Pose"].astype(str), df["Affinity (kcal/mol)"],
-                       color=cols, edgecolor=_cc["border"], linewidth=0.6)
+                fig.patch.set_facecolor(_cc["bg"])
+                ax.set_facecolor(_cc["bg_sub"])
+                cols = [
+                    "#3fb950" if v == df["Affinity (kcal/mol)"].min() else "#58a6ff"
+                    for v in df["Affinity (kcal/mol)"]
+                ]
+                ax.bar(
+                    df["Pose"].astype(str), df["Affinity (kcal/mol)"],
+                    color=cols, edgecolor=_cc["border"], linewidth=0.6,
+                )
                 ax.invert_yaxis()
-                ax.set_xlabel("Pose", color=_cc["muted"], fontsize=9)
+                ax.set_xlabel("Pose",                color=_cc["muted"], fontsize=9)
                 ax.set_ylabel("Affinity (kcal/mol)", color=_cc["muted"], fontsize=9)
                 ax.tick_params(colors=_cc["muted"], labelsize=8)
-                for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
+                for sp in ax.spines.values():
+                    sp.set_edgecolor(_cc["border"])
                 fig.tight_layout()
-                st.pyplot(fig, width="stretch"); plt.close(fig)
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
 
         st.markdown("---")
 
-        # Animated viewer
+        # ── Animated viewer ───────────────────────────────────────────────────
         st.markdown("**🎬 Animated Pose Viewer**")
         anim_spd = st.slider("Interval (ms)", 500, 3000, 1500, 250, key="anim_spd")
         if st.session_state.output_sdf and os.path.exists(st.session_state.output_sdf):
             sdf_txt = open(st.session_state.output_sdf).read()
             va = py3Dmol.view(width="100%", height=440)
-            va.setBackgroundColor(_viewer_bg()); mai = 0
+            va.setBackgroundColor(_viewer_bg())
+            mai = 0
             if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                 va.addModel(open(st.session_state.receptor_fh).read(), "pdb")
-                va.setStyle({"model": mai}, {"cartoon": {"color": "spectrum", "opacity": 0.7},
-                                              "stick": {"radius": 0.1, "opacity": 0.2}}); mai += 1
+                va.setStyle({"model": mai}, {
+                    "cartoon": {"color": "spectrum", "opacity": 0.7},
+                    "stick":   {"radius": 0.1, "opacity": 0.2},
+                })
+                mai += 1
             if st.session_state.ligand_pdb_path and os.path.exists(st.session_state.ligand_pdb_path):
                 va.addModel(open(st.session_state.ligand_pdb_path).read(), "pdb")
-                va.setStyle({"model": mai}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.22}}); mai += 1
+                va.setStyle({"model": mai}, {
+                    "stick": {"colorscheme": "magentaCarbon", "radius": 0.22}
+                })
+                mai += 1
             va.addModelsAsFrames(sdf_txt)
             va.setStyle({"model": mai}, {"stick": {"colorscheme": "greenCarbon", "radius": 0.25}})
             va.animate({"interval": anim_spd, "loop": "forward"})
             va.addSurface("SES", {"opacity": 0.18, "color": "lightblue"}, {"model": 0}, {"model": mai})
-            va.zoomTo(); va.center({"model": mai}); va.rotate(30)
+            va.zoomTo()
+            va.center({"model": mai})
+            va.rotate(30)
             show3d(va, height=440)
 
         st.markdown("---")
 
-        # Pose selector
+        # ── Pose selector ─────────────────────────────────────────────────────
         st.markdown("**🔎 Interactive Pose Selector**")
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
@@ -996,31 +1180,49 @@ with tab_basic:
             if df is not None:
                 row = df[df["Pose"] == pose_idx + 1]
                 if len(row):
-                    aff      = row.iloc[0]["Affinity (kcal/mol)"]
-                    _pills   = (f'{_pill(f"Pose {pose_idx+1}/{len(mols)}")} '
-                                f'{_pill(f"Affinity: {aff:.2f} kcal/mol", "success" if aff < -8 else "warn")}')
+                    aff = row.iloc[0]["Affinity (kcal/mol)"]
+                    _score_kind = "success" if aff < -8 else "warn"
+                    _pose_pill  = _pill(f"Pose {pose_idx+1}/{len(mols)}")
+                    _aff_pill   = _pill(f"Affinity: {aff:.2f} kcal/mol", _score_kind)
+                    _pills_str  = f"{_pose_pill} {_aff_pill}"
+
                     if _cryst_pdb and os.path.exists(_cryst_pdb):
                         _rmsd = calc_rmsd_heavy(sel_mol, _cryst_pdb)
                         if _rmsd is not None:
-                            _rk = "success" if _rmsd <= 2.0 else ("warn" if _rmsd <= 3.0 else "info")
-                            _pills += f' {_pill(f"RMSD {_rmsd:.2f} Å vs crystal", _rk)}'
-                    st.markdown(_pills, unsafe_allow_html=True)
+                            _rk = (
+                                "success" if _rmsd <= 2.0 else
+                                "warn"    if _rmsd <= 3.0 else "info"
+                            )
+                            _pills_str += f" {_pill(f'RMSD {_rmsd:.2f} A vs crystal', _rk)}"
+                    st.markdown(_pills_str, unsafe_allow_html=True)
 
             cpv, cdl = st.columns([3, 1])
             with cpv:
                 try:
                     v2 = py3Dmol.view(width="100%", height=400)
-                    v2.setBackgroundColor(_viewer_bg()); mi2 = 0
+                    v2.setBackgroundColor(_viewer_bg())
+                    mi2 = 0
                     if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                         v2.addModel(open(st.session_state.receptor_fh).read(), "pdb")
-                        v2.setStyle({"model": mi2}, {"cartoon": {"color": "spectrum", "opacity": 0.5},
-                                                      "stick": {"radius": 0.08, "opacity": 0.15}}); mi2 += 1
+                        v2.setStyle({"model": mi2}, {
+                            "cartoon": {"color": "spectrum", "opacity": 0.5},
+                            "stick":   {"radius": 0.08, "opacity": 0.15},
+                        })
+                        mi2 += 1
                     if _cryst_pdb and os.path.exists(_cryst_pdb):
                         v2.addModel(open(_cryst_pdb).read(), "pdb")
-                        v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.2}}); mi2 += 1
+                        v2.setStyle({"model": mi2}, {
+                            "stick": {"colorscheme": "magentaCarbon", "radius": 0.2}
+                        })
+                        mi2 += 1
                     v2.addModel(Chem.MolToMolBlock(sel_mol), "mol")
-                    v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                    v2.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": mi2})
+                    v2.setStyle({"model": mi2}, {
+                        "stick": {"colorscheme": "cyanCarbon", "radius": 0.28}
+                    })
+                    v2.addSurface(
+                        "SES", {"opacity": 0.2, "color": "lightblue"},
+                        {"model": 0}, {"model": mi2},
+                    )
                     v2.zoomTo({"model": mi2})
                     show3d(v2, height=400)
                 except Exception as e:
@@ -1030,53 +1232,93 @@ with tab_basic:
                 st.markdown("**Download**")
                 sp_raw = str(WORKDIR / f"pose_{pose_idx+1}_raw.sdf")
                 write_single_pose(sel_mol, sp_raw)
-                st.download_button(f"⬇ Pose {pose_idx+1} (.sdf)", open(sp_raw, "rb"),
-                    file_name=f"pose_{pose_idx+1}.sdf", key=f"dl_p_{pose_idx}")
-                st.download_button("⬇ All poses (.pdbqt)",
+                st.download_button(
+                    f"⬇ Pose {pose_idx+1} (.sdf)",
+                    open(sp_raw, "rb"),
+                    file_name=f"pose_{pose_idx+1}.sdf",
+                    key=f"dl_p_{pose_idx}",
+                    use_container_width=True,
+                )
+                st.download_button(
+                    "⬇ All poses (.pdbqt)",
                     open(st.session_state.output_pdbqt, "rb"),
-                    file_name=f"{st.session_state.dock_base}_out.pdbqt", key="dl_pdbqt")
+                    file_name=f"{st.session_state.dock_base}_out.pdbqt",
+                    key="dl_pdbqt",
+                    use_container_width=True,
+                )
                 if df is not None:
-                    st.download_button("⬇ Scores (.csv)", df.to_csv(index=False).encode(),
+                    st.download_button(
+                        "⬇ Scores (.csv)",
+                        df.to_csv(index=False).encode(),
                         file_name=f"{st.session_state.dock_base}_scores.csv",
-                        mime="text/csv", key="dl_csv")
+                        mime="text/csv",
+                        key="dl_csv",
+                        use_container_width=True,
+                    )
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    st.download_button("⬇ Receptor (.pdb)",
+                    st.download_button(
+                        "⬇ Receptor (.pdb)",
                         open(st.session_state.receptor_fh, "rb"),
-                        file_name="receptor.pdb", key="dl_rec")
+                        file_name="receptor.pdb",
+                        key="dl_rec",
+                        use_container_width=True,
+                    )
 
-            # Binding pocket
+            # ── Binding pocket ────────────────────────────────────────────────
             st.markdown("---")
             st.markdown("**🔬 Binding Pocket View**")
             _bpl, _bpr = st.columns([2, 1])
             with _bpl:
-                _cutoff = st.slider("Distance cutoff (Å)", 2.5, 5.0, 3.5, 0.1, key="bp_cutoff")
+                _cutoff = st.slider(
+                    "Distance cutoff (A)", 2.5, 5.0, 3.5, 0.1, key="bp_cutoff"
+                )
             with _bpr:
-                _show_labels = st.checkbox("Show residue labels", value=True, key="bp_show_labels")
+                _show_labels = st.checkbox(
+                    "Show residue labels", value=True, key="bp_show_labels"
+                )
 
             try:
                 vbp = py3Dmol.view(width="100%", height=440)
-                vbp.setBackgroundColor(_viewer_bg()); mbp = 0
+                vbp.setBackgroundColor(_viewer_bg())
+                mbp = 0
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                     vbp.addModel(open(st.session_state.receptor_fh).read(), "pdb")
-                    vbp.setStyle({"model": mbp}, {"cartoon": {"color": "spectrum", "opacity": 0.45}}); mbp += 1
+                    vbp.setStyle({"model": mbp}, {
+                        "cartoon": {"color": "spectrum", "opacity": 0.45}
+                    })
+                    mbp += 1
                 vbp.addModel(Chem.MolToMolBlock(sel_mol), "mol")
                 _lig_m = mbp
-                vbp.setStyle({"model": _lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
+                vbp.setStyle({"model": _lig_m}, {
+                    "stick": {"colorscheme": "cyanCarbon", "radius": 0.30}
+                })
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    _ir = get_interacting_residues(st.session_state.receptor_fh, sel_mol, cutoff=_cutoff)
+                    _ir = get_interacting_residues(
+                        st.session_state.receptor_fh, sel_mol, cutoff=_cutoff
+                    )
                     for _rb in _ir:
-                        vbp.setStyle({"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
-                                     {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
+                        vbp.setStyle(
+                            {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
+                            {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}},
+                        )
                         if _show_labels:
-                            vbp.addLabel(f"{_rb['resn']}{_rb['resi']}",
-                                         {"fontSize": 11, "fontColor": "yellow", "backgroundColor": "black",
-                                          "backgroundOpacity": 0.65, "inFront": True, "showBackground": True},
-                                         {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]})
-                    _n = len(_ir)
-                    _res_label = f"{_n} residue{'s' if _n != 1 else ''}"
+                            vbp.addLabel(
+                                f"{_rb['resn']}{_rb['resi']}",
+                                {
+                                    "fontSize": 11, "fontColor": "yellow",
+                                    "backgroundColor": "black",
+                                    "backgroundOpacity": 0.65,
+                                    "inFront": True, "showBackground": True,
+                                },
+                                {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
+                            )
+                    _n         = len(_ir)
+                    _res_label = f"{_n} residue" + ("s" if _n != 1 else "")
+                    _res_kind  = "success" if _n else "warn"
                     st.markdown(
-                        f"{_pill(f'Pose {b_pose_i+1}')} {_pill(f'{_cutoff:.1f} Å cutoff')} "
-                        f"{_pill(_res_label, 'success' if _n else 'warn')}",
+                        f"{_pill(f'Pose {pose_idx+1}')}"
+                        f" {_pill(f'{_cutoff:.1f} A cutoff')}"
+                        f" {_pill(_res_label, _res_kind)}",
                         unsafe_allow_html=True,
                     )
                 vbp.zoomTo({"model": _lig_m})
@@ -1084,12 +1326,15 @@ with tab_basic:
             except Exception as _e:
                 st.info(f"Binding pocket viewer error: {_e}")
 
-            # PoseView 2D
+            # ── PoseView 2D ───────────────────────────────────────────────────
             pv_sdf_all = st.session_state.get("output_pv_sdf", "")
             sp_pv = str(WORKDIR / f"pose_{pose_idx+1}_pv_ready.sdf")
             if pv_sdf_all and os.path.exists(pv_sdf_all):
                 pv_mols = load_mols_from_sdf(pv_sdf_all)
-                write_single_pose(pv_mols[pose_idx] if pose_idx < len(pv_mols) else sel_mol, sp_pv)
+                write_single_pose(
+                    pv_mols[pose_idx] if pose_idx < len(pv_mols) else sel_mol,
+                    sp_pv,
+                )
             else:
                 write_single_pose(sel_mol, sp_pv)
 
@@ -1113,7 +1358,8 @@ with tab_basic:
                 lig_smiles          = st.session_state.get("prot_smiles", ""),
                 binding_energy      = (
                     float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
-                    if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0 else None
+                    if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0
+                    else None
                 ),
             )
 
@@ -1138,26 +1384,40 @@ with tab_batch:
 
     col_b1, col_b2 = st.columns([1.6, 1])
     with col_b1:
-        b_input_mode = st.radio("Input mode", ["SMILES list (text)", "Upload .smi file"], key="b_input_mode")
+        b_input_mode = st.radio(
+            "Input mode", ["SMILES list (text)", "Upload .smi file"],
+            key="b_input_mode",
+        )
         if b_input_mode == "SMILES list (text)":
-            st.text_area("One `SMILES [name]` per line",
-                value=("C1=CC(=CC=C1C2=CC(=O)C3=C(C=C(C=C3O2)O)O)O Apigenin\n"
-                       "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)O Baicalein\n"
-                       "CC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)O Osimertinib\n"
-                       "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)O Luteolin\n"
-                       "CC(C)OC1=C(C=C2C(=C1)N=CN2)NC3=CC=CC(=C3)C#C Gefitinib"),
-                height=220, key="b_smiles_text")
+            st.text_area(
+                "One `SMILES [name]` per line",
+                value=(
+                    "C1=CC(=CC=C1C2=CC(=O)C3=C(C=C(C=C3O2)O)O)O Apigenin\n"
+                    "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)O Baicalein\n"
+                    "CC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)O Osimertinib\n"
+                    "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)O Luteolin\n"
+                    "CC(C)OC1=C(C=C2C(=C1)N=CN2)NC3=CC=CC(=C3)C#C Gefitinib"
+                ),
+                height=220, key="b_smiles_text",
+            )
         else:
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
 
     with col_b2:
         st.markdown("**Redocking validation**")
-        b_do_redock = st.checkbox("Dock co-crystal ligand as reference", value=True, key="b_do_redock")
+        b_do_redock = st.checkbox(
+            "Dock co-crystal ligand as reference", value=True, key="b_do_redock"
+        )
         if b_do_redock:
-            st.text_input("Co-crystal SMILES [name]",
-                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
-                key="b_redock_smiles")
+            st.text_input(
+                "Co-crystal SMILES [name]",
+                value=(
+                    "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC "
+                    "Erlotinib"
+                ),
+                key="b_redock_smiles",
+            )
             st.caption("Score shown as dashed reference line in plot.")
         st.markdown("**Docking parameters**")
         b_exh = st.slider("Exhaustiveness", 4, 32, 8, 2, key="b_exh")
@@ -1166,7 +1426,10 @@ with tab_batch:
 
     if not b_rec_done:
         st.caption("⚠ Complete Step B1 first.")
-    if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=not b_rec_done):
+    if st.button(
+        "▶ Run Batch Docking", key="b_btn_dock", type="primary",
+        disabled=not b_rec_done,
+    ):
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
         b_ph_val  = st.session_state.get("b_ph", 7.4)
@@ -1177,23 +1440,30 @@ with tab_batch:
             if st.session_state.get("b_input_mode") == "SMILES list (text)":
                 for line in st.session_state.get("b_smiles_text", "").strip().splitlines():
                     line = line.strip()
-                    if not line or line.startswith("#"): continue
+                    if not line or line.startswith("#"):
+                        continue
                     pts = line.split(None, 1)
-                    smiles_pairs.append((pts[0], pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"))
+                    _nm = pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
+                    smiles_pairs.append((pts[0], _nm))
             else:
                 fobj = st.session_state.get("b_smi_file")
-                if fobj is None: raise ValueError("No .smi file uploaded")
+                if fobj is None:
+                    raise ValueError("No .smi file uploaded")
                 for line in fobj.read().decode().splitlines():
                     line = line.strip()
-                    if not line or line.startswith("#"): continue
+                    if not line or line.startswith("#"):
+                        continue
                     pts = line.split(None, 1)
-                    smiles_pairs.append((pts[0], pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"))
-            if not smiles_pairs: raise ValueError("No valid SMILES found")
+                    _nm = pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
+                    smiles_pairs.append((pts[0], _nm))
+            if not smiles_pairs:
+                raise ValueError("No valid SMILES found")
         except Exception as e:
-            st.error(f"❌ Input parsing failed: {e}"); st.stop()
+            st.error(f"❌ Input parsing failed: {e}")
+            st.stop()
 
         # Redocking
-        redock_score = None
+        redock_score  = None
         redock_result = None
         if st.session_state.get("b_do_redock"):
             raw_rd = st.session_state.get("b_redock_smiles", "").strip()
@@ -1203,24 +1473,38 @@ with tab_batch:
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
                 rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR)
                 if rd_prep["success"]:
-                    rd_dock = run_vina(rec_pdbqt, rd_prep["pdbqt"], config, VINA_PATH,
-                                       b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm)
+                    rd_dock = run_vina(
+                        rec_pdbqt, rd_prep["pdbqt"], config,
+                        VINA_PATH, b_exh, b_nm, b_er,
+                        BATCH_WORKDIR, "redock_" + rd_nm,
+                    )
                     if rd_dock["success"] and rd_dock["top_score"] is not None:
                         redock_score = rd_dock["top_score"]
-                        rd_pv_sdf = str(BATCH_WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
+                        rd_pv_sdf    = str(BATCH_WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
                         fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
                         if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
                             rd_pv_sdf = rd_dock["out_sdf"]
-                        rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
+                        rd_n = (
+                            len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False))
+                            if os.path.exists(rd_dock["out_sdf"]) else 0
+                        )
                         redock_result = {
-                            "Name": f"⭐ {rd_nm} (co-crystal ref)", "ref_name": rd_nm,
-                            "SMILES": rd_smi, "Charge": rd_prep["charge"],
-                            "Top Score": redock_score, "pose_scores": [s["affinity"] for s in rd_dock["scores"]],
-                            "Poses": rd_n, "out_pdbqt": rd_dock["out_pdbqt"],
-                            "out_sdf": rd_dock["out_sdf"], "pv_sdf": rd_pv_sdf,
-                            "Status": "OK", "is_redock": True,
+                            "Name":        f"⭐ {rd_nm} (co-crystal ref)",
+                            "ref_name":    rd_nm,
+                            "SMILES":      rd_smi,
+                            "Charge":      rd_prep["charge"],
+                            "Top Score":   redock_score,
+                            "pose_scores": [s["affinity"] for s in rd_dock["scores"]],
+                            "Poses":       rd_n,
+                            "out_pdbqt":   rd_dock["out_pdbqt"],
+                            "out_sdf":     rd_dock["out_sdf"],
+                            "pv_sdf":      rd_pv_sdf,
+                            "Status":      "OK",
+                            "is_redock":   True,
                         }
-                        st.success(f"✓ Reference score: **{redock_score:.2f} kcal/mol** ({rd_nm})")
+                        st.success(
+                            f"✓ Reference score: **{redock_score:.2f} kcal/mol** ({rd_nm})"
+                        )
                     else:
                         st.warning("⚠ Redocking failed — no score returned")
                 else:
@@ -1237,19 +1521,34 @@ with tab_batch:
             prog.progress(i / n, text=f"Docking {name} ({i+1}/{n})…")
             prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
             if not prep["success"]:
-                results.append({"Name": name, "SMILES": smi, "Charge": None,
-                                 "Top Score": None, "Status": f"PREP FAILED: {prep['error']}"})
+                results.append({
+                    "Name": name, "SMILES": smi, "Charge": None,
+                    "Top Score": None,
+                    "Status": f"PREP FAILED: {prep['error']}",
+                })
                 all_logs.append(f"[{name}] PREP ERROR: {prep['error']}")
                 continue
 
-            dock = run_vina(rec_pdbqt, prep["pdbqt"], config, VINA_PATH,
-                            b_exh, b_nm, b_er, BATCH_WORKDIR, name)
-            all_logs.append(f"[{name}] score={dock.get('top_score')} | {dock.get('log','')[:100]}")
-            log_slot.markdown(f'<div class="log-box">{"".join(all_logs[-5:])}</div>', unsafe_allow_html=True)
+            dock = run_vina(
+                rec_pdbqt, prep["pdbqt"], config,
+                VINA_PATH, b_exh, b_nm, b_er,
+                BATCH_WORKDIR, name,
+            )
+            all_logs.append(
+                f"[{name}] score={dock.get('top_score')} | "
+                f"{dock.get('log','')[:100]}"
+            )
+            log_slot.markdown(
+                f'<div class="log-box">{"".join(all_logs[-5:])}</div>',
+                unsafe_allow_html=True,
+            )
 
             if not dock["success"] or dock["top_score"] is None:
-                results.append({"Name": name, "SMILES": smi, "Charge": prep["charge"],
-                                 "Top Score": None, "Status": "DOCK FAILED"})
+                results.append({
+                    "Name": name, "SMILES": smi,
+                    "Charge": prep["charge"],
+                    "Top Score": None, "Status": "DOCK FAILED",
+                })
                 continue
 
             pv_sdf = str(BATCH_WORKDIR / f"{name}_pv_ready.sdf")
@@ -1257,25 +1556,42 @@ with tab_batch:
             if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
                 pv_sdf = dock["out_sdf"]
 
-            n_poses = len(load_mols_from_sdf(dock["out_sdf"], sanitize=False)) if os.path.exists(dock["out_sdf"]) else 0
+            n_poses = (
+                len(load_mols_from_sdf(dock["out_sdf"], sanitize=False))
+                if os.path.exists(dock["out_sdf"]) else 0
+            )
             results.append({
-                "Name": name, "SMILES": smi, "Charge": prep["charge"],
-                "Top Score": dock["top_score"],
+                "Name":        name,
+                "SMILES":      smi,
+                "Charge":      prep["charge"],
+                "Top Score":   dock["top_score"],
                 "pose_scores": [s["affinity"] for s in dock["scores"]],
-                "Poses": n_poses, "out_pdbqt": dock["out_pdbqt"],
-                "out_sdf": dock["out_sdf"], "pv_sdf": pv_sdf, "Status": "OK",
+                "Poses":       n_poses,
+                "out_pdbqt":   dock["out_pdbqt"],
+                "out_sdf":     dock["out_sdf"],
+                "pv_sdf":      pv_sdf,
+                "Status":      "OK",
             })
 
         n_ok = sum(1 for r in results if r["Status"] == "OK")
-        prog.progress(1.0, text=f"✓ Done — {n_ok}/{n} ligands docked successfully")
+        prog.progress(1.0, text=f"Done — {n_ok}/{n} ligands docked successfully")
         log_slot.empty()
+
         st.session_state.update({
-            "b_batch_done": True, "b_batch_results": results,
-            "b_batch_log": "\n".join(all_logs),
-            "b_redock_score": redock_score, "b_redock_result": redock_result,
-            "b_confirmed_ref_score": None, "b_confirmed_ref_pose": None, "b_confirmed_ref_name": None,
-            "b_pv2_image_png": None, "b_pv2_image_svg": None, "b_pv2_pose_key": None,
-            "b_pv2_ref_png": None, "b_pv2_ref_svg": None, "b_plot_png": None,
+            "b_batch_done":          True,
+            "b_batch_results":       results,
+            "b_batch_log":           "\n".join(all_logs),
+            "b_redock_score":        redock_score,
+            "b_redock_result":       redock_result,
+            "b_confirmed_ref_score": None,
+            "b_confirmed_ref_pose":  None,
+            "b_confirmed_ref_name":  None,
+            "b_pv2_image_png":       None,
+            "b_pv2_image_svg":       None,
+            "b_pv2_pose_key":        None,
+            "b_pv2_ref_png":         None,
+            "b_pv2_ref_svg":         None,
+            "b_plot_png":            None,
         })
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1301,45 +1617,71 @@ with tab_batch:
         redock_result = st.session_state.get("b_redock_result")
         c_ref_score   = st.session_state.get("b_confirmed_ref_score")
         c_ref_pose    = st.session_state.get("b_confirmed_ref_pose")
-        c_ref_name    = st.session_state.get("b_confirmed_ref_name")
         active_ref    = c_ref_score if c_ref_score is not None else redock_score
 
         n_ok   = sum(1 for r in results if r["Status"] == "OK")
         n_fail = len(results) - n_ok
         st.markdown(
-            f"{_pill(f'{n_ok} ligands docked ✓', 'success')} {_pill('AutoDock Vina 1.2.7')}"
+            f"{_pill(f'{n_ok} ligands docked', 'success')}"
+            f" {_pill('AutoDock Vina 1.2.7')}"
             + (f" {_pill(f'{n_fail} failed', 'warn')}" if n_fail else ""),
             unsafe_allow_html=True,
         )
 
-        ok_results = [r for r in results if r["Status"] == "OK"
-                      and r.get("out_sdf") and os.path.exists(r["out_sdf"])]
-        browsable  = ([redock_result] if redock_result and os.path.exists(redock_result.get("out_sdf","")) else []) + ok_results
+        ok_results = [
+            r for r in results
+            if r["Status"] == "OK"
+            and r.get("out_sdf") and os.path.exists(r["out_sdf"])
+        ]
+        browsable = (
+            [redock_result]
+            if redock_result and os.path.exists(redock_result.get("out_sdf", ""))
+            else []
+        ) + ok_results
 
         if browsable:
             st.markdown("**🔎 Pose Browser**")
-            sel_nm = st.selectbox("Select ligand", [r["Name"] for r in browsable], index=0, key="b_lig_sel")
+            sel_nm = st.selectbox(
+                "Select ligand",
+                [r["Name"] for r in browsable],
+                index=0, key="b_lig_sel",
+            )
             sel_res       = next(r for r in browsable if r["Name"] == sel_nm)
             is_redock_sel = sel_res.get("is_redock", False)
             pose_scores_l = sel_res.get("pose_scores", [])
 
             b_mols = load_mols_from_sdf(sel_res["out_sdf"], sanitize=False)
             if b_mols:
-                b_pose_i        = st.slider("Pose", 1, len(b_mols), 1, key="b_pose_sel") - 1
-                this_score      = pose_scores_l[b_pose_i] if b_pose_i < len(pose_scores_l) else sel_res["Top Score"]
-                score_kind      = "success" if (this_score is not None and this_score < -8) else "warn"
-                row_pills       = (f'{_pill(f"Pose {b_pose_i+1} / {len(b_mols)}")}'
-                                   f'{_pill(f"Score: {this_score:.2f} kcal/mol", score_kind) if this_score is not None else ""}')
+                b_pose_i    = st.slider("Pose", 1, len(b_mols), 1, key="b_pose_sel") - 1
+                this_score  = (
+                    pose_scores_l[b_pose_i]
+                    if b_pose_i < len(pose_scores_l)
+                    else sel_res["Top Score"]
+                )
+                _score_kind = "success" if (this_score is not None and this_score < -8) else "warn"
+                _pose_pill  = _pill(f"Pose {b_pose_i+1} / {len(b_mols)}")
+                _score_pill = (
+                    _pill(f"Score: {this_score:.2f} kcal/mol", _score_kind)
+                    if this_score is not None else ""
+                )
+                row_pills = f"{_pose_pill} {_score_pill}"
+
                 if pose_scores_l and b_pose_i > 0:
-                    row_pills += f' {_pill(f"Δ {this_score - pose_scores_l[0]:+.2f} vs pose 1")}'
+                    _delta = this_score - pose_scores_l[0]
+                    _sign  = "+" if _delta > 0 else ""
+                    row_pills += f" {_pill(f'delta {_sign}{_delta:.2f} vs pose 1')}"
+
                 if is_redock_sel:
                     _cryst = st.session_state.get("b_ligand_pdb_path") or ""
                     if _cryst and os.path.exists(_cryst):
                         _rmsd = calc_rmsd_heavy(b_mols[b_pose_i], _cryst)
                         if _rmsd is not None:
-                            _rk = "success" if _rmsd <= 2.0 else ("warn" if _rmsd <= 3.0 else "info")
-                            row_pills += f' {_pill(f"RMSD {_rmsd:.2f} Å vs crystal", _rk)}'
-                    st.markdown(f'{_pill("⭐ Co-crystal reference ligand", "warn")}', unsafe_allow_html=True)
+                            _rk = (
+                                "success" if _rmsd <= 2.0 else
+                                "warn"    if _rmsd <= 3.0 else "info"
+                            )
+                            row_pills += f" {_pill(f'RMSD {_rmsd:.2f} A vs crystal', _rk)}"
+                    st.markdown(_pill("⭐ Co-crystal reference ligand", "warn"), unsafe_allow_html=True)
 
                 st.markdown(row_pills, unsafe_allow_html=True)
 
@@ -1347,20 +1689,33 @@ with tab_batch:
                 with cbv:
                     try:
                         vb = py3Dmol.view(width="100%", height=420)
-                        vb.setBackgroundColor(_viewer_bg()); bmi = 0
+                        vb.setBackgroundColor(_viewer_bg())
+                        bmi = 0
                         _rec_fh = st.session_state.get("b_receptor_fh")
                         if _rec_fh and os.path.exists(_rec_fh):
                             vb.addModel(open(_rec_fh).read(), "pdb")
-                            vb.setStyle({"model": bmi}, {"cartoon": {"color": "spectrum", "opacity": 0.7},
-                                                          "stick": {"radius": 0.08, "opacity": 0.15}}); bmi += 1
+                            vb.setStyle({"model": bmi}, {
+                                "cartoon": {"color": "spectrum", "opacity": 0.7},
+                                "stick":   {"radius": 0.08, "opacity": 0.15},
+                            })
+                            bmi += 1
                         _lig_p = st.session_state.get("b_ligand_pdb_path")
                         if _lig_p and os.path.exists(_lig_p):
                             vb.addModel(open(_lig_p).read(), "pdb")
-                            vb.setStyle({"model": bmi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.2}}); bmi += 1
+                            vb.setStyle({"model": bmi}, {
+                                "stick": {"colorscheme": "magentaCarbon", "radius": 0.2}
+                            })
+                            bmi += 1
                         vb.addModel(Chem.MolToMolBlock(b_mols[b_pose_i]), "mol")
-                        vb.setStyle({"model": bmi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                        vb.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": bmi})
-                        vb.zoomTo(); vb.center({"model": bmi})
+                        vb.setStyle({"model": bmi}, {
+                            "stick": {"colorscheme": "cyanCarbon", "radius": 0.28}
+                        })
+                        vb.addSurface(
+                            "SES", {"opacity": 0.2, "color": "lightblue"},
+                            {"model": 0}, {"model": bmi},
+                        )
+                        vb.zoomTo()
+                        vb.center({"model": bmi})
                         show3d(vb, height=420)
                     except Exception as e:
                         st.info(f"Viewer error: {e}")
@@ -1370,10 +1725,11 @@ with tab_batch:
                     if is_redock_sel and this_score is not None:
                         already = (c_ref_score == this_score and c_ref_pose == b_pose_i + 1)
                         if st.button(
-                            f"✅ Confirmed (pose {b_pose_i+1})" if already else f"📌 Use pose {b_pose_i+1} as reference",
+                            f"✅ Confirmed (pose {b_pose_i+1})" if already
+                            else f"📌 Use pose {b_pose_i+1} as reference",
                             key="b_confirm_ref_btn",
                             type="secondary" if already else "primary",
-                            width="stretch",
+                            use_container_width=True,
                         ):
                             st.session_state.update({
                                 "b_confirmed_ref_score": this_score,
@@ -1382,7 +1738,11 @@ with tab_batch:
                             })
                             st.rerun()
                         if c_ref_score is not None and not already:
-                            if st.button("🔄 Reset reference", key="b_reset_ref_btn", width="stretch"):
+                            if st.button(
+                                "🔄 Reset reference",
+                                key="b_reset_ref_btn",
+                                use_container_width=True,
+                            ):
                                 st.session_state.update({
                                     "b_confirmed_ref_score": None,
                                     "b_confirmed_ref_pose":  None,
@@ -1391,28 +1751,45 @@ with tab_batch:
                                 st.rerun()
                     st.markdown("**Download**")
                     safe_nm = sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
-                    sp3     = str(BATCH_WORKDIR / f"{safe_nm}_pose{b_pose_i+1}.sdf")
+                    sp3 = str(BATCH_WORKDIR / f"{safe_nm}_pose{b_pose_i+1}.sdf")
                     write_single_pose(b_mols[b_pose_i], sp3)
-                    st.download_button(f"⬇ Pose {b_pose_i+1} (.sdf)", open(sp3, "rb"),
-                        file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf", key="b_dl_pose")
+                    st.download_button(
+                        f"⬇ Pose {b_pose_i+1} (.sdf)",
+                        open(sp3, "rb"),
+                        file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf",
+                        key="b_dl_pose",
+                        use_container_width=True,
+                    )
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
-                        st.download_button("⬇ All poses (.pdbqt)",
+                        st.download_button(
+                            "⬇ All poses (.pdbqt)",
                             open(sel_res["out_pdbqt"], "rb"),
-                            file_name=f"{safe_nm}_out.pdbqt", key="b_dl_pdbqt")
+                            file_name=f"{safe_nm}_out.pdbqt",
+                            key="b_dl_pdbqt",
+                            use_container_width=True,
+                        )
 
         st.markdown("---")
         with st.expander("📋 Full docking log", expanded=False):
-            st.markdown(f'<div class="log-box">{st.session_state.get("b_batch_log","")}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="log-box">'
+                f'{st.session_state.get("b_batch_log", "")}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-        # Score table + plot
-        df_res  = pd.DataFrame([{
-            "Name":                r["Name"],
-            "Top Score (kcal/mol)": r["Top Score"],
-            "Charge":              f"{r['Charge']:+d}" if r.get("Charge") is not None else "—",
-            "Status":              r["Status"],
+        # ── Score table + plot ────────────────────────────────────────────────
+        df_res = pd.DataFrame([{
+            "Name":                  r["Name"],
+            "Top Score (kcal/mol)":  r["Top Score"],
+            "Charge":                f"{r['Charge']:+d}" if r.get("Charge") is not None else "—",
+            "Status":                r["Status"],
         } for r in results])
-        ok_df   = df_res[df_res["Status"] == "OK"].sort_values("Top Score (kcal/mol)").reset_index(drop=True)
+        ok_df   = (
+            df_res[df_res["Status"] == "OK"]
+            .sort_values("Top Score (kcal/mol)")
+            .reset_index(drop=True)
+        )
         plot_df = df_res[df_res["Status"] == "OK"].reset_index(drop=True)
 
         if not plot_df.empty:
@@ -1421,56 +1798,92 @@ with tab_batch:
 
             def _draw_plot(ax):
                 _cc = _chart_colors()
-                ax.get_figure().patch.set_facecolor(_cc["bg"]); ax.set_facecolor(_cc["bg_sub"])
+                ax.get_figure().patch.set_facecolor(_cc["bg"])
+                ax.set_facecolor(_cc["bg_sub"])
                 scores = plot_df["Top Score (kcal/mol)"].values
                 xs     = list(range(_n))
                 colors = ["#3fb950" if s == _best else "#58a6ff" for s in scores]
-                ax.scatter(xs, scores, color=colors, s=90, zorder=3, edgecolors=_cc["border"], linewidths=0.5)
+                ax.scatter(
+                    xs, scores, color=colors, s=90, zorder=3,
+                    edgecolors=_cc["border"], linewidths=0.5,
+                )
                 ax.plot(xs, scores, color=_cc["border"], linewidth=0.8, zorder=2)
-                ax.set_xticks(xs); ax.set_xticklabels(plot_df["Name"].values, rotation=40, ha="right")
+                ax.set_xticks(xs)
+                ax.set_xticklabels(plot_df["Name"].values, rotation=40, ha="right")
                 ax.set_xlim(-0.5, _n - 0.5)
                 if active_ref is not None:
-                    _lbl = (f"✓ Confirmed ref (pose {c_ref_pose}): {active_ref:.2f} kcal/mol"
-                            if c_ref_score is not None else f"Co-crystal ref: {active_ref:.2f} kcal/mol")
-                    ax.axhline(active_ref, color="#f85149", linewidth=1.8, linestyle="--", label=_lbl)
-                    ax.legend(facecolor=_cc["legend_bg"], edgecolor=_cc["border"],
-                              labelcolor=_cc["text"], fontsize=8)
+                    _ref_lbl = (
+                        f"Confirmed ref (pose {c_ref_pose}): {active_ref:.2f} kcal/mol"
+                        if c_ref_score is not None
+                        else f"Co-crystal ref: {active_ref:.2f} kcal/mol"
+                    )
+                    ax.axhline(
+                        active_ref, color="#f85149", linewidth=1.8,
+                        linestyle="--", label=_ref_lbl,
+                    )
+                    ax.legend(
+                        facecolor=_cc["legend_bg"], edgecolor=_cc["border"],
+                        labelcolor=_cc["text"], fontsize=8,
+                    )
                 ax.set_ylabel("Vina score (kcal/mol)", color=_cc["muted"], fontsize=9)
                 ax.set_xlabel("Ligand",                color=_cc["muted"], fontsize=9)
                 ax.tick_params(colors=_cc["muted"], labelsize=7)
-                for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
+                for sp in ax.spines.values():
+                    sp.set_edgecolor(_cc["border"])
 
             if _n <= 10:
                 ct2, cp2 = st.columns([1, 1.6])
                 with ct2:
-                    st.markdown("**Score Table**"); st.dataframe(df_res, hide_index=True, width="stretch")
+                    st.markdown("**Score Table**")
+                    st.dataframe(df_res, hide_index=True, use_container_width=True)
                 with cp2:
                     st.markdown("**Top Score per Ligand**")
                     fig, ax = plt.subplots(figsize=(max(5, _n * 0.6 + 1.5), 3.5))
-                    _draw_plot(ax); fig.tight_layout()
-                    _buf = io.BytesIO(); fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight",
-                                                     facecolor=fig.get_facecolor()); _buf.seek(0)
+                    _draw_plot(ax)
+                    fig.tight_layout()
+                    _buf = io.BytesIO()
+                    fig.savefig(
+                        _buf, format="png", dpi=150,
+                        bbox_inches="tight", facecolor=fig.get_facecolor(),
+                    )
+                    _buf.seek(0)
                     st.session_state["b_plot_png"] = _buf.getvalue()
-                    st.pyplot(fig, width="stretch"); plt.close(fig)
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
             else:
                 st.markdown("**Top Score per Ligand**")
                 fig, ax = plt.subplots(figsize=(max(6, _n * 0.9 + 1.5), 4))
-                _draw_plot(ax); fig.tight_layout()
-                _buf = io.BytesIO(); fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight",
-                                                 facecolor=fig.get_facecolor()); _buf.seek(0)
+                _draw_plot(ax)
+                fig.tight_layout()
+                _buf = io.BytesIO()
+                fig.savefig(
+                    _buf, format="png", dpi=150,
+                    bbox_inches="tight", facecolor=fig.get_facecolor(),
+                )
+                _buf.seek(0)
                 st.session_state["b_plot_png"] = _buf.getvalue()
-                st.pyplot(fig, width="stretch"); plt.close(fig)
-                st.markdown("**Score Table**"); st.dataframe(df_res, hide_index=True, width="stretch")
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+                st.markdown("**Score Table**")
+                st.dataframe(df_res, hide_index=True, use_container_width=True)
         else:
-            st.markdown("**Score Table**"); st.dataframe(df_res, hide_index=True, width="stretch")
+            st.markdown("**Score Table**")
+            st.dataframe(df_res, hide_index=True, use_container_width=True)
 
+        # ── Downloads ─────────────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("**⬇ Download All Results**")
         c_csv, c_zip = st.columns(2)
         with c_csv:
             if not ok_df.empty:
-                st.download_button("⬇ Top scores (.csv)", ok_df.to_csv(index=False).encode(),
-                    file_name="batch_scores.csv", mime="text/csv", key="b_dl_csv")
+                st.download_button(
+                    "⬇ Top scores (.csv)",
+                    ok_df.to_csv(index=False).encode(),
+                    file_name="batch_scores.csv",
+                    mime="text/csv",
+                    key="b_dl_csv",
+                    use_container_width=True,
+                )
         with c_zip:
             zb = io.BytesIO()
             with zipfile.ZipFile(zb, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1491,35 +1904,61 @@ with tab_batch:
                 if st.session_state.get("b_plot_png"):
                     zf.writestr("plots/batch_score_plot.png", st.session_state["b_plot_png"])
                 for _sfx, _pk, _sk in [("poseview2", "b_pv2_image_png", "b_pv2_image_svg")]:
-                    if st.session_state.get(_pk): zf.writestr(f"poseview2/{_sfx}.png", st.session_state[_pk])
-                    if st.session_state.get(_sk): zf.writestr(f"poseview2/{_sfx}.svg", st.session_state[_sk])
+                    if st.session_state.get(_pk):
+                        zf.writestr(f"poseview2/{_sfx}.png", st.session_state[_pk])
+                    if st.session_state.get(_sk):
+                        zf.writestr(f"poseview2/{_sfx}.svg", st.session_state[_sk])
             zb.seek(0)
-            st.download_button("⬇ Download ALL (.zip)", zb,
-                file_name="anyone_can_dock.zip", mime="application/zip", key="b_dl_zip")
+            st.download_button(
+                "⬇ Download ALL (.zip)", zb,
+                file_name="anyone_can_dock.zip",
+                mime="application/zip",
+                key="b_dl_zip",
+                use_container_width=True,
+            )
 
-        # 2D Interaction diagram
+        # ── 2D Interaction diagram ────────────────────────────────────────────
         st.markdown("---")
         st.markdown("### 🧬 2D Interaction Diagram — PoseView2")
-        pv_browsable = [r for r in browsable if r.get("out_sdf") and os.path.exists(r["out_sdf"])]
+        pv_browsable = [
+            r for r in browsable
+            if r.get("out_sdf") and os.path.exists(r["out_sdf"])
+        ]
         if pv_browsable:
-            pv_sel_nm  = st.selectbox("Associate docked ligand (for AI prompt)",
-                [r["Name"] for r in pv_browsable], index=0, key="b_pv_lig_sel")
+            pv_sel_nm   = st.selectbox(
+                "Associate docked ligand (for AI prompt)",
+                [r["Name"] for r in pv_browsable],
+                index=0, key="b_pv_lig_sel",
+            )
             pv_sel_res  = next(r for r in pv_browsable if r["Name"] == pv_sel_nm)
             pv_safe_nm  = pv_sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
             pv_all_mols = load_mols_from_sdf(pv_sel_res["out_sdf"], sanitize=False)
 
             if pv_all_mols:
-                pv_pose_i = st.slider("Pose (AI prompt context)", 1, len(pv_all_mols), 1, key="b_pv_pose_sel") - 1
+                pv_pose_i = (
+                    st.slider(
+                        "Pose (AI prompt context)",
+                        1, len(pv_all_mols), 1,
+                        key="b_pv_pose_sel",
+                    ) - 1
+                )
                 pv_scores = pv_sel_res.get("pose_scores", [])
-                pv_score  = pv_scores[pv_pose_i] if pv_pose_i < len(pv_scores) else pv_sel_res.get("Top Score")
+                pv_score  = (
+                    pv_scores[pv_pose_i]
+                    if pv_pose_i < len(pv_scores)
+                    else pv_sel_res.get("Top Score")
+                )
 
                 st.session_state["_b_pv2_smiles"] = pv_sel_res.get("SMILES", pv_sel_nm)
 
-                sp_pv2 = str(BATCH_WORKDIR / f"{pv_safe_nm}_pose{pv_pose_i+1}_pv2_ready.sdf")
+                sp_pv2      = str(BATCH_WORKDIR / f"{pv_safe_nm}_pose{pv_pose_i+1}_pv2_ready.sdf")
                 pv_all_path = pv_sel_res.get("pv_sdf", "")
                 if pv_all_path and os.path.exists(pv_all_path):
                     pv_fixed = load_mols_from_sdf(pv_all_path)
-                    write_single_pose(pv_fixed[pv_pose_i] if pv_pose_i < len(pv_fixed) else pv_all_mols[pv_pose_i], sp_pv2)
+                    write_single_pose(
+                        pv_fixed[pv_pose_i] if pv_pose_i < len(pv_fixed) else pv_all_mols[pv_pose_i],
+                        sp_pv2,
+                    )
                 else:
                     write_single_pose(pv_all_mols[pv_pose_i], sp_pv2)
 
@@ -1543,8 +1982,8 @@ with tab_batch:
                     lig_smiles          = pv_sel_res.get("SMILES", ""),
                     binding_energy      = pv_score,
                     ref_lig_name        = redock_result.get("ref_name", "") if redock_result else "",
-                    ref_lig_smiles      = redock_result.get("SMILES", "") if redock_result else "",
-                    ref_lig_energy      = redock_result.get("Top Score") if redock_result else None,
+                    ref_lig_smiles      = redock_result.get("SMILES", "")   if redock_result else "",
+                    ref_lig_energy      = redock_result.get("Top Score")     if redock_result else None,
                     show_header         = False,
                 )
 
@@ -1556,11 +1995,13 @@ with tab_batch:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 st.markdown(
-    '<div style="text-align:center;color:#57606A;font-size:0.78rem;font-family:\'IBM Plex Mono\',monospace;">'
+    '<div style="text-align:center;color:#57606A;font-size:0.78rem;'
+    'font-family:\'IBM Plex Mono\',monospace;">'
     'AutoDock Vina 1.2.7 · Meeko · RDKit · OpenBabel · py3Dmol<br>'
-    'Eberhardt et al. J. Chem. Inf. Model. 2021, 61, 3891–3898 &nbsp;·&nbsp; '
-    '<a href="https://pubs.acs.org/doi/10.1021/acs.jcim.5c02852" target="_blank" style="color:#58a6ff;text-decoration:none;">'
-    'DFDD — Hengphasatporn et al. J. Chem. Inf. Model. 2026</a>'
+    'Eberhardt et al. J. Chem. Inf. Model. 2021, 61, 3891&#8211;3898 &nbsp;·&nbsp; '
+    '<a href="https://pubs.acs.org/doi/10.1021/acs.jcim.5c02852" target="_blank" '
+    'style="color:#58a6ff;text-decoration:none;">'
+    'DFDD &#8212; Hengphasatporn et al. J. Chem. Inf. Model. 2026</a>'
     '</div>',
     unsafe_allow_html=True,
 )
