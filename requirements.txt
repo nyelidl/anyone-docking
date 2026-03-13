@@ -1,8 +1,5 @@
-# AutoDock Vina Streamlit App — Python Dependencies
-# Install with: pip install -r requirements.txt
-
 streamlit>=1.35
-streamlit-ketcher>=0.0.3       # was pinned to 0.0.1 (too old)
+streamlit-ketcher>=0.0.3
 prody>=2.4
 rdkit>=2023.3
 meeko==0.7.1
