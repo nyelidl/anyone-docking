@@ -84,17 +84,28 @@ def _rdkit_six_patch():
 def get_vina_binary(path: str = "/tmp/vina_1.2.7") -> tuple[str | None, str]:
     """
     Download AutoDock Vina 1.2.7 if not present.
+    Uses urllib (no wget dependency) — works on Streamlit Cloud.
     Returns (binary_path, status_message).
     """
+    _URL = (
+        "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/"
+        "v1.2.7/vina_1.2.7_linux_x86_64"
+    )
     if not os.path.exists(path) or os.path.getsize(path) < 100_000:
-        rc, out = run_cmd([
-            "wget", "-q",
-            "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/"
-            "v1.2.7/vina_1.2.7_linux_x86_64",
-            "-O", path,
-        ])
-        if rc != 0:
-            return None, f"Download failed: {out}"
+        try:
+            import urllib.request
+            urllib.request.urlretrieve(_URL, path)
+        except Exception as e:
+            # fallback: requests
+            try:
+                import requests
+                r = requests.get(_URL, stream=True, timeout=60)
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+            except Exception as e2:
+                return None, f"Download failed: {e} / {e2}"
     os.chmod(path, 0o755)
     return path, "ok"
 
