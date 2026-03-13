@@ -1073,9 +1073,10 @@ with tab_basic:
                                           "backgroundOpacity": 0.65, "inFront": True, "showBackground": True},
                                          {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]})
                     _n = len(_ir)
+                    _res_label = f"{_n} residue{'s' if _n != 1 else ''}"
                     st.markdown(
-                        f"{_pill(f'Pose {pose_idx+1}')} {_pill(f'{_cutoff:.1f} Å cutoff')} "
-                        f"{_pill(f'{_n} residue{\"s\" if _n != 1 else \"\"}', 'success' if _n else 'warn')}",
+                        f"{_pill(f'Pose {b_pose_i+1}')} {_pill(f'{_cutoff:.1f} Å cutoff')} "
+                        f"{_pill(_res_label, 'success' if _n else 'warn')}",
                         unsafe_allow_html=True,
                     )
                 vbp.zoomTo({"model": _lig_m})
