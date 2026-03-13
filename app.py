@@ -1370,7 +1370,7 @@ if metal_lines:
     with open(rec_pdbqt, "w") as _mf:
         _mf.writelines(_pdbqt_lines)
     log.append(f"✅ Re-injected {len(metal_lines)} metal atom(s) into PDBQT")
-    log.append("✓ Receptor PDBQT ready")
+log.append("✓ Receptor PDBQT ready")
             box_pdb  = str(wdir / "rec.box.pdb")
             cfg_path = str(wdir / "rec.box.txt")
             hx, hy, hz = sx/2, sy/2, sz/2
