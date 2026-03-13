@@ -202,6 +202,7 @@ _DEFAULTS = dict(
     # Basic receptor
     pdb_token=None, receptor_fh=None, receptor_pdbqt=None,
     box_pdb=None, config_txt=None, cx=None, cy=None, cz=None,
+    box_sx=16, box_sy=16, box_sz=16,
     ligand_pdb_path=None, receptor_done=False, receptor_log="",
     cocrystal_ligand_id="",
     # Basic ligand
@@ -216,6 +217,7 @@ _DEFAULTS = dict(
     # Batch receptor
     b_pdb_token=None, b_receptor_fh=None, b_receptor_pdbqt=None,
     b_box_pdb=None, b_config_txt=None, b_cx=None, b_cy=None, b_cz=None,
+    b_box_sx=16, b_box_sy=16, b_box_sz=16,
     b_ligand_pdb_path=None, b_receptor_done=False, b_receptor_log="",
     b_cocrystal_ligand_id="",
     # Batch results
@@ -688,9 +690,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 pfx + "cx":                  result["cx"],
                 pfx + "cy":                  result["cy"],
                 pfx + "cz":                  result["cz"],
-                pfx + "sx":                  result["sx"],
-                pfx + "sy":                  result["sy"],
-                pfx + "sz":                  result["sz"],
+                pfx + "box_sx":              result["sx"],
+                pfx + "box_sy":              result["sy"],
+                pfx + "box_sz":              result["sz"],
                 pfx + "ligand_pdb_path":     result["ligand_pdb_path"],
                 pfx + "cocrystal_ligand_id": result["cocrystal_ligand_id"],
                 pfx + "receptor_done":       True,
@@ -706,9 +708,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         cx_v    = st.session_state.get(pfx + "cx", 0)
         cy_v    = st.session_state.get(pfx + "cy", 0)
         cz_v    = st.session_state.get(pfx + "cz", 0)
-        _sx     = st.session_state.get(pfx + "sx", 16)
-        _sy     = st.session_state.get(pfx + "sy", 16)
-        _sz     = st.session_state.get(pfx + "sz", 16)
+        _sx     = st.session_state.get(pfx + "box_sx", 16)
+        _sy     = st.session_state.get(pfx + "box_sy", 16)
+        _sz     = st.session_state.get(pfx + "box_sz", 16)
         _lig_id = st.session_state.get(pfx + "cocrystal_ligand_id", "")
 
         _center_pill = f"Center ({cx_v:.2f}, {cy_v:.2f}, {cz_v:.2f})"
