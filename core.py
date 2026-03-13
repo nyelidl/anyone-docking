@@ -82,10 +82,14 @@ def _rdkit_six_patch():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def check_obabel():
-    """Return (available: bool, version_or_error: str)."""
-    rc, out = run_cmd("obabel --version")
-    if rc != 0 or not out:
+    """Return (available: bool, version_or_error: str).
+    NOTE: obabel --version exits with code 1 on many builds, so we use
+    shutil.which for the existence check and ignore the exit code.
+    """
+    import shutil
+    if shutil.which("obabel") is None:
         return False, "obabel not found — add 'openbabel' to packages.txt"
+    _, out = run_cmd("obabel --version")
     return True, (out.splitlines()[0] if out else "ok")
 
 
