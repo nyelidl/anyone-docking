@@ -1313,14 +1313,64 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
             rec_fh    = str(wdir / "rec.pdb")
             rec_pdbqt = str(wdir / "rec.pdbqt")
-            run_cmd(f'obabel "{rec_raw}" -O "{rec_fh}" -h 2>/dev/null')
-            if os.path.getsize(rec_fh) < 100:
-                raise ValueError("OpenBabel H-addition produced empty file")
-            run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger 2>/dev/null')
-            if os.path.getsize(rec_pdbqt) < 100:
-                raise ValueError("PDBQT conversion produced empty file")
-            log.append("✓ Receptor PDBQT ready")
 
+            # ── Metal ion handling: strip before OpenBabel, re-inject after ──────────
+_METAL_RESNAMES = {"MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K"}
+_METAL_CHARGES  = {"MG": 2.0, "ZN": 2.0, "CA": 2.0, "MN": 2.0, "FE": 3.0,
+                   "CU": 2.0, "CO": 2.0, "NI": 2.0, "CD": 2.0, "HG": 2.0,
+                   "NA": 1.0, "K":  1.0}
+
+metal_lines = []
+clean_lines = []
+with open(rec_raw) as _mf:
+    for _ml in _mf:
+        _rec = _ml[:6].strip()
+        if _rec in ("ATOM", "HETATM") and _ml[17:20].strip().upper() in _METAL_RESNAMES:
+            metal_lines.append(_ml)
+        else:
+            clean_lines.append(_ml)
+
+rec_raw_nometal = str(wdir / "receptor_atoms_nometal.pdb")
+with open(rec_raw_nometal, "w") as _mf:
+    _mf.writelines(clean_lines)
+
+if metal_lines:
+    log.append(f"⚠ Stripped {len(metal_lines)} metal atom(s) before OpenBabel: "
+               + ", ".join({l[17:20].strip() for l in metal_lines}))
+
+run_cmd(f'obabel "{rec_raw_nometal}" -O "{rec_fh}" -h 2>/dev/null')
+if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
+    raise ValueError("OpenBabel H-addition produced empty file")
+
+run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger 2>/dev/null')
+if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
+    raise ValueError("PDBQT conversion produced empty file")
+
+# Re-inject metal ions with correct charges
+if metal_lines:
+    _pdbqt_lines = open(rec_pdbqt).readlines()
+    _pdbqt_lines = [_l for _l in _pdbqt_lines if _l.strip() != "END"]
+    for _ml in metal_lines:
+        try:
+            _resname   = _ml[17:20].strip().upper()
+            _serial    = int(_ml[6:11])
+            _name      = _ml[12:16].strip()
+            _chain     = _ml[21] if len(_ml) > 21 else "A"
+            _resid     = int(_ml[22:26])
+            _x, _y, _z = float(_ml[30:38]), float(_ml[38:46]), float(_ml[46:54])
+            _charge    = _METAL_CHARGES.get(_resname, 0.0)
+            _atype     = _resname.capitalize()
+            _pdbqt_lines.append(
+                f"HETATM{_serial:5d} {_name:<4s} {_resname:<3s} {_chain}{_resid:4d}    "
+                f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00    {_charge:+.3f} {_atype}\n"
+            )
+        except Exception as _me:
+            log.append(f"⚠ Could not re-inject metal line: {_me}")
+    _pdbqt_lines.append("END\n")
+    with open(rec_pdbqt, "w") as _mf:
+        _mf.writelines(_pdbqt_lines)
+    log.append(f"✅ Re-injected {len(metal_lines)} metal atom(s) into PDBQT")
+    log.append("✓ Receptor PDBQT ready")
             box_pdb  = str(wdir / "rec.box.pdb")
             cfg_path = str(wdir / "rec.box.txt")
             hx, hy, hz = sx/2, sy/2, sz/2
