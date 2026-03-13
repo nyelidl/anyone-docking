@@ -1,7 +1,5 @@
-openbabel
-wget
-curl
 libcairo2-dev
-libpangocairo-1.0-0
+libpango1.0-dev
 pkg-config
-fonts-dejavu-core
+python3-dev
+libgirepository1.0-dev
