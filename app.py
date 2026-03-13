@@ -260,7 +260,6 @@ def show3d(view, height=480):
     except ImportError:
         raw  = view._make_html()
         resp = _re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', raw)
-        # Inject CSS to remove any close/X toolbar Streamlit adds around iframes
         _no_x_css = (
             "<style>"
             "button[title='Close'],button[aria-label='Close'],"
@@ -394,11 +393,6 @@ def _write_single_pose(mol, path: str) -> None:
 #  INTERACTION HELPERS — distance-based residue highlight + docking grid box
 # ══════════════════════════════════════════════════════════════════════════════
 def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5):
-    """
-    Return protein residues within `cutoff` Å of any ligand heavy atom.
-    Each entry: {'chain': str, 'resi': int, 'resn': str}.
-    Uses ProDy for fast coordinate parsing of the receptor.
-    """
     try:
         import numpy as np
         from prody import parsePDB
@@ -426,17 +420,11 @@ def _get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5):
 
 
 def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
-    """
-    Add a docking search-space grid box to a py3Dmol view.
-    Renders a translucent filled volume plus a solid cyan wireframe outline.
-    """
     try:
         _c = {"x": float(cx), "y": float(cy), "z": float(cz)}
         _d = {"w": float(sx), "h": float(sy), "d": float(sz)}
-        # Faint filled interior
         view.addBox({"center": _c, "dimensions": _d,
                      "color": "blue", "opacity": 0.07, "wireframe": False})
-        # Crisp wireframe outline
         view.addBox({"center": _c, "dimensions": _d,
                      "color": "cyan", "opacity": 0.90, "wireframe": True})
     except Exception:
@@ -444,16 +432,6 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
 
 
 def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
-    """Heavy-atom RMSD (Å): docked SDF pose vs ProDy-written co-crystal PDB.
-
-    Key design:
-    - Atom names / order completely ignored — pure MCS element+topology matching
-    - All symmetry mappings tried; minimum RMSD returned
-    - Requires MCS to cover >=60% of the smaller molecule to reject garbage
-      RMSD between unrelated molecules
-    - Multiple PDB reading strategies to handle ProDy files (no CONECT records)
-    Returns float (Å) or None on any failure.
-    """
     try:
         from rdkit import Chem
         from rdkit.Chem import rdFMCS
@@ -462,7 +440,6 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
         if not os.path.exists(crystal_pdb_path):
             return None
 
-        # ── Read crystal ligand — try several strategies ──────────────────────
         cryst = None
         for sanitize, removeHs, proxBonding in [
             (True,  True, True),
@@ -489,7 +466,6 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
         if cryst is None or cryst.GetNumConformers() == 0:
             return None
 
-        # ── Strip H from docked pose ──────────────────────────────────────────
         pose = Chem.RemoveHs(pose_mol, sanitize=False)
         try: Chem.SanitizeMol(pose)
         except Exception: pass
@@ -498,7 +474,6 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
 
         n_smaller = min(pose.GetNumAtoms(), cryst.GetNumAtoms())
 
-        # ── MCS by element + topology (names ignored) ─────────────────────────
         mcs = rdFMCS.FindMCS(
             [pose, cryst],
             timeout=10,
@@ -508,8 +483,6 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
             matchValences=False,
         )
 
-        # Require MCS to cover >=60% of the smaller molecule
-        # (rejects RMSD for completely unrelated docked ligands)
         if mcs.numAtoms < 3 or mcs.numAtoms < 0.6 * n_smaller:
             return None
 
@@ -517,7 +490,6 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
         if mcs_mol is None:
             return None
 
-        # All valid symmetry mappings — take minimum RMSD
         pose_matches  = pose.GetSubstructMatches(mcs_mol,  uniquify=False)
         cryst_matches = cryst.GetSubstructMatches(mcs_mol, uniquify=False)
         if not pose_matches or not cryst_matches:
@@ -541,26 +513,14 @@ def _calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  POSEVIEW REST API v1  (proteins.plus)
-#  Upload receptor PDB + docked pose SDF → 2D interaction SVG of the docked pose
-#  NOTE: PoseView2 (/api/poseview2_rest) only accepts pdbCode+ligandID and always
-#  shows the co-crystal ligand — it does NOT support file upload.
-#  To visualise a docked pose we must use PoseView v1 (/api/v2/poseview/).
+#  POSEVIEW REST API
 # ══════════════════════════════════════════════════════════════════════════════
 def _call_poseview2(receptor_pdb: str, pose_sdf: str):
-    """
-    Submit receptor PDB + docked pose SDF to PoseView (v1) REST API.
-    Returns (svg_bytes, error_string).
-
-    Endpoint: POST https://proteins.plus/api/v2/poseview/
-    Docs:     https://proteins.plus/help/poseview_rest
-    """
     import requests, time
 
     _SUBMIT = "https://proteins.plus/api/v2/poseview/"
     _JOBS   = "https://proteins.plus/api/v2/poseview/jobs/"
 
-    # ── Submit job ────────────────────────────────────────────────────────────
     try:
         with open(receptor_pdb) as rf, open(pose_sdf) as lf:
             r = requests.post(
@@ -576,14 +536,12 @@ def _call_poseview2(receptor_pdb: str, pose_sdf: str):
     except Exception as e:
         return None, f"Submission failed: {e}"
 
-    # ── Poll for result ───────────────────────────────────────────────────────
     for attempt in range(30):
         time.sleep(2)
         try:
             job    = requests.get(_JOBS + job_id + "/", timeout=10).json()
             status = job.get("status", "")
             if status in ("done", "success"):
-                # Try known result keys; result_image is SVG URL in v1
                 img = (job.get("result_image") or job.get("image")
                        or job.get("result")    or job.get("image_url"))
                 if not img:
@@ -604,13 +562,6 @@ def _call_poseview2(receptor_pdb: str, pose_sdf: str):
 
 
 def _call_poseview2_ref(pdb_code: str, ligand_id: str):
-    """
-    Submit a job to the PoseView2 REST API using pdbCode + ligandID.
-    Returns (svg_bytes, error_string).
-    Always shows the co-crystal ligand from the PDB entry.
-
-    Endpoint: POST https://proteins.plus/api/poseview2_rest
-    """
     import requests, time
 
     _SUBMIT = "https://proteins.plus/api/poseview2_rest"
@@ -670,18 +621,12 @@ def _svg_to_png(svg_bytes: bytes):
 
 
 def _stamp_png(png_bytes: bytes, text: str) -> bytes:
-    """
-    Burn a text label into the bottom-center of a PNG.
-    Style: light gray pill (#E8E8E8), dark text (#1A1A1A), large radius — matches the
-    reference screenshot.
-    """
     try:
         from PIL import Image, ImageDraw, ImageFont
         import io as _io
         img = Image.open(_io.BytesIO(png_bytes)).convert("RGBA")
         draw = ImageDraw.Draw(img)
 
-        # Try clean sans-serif fonts in order of preference
         font = None
         for _fp, _sz in [
             ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",  28),
@@ -698,23 +643,20 @@ def _stamp_png(png_bytes: bytes, text: str) -> bytes:
         bbox = draw.textbbox((0, 0), text, font=font, anchor="lt")
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-        pad_x, pad_y = 36, 16          # horizontal / vertical padding inside pill
+        pad_x, pad_y = 36, 16
         pill_w = tw + pad_x * 2
         pill_h = th + pad_y * 2
-        pill_r = pill_h // 2           # full-round stadium shape
+        pill_r = pill_h // 2
 
-        # Pill horizontally centered on image, 28 px above bottom edge
         px = (img.width - pill_w) // 2
         py = img.height - pill_h - 28
 
-        # Light gray pill
         draw.rounded_rectangle(
             [px, py, px + pill_w, py + pill_h],
             radius=pill_r,
             fill=(232, 232, 232, 230),
         )
 
-        # Text centered inside pill — anchor="mm" places text at exact midpoint
         draw.text(
             (px + pill_w // 2, py + pill_h // 2),
             text,
@@ -727,10 +669,9 @@ def _stamp_png(png_bytes: bytes, text: str) -> bytes:
         img.convert("RGB").save(buf, format="PNG")
         return buf.getvalue()
     except Exception:
-        return png_bytes  # silently return original if stamping fails
+        return png_bytes
 
 
-# Full legend — used for PoseView2 (co-crystal reference, all interaction types)
 _POSEVIEW_LEGEND_HTML = """
 <div style="
     background:#ffffff;
@@ -742,30 +683,24 @@ _POSEVIEW_LEGEND_HTML = """
     color:#333;
     margin-top:8px;
 ">
-  <!-- Row 1 -->
   <div style="display:flex;align-items:center;gap:40px;margin-bottom:10px;">
-    <!-- hydrogen bond -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
         stroke="#5B9BD5" stroke-width="2" stroke-dasharray="5,3"/></svg>
       <span>hydrogen bond</span>
     </div>
-    <!-- ionic interaction -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
         stroke="#E85D8A" stroke-width="2" stroke-dasharray="5,3"/></svg>
       <span>ionic interaction</span>
     </div>
-    <!-- metal interaction -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
         stroke="#F5C400" stroke-width="2" stroke-dasharray="5,3"/></svg>
       <span>metal interaction</span>
     </div>
   </div>
-  <!-- Row 2 -->
   <div style="display:flex;align-items:center;gap:40px;">
-    <!-- cation-pi interaction -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="56" height="14">
         <circle cx="4"  cy="7" r="4" fill="#44A44A"/>
@@ -775,7 +710,6 @@ _POSEVIEW_LEGEND_HTML = """
       </svg>
       <span>cation-pi interaction</span>
     </div>
-    <!-- pi-pi interaction -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="56" height="14">
         <circle cx="5"  cy="7" r="4" fill="#00BCD4"/>
@@ -785,7 +719,6 @@ _POSEVIEW_LEGEND_HTML = """
       </svg>
       <span>pi-pi interaction</span>
     </div>
-    <!-- hydrophobic contact -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
         stroke="#2E8B57" stroke-width="2.5"/></svg>
@@ -795,7 +728,6 @@ _POSEVIEW_LEGEND_HTML = """
 </div>
 """
 
-# Reduced legend — used for PoseView v1 (docked pose: hydrogen bond + hydrophobic only)
 _POSEVIEW_V1_LEGEND_HTML = """
 <div style="
     background:#ffffff;
@@ -808,13 +740,11 @@ _POSEVIEW_V1_LEGEND_HTML = """
     margin-top:8px;
 ">
   <div style="display:flex;align-items:center;gap:40px;">
-    <!-- hydrogen bond -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
         stroke="#000000" stroke-width="2" stroke-dasharray="5,3"/></svg>
       <span>hydrogen bond</span>
     </div>
-    <!-- hydrophobic contact -->
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7"
         stroke="#2E8B57" stroke-width="2.5"/></svg>
@@ -826,12 +756,6 @@ _POSEVIEW_V1_LEGEND_HTML = """
 
 
 def _show_poseview_image(png_data, svg_data, caption, is_poseview2: bool = False, stamp: str = ""):
-    """
-    Render a PoseView diagram.
-    is_poseview2=True  → full 6-interaction legend (co-crystal reference)
-    is_poseview2=False → reduced legend: hydrogen bond + hydrophobic contact only (docked pose)
-    stamp              → text burned into bottom-left corner of the figure
-    """
     _legend = _POSEVIEW_LEGEND_HTML if is_poseview2 else _POSEVIEW_V1_LEGEND_HTML
     if png_data:
         _display_png = _stamp_png(png_data, stamp) if stamp else png_data
@@ -841,8 +765,6 @@ def _show_poseview_image(png_data, svg_data, caption, is_poseview2: bool = False
     elif svg_data:
         svg_str = svg_data.decode("utf-8") if isinstance(svg_data, bytes) else svg_data
         if stamp:
-            # Inject a centered light-gray pill stamp at the bottom of the SVG.
-            # Uses a foreignObject so CSS border-radius works reliably across viewers.
             _esc = stamp.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             _svg_stamp = (
                 '<g class="pv-stamp">'
@@ -883,13 +805,10 @@ def _show_poseview_image(png_data, svg_data, caption, is_poseview2: bool = False
 #  POSEVIEW2 UI BLOCK  (reusable)
 # ══════════════════════════════════════════════════════════════════════════════
 def _poseview_ui(
-    # ── PoseView v1 inputs (docked pose) ────────────────────────────────────
-    rec_key: str,         # session-state key holding receptor PDB path
-    pose_sdf_path: str,   # path to the single-pose SDF file to submit
-    # ── PoseView2 inputs (co-crystal reference) ──────────────────────────────
-    pdb_id: str = "",          # e.g. "1M17"
-    cocrystal_ligand_id: str = "",  # e.g. "AQ4_A_999"
-    # ── Session-state keys for docked pose image cache ───────────────────────
+    rec_key: str,
+    pose_sdf_path: str,
+    pdb_id: str = "",
+    cocrystal_ligand_id: str = "",
     smiles_key: str = "",
     pose_idx: int = 0,
     img_url_key: str = "",
@@ -899,11 +818,9 @@ def _poseview_ui(
     btn_key: str = "",
     dl_png_key: str = "",
     dl_svg_key: str = "",
-    # ── Session-state keys for co-crystal reference image cache ──────────────
     ref_png_key: str = "",
     ref_svg_key: str = "",
     label_suffix: str = "",
-    # ── Context for auto-filled AI prompt ────────────────────────────────────
     lig_name: str = "",
     lig_smiles: str = "",
     binding_energy: float | None = None,
@@ -912,11 +829,6 @@ def _poseview_ui(
     ref_lig_energy: float | None = None,
     show_header: bool = True,
 ):
-    """
-    2D interaction diagram block — shows both:
-      LEFT : PoseView v1  — docked pose (file upload)
-      RIGHT: PoseView2    — co-crystal reference (pdbCode + ligandID)
-    """
     _pose_key  = f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
     _pv_stale  = st.session_state.get(pose_key_key) != _pose_key
     _has_ref   = bool(pdb_id and cocrystal_ligand_id)
@@ -947,7 +859,6 @@ def _poseview_ui(
         elif not os.path.exists(pose_sdf_path):
             st.error("Pose SDF not found.")
         else:
-            # ── Left: PoseView v1 — docked pose ──────────────────────────────
             with st.spinner("⏳ PoseView v1 — docked pose… (10–60 s)"):
                 _svg, _err = _call_poseview2(_rec, pose_sdf_path)
             if _err:
@@ -959,7 +870,6 @@ def _poseview_ui(
                 st.session_state[img_svg_key]  = _svg
                 st.session_state[pose_key_key] = _pose_key
 
-            # ── Right: PoseView2 — co-crystal reference ───────────────────────
             if _has_ref and ref_png_key and ref_svg_key:
                 with st.spinner(f"⏳ PoseView2 — co-crystal reference {pdb_id.upper()} / {cocrystal_ligand_id}… (10–60 s)"):
                     _ref_svg, _ref_err = _call_poseview2_ref(pdb_id, cocrystal_ligand_id)
@@ -971,7 +881,6 @@ def _poseview_ui(
 
             st.rerun()
 
-    # ── Display side-by-side ──────────────────────────────────────────────────
     _pose_svg = st.session_state.get(img_svg_key)
     _ref_svg2 = st.session_state.get(ref_svg_key) if ref_svg_key else None
 
@@ -1032,7 +941,6 @@ def _poseview_ui(
                 icon="🧪",
             )
 
-        # ── AI Prompt ─────────────────────────────────────────────────────────
         st.markdown("---")
 
         _pdb_str    = pdb_id.upper() if pdb_id else "[PDB ID]"
@@ -1044,7 +952,6 @@ def _poseview_ui(
                        if binding_energy is not None else "[binding energy]")
 
         _has_ref = bool(ref_lig_name or ref_lig_smiles)
-        # Show co-crystal reference legend only when BOTH diagrams were actually generated
         _both_diagrams = bool(
             st.session_state.get(img_svg_key) and ref_svg_key
             and st.session_state.get(ref_svg_key)
@@ -1080,7 +987,6 @@ def _poseview_ui(
                if lig_smiles and ("[O-]" in lig_smiles or "[NH2+]" in lig_smiles
                                    or "[NH+]" in lig_smiles or "[N+]" in lig_smiles) else "")
             + (
-                # Both diagrams generated — show legend for each separately
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
                 "  - Black dashed line      : hydrogen bond\n"
                 "  - Dark green solid line  : hydrophobic contact\n\n"
@@ -1092,7 +998,6 @@ def _poseview_ui(
                 "  - Cyan dot-dashed line     : pi-pi interaction\n"
                 "  - Dark green solid line    : hydrophobic contact\n\n"
                 if _both_diagrams else
-                # Only docked pose diagram available
                 "Diagram legend (interaction types shown in the docked pose figure):\n"
                 "  - Black dashed line      : hydrogen bond\n"
                 "  - Dark green solid line  : hydrophobic contact\n\n"
@@ -1144,10 +1049,19 @@ def _get_pka_model():
 VINA_PATH, _vina_err = _get_vina()
 PKA_MODEL             = _get_pka_model()
 
-# ─── Ligand exclusion lists ───────────────────────────────────────────────────
+# ─── Ligand / solvent exclusion lists ────────────────────────────────────────
 _EXCLUDE_IONS   = set("HOH,WAT,DOD,SOL,NA,CL,K,CA,MG,ZN,MN,FE,CU,CO,NI,CD,HG".split(","))
 _GLYCAN_NAMES   = {"NAG","BMA","MAN","FUC","GAL","GLC","SIA","NGA","FUL","GLA","BGC"}
 _COFACTOR_NAMES = {"ATP","ADP","AMP","GTP","GDP","FAD","FMN","HEM","GOL","PEG","EDO","SO4","PO4"}
+
+# ─── Metal ion handling (module-level — used in _receptor_section) ────────────
+# These dicts must be defined here, NOT inside a try: block, to avoid SyntaxError.
+_METAL_RESNAMES = {"MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K"}
+_METAL_CHARGES  = {
+    "MG": 2.0, "ZN": 2.0, "CA": 2.0, "MN": 2.0, "FE": 3.0,
+    "CU": 2.0, "CO": 2.0, "NI": 2.0, "CD": 2.0, "HG": 2.0,
+    "NA": 1.0, "K":  1.0,
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1193,8 +1107,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     "  resname ELR and segid A\n"
                     "  resid 900:905 and segid B\n"
                     "  resname ATP\n"
-                    "Uses ProDy selection syntax (same as used throughout this app).\n\n"
-                    "Examples:\n"
+                    "Uses ProDy selection syntax.\n\n"
                     "  resname ATP                  - by ligand residue name\n"
                     "  resname ATP and chain A       - ligand in specific chain\n"
                     "  resid 84 86 134 and chain A   - specific protein residues\n"
@@ -1209,7 +1122,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 "`resid 84 to 100 and chain B` · "
                 "`resname ATP`"
             )
-    
+
     with col_b:
         st.markdown("**Search box size (Å)**")
         sx = st.slider("X size", 10, 40, 16, 2, key=pfx+"sx")
@@ -1284,7 +1197,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 cx, cy, cz = (float(v) for v in calcCenter(_ref_atoms))
                 log.append(f"🔬 ProDy selection: '{_prody_sel_str}' → {_ref_atoms.numAtoms()} atoms")
                 log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
-                # Extract resname/chain/resid for PoseView2 ligand ID (same logic as Colab 1.1)
                 _resnames = list(dict.fromkeys(_ref_atoms.getResnames()))
                 _resids   = list(dict.fromkeys(_ref_atoms.getResnums()))
                 _chains   = list(dict.fromkeys(_ref_atoms.getChids()))
@@ -1298,7 +1210,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     log.append(f"✓ Ligand: {rn} chain {ch} resnum {ri} ({_ref_atoms.numAtoms()} atoms)")
                     log.append(f"🔑 PoseView2 ligand ID: {rn}_{ch}_{ri}")
                 else:
-                    # Multi-residue selection (e.g. binding site) — centers correctly, no PoseView2 ID
                     ligand_pdb_path = str(wdir / "LIG_ref.pdb")
                     writePDB(ligand_pdb_path, _ref_atoms)
                     log.append(f"⚠ Multi-residue selection ({len(_resnames)} resnames, {len(_resids)} resids) — PoseView2 ligand ID not set")
@@ -1314,58 +1225,68 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             rec_fh    = str(wdir / "rec.pdb")
             rec_pdbqt = str(wdir / "rec.pdbqt")
 
-            # ── Metal ion handling: strip before OpenBabel, re-inject after ──────────
-metal_lines = []
-clean_lines = []
-with open(rec_raw) as _mf:
-    for _ml in _mf:
-        _rec = _ml[:6].strip()
-        if _rec in ("ATOM", "HETATM") and _ml[17:20].strip().upper() in _METAL_RESNAMES:
-            metal_lines.append(_ml)
-        else:
-            clean_lines.append(_ml)
+            # ── (a) Strip metal ions before OpenBabel ─────────────────────────
+            # OpenBabel's Gasteiger charge calculator crashes on metals like Mg²⁺.
+            # We strip them, convert the clean PDB, then re-inject with correct charges.
+            metal_lines = []
+            clean_lines = []
+            with open(rec_raw) as _mf:
+                for _ml in _mf:
+                    _rec_field = _ml[:6].strip()
+                    if (_rec_field in ("ATOM", "HETATM")
+                            and _ml[17:20].strip().upper() in _METAL_RESNAMES):
+                        metal_lines.append(_ml)
+                    else:
+                        clean_lines.append(_ml)
 
-rec_raw_nometal = str(wdir / "receptor_atoms_nometal.pdb")
-with open(rec_raw_nometal, "w") as _mf:
-    _mf.writelines(clean_lines)
+            rec_raw_nometal = str(wdir / "receptor_atoms_nometal.pdb")
+            with open(rec_raw_nometal, "w") as _mf:
+                _mf.writelines(clean_lines)
 
-if metal_lines:
-    log.append(f"⚠ Stripped {len(metal_lines)} metal atom(s) before OpenBabel: "
-               + ", ".join({l[17:20].strip() for l in metal_lines}))
+            if metal_lines:
+                _stripped_names = ", ".join(sorted({l[17:20].strip() for l in metal_lines}))
+                log.append(f"⚠ Stripped {len(metal_lines)} metal atom(s) before OpenBabel: {_stripped_names}")
 
-run_cmd(f'obabel "{rec_raw_nometal}" -O "{rec_fh}" -h 2>/dev/null')
-if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
-    raise ValueError("OpenBabel H-addition produced empty file")
+            # ── (b) Add H and convert to PDBQT (metal-free) ──────────────────
+            run_cmd(f'obabel "{rec_raw_nometal}" -O "{rec_fh}" -h 2>/dev/null')
+            if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
+                raise ValueError("OpenBabel H-addition produced empty file")
 
-run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger 2>/dev/null')
-if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
-    raise ValueError("PDBQT conversion produced empty file")
+            run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger 2>/dev/null')
+            if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
+                raise ValueError("PDBQT conversion produced empty file")
 
-if metal_lines:
-    _pdbqt_lines = open(rec_pdbqt).readlines()
-    _pdbqt_lines = [_l for _l in _pdbqt_lines if _l.strip() != "END"]
-    for _ml in metal_lines:
-        try:
-            _resname   = _ml[17:20].strip().upper()
-            _serial    = int(_ml[6:11])
-            _name      = _ml[12:16].strip()
-            _chain     = _ml[21] if len(_ml) > 21 else "A"
-            _resid     = int(_ml[22:26])
-            _x, _y, _z = float(_ml[30:38]), float(_ml[38:46]), float(_ml[46:54])
-            _charge    = _METAL_CHARGES.get(_resname, 0.0)
-            _atype     = _resname.capitalize()
-            _pdbqt_lines.append(
-                f"HETATM{_serial:5d} {_name:<4s} {_resname:<3s} {_chain}{_resid:4d}    "
-                f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00    {_charge:+.3f} {_atype}\n"
-            )
-        except Exception as _me:
-            log.append(f"⚠ Could not re-inject metal line: {_me}")
-    _pdbqt_lines.append("END\n")
-    with open(rec_pdbqt, "w") as _mf:
-        _mf.writelines(_pdbqt_lines)
-    log.append(f"✅ Re-injected {len(metal_lines)} metal atom(s) into PDBQT")
+            # ── (c) Re-inject metal ions into PDBQT with correct charges ──────
+            if metal_lines:
+                _pdbqt_lines = open(rec_pdbqt).readlines()
+                _pdbqt_lines = [_l for _l in _pdbqt_lines if _l.strip() != "END"]
+                _injected = 0
+                for _ml in metal_lines:
+                    try:
+                        _resname = _ml[17:20].strip().upper()
+                        _serial  = int(_ml[6:11])
+                        _name    = _ml[12:16].strip()
+                        _chain   = _ml[21] if len(_ml) > 21 else "A"
+                        _resid   = int(_ml[22:26])
+                        _x       = float(_ml[30:38])
+                        _y       = float(_ml[38:46])
+                        _z       = float(_ml[46:54])
+                        _charge  = _METAL_CHARGES.get(_resname, 0.0)
+                        _atype   = _resname.capitalize()
+                        _pdbqt_lines.append(
+                            f"HETATM{_serial:5d} {_name:<4s} {_resname:<3s} {_chain}{_resid:4d}    "
+                            f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00    {_charge:+.3f} {_atype}\n"
+                        )
+                        _injected += 1
+                    except Exception as _me:
+                        log.append(f"⚠ Could not re-inject metal line: {_me}")
+                _pdbqt_lines.append("END\n")
+                with open(rec_pdbqt, "w") as _mf:
+                    _mf.writelines(_pdbqt_lines)
+                log.append(f"✅ Re-injected {_injected} metal atom(s) into PDBQT")
 
-log.append("✓ Receptor PDBQT ready")
+            log.append("✓ Receptor PDBQT ready")
+
             box_pdb  = str(wdir / "rec.box.pdb")
             cfg_path = str(wdir / "rec.box.txt")
             hx, hy, hz = sx/2, sy/2, sz/2
@@ -1384,7 +1305,6 @@ log.append("✓ Receptor PDBQT ready")
                         f"size_x = {sx}\nsize_y = {sy}\nsize_z = {sz}\n")
             log.append("✓ Box + config written")
 
-            # ── Build PoseView2 ligand identifier: resname_chain_resnum ──────
             cocrystal_ligand_id = f"{rn}_{ch}_{ri}" if ligand_sel_str else ""
 
             st.session_state.update({
@@ -1394,7 +1314,7 @@ log.append("✓ Receptor PDBQT ready")
                 pfx+"cy": cy,                    pfx+"cz": cz,
                 pfx+"ligand_pdb_path": ligand_pdb_path,
                 pfx+"cocrystal_rn": rn if ligand_sel_str else "N/A",
-                pfx+"cocrystal_ligand_id": cocrystal_ligand_id,  # NEW
+                pfx+"cocrystal_ligand_id": cocrystal_ligand_id,
                 pfx+"receptor_done": True,        pfx+"receptor_log": "\n".join(log),
             })
         except Exception as e:
@@ -1442,7 +1362,6 @@ log.append("✓ Receptor PDBQT ready")
             v3.zoomTo()
             if lig_p and os.path.exists(lig_p):
                 v3.center({"model": mi})
-            # ── Docking grid box overlay ──────────────────────────────────
             _add_box_to_view(v3,
                 st.session_state.get(pfx+"cx", 0),
                 st.session_state.get(pfx+"cy", 0),
@@ -1450,7 +1369,6 @@ log.append("✓ Receptor PDBQT ready")
                 st.session_state.get(pfx+"sx", 16),
                 st.session_state.get(pfx+"sy", 16),
                 st.session_state.get(pfx+"sz", 16))
-            # ── Simple XYZ axis arrows from box center ─────────────────────
             try:
                 _ocx = float(st.session_state.get(pfx+"cx", 0))
                 _ocy = float(st.session_state.get(pfx+"cy", 0))
@@ -1530,10 +1448,8 @@ tab_basic, tab_batch = st.tabs([
 # ╚════════════════════════════════════════════════════════════════════════════╝
 with tab_basic:
 
-    # ── Step 1: Receptor ──────────────────────────────────────────────────────
     _receptor_section(pfx="", wdir=WORKDIR, step_label="Step 1 of 4")
 
-    # ── Step 2: Ligand ────────────────────────────────────────────────────────
     card_cls = "step-card done" if st.session_state.ligand_done else "step-card"
     st.markdown(
         f'<div class="{card_cls}"><div class="step-title">Step 2 of 4</div>'
@@ -1552,7 +1468,7 @@ with tab_basic:
     elif lig_input_mode == "Upload structure (.pdb)":
         st.file_uploader("Upload structure file (.pdb)",
                          type=["sdf", "mol2", "pdb"], key="lig_struct_file")
-    else:  # Draw structure (Ketcher)
+    else:
         try:
             from streamlit_ketcher import st_ketcher
             _ketch_smi = st_ketcher(
@@ -1689,7 +1605,6 @@ with tab_basic:
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 
-    # ── Step 3: Docking ───────────────────────────────────────────────────────
     card_cls = "step-card done" if st.session_state.docking_done else "step-card"
     st.markdown(
         f'<div class="{card_cls}"><div class="step-title">Step 3 of 4</div>'
@@ -1791,7 +1706,6 @@ with tab_basic:
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 
-    # ── Step 4: Results ───────────────────────────────────────────────────────
     card_cls = "step-card done" if st.session_state.docking_done else "step-card"
     st.markdown(
         f'<div class="{card_cls}"><div class="step-title">Step 4 of 4</div>'
@@ -1870,8 +1784,6 @@ with tab_basic:
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
             sel_mol  = mols[pose_idx]
-            # RMSD: show when co-crystal ligand PDB exists (set during receptor prep)
-            # _calc_rmsd_heavy rejects unrelated molecules via 60% MCS coverage guard
             _cryst_pdb_s = st.session_state.get("ligand_pdb_path") or ""
             _show_rmsd_s = bool(_cryst_pdb_s and os.path.exists(_cryst_pdb_s))
 
@@ -1937,7 +1849,6 @@ with tab_basic:
                         open(st.session_state.receptor_fh, "rb"),
                         file_name="receptor.pdb", key="dl_rec")
 
-            # ── Binding Pocket View — residues within user-defined Å of selected pose ──
             st.markdown("---")
             st.markdown("**🔬 Binding Pocket View**")
 
@@ -1946,16 +1857,14 @@ with tab_basic:
                 _bp_cutoff = st.slider(
                     "Residue distance cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
                     key="bp_cutoff",
-                    help="Show protein residues within this distance of any ligand atom. "
-                         "Updates instantly when you change pose or cutoff.")
+                    help="Show protein residues within this distance of any ligand atom.")
             with _bp_ctrl_r:
                 _bp_show_labels = st.checkbox(
-                    "Show residue labels", value=True, key="bp_show_labels",
-                    help="Toggle yellow residue-name + resid labels on interacting residues.")
+                    "Show residue labels", value=True, key="bp_show_labels")
 
             st.caption(
                 f"Protein residues within **{_bp_cutoff:.1f} Å** of "
-                f"**pose {pose_idx + 1}** (orange sticks). Co-crystal ligand excluded.")
+                f"**pose {pose_idx + 1}** (orange sticks).")
 
             try:
                 vbp = py3Dmol.view(width="100%", height=440)
@@ -1966,13 +1875,11 @@ with tab_basic:
                     vbp.setStyle({"model": mbp},
                                   {"cartoon": {"color": "spectrum", "opacity": 0.45}}); mbp += 1
 
-                # Docked pose — cyan sticks
                 vbp.addModel(Chem.MolToMolBlock(sel_mol), "mol")
                 _lig_bp_model = mbp
                 vbp.setStyle({"model": _lig_bp_model},
                               {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
 
-                # Interacting residues — reactive to pose_idx + _bp_cutoff
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                     _ir_bp = _get_interacting_residues(
                         st.session_state.receptor_fh, sel_mol, cutoff=_bp_cutoff)
@@ -2003,8 +1910,6 @@ with tab_basic:
             except Exception as _e_bp:
                 st.info(f"Binding pocket viewer error: {_e_bp}")
 
-            # ── PoseView2 2D Interaction ──────────────────────────────────────
-            # Write bond-order-fixed single pose SDF for PoseView2 submission
             pv_sdf_all = st.session_state.get("output_pv_sdf", "")
             sp_pv = str(WORKDIR / f"pose_{pose_idx+1}_pv_ready.sdf")
             if pv_sdf_all and os.path.exists(pv_sdf_all):
@@ -2052,7 +1957,6 @@ with tab_batch:
 
     _receptor_section(pfx="b_", wdir=BATCH_WORKDIR, step_label="Step B1 of B3")
 
-    # ── Step B2 ───────────────────────────────────────────────────────────────
     b_rec_done   = st.session_state.get("b_receptor_done", False)
     b_batch_done = st.session_state.get("b_batch_done", False)
     card_cls = "step-card done" if b_batch_done else "step-card"
@@ -2302,7 +2206,6 @@ with tab_batch:
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 
-    # ── Step B3: Results ──────────────────────────────────────────────────────
     b_batch_done = st.session_state.get("b_batch_done", False)
     card_cls = "step-card done" if b_batch_done else "step-card"
     st.markdown(
@@ -2364,7 +2267,6 @@ with tab_batch:
                 if pose_scores_list and b_pose_i > 0 and len(pose_scores_list) > 1:
                     delta = this_pose_score - pose_scores_list[0]
                     row_pills += f' {_pill(f"Δ {delta:+.2f} vs pose 1")}'
-                # RMSD: gated by is_redock_sel (user-tagged co-crystal reference)
                 if is_redock_sel:
                     _cryst_pdb_b = st.session_state.get("b_ligand_pdb_path") or ""
                     if _cryst_pdb_b and os.path.exists(_cryst_pdb_b):
@@ -2477,10 +2379,7 @@ with tab_batch:
                  .sort_values("Top Score (kcal/mol)")
                  .reset_index(drop=True))
 
-        # plot_df: OK ligands in original input order (same as Score Table)
         plot_df = df_res[df_res["Status"] == "OK"].reset_index(drop=True)
-
-        # Score Table — shown as-is (Poses column already removed from df_res)
         _display_df = df_res.copy()
 
         if not plot_df.empty:
@@ -2494,7 +2393,6 @@ with tab_batch:
                 scores = plot_df["Top Score (kcal/mol)"].values
                 names  = plot_df["Name"].values
                 colors = ["#3fb950" if s == _best_score else "#58a6ff" for s in scores]
-                # Integer x-positions → each ligand gets its own slot, duplicates stay separate
                 xs = list(range(_n_ligs))
                 ax.scatter(xs, scores, color=colors, s=90, zorder=3,
                            edgecolors=_cc["border"], linewidths=0.5)
@@ -2519,7 +2417,6 @@ with tab_batch:
                 ax.grid(axis="y", color=_cc["bg_sub"], linewidth=0.5)
 
             if _n_ligs <= 10:
-                # ≤10 ligands: original side-by-side layout
                 ct2, cp2 = st.columns([1, 1.6])
                 with ct2:
                     st.markdown("**Score Table**")
@@ -2536,7 +2433,6 @@ with tab_batch:
                     st.session_state["b_plot_png"] = _buf.getvalue()
                     st.pyplot(fig, width='stretch'); plt.close(fig)
             else:
-                # >10 ligands: plot full-width first, table below
                 st.markdown("**Top Score per Ligand**")
                 _fw = max(6, _n_ligs * 0.9 + 1.5)
                 fig, ax = plt.subplots(figsize=(_fw, 4))
@@ -2596,7 +2492,6 @@ with tab_batch:
                 file_name="anyone_can_dock.zip",
                 mime="application/zip", key="b_dl_zip")
 
-        # ── PoseView2 2D Interaction — independent selector ───────────────────
         st.markdown("---")
         st.markdown("### 🧬 2D Interaction Diagram — PoseView2")
         st.caption(
@@ -2631,7 +2526,6 @@ with tab_batch:
 
                 st.session_state["_b_pv2_smiles"] = pv_sel_res.get("SMILES", pv_sel_nm)
 
-                # Write bond-order-fixed single pose SDF for PoseView2 submission
                 pv_sdf_all_path = pv_sel_res.get("pv_sdf", "")
                 sp_pv2 = str(BATCH_WORKDIR / f"{pv_safe_nm}_pose{pv_pose_i+1}_pv2_ready.sdf")
                 if pv_sdf_all_path and os.path.exists(pv_sdf_all_path):
