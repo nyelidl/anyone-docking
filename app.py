@@ -1315,11 +1315,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             rec_pdbqt = str(wdir / "rec.pdbqt")
 
             # ── Metal ion handling: strip before OpenBabel, re-inject after ──────────
-_METAL_RESNAMES = {"MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K"}
-_METAL_CHARGES  = {"MG": 2.0, "ZN": 2.0, "CA": 2.0, "MN": 2.0, "FE": 3.0,
-                   "CU": 2.0, "CO": 2.0, "NI": 2.0, "CD": 2.0, "HG": 2.0,
-                   "NA": 1.0, "K":  1.0}
-
 metal_lines = []
 clean_lines = []
 with open(rec_raw) as _mf:
@@ -1346,7 +1341,6 @@ run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger 2>/de
 if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
     raise ValueError("PDBQT conversion produced empty file")
 
-# Re-inject metal ions with correct charges
 if metal_lines:
     _pdbqt_lines = open(rec_pdbqt).readlines()
     _pdbqt_lines = [_l for _l in _pdbqt_lines if _l.strip() != "END"]
@@ -1370,6 +1364,7 @@ if metal_lines:
     with open(rec_pdbqt, "w") as _mf:
         _mf.writelines(_pdbqt_lines)
     log.append(f"✅ Re-injected {len(metal_lines)} metal atom(s) into PDBQT")
+
 log.append("✓ Receptor PDBQT ready")
             box_pdb  = str(wdir / "rec.box.pdb")
             cfg_path = str(wdir / "rec.box.txt")
