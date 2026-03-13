@@ -15,9 +15,9 @@ from pathlib import Path
 # ══════════════════════════════════════════════════════════════════════════════
 
 # Metal ions that crash OpenBabel's Gasteiger charge calculator.
-# Defined at module level — never inside a try: block.
+# Defined at module level — NEVER inside a try: block.
 METAL_RESNAMES = {
-    "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K"
+    "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K",
 }
 METAL_CHARGES = {
     "MG": 2.0, "ZN": 2.0, "CA": 2.0, "MN": 2.0, "FE": 3.0,
@@ -25,7 +25,7 @@ METAL_CHARGES = {
     "NA": 1.0, "K":  1.0,
 }
 
-# Ligand / solvent exclusion lists used during co-crystal detection
+# Residues excluded from co-crystal ligand detection
 EXCLUDE_IONS = set(
     "HOH,WAT,DOD,SOL,NA,CL,K,CA,MG,ZN,MN,FE,CU,CO,NI,CD,HG".split(",")
 )
@@ -78,13 +78,25 @@ def _rdkit_six_patch():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  TOOL AVAILABILITY CHECKS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_obabel():
+    """Return (available: bool, version_or_error: str)."""
+    rc, out = run_cmd("obabel --version")
+    if rc != 0 or not out:
+        return False, "obabel not found — add 'openbabel' to packages.txt"
+    return True, (out.splitlines()[0] if out else "ok")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  VINA BINARY
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_vina_binary(path: str = "/tmp/vina_1.2.7") -> tuple[str | None, str]:
+def get_vina_binary(path: str = "/tmp/vina_1.2.7"):
     """
     Download AutoDock Vina 1.2.7 if not present.
-    Uses urllib (no wget dependency) — works on Streamlit Cloud.
+    Uses urllib (no wget/curl) — works on Streamlit Cloud.
     Returns (binary_path, status_message).
     """
     _URL = (
@@ -95,17 +107,17 @@ def get_vina_binary(path: str = "/tmp/vina_1.2.7") -> tuple[str | None, str]:
         try:
             import urllib.request
             urllib.request.urlretrieve(_URL, path)
-        except Exception as e:
-            # fallback: requests
+        except Exception as e1:
+            # fallback: requests (always present via streamlit deps)
             try:
                 import requests
-                r = requests.get(_URL, stream=True, timeout=60)
+                r = requests.get(_URL, stream=True, timeout=120)
                 r.raise_for_status()
                 with open(path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 1024):
                         f.write(chunk)
             except Exception as e2:
-                return None, f"Download failed: {e} / {e2}"
+                return None, f"Download failed: {e1} / {e2}"
     os.chmod(path, 0o755)
     return path, "ok"
 
@@ -119,15 +131,8 @@ def detect_cocrystal_ligand(raw_pdb: str) -> dict:
     Parse PDB and return the best co-crystal ligand candidate.
 
     Returns dict with keys:
-        found        : bool
-        resname      : str
-        chain        : str
-        resid        : int
-        sel_str      : str   (ProDy selection)
-        ligand_id    : str   (resname_chain_resid for PoseView2)
-        cx, cy, cz   : float (geometric center)
-        n_atoms      : int
-        atoms        : ProDy AtomGroup (or None)
+        found, resname, chain, resid, sel_str, ligand_id,
+        cx, cy, cz, n_atoms, atoms
     """
     from prody import parsePDB, calcCenter
 
@@ -148,49 +153,35 @@ def detect_cocrystal_ligand(raw_pdb: str) -> dict:
         return {"found": False}
 
     cands.sort(key=lambda r: (-r.numAtoms(), r.getChid() != "A"))
-    chosen  = cands[0]
-    rn      = chosen.getResname()
-    ch      = chosen.getChid()
-    ri      = chosen.getResnum()
-    sel_str = f"resname {rn} and resid {ri} and chain {ch}"
+    chosen    = cands[0]
+    rn        = chosen.getResname()
+    ch        = chosen.getChid()
+    ri        = chosen.getResnum()
+    sel_str   = f"resname {rn} and resid {ri} and chain {ch}"
     lig_atoms = atoms.select(sel_str)
     cx, cy, cz = (float(v) for v in calcCenter(lig_atoms))
 
     return {
-        "found":      True,
-        "resname":    rn,
-        "chain":      ch,
-        "resid":      ri,
-        "sel_str":    sel_str,
-        "ligand_id":  f"{rn}_{ch}_{ri}",
-        "cx":         cx,
-        "cy":         cy,
-        "cz":         cz,
-        "n_atoms":    lig_atoms.numAtoms(),
-        "atoms":      lig_atoms,
+        "found":     True,
+        "resname":   rn,
+        "chain":     ch,
+        "resid":     ri,
+        "sel_str":   sel_str,
+        "ligand_id": f"{rn}_{ch}_{ri}",
+        "cx": cx, "cy": cy, "cz": cz,
+        "n_atoms":   lig_atoms.numAtoms(),
+        "atoms":     lig_atoms,
     }
 
 
-def strip_and_convert_receptor(rec_raw: str, wdir: str | Path) -> dict:
+def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
     """
-    Full receptor PDBQT preparation pipeline with metal-ion safety:
+    Full receptor PDBQT preparation with metal-ion safety:
       (a) Strip metal HETATM lines before OpenBabel
-      (b) Add hydrogens + convert to PDBQT (metal-free)
-      (c) Re-inject metals with correct formal charges
+      (b) Add hydrogens + convert to PDBQT (metal-free file only)
+      (c) Re-inject metals into PDBQT with correct formal charges
 
-    Parameters
-    ----------
-    rec_raw : path to input receptor PDB (protein + metals, no co-crystal ligand)
-    wdir    : working directory for intermediate files
-
-    Returns
-    -------
-    dict with keys:
-        success      : bool
-        rec_fh       : path to H-added PDB
-        rec_pdbqt    : path to final PDBQT
-        log          : list[str]
-        error        : str (only if success=False)
+    Returns dict: success, rec_fh, rec_pdbqt, log, error
     """
     wdir = Path(wdir)
     log  = []
@@ -204,30 +195,41 @@ def strip_and_convert_receptor(rec_raw: str, wdir: str | Path) -> dict:
         clean_lines = []
         with open(rec_raw) as f:
             for line in f:
-                rec_field = line[:6].strip()
-                if (rec_field in ("ATOM", "HETATM")
+                field = line[:6].strip()
+                if (field in ("ATOM", "HETATM")
                         and line[17:20].strip().upper() in METAL_RESNAMES):
                     metal_lines.append(line)
                 else:
                     clean_lines.append(line)
 
-        rec_raw_nometal = str(wdir / "receptor_atoms_nometal.pdb")
-        with open(rec_raw_nometal, "w") as f:
+        rec_nometal = str(wdir / "receptor_atoms_nometal.pdb")
+        with open(rec_nometal, "w") as f:
             f.writelines(clean_lines)
 
         if metal_lines:
             names = ", ".join(sorted({l[17:20].strip() for l in metal_lines}))
-            log.append(f"⚠ Stripped {len(metal_lines)} metal atom(s) before OpenBabel: {names}")
+            log.append(
+                f"⚠ Stripped {len(metal_lines)} metal atom(s) "
+                f"before OpenBabel: {names}"
+            )
 
         # ── (b) Add H + convert to PDBQT ─────────────────────────────────────
-        run_cmd(f'obabel "{rec_raw_nometal}" -O "{rec_fh}" -h 2>/dev/null')
+        rc1, out1 = run_cmd(f'obabel "{rec_nometal}" -O "{rec_fh}" -h')
         if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
-            raise ValueError("OpenBabel H-addition produced empty file")
+            raise ValueError(
+                f"OpenBabel H-addition produced empty file "
+                f"(exit {rc1}). Output: {out1[:400]}"
+            )
         log.append("✓ Hydrogens added")
 
-        run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger 2>/dev/null')
+        rc2, out2 = run_cmd(
+            f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger'
+        )
         if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
-            raise ValueError("PDBQT conversion produced empty file")
+            raise ValueError(
+                f"PDBQT conversion produced empty file "
+                f"(exit {rc2}). Output: {out2[:400]}"
+            )
         log.append("✓ PDBQT conversion complete")
 
         # ── (c) Re-inject metal ions ──────────────────────────────────────────
@@ -248,13 +250,14 @@ def strip_and_convert_receptor(rec_raw: str, wdir: str | Path) -> dict:
                     charge  = METAL_CHARGES.get(resname, 0.0)
                     atype   = resname.capitalize()
                     pdbqt_lines.append(
-                        f"HETATM{serial:5d} {name:<4s} {resname:<3s} {chain}{resid:4d}    "
-                        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00    {charge:+.3f} {atype}\n"
+                        f"HETATM{serial:5d} {name:<4s} {resname:<3s} "
+                        f"{chain}{resid:4d}    "
+                        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
+                        f"    {charge:+.3f} {atype}\n"
                     )
                     injected += 1
                 except Exception as e:
                     log.append(f"⚠ Could not re-inject metal line: {e}")
-
             pdbqt_lines.append("END\n")
             with open(rec_pdbqt, "w") as f:
                 f.writelines(pdbqt_lines)
@@ -311,30 +314,22 @@ def write_vina_config(filename: str, cx, cy, cz, sx, sy, sz):
 
 def prepare_receptor(
     raw_pdb: str,
-    wdir: str | Path,
-    center_mode: str = "auto",      # "auto" | "manual" | "selection"
-    manual_xyz: tuple = (0, 0, 0),
+    wdir,
+    center_mode: str = "auto",
+    manual_xyz: tuple = (0.0, 0.0, 0.0),
     prody_sel: str = "",
     box_size: tuple = (16, 16, 16),
 ) -> dict:
     """
-    Full receptor preparation: parse PDB → detect/set grid center →
-    write receptor PDB → PDBQT conversion with metal safety →
-    write box PDB + Vina config.
+    Full receptor preparation:
+        parse PDB → detect/set grid center → write receptor PDB
+        → PDBQT conversion (metal-safe) → write box PDB + Vina config
 
-    Returns dict with keys:
-        success            : bool
-        rec_fh             : str  (H-added receptor PDB)
-        rec_pdbqt          : str  (receptor PDBQT)
-        box_pdb            : str
-        config_txt         : str
-        cx, cy, cz         : float
-        sx, sy, sz         : int
-        ligand_pdb_path    : str | None
-        cocrystal_ligand_id: str
-        n_atoms            : int
-        log                : list[str]
-        error              : str (only on failure)
+    center_mode: 'auto' | 'manual' | 'selection'
+
+    Returns dict: success, rec_fh, rec_pdbqt, box_pdb, config_txt,
+                  cx, cy, cz, sx, sy, sz, ligand_pdb_path,
+                  cocrystal_ligand_id, n_atoms, log, error
     """
     from prody import parsePDB, calcCenter, writePDB
 
@@ -348,24 +343,27 @@ def prepare_receptor(
             raise ValueError("ProDy parsePDB returned None")
         log.append(f"✓ Parsed {atoms.numAtoms()} atoms")
 
-        # ── Determine grid center ─────────────────────────────────────────────
-        ligand_pdb_path    = None
-        ligand_sel_str     = None
+        ligand_pdb_path     = None
+        ligand_sel_str      = None
         cocrystal_ligand_id = ""
         rn = ch = ""
         ri = 0
         cx = cy = cz = 0.0
 
+        # ── Grid centre ───────────────────────────────────────────────────────
         if center_mode == "auto":
             info = detect_cocrystal_ligand(raw_pdb)
             if info["found"]:
-                rn, ch, ri = info["resname"], info["chain"], info["resid"]
+                rn, ch, ri          = info["resname"], info["chain"], info["resid"]
                 ligand_sel_str      = info["sel_str"]
                 cocrystal_ligand_id = info["ligand_id"]
                 cx, cy, cz          = info["cx"], info["cy"], info["cz"]
                 ligand_pdb_path     = str(wdir / "LIG.pdb")
                 writePDB(ligand_pdb_path, info["atoms"])
-                log.append(f"✓ Co-crystal ligand: {rn} chain {ch} resnum {ri} ({info['n_atoms']} atoms)")
+                log.append(
+                    f"✓ Co-crystal ligand: {rn} chain {ch} resnum {ri} "
+                    f"({info['n_atoms']} atoms)"
+                )
                 log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
             else:
@@ -373,7 +371,7 @@ def prepare_receptor(
 
         elif center_mode == "manual":
             cx, cy, cz = (float(v) for v in manual_xyz)
-            log.append(f"🛠 Manual XYZ center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+            log.append(f"🛠 Manual center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
 
         elif center_mode == "selection":
             if not prody_sel.strip():
@@ -381,11 +379,13 @@ def prepare_receptor(
             ref_atoms = atoms.select(prody_sel.strip())
             if ref_atoms is None or ref_atoms.numAtoms() == 0:
                 raise ValueError(
-                    f"ProDy selection '{prody_sel}' matched 0 atoms. "
-                    "Check resname / resid / chain."
+                    f"ProDy selection '{prody_sel}' matched 0 atoms."
                 )
             cx, cy, cz = (float(v) for v in calcCenter(ref_atoms))
-            log.append(f"🔬 ProDy selection: '{prody_sel}' → {ref_atoms.numAtoms()} atoms")
+            log.append(
+                f"🔬 ProDy selection: '{prody_sel}' "
+                f"→ {ref_atoms.numAtoms()} atoms"
+            )
             log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
 
             _resnames = list(dict.fromkeys(ref_atoms.getResnames()))
@@ -405,12 +405,14 @@ def prepare_receptor(
             else:
                 ligand_pdb_path = str(wdir / "LIG_ref.pdb")
                 writePDB(ligand_pdb_path, ref_atoms)
-                log.append(f"⚠ Multi-residue selection — PoseView2 ligand ID not set")
+                log.append("⚠ Multi-residue selection — PoseView2 ligand ID not set")
 
         # ── Write receptor PDB (without co-crystal ligand) ────────────────────
-        sel_str  = (f"not ({ligand_sel_str}) and not water"
-                    if ligand_sel_str else "not water")
-        rec_sel  = atoms.select(sel_str)
+        sel_str = (
+            f"not ({ligand_sel_str}) and not water"
+            if ligand_sel_str else "not water"
+        )
+        rec_sel = atoms.select(sel_str)
         if rec_sel is None or rec_sel.numAtoms() == 0:
             raise ValueError("Receptor selection returned no atoms")
 
@@ -418,13 +420,13 @@ def prepare_receptor(
         writePDB(rec_raw_path, rec_sel)
         log.append(f"✓ Receptor: {rec_sel.numAtoms()} atoms")
 
-        # ── PDBQT conversion (with metal safety) ─────────────────────────────
+        # ── PDBQT conversion (metal-safe) ─────────────────────────────────────
         conv = strip_and_convert_receptor(rec_raw_path, wdir)
         log.extend(conv["log"])
         if not conv["success"]:
             raise ValueError(conv["error"])
 
-        # ── Box + config ──────────────────────────────────────────────────────
+        # ── Box PDB + Vina config ─────────────────────────────────────────────
         box_pdb  = str(wdir / "rec.box.pdb")
         cfg_path = str(wdir / "rec.box.txt")
         write_box_pdb(box_pdb, cx, cy, cz, sx, sy, sz)
@@ -460,7 +462,7 @@ def _meeko_to_pdbqt(mol, out_path: str):
     prep = MoleculePreparation()
     try:
         from meeko import PDBQTWriterLegacy
-        setups = prep.prepare(mol)
+        setups    = prep.prepare(mol)
         pdbqt_str, _, _ = PDBQTWriterLegacy.write_string(setups[0])
     except (ImportError, AttributeError):
         prep.prepare(mol)
@@ -469,38 +471,25 @@ def _meeko_to_pdbqt(mol, out_path: str):
         f.write(pdbqt_str)
 
 
-def prepare_ligand(
-    smiles: str,
-    name: str,
-    ph: float,
-    wdir: str | Path,
-) -> dict:
+def prepare_ligand(smiles: str, name: str, ph: float, wdir) -> dict:
     """
-    Protonate at target pH (Dimorphite-DL) → generate 3D conformer (ETKDGv3)
-    → MMFF/UFF minimise → write PDBQT (Meeko) + SDF.
+    Protonate at target pH (Dimorphite-DL) → 3D conformer (ETKDGv3)
+    → MMFF/UFF minimise → PDBQT (Meeko) + SDF.
 
-    Returns dict with keys:
-        success      : bool
-        pdbqt        : str
-        sdf          : str
-        prot_smiles  : str   (protonated SMILES actually used)
-        charge       : int
-        log          : list[str]
-        error        : str (only on failure)
+    Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
     """
     _rdkit_six_patch()
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
-    wdir = Path(wdir)
-    log  = []
+    wdir      = Path(wdir)
+    log       = []
     out_pdbqt = str(wdir / f"{name}.pdbqt")
     out_sdf   = str(wdir / f"{name}_3d.sdf")
 
     try:
         prot = smiles.strip()
 
-        # Protonate
         try:
             from dimorphite_dl import protonate_smiles
             vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
@@ -553,10 +542,10 @@ def prepare_ligand(
         return {"success": False, "error": str(e), "log": log}
 
 
-def smiles_from_file(file_path: str, wdir: str | Path) -> str:
+def smiles_from_file(file_path: str, wdir) -> str:
     """
-    Extract SMILES from SDF / MOL2 / PDB file via RDKit or OpenBabel.
-    Returns SMILES string or raises ValueError.
+    Extract SMILES from SDF / MOL2 / PDB via RDKit or OpenBabel.
+    Returns SMILES string, raises ValueError on failure.
     """
     wdir = Path(wdir)
     ext  = Path(file_path).suffix.lower()
@@ -589,20 +578,13 @@ def run_vina(
     exhaustiveness: int = 16,
     n_modes: int = 10,
     energy_range: int = 3,
-    wdir: str | Path = ".",
+    wdir = ".",
     out_name: str = "out",
 ) -> dict:
     """
     Run AutoDock Vina and convert output to SDF.
 
-    Returns dict with keys:
-        success      : bool
-        out_pdbqt    : str
-        out_sdf      : str
-        scores       : list[dict]   [{pose, affinity, rmsd_lb, rmsd_ub}]
-        top_score    : float | None
-        log          : str
-        error        : str (only on failure)
+    Returns dict: success, out_pdbqt, out_sdf, scores, top_score, log, error
     """
     wdir      = Path(wdir)
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
@@ -621,16 +603,11 @@ def run_vina(
     )
 
     if rc != 0 or not os.path.exists(out_pdbqt):
-        return {
-            "success": False,
-            "error":   f"Vina exit code {rc}",
-            "log":     vlog,
-        }
+        return {"success": False, "error": f"Vina exit code {rc}", "log": vlog}
 
     run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" 2>/dev/null')
 
-    # Parse scores from PDBQT remarks
-    scores = []
+    scores    = []
     cur_model = None
     for line in open(out_pdbqt):
         ln = line.strip()
@@ -651,14 +628,12 @@ def run_vina(
             except Exception:
                 pass
 
-    top_score = scores[0]["affinity"] if scores else None
-
     return {
         "success":   True,
         "out_pdbqt": out_pdbqt,
         "out_sdf":   out_sdf,
         "scores":    scores,
-        "top_score": top_score,
+        "top_score": scores[0]["affinity"] if scores else None,
         "log":       vlog,
     }
 
@@ -684,9 +659,7 @@ def _bo_fix_mol(probe, template):
     try:
         fixed = AllChem.AssignBondOrdersFromTemplate(template, probe_noH)
     except ValueError as exc:
-        raise RuntimeError(
-            f"AssignBondOrdersFromTemplate failed: {exc}"
-        ) from exc
+        raise RuntimeError(f"AssignBondOrdersFromTemplate failed: {exc}") from exc
 
     match = fixed.GetSubstructMatch(template)
     if match:
@@ -702,11 +675,12 @@ def _bo_fix_mol(probe, template):
     return fixed
 
 
-def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list[str]:
+def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
     """
     Apply bond-order + formal-charge correction to all poses in an SDF.
     Returns list of log messages.
     """
+    import shutil
     from rdkit import Chem
     log = []
 
@@ -714,7 +688,6 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list[str]:
         template = _bo_template(smiles)
     except Exception as e:
         log.append(f"⚠ Could not build template: {e} — skipping fix")
-        import shutil
         shutil.copy(raw_sdf, fixed_sdf)
         return log
 
@@ -767,13 +740,9 @@ def write_single_pose(mol, path: str) -> None:
 #  STRUCTURAL ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_interacting_residues(
-    receptor_pdb: str,
-    lig_mol,
-    cutoff: float = 3.5,
-) -> list[dict]:
+def get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5) -> list:
     """
-    Return protein residues within `cutoff` Å of any ligand heavy atom.
+    Return protein residues within cutoff Å of any ligand heavy atom.
     Each entry: {"chain": str, "resi": int, "resn": str}
     """
     try:
@@ -794,7 +763,7 @@ def get_interacting_residues(
         resids   = rec.getResnums()
         resnames = rec.getResnames()
 
-        seen: dict = {}
+        seen = {}
         for j in range(len(r_xyz)):
             if np.linalg.norm(lig_xyz - r_xyz[j], axis=1).min() <= cutoff:
                 key = (str(chains[j]), int(resids[j]))
@@ -807,11 +776,10 @@ def get_interacting_residues(
         return []
 
 
-def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str) -> float | None:
+def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
     """
     Heavy-atom RMSD (Å) between a docked pose and a co-crystal PDB.
-    Uses MCS matching (element + topology, no atom-name dependency).
-    Requires ≥60% MCS coverage to guard against unrelated molecules.
+    Uses MCS matching; requires ≥60% MCS coverage.
     Returns float or None on any failure.
     """
     try:
@@ -901,10 +869,10 @@ def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str) -> float | None:
 #  POSEVIEW REST API
 # ══════════════════════════════════════════════════════════════════════════════
 
-def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple[bytes | None, str | None]:
+def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
-    Returns (svg_bytes, error_string).  One of them will be None.
+    Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
     import time
@@ -933,8 +901,10 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple[bytes | None, st
             job    = requests.get(_JOBS + job_id + "/", timeout=10).json()
             status = job.get("status", "")
             if status in ("done", "success"):
-                img = (job.get("result_image") or job.get("image")
-                       or job.get("result")    or job.get("image_url"))
+                img = (
+                    job.get("result_image") or job.get("image")
+                    or job.get("result")    or job.get("image_url")
+                )
                 if not img:
                     return None, f"No image key. Keys: {list(job.keys())}"
                 if isinstance(img, str) and img.startswith("http"):
@@ -952,10 +922,10 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple[bytes | None, st
     return None, "Timed out (60 s)."
 
 
-def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple[bytes | None, str | None]:
+def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
     """
     Submit co-crystal reference job to PoseView2 REST API.
-    Returns (svg_bytes, error_string).  One of them will be None.
+    Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
     import time
@@ -977,7 +947,10 @@ def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple[bytes | None, str
         )
         data = r.json()
         if r.status_code not in (200, 202):
-            return None, f"Submission failed ({r.status_code}): {data.get('message', '')}"
+            return None, (
+                f"Submission failed ({r.status_code}): "
+                f"{data.get('message', '')}"
+            )
         location = data.get("location", "")
         if not location:
             return None, "API returned no job location."
@@ -1010,20 +983,22 @@ def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple[bytes | None, str
     return None, "Timed out (60 s)."
 
 
-def svg_to_png(svg_bytes: bytes) -> bytes | None:
-    """Convert SVG bytes to PNG bytes via cairosvg. Returns None if unavailable."""
+# ══════════════════════════════════════════════════════════════════════════════
+#  IMAGE UTILITIES
+# ══════════════════════════════════════════════════════════════════════════════
+
+def svg_to_png(svg_bytes: bytes):
+    """Convert SVG bytes → PNG bytes via cairosvg. Returns None if unavailable."""
     try:
         import cairosvg
         return cairosvg.svg2png(bytestring=svg_bytes, scale=2, background_color="white")
-    except ImportError:
-        return None
     except Exception:
         return None
 
 
 def stamp_png(png_bytes: bytes, text: str) -> bytes:
     """
-    Burn a centered label pill into the bottom of a PNG.
+    Burn a centred label pill into the bottom of a PNG.
     Returns original bytes unchanged on any error.
     """
     try:
@@ -1047,31 +1022,27 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
         if font is None:
             font = ImageFont.load_default()
 
-        bbox = draw.textbbox((0, 0), text, font=font, anchor="lt")
-        tw   = bbox[2] - bbox[0]
-        th   = bbox[3] - bbox[1]
-
+        bbox   = draw.textbbox((0, 0), text, font=font, anchor="lt")
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         pad_x, pad_y = 36, 16
         pill_w = tw + pad_x * 2
         pill_h = th + pad_y * 2
         pill_r = pill_h // 2
-
-        px = (img.width  - pill_w) // 2
-        py =  img.height - pill_h  - 28
+        px     = (img.width  - pill_w) // 2
+        py_    =  img.height - pill_h  - 28
 
         draw.rounded_rectangle(
-            [px, py, px + pill_w, py + pill_h],
+            [px, py_, px + pill_w, py_ + pill_h],
             radius=pill_r,
             fill=(232, 232, 232, 230),
         )
         draw.text(
-            (px + pill_w // 2, py + pill_h // 2),
+            (px + pill_w // 2, py_ + pill_h // 2),
             text,
             font=font,
             fill=(26, 26, 26, 255),
             anchor="mm",
         )
-
         buf = _io.BytesIO()
         img.convert("RGB").save(buf, format="PNG")
         return buf.getvalue()
