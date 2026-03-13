@@ -807,8 +807,7 @@ if not _OBABEL_OK:
     st.stop()
 
 st.markdown(
-    f"{_pill('Vina 1.2.7 ready', 'success')} "
-    f"{_pill('OpenBabel ready', 'success')}",
+    f"{_pill('Vina 1.2.7 ready', 'success')} ",
     unsafe_allow_html=True,
 )
 st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
