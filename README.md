@@ -2,7 +2,7 @@
 
 **Anyone docking: Browser-based molecular docking — no installation required.**
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)(https://nyelidl.github.io/anyone-docking/)]
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](nyelidl.github.io/anyone-docking/)
 
 > Paste a SMILES, draw a structure, or upload a file. Pick a PDB. Dock in seconds.
 
