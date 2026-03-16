@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Loading App...</title>
+  <title>Anyone can dock</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -16,15 +16,21 @@
       justify-content: center;
       height: 100vh;
       text-align: center;
+      padding: 1rem;
     }
     .logo {
-      font-size: 3rem;
-      margin-bottom: 1rem;
+      width: 90px;
+      height: 90px;
+      margin-bottom: 1.2rem;
     }
     h1 {
-      font-size: 1.5rem;
-      margin-bottom: 0.5rem;
-      color: #ff4b4b;
+      font-size: 1.8rem;
+      font-weight: 800;
+      margin-bottom: 0.4rem;
+      background: linear-gradient(90deg, #ff4b4b, #cc44cc, #4b8bff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
     p {
       color: #aaa;
@@ -46,17 +52,13 @@
     .hint {
       font-size: 0.8rem;
       color: #555;
-      margin-top: 2rem;
-    }
-    a {
-      color: #ff4b4b;
-      text-decoration: none;
+      margin-top: 1.5rem;
     }
   </style>
 </head>
 <body>
-  <div class="logo">⚓</div>
-  <h1>Anyone Docking</h1>
+  <img class="logo" src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" alt="Anyone can dock logo" />
+  <h1>Anyone can dock, everyone can do!</h1>
   <p>Finding the best available server for you...</p>
   <div class="spinner"></div>
   <div class="hint">You will be redirected automatically.</div>
