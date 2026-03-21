@@ -942,26 +942,22 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
 
-    WHY THE NOTEBOOK WORKS BUT STREAMLIT DIDN'T:
-    The notebook never sends a raw PDB to PoseView. It always goes:
-        raw PDB → MoleculeHandler/Protoss → file_string → PoseView
-    Streamlit was sending rec.pdb (OpenBabel -h, explicit Hs) directly,
-    which PoseView rejects with status 'failure'.
+    Replicates exactly what the proteins.plus WEBSITE does:
+      Step 1 — Upload protein file → MoleculeHandler → protein_id
+      Step 2 — Upload ligand  file → MoleculeHandler → ligand_id
+      Step 3 — POST poseview with data={'protein_id':..., 'ligand_id':...}
+               (NOT files= — use the record IDs like notebook cell 8)
+      Step 4 — Poll → GET job['image'] SVG
 
-    This function now replicates the notebook exactly:
-      Step 1 — POST receptor to molecule_handler/upload/ (Protoss preprocessing)
-               → poll upload job → GET protein['file_string']  (clean Protoss PDB)
-      Step 2 — POST to poseview/ with:
-                 files={'protein_file': <file_string>, 'ligand_file': <docked SDF>}
-      Step 3 — poll poseview job
-      Step 4 — GET job['image'] SVG URL
+    This is why the website works and direct file submission fails:
+    the website always goes through MoleculeHandler for both protein AND ligand.
 
     Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
-    import io as _io
 
     _PROTEINS = _PP_BASE + "molecule_handler/proteins/"
+    _LIGANDS  = _PP_BASE + "molecule_handler/ligands/"
 
     last_error = "Unknown error"
 
@@ -969,8 +965,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
 
-        # ── Step 1: Upload receptor → Protoss → get file_string ──────────────
-        # Mirrors: requests.post(UPLOAD, files={'protein_file': f}).json()
+        # ── Step 1: Upload protein → MoleculeHandler → protein_id ────────────
         try:
             with open(receptor_pdb) as f:
                 r = requests.post(
@@ -979,59 +974,74 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
                     timeout=60,
                 )
             r.raise_for_status()
-            upload_data = r.json()
-            upload_job_id = upload_data.get("job_id") or upload_data.get("id")
-            if not upload_job_id:
-                last_error = f"MoleculeHandler returned no job_id: {upload_data}"
+            job_id = r.json().get("job_id") or r.json().get("id")
+            if not job_id:
+                last_error = f"Protein upload: no job_id in {r.json()}"
                 continue
-
-            upload_job = _pp_poll(upload_job_id, _PP_UPLOAD_JOBS)
-            if str(upload_job.get("status", "")).lower() != "success":
-                last_error = (
-                    f"MoleculeHandler failed (attempt {attempt}): {upload_job}"
-                )
+            job = _pp_poll(job_id, _PP_UPLOAD_JOBS)
+            if str(job.get("status", "")).lower() != "success":
+                last_error = f"Protein upload failed (attempt {attempt}): {job}"
                 continue
-
-            protein_id   = upload_job["output_protein"]
-            protein_json = requests.get(
-                _PROTEINS + protein_id + "/", timeout=15
-            ).json()
-            pdb_text = protein_json.get("file_string", "")
-            if not pdb_text:
-                last_error = (
-                    f"protein_json missing file_string. "
-                    f"Keys: {list(protein_json.keys())}"
-                )
-                continue
-
+            protein_id = job["output_protein"]
         except Exception as e:
-            last_error = f"MoleculeHandler step failed (attempt {attempt}): {e}"
+            last_error = f"Protein upload failed (attempt {attempt}): {e}"
             continue
 
-        # ── Step 2: Submit to PoseView — both as files= ───────────────────────
-        # Mirrors: files = {'protein_file': upload_file, 'ligand_file': lig_file}
-        #          requests.post(POSEVIEW, files=files).json()
+        # ── Step 2: Upload ligand SDF → MoleculeHandler → ligand_id ──────────
         try:
-            with open(pose_sdf) as lf:
+            with open(pose_sdf) as f:
                 r = requests.post(
-                    _PP_POSEVIEW,
-                    files={
-                        "protein_file": ("receptor.pdb", _io.StringIO(pdb_text), "chemical/x-pdb"),
-                        "ligand_file":  lf,
-                    },
-                    timeout=30,
+                    _PP_UPLOAD,
+                    files={"ligand_file": f},
+                    timeout=60,
                 )
+            r.raise_for_status()
+            job_id = r.json().get("job_id") or r.json().get("id")
+            if not job_id:
+                last_error = f"Ligand upload: no job_id in {r.json()}"
+                continue
+            job = _pp_poll(job_id, _PP_UPLOAD_JOBS)
+            if str(job.get("status", "")).lower() != "success":
+                last_error = f"Ligand upload failed (attempt {attempt}): {job}"
+                continue
+            # ligand_id comes from output_ligands list
+            output_ligands = job.get("output_ligands") or []
+            if not output_ligands:
+                # fallback: fetch protein record and get its ligand_set
+                prot_json = requests.get(
+                    _PROTEINS + job.get("output_protein", "") + "/",
+                    timeout=15,
+                ).json()
+                output_ligands = prot_json.get("ligand_set", [])
+            if not output_ligands:
+                last_error = f"Ligand upload: no ligand IDs returned. Job: {job}"
+                continue
+            ligand_id = output_ligands[0]
+        except Exception as e:
+            last_error = f"Ligand upload failed (attempt {attempt}): {e}"
+            continue
+
+        # ── Step 3: Submit PoseView with protein_id + ligand_id ──────────────
+        # Mirrors notebook cell 8:
+        #   query = {'protein_id': protein['id'], 'ligand_id': ligand['id']}
+        #   requests.post(POSEVIEW, data=query)
+        try:
+            r = requests.post(
+                _PP_POSEVIEW,
+                data={"protein_id": protein_id, "ligand_id": ligand_id},
+                timeout=30,
+            )
             r.raise_for_status()
             pv_data   = r.json()
             pv_job_id = pv_data.get("job_id") or pv_data.get("id")
             if not pv_job_id:
-                last_error = f"PoseView returned no job_id: {pv_data}"
+                last_error = f"PoseView submission: no job_id in {pv_data}"
                 continue
         except Exception as e:
             last_error = f"PoseView submission failed (attempt {attempt}): {e}"
             continue
 
-        # ── Step 3: Poll PoseView job ─────────────────────────────────────────
+        # ── Step 4: Poll + fetch SVG ──────────────────────────────────────────
         try:
             pv_job = _pp_poll(pv_job_id, _PP_POSEVIEW_JOBS)
             status = str(pv_job.get("status", "")).lower()
@@ -1055,8 +1065,6 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             )
             continue
 
-        # ── Step 4: Fetch SVG from job['image'] URL ───────────────────────────
-        # Mirrors: poseview_job['image']
         img_url = pv_job.get("image")
         if not img_url:
             last_error = (
