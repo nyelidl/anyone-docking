@@ -929,11 +929,23 @@ def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # API base URLs — matches the working notebook exactly
-_PP_BASE        = "https://proteins.plus/api/v2/"
-_PP_UPLOAD      = _PP_BASE + "molecule_handler/upload/"
-_PP_UPLOAD_JOBS = _PP_BASE + "molecule_handler/upload/jobs/"
-_PP_POSEVIEW    = _PP_BASE + "poseview/"
+_PP_BASE          = "https://proteins.plus/api/v2/"
+_PP_UPLOAD        = _PP_BASE + "molecule_handler/upload/"
+_PP_UPLOAD_JOBS   = _PP_BASE + "molecule_handler/upload/jobs/"
+_PP_POSEVIEW      = _PP_BASE + "poseview/"
 _PP_POSEVIEW_JOBS = _PP_BASE + "poseview/jobs/"
+
+# Mimic a real browser — proteins.plus rate-limits automated server IPs
+# (Streamlit Cloud) but not browser requests from user IPs.
+_PP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://proteins.plus/",
+    "Origin":  "https://proteins.plus",
+}
 
 
 def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
@@ -944,7 +956,7 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
     Mirror of poll_job() from the official notebook.
     """
     import requests
-    job    = requests.get(poll_url + job_id + "/", timeout=15).json()
+    job    = requests.get(poll_url + job_id + "/", headers=_PP_HEADERS, timeout=15).json()
     status = str(job.get("status", "")).lower()
     polls  = 0
     while status in ("pending", "running", "processing", "queued", ""):
@@ -955,7 +967,7 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
             )
         time.sleep(poll_interval)
         polls += 1
-        job    = requests.get(poll_url + job_id + "/", timeout=15).json()
+        job    = requests.get(poll_url + job_id + "/", headers=_PP_HEADERS, timeout=15).json()
         status = str(job.get("status", "")).lower()
     return job
 
@@ -997,6 +1009,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
                 r = requests.post(
                     _PP_UPLOAD,
                     files={"protein_file": f},
+                    headers=_PP_HEADERS,
                     timeout=60,
                 )
             r.raise_for_status()
@@ -1010,7 +1023,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
                 continue
             protein_id   = job["output_protein"]
             protein_json = requests.get(
-                _PROTEINS + protein_id + "/", timeout=15
+                _PROTEINS + protein_id + "/", headers=_PP_HEADERS, timeout=15
             ).json()
             pdb_text = protein_json.get("file_string", "")
             if not pdb_text:
@@ -1039,6 +1052,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
                                          "chemical/x-pdb"),
                         "ligand_file":  lf,
                     },
+                    headers=_PP_HEADERS,
                     timeout=30,
                 )
             r.raise_for_status()
@@ -1083,7 +1097,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             )
             continue
         try:
-            resp = requests.get(img_url, timeout=20)
+            resp = requests.get(img_url, headers=_PP_HEADERS, timeout=20)
             resp.raise_for_status()
             return resp.content, None
         except Exception as e:
