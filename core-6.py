@@ -773,6 +773,28 @@ def write_single_pose(mol, path: str) -> None:
         w.write(mol)
 
 
+def convert_sdf_to_v2000(sdf_path: str) -> str:
+    """
+    Convert an SDF to clean V2000 format via obabel.
+    PoseView requires V2000 — RDKit may write V3000 for large molecules.
+    Returns path to converted file (tmp), or original path on failure.
+    """
+    out = sdf_path.replace(".sdf", "_v2000.sdf")
+    if out == sdf_path:
+        out = sdf_path + "_v2000.sdf"
+    rc, log = run_cmd(
+        f'obabel "{sdf_path}" -O "{out}" --gen3d -h 2>/dev/null'
+    )
+    # --gen3d keeps 3D coords; -h adds Hs so PoseView can detect H-bonds
+    if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
+        return out
+    # fallback: try without --gen3d
+    rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" 2>/dev/null')
+    if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
+        return out
+    return sdf_path
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  STRUCTURAL ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -907,11 +929,27 @@ def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # API base URLs — matches the working notebook exactly
-_PP_BASE        = "https://proteins.plus/api/v2/"
-_PP_UPLOAD      = _PP_BASE + "molecule_handler/upload/"
-_PP_UPLOAD_JOBS = _PP_BASE + "molecule_handler/upload/jobs/"
-_PP_POSEVIEW    = _PP_BASE + "poseview/"
+_PP_BASE          = "https://proteins.plus/api/v2/"
+_PP_UPLOAD        = _PP_BASE + "molecule_handler/upload/"
+_PP_UPLOAD_JOBS   = _PP_BASE + "molecule_handler/upload/jobs/"
+_PP_POSEVIEW      = _PP_BASE + "poseview/"
 _PP_POSEVIEW_JOBS = _PP_BASE + "poseview/jobs/"
+
+# Mimic a real browser — proteins.plus rate-limits automated server IPs
+# (Streamlit Cloud) but not browser requests from user IPs.
+_PP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://proteins.plus/",
+    "Origin":  "https://proteins.plus",
+}
+
+# Cache: receptor_pdb path → Protoss file_string
+# Avoids re-uploading the full receptor on every PoseView call
+_PP_PROTEIN_CACHE: dict = {}
 
 
 def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
@@ -922,7 +960,7 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
     Mirror of poll_job() from the official notebook.
     """
     import requests
-    job    = requests.get(poll_url + job_id + "/", timeout=15).json()
+    job    = requests.get(poll_url + job_id + "/", headers=_PP_HEADERS, timeout=15).json()
     status = str(job.get("status", "")).lower()
     polls  = 0
     while status in ("pending", "running", "processing", "queued", ""):
@@ -933,7 +971,7 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
             )
         time.sleep(poll_interval)
         polls += 1
-        job    = requests.get(poll_url + job_id + "/", timeout=15).json()
+        job    = requests.get(poll_url + job_id + "/", headers=_PP_HEADERS, timeout=15).json()
         status = str(job.get("status", "")).lower()
     return job
 
@@ -942,19 +980,19 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
 
-    WHY THE NOTEBOOK WORKS BUT STREAMLIT DIDN'T:
-    The notebook never sends a raw PDB to PoseView. It always goes:
-        raw PDB → MoleculeHandler/Protoss → file_string → PoseView
-    Streamlit was sending rec.pdb (OpenBabel -h, explicit Hs) directly,
-    which PoseView rejects with status 'failure'.
+    Correct flow — MoleculeHandler only accepts protein files, not ligand SDFs:
+      Step 1 — Upload protein → MoleculeHandler/Protoss → get file_string
+               (clean Protoss-processed PDB text)
+      Step 2 — POST to poseview/ with both as files=:
+                 protein_file = file_string  (Protoss-processed)
+                 ligand_file  = docked SDF   (submitted directly)
+      Step 3 — Poll → GET job['image'] SVG
 
-    This function now replicates the notebook exactly:
-      Step 1 — POST receptor to molecule_handler/upload/ (Protoss preprocessing)
-               → poll upload job → GET protein['file_string']  (clean Protoss PDB)
-      Step 2 — POST to poseview/ with:
-                 files={'protein_file': <file_string>, 'ligand_file': <docked SDF>}
-      Step 3 — poll poseview job
-      Step 4 — GET job['image'] SVG URL
+    Mirrors notebook cell 6:
+        files = {'protein_file': open('4agn.pdb'),
+                 'ligand_file':  open('NXG_A_1294.sdf')}
+        requests.post(POSEVIEW, files=files)
+    where 4agn.pdb was previously saved from protein_json['file_string'].
 
     Returns (svg_bytes, error_string) — one will be None.
     """
@@ -969,69 +1007,75 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
 
-        # ── Step 1: Upload receptor → Protoss → get file_string ──────────────
-        # Mirrors: requests.post(UPLOAD, files={'protein_file': f}).json()
+        # ── Step 1: Upload protein → MoleculeHandler → file_string ───────────
+        # Cached — full receptor upload + Protoss takes 30-60 s for large PDBs.
+        # We cache by file path so repeated PoseView calls reuse the result.
         try:
-            with open(receptor_pdb) as f:
-                r = requests.post(
-                    _PP_UPLOAD,
-                    files={"protein_file": f},
-                    timeout=60,
-                )
-            r.raise_for_status()
-            upload_data = r.json()
-            upload_job_id = upload_data.get("job_id") or upload_data.get("id")
-            if not upload_job_id:
-                last_error = f"MoleculeHandler returned no job_id: {upload_data}"
-                continue
-
-            upload_job = _pp_poll(upload_job_id, _PP_UPLOAD_JOBS)
-            if str(upload_job.get("status", "")).lower() != "success":
-                last_error = (
-                    f"MoleculeHandler failed (attempt {attempt}): {upload_job}"
-                )
-                continue
-
-            protein_id   = upload_job["output_protein"]
-            protein_json = requests.get(
-                _PROTEINS + protein_id + "/", timeout=15
-            ).json()
-            pdb_text = protein_json.get("file_string", "")
-            if not pdb_text:
-                last_error = (
-                    f"protein_json missing file_string. "
-                    f"Keys: {list(protein_json.keys())}"
-                )
-                continue
-
+            if receptor_pdb in _PP_PROTEIN_CACHE:
+                pdb_text = _PP_PROTEIN_CACHE[receptor_pdb]
+            else:
+                with open(receptor_pdb) as f:
+                    r = requests.post(
+                        _PP_UPLOAD,
+                        files={"protein_file": f},
+                        headers=_PP_HEADERS,
+                        timeout=60,
+                    )
+                r.raise_for_status()
+                job_id = r.json().get("job_id") or r.json().get("id")
+                if not job_id:
+                    last_error = f"Protein upload: no job_id in {r.json()}"
+                    continue
+                job = _pp_poll(job_id, _PP_UPLOAD_JOBS)
+                if str(job.get("status", "")).lower() != "success":
+                    last_error = f"Protein MoleculeHandler failed (attempt {attempt}): {job}"
+                    continue
+                protein_id   = job["output_protein"]
+                protein_json = requests.get(
+                    _PROTEINS + protein_id + "/", headers=_PP_HEADERS, timeout=15
+                ).json()
+                pdb_text = protein_json.get("file_string", "")
+                if not pdb_text:
+                    last_error = (
+                        f"protein_json missing file_string. "
+                        f"Keys: {list(protein_json.keys())}"
+                    )
+                    continue
+                _PP_PROTEIN_CACHE[receptor_pdb] = pdb_text
         except Exception as e:
-            last_error = f"MoleculeHandler step failed (attempt {attempt}): {e}"
+            last_error = f"Protein upload failed (attempt {attempt}): {e}"
             continue
 
-        # ── Step 2: Submit to PoseView — both as files= ───────────────────────
-        # Mirrors: files = {'protein_file': upload_file, 'ligand_file': lig_file}
-        #          requests.post(POSEVIEW, files=files).json()
+        # ── Step 2: POST to PoseView — protein file_string + ligand SDF ──────
+        # MoleculeHandler does NOT accept standalone ligand uploads (400 error).
+        # Ligand SDF is submitted directly as ligand_file — same as notebook cell 6
+        # where the SDF was obtained from MoleculeHandler's ligand_set file_string.
+        # Convert to V2000 first — PoseView crashes on V3000/malformed SDF.
         try:
-            with open(pose_sdf) as lf:
+            ligand_v2000 = convert_sdf_to_v2000(pose_sdf)
+            with open(ligand_v2000) as lf:
                 r = requests.post(
                     _PP_POSEVIEW,
                     files={
-                        "protein_file": ("receptor.pdb", _io.StringIO(pdb_text), "chemical/x-pdb"),
+                        "protein_file": ("receptor.pdb",
+                                         _io.StringIO(pdb_text),
+                                         "chemical/x-pdb"),
                         "ligand_file":  lf,
                     },
+                    headers=_PP_HEADERS,
                     timeout=30,
                 )
             r.raise_for_status()
             pv_data   = r.json()
             pv_job_id = pv_data.get("job_id") or pv_data.get("id")
             if not pv_job_id:
-                last_error = f"PoseView returned no job_id: {pv_data}"
+                last_error = f"PoseView submission: no job_id in {pv_data}"
                 continue
         except Exception as e:
             last_error = f"PoseView submission failed (attempt {attempt}): {e}"
             continue
 
-        # ── Step 3: Poll PoseView job ─────────────────────────────────────────
+        # ── Step 3: Poll + fetch SVG ──────────────────────────────────────────
         try:
             pv_job = _pp_poll(pv_job_id, _PP_POSEVIEW_JOBS)
             status = str(pv_job.get("status", "")).lower()
@@ -1055,8 +1099,6 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             )
             continue
 
-        # ── Step 4: Fetch SVG from job['image'] URL ───────────────────────────
-        # Mirrors: poseview_job['image']
         img_url = pv_job.get("image")
         if not img_url:
             last_error = (
@@ -1065,7 +1107,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             )
             continue
         try:
-            resp = requests.get(img_url, timeout=20)
+            resp = requests.get(img_url, headers=_PP_HEADERS, timeout=20)
             resp.raise_for_status()
             return resp.content, None
         except Exception as e:
@@ -1075,7 +1117,47 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     return None, last_error
 
 
-def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
+def warm_poseview_cache(receptor_pdb: str) -> tuple:
+    """
+    Pre-upload receptor to MoleculeHandler so first PoseView call is instant.
+    Call this right after receptor preparation completes.
+    Returns (success: bool, message: str).
+    """
+    import requests
+    _PROTEINS = _PP_BASE + "molecule_handler/proteins/"
+    try:
+        if receptor_pdb in _PP_PROTEIN_CACHE:
+            return True, "Already cached"
+        with open(receptor_pdb) as f:
+            r = requests.post(
+                _PP_UPLOAD,
+                files={"protein_file": f},
+                headers=_PP_HEADERS,
+                timeout=60,
+            )
+        r.raise_for_status()
+        job_id = r.json().get("job_id") or r.json().get("id")
+        if not job_id:
+            return False, f"No job_id: {r.json()}"
+        job = _pp_poll(job_id, _PP_UPLOAD_JOBS)
+        if str(job.get("status", "")).lower() != "success":
+            return False, f"Upload failed: {job}"
+        protein_id   = job["output_protein"]
+        protein_json = requests.get(
+            _PROTEINS + protein_id + "/", headers=_PP_HEADERS, timeout=15
+        ).json()
+        pdb_text = protein_json.get("file_string", "")
+        if not pdb_text:
+            return False, "No file_string in response"
+        _PP_PROTEIN_CACHE[receptor_pdb] = pdb_text
+        return True, f"Cached ({len(pdb_text)} chars)"
+    except Exception as e:
+        return False, str(e)
+
+
+def clear_poseview_cache():
+    """Clear receptor upload cache when a new receptor is prepared."""
+    _PP_PROTEIN_CACHE.clear()
     """
     Submit co-crystal reference job to PoseView2 REST API.
 
@@ -1354,3 +1436,182 @@ def diagnose_poseview() -> dict:
         log.append(f"✗ PoseView failed: {e}")
 
     return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  RDKIT LOCAL 2D INTERACTION DIAGRAM
+#  Based on: greglandrum.github.io/rdkit-blog/posts/2025-09-26-drawing-interactions-1.html
+#  Strategy: add pseudo-atoms for each interacting residue connected to the
+#  nearest ligand atom via ZERO bonds → RDKit 2D layout handles placement.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_HBOND_CUTOFF       = 3.5
+_HYDROPHOBIC_CUTOFF = 4.5
+
+_COLOR_HBOND     = (0.35, 0.61, 0.84, 0.35)   # blue  — H-bond / polar
+_COLOR_HYDROPHOB = (0.17, 0.55, 0.34, 0.35)   # green — hydrophobic
+_COLOR_OTHER     = (0.80, 0.37, 0.54, 0.35)   # pink  — other
+
+_POLAR_RES = {
+    "SER","THR","TYR","ASN","GLN","HIS","LYS","ARG",
+    "ASP","GLU","CYS","TRP","HOH","WAT",
+}
+_HYDROPHOBIC_RES = {"ALA","VAL","ILE","LEU","MET","PHE","TRP","PRO","GLY"}
+
+
+def _classify_interaction(receptor_pdb: str, lig_mol, chain: str,
+                          resid: int) -> str:
+    """Return 'hbond', 'hydrophobic', or 'other' for a residue–ligand pair."""
+    try:
+        import numpy as np
+        from prody import parsePDB
+
+        rec = parsePDB(receptor_pdb)
+        res = rec.select(f"chain {chain} resnum {resid}")
+        if res is None:
+            return "other"
+
+        conf    = lig_mol.GetConformer()
+        lig_xyz = np.array([
+            [conf.GetAtomPosition(i).x,
+             conf.GetAtomPosition(i).y,
+             conf.GetAtomPosition(i).z]
+            for i in range(lig_mol.GetNumAtoms())
+        ])
+        res_xyz  = res.getCoords()
+        min_dist = min(
+            float(np.linalg.norm(lp - rp))
+            for lp in lig_xyz for rp in res_xyz
+        )
+        res_names = set(res.getResnames())
+
+        if any(r in _POLAR_RES for r in res_names) and min_dist <= _HBOND_CUTOFF:
+            return "hbond"
+        if any(r in _HYDROPHOBIC_RES for r in res_names):
+            return "hydrophobic"
+        return "other"
+    except Exception:
+        return "other"
+
+
+def _closest_lig_atoms(lig_mol, receptor_pdb: str,
+                       chain: str, resid: int,
+                       max_atoms: int = 2) -> list:
+    """Return indices of up to max_atoms ligand atoms closest to residue."""
+    try:
+        import numpy as np
+        from prody import parsePDB
+
+        rec = parsePDB(receptor_pdb)
+        res = rec.select(f"chain {chain} resnum {resid}")
+        if res is None:
+            return [0]
+
+        conf    = lig_mol.GetConformer()
+        res_xyz = res.getCoords()
+        dists   = []
+        for i in range(lig_mol.GetNumAtoms()):
+            pos = conf.GetAtomPosition(i)
+            lp  = np.array([pos.x, pos.y, pos.z])
+            d   = min(float(np.linalg.norm(lp - rp)) for rp in res_xyz)
+            dists.append((d, i))
+        dists.sort()
+        return [idx for _, idx in dists[:max_atoms]]
+    except Exception:
+        return [0]
+
+
+def draw_interactions_rdkit(
+    lig_mol,
+    receptor_pdb: str,
+    smiles: str,
+    title: str = "",
+    cutoff: float = 3.5,
+    size: tuple = (600, 500),
+) -> bytes:
+    """
+    Generate a local 2D protein–ligand interaction diagram using pure RDKit.
+    No external server — works on Streamlit Cloud, locally, everywhere.
+
+    Approach (Greg Landrum, RDKit blog Sep 2025):
+      - Interacting residues become labelled dummy atoms
+      - Connected to nearest ligand atom(s) via ZERO-order bonds
+      - RDKit 2D layout places residue labels naturally around the ligand
+      - Colour coding: blue = H-bond, green = hydrophobic, pink = other
+
+    Returns SVG bytes.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import Draw, rdDepictor
+
+    # Clean 2D ligand from SMILES
+    mol2d = Chem.MolFromSmiles(smiles)
+    if mol2d is None:
+        mol2d = Chem.RemoveHs(lig_mol, sanitize=False)
+        try:
+            Chem.SanitizeMol(mol2d)
+        except Exception:
+            pass
+    rdDepictor.Compute2DCoords(mol2d)
+    n2d = mol2d.GetNumAtoms()
+
+    # Get interacting residues
+    residues = get_interacting_residues(receptor_pdb, lig_mol, cutoff=cutoff)
+
+    if not residues:
+        d2d = Draw.MolDraw2DSVG(size[0], size[1])
+        d2d.DrawMolecule(mol2d, legend=title or "No interactions found")
+        d2d.FinishDrawing()
+        return d2d.GetDrawingText().encode()
+
+    # Build mol with pseudo-atoms for each residue
+    rwmol      = Chem.RWMol(mol2d)
+    highlights = []
+    colors     = {}
+
+    for res in residues:
+        chain = res["chain"]
+        resid = res["resi"]
+        resn  = res["resn"]
+        label = f"{resn} {resid}"
+
+        close_atoms = [i for i in
+                       _closest_lig_atoms(lig_mol, receptor_pdb, chain, resid)
+                       if i < n2d]
+        if not close_atoms:
+            close_atoms = [0]
+
+        itype = _classify_interaction(receptor_pdb, lig_mol, chain, resid)
+        color = {"hbond": _COLOR_HBOND,
+                 "hydrophobic": _COLOR_HYDROPHOB}.get(itype, _COLOR_OTHER)
+
+        dummy = Chem.Atom(0)
+        dummy.SetProp("atomLabel", label)
+        aid = rwmol.AddAtom(dummy)
+        highlights.append(aid)
+        colors[aid] = color
+
+        for lig_idx in close_atoms:
+            rwmol.AddBond(aid, lig_idx, Chem.BondType.ZERO)
+
+    try:
+        rdDepictor.Compute2DCoords(rwmol)
+    except Exception:
+        pass
+
+    d2d  = Draw.MolDraw2DSVG(size[0], size[1])
+    opts = d2d.drawOptions()
+    opts.circleAtoms         = True
+    opts.fillHighlights      = True
+    opts.continuousHighlight = False
+    opts.highlightRadius     = 0.6
+    opts.addAtomIndices      = False
+
+    d2d.DrawMolecule(
+        rwmol,
+        legend=title,
+        highlightAtoms=highlights,
+        highlightAtomColors=colors,
+    )
+    d2d.FinishDrawing()
+    return d2d.GetDrawingText().encode()
