@@ -1550,32 +1550,45 @@ def draw_interactions_rdkit(
     import numpy as np
 
     # ── 1. Clean 2D mol from SMILES — preserving formal charges ──────────────
-    # prot_smiles from Dimorphite-DL may use aromatic ketone notation
-    # e.g. "O=c1cc(...)oc2..." which RDKit parses as kekulized form.
-    # Try multiple parsing strategies to preserve [O-], [NH3+] etc.
-    mol2d = None
+    # Dimorphite-DL may produce aromatic-ketone SMILES like "O=c1cc(...)oc2..."
+    # which RDKit's direct parser rejects. Strategy:
+    #   A) Direct parse (works for most SMILES)
+    #   B) sanitize=False + UpdatePropertyCache + SetAromaticity → canonicalize
+    #      (handles aromatic-ketone notation, preserves [O-] [NH3+] etc.)
+    #   C) Fallback to 3D mol (last resort, loses charges)
 
-    for _smi in [smiles, smiles]:
-        if not _smi:
-            break
-        # Strategy 1: direct parse
-        _m = Chem.MolFromSmiles(_smi)
-        if _m is not None:
-            mol2d = _m
-            break
-        # Strategy 2: sanitize with partial flags (preserve charges, fix aromaticity)
+    def _parse_smiles_robust(smi: str):
+        """Return RDKit mol from SMILES, preserving formal charges."""
+        if not smi:
+            return None
+        # A: direct
+        m = Chem.MolFromSmiles(smi)
+        if m is not None:
+            return m
+        # B: fix aromatic-ketone notation
         try:
-            _m = Chem.MolFromSmiles(_smi, sanitize=False)
-            if _m is not None:
-                Chem.SanitizeMol(
-                    _m,
-                    Chem.SanitizeFlags.SANITIZE_ALL
-                    ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
-                )
-                mol2d = _m
-                break
+            m = Chem.MolFromSmiles(smi, sanitize=False)
+            if m is None:
+                return None
+            m.UpdatePropertyCache(strict=False)
+            Chem.FastFindRings(m)
+            Chem.SetAromaticity(m)
+            # Get canonical SMILES from the fixed mol — this preserves charges
+            canon = Chem.MolToSmiles(m)
+            # Reparse canonical — now RDKit can handle it cleanly
+            m2 = Chem.MolFromSmiles(canon)
+            if m2 is not None:
+                return m2
+            # If reparse failed, return the partially sanitized mol
+            try:
+                Chem.SanitizeMol(m, catchErrors=True)
+            except Exception:
+                pass
+            return m
         except Exception:
-            pass
+            return None
+
+    mol2d = _parse_smiles_robust(smiles)
 
     if mol2d is None:
         # Fallback: strip Hs from 3D mol — charges may be lost
@@ -1584,15 +1597,6 @@ def draw_interactions_rdkit(
             Chem.SanitizeMol(mol2d)
         except Exception:
             pass
-
-    # Canonicalise to ensure consistent atom ordering + charge display
-    try:
-        _canon = Chem.MolToSmiles(mol2d)
-        _reparse = Chem.MolFromSmiles(_canon)
-        if _reparse is not None:
-            mol2d = _reparse
-    except Exception:
-        pass
 
     rdDepictor.Compute2DCoords(mol2d)
     n2d = mol2d.GetNumAtoms()
@@ -1605,15 +1609,37 @@ def draw_interactions_rdkit(
         pass
 
     idx3d_to_2d = {}
+    match_ok = False
     try:
-        # mol3d_noH.GetSubstructMatch(mol2d) returns:
-        #   match[i] = index in mol3d_noH matching mol2d atom i
         match = mol3d_noH.GetSubstructMatch(mol2d)
-        for i2d, i3d in enumerate(match):
-            idx3d_to_2d[i3d] = i2d
+        if len(match) == mol2d.GetNumAtoms():
+            for i2d, i3d in enumerate(match):
+                idx3d_to_2d[i3d] = i2d
+            match_ok = True
     except Exception:
-        for i in range(min(mol3d_noH.GetNumAtoms(), n2d)):
-            idx3d_to_2d[i] = i
+        pass
+
+    if not match_ok:
+        # Substructure match failed (SMILES mismatch between 3D mol and 2D mol).
+        # Fall back: map each 3D atom to the 2D atom with the most similar
+        # atomic number, distributing residues across the molecule instead of
+        # all collapsing to atom 0.
+        from rdkit.Chem import rdMolDescriptors
+        n3 = mol3d_noH.GetNumAtoms()
+        # Build a list of (atomic_num, idx) for mol2d
+        mol2d_atoms = [(mol2d.GetAtomWithIdx(i).GetAtomicNum(), i)
+                       for i in range(n2d)]
+        used = {}  # atomic_num → cycle index for round-robin assignment
+        for i3d in range(n3):
+            an = mol3d_noH.GetAtomWithIdx(i3d).GetAtomicNum()
+            # Find all 2D atoms with matching atomic number
+            candidates = [i for a, i in mol2d_atoms if a == an]
+            if not candidates:
+                candidates = list(range(n2d))
+            # Round-robin to spread across candidates
+            k = used.get(an, 0) % len(candidates)
+            idx3d_to_2d[i3d] = candidates[k]
+            used[an] = k + 1
 
     # ── 3. Get interacting residues, sort by distance, cap ────────────────────
     residues = get_interacting_residues(receptor_pdb, lig_mol, cutoff=cutoff)
