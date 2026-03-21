@@ -1660,4 +1660,26 @@ def draw_interactions_rdkit(
         highlightAtomColors=clrs,
     )
     d2d.FinishDrawing()
-    return d2d.GetDrawingText().encode()
+    svg_text = d2d.GetDrawingText()
+
+    # Stamp the title as a centred pill at the bottom of the SVG
+    # (same visual idea as stamp_png for PoseView images)
+    if title:
+        _esc = (title
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+        _stamp = (
+            f'<g>'
+            f'<rect x="5%" y="92%" width="90%" height="28"'
+            f' rx="14" ry="14"'
+            f' fill="#E8E8E8" fill-opacity="0.92" stroke="none"/>'
+            f'<text x="50%" y="92%" dy="18"'
+            f' text-anchor="middle"'
+            f' font-family="Helvetica Neue, Arial, sans-serif"'
+            f' font-size="13" fill="#1A1A1A">{_esc}</text>'
+            f'</g>'
+        )
+        svg_text = svg_text.replace("</svg>", f"{_stamp}</svg>")
+
+    return svg_text.encode()
