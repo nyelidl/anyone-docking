@@ -470,7 +470,7 @@ def _poseview_ui(
                 help="Reduce to clean up busy diagrams.",
             )
 
-        if st.button("🐍 Generate Both RDKit Diagrams", key=btn_key + "_rdkit", type="primary"):
+        if st.button("🐍 Generate 2D Interaction Diagrams using RDKit", key=btn_key + "_rdkit", type="primary"):
             # Generates docked pose + co-crystal reference in one click
             with st.spinner("⏳ Generating docked pose diagram…"):
                 try:
