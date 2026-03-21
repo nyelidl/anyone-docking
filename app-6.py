@@ -30,12 +30,17 @@ from core import (
     get_interacting_residues,
     calc_rmsd_heavy,
     call_poseview_v1,
-    call_poseview2_ref,
     svg_to_png,
     stamp_png,
 )
 
-# Optional — only available in the latest core.py
+# Graceful fallbacks for functions added in newer core.py versions
+try:
+    from core import call_poseview2_ref
+except ImportError:
+    def call_poseview2_ref(pdb_code, ligand_id):
+        return None, "call_poseview2_ref not available — please update core.py"
+
 try:
     from core import warm_poseview_cache, clear_poseview_cache
 except ImportError:
