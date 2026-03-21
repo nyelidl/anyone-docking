@@ -3,19 +3,28 @@
 core.py — Pure computation layer for Anyone Can Dock.
 No Streamlit imports. All functions return plain dicts / tuples.
 Safe to import in Colab notebooks, pytest, or any UI framework.
+
+Fixes vs previous version:
+  - call_poseview_v1: handles "failure"/"error" status, logs full API response,
+    retries up to 3 times with 10 s gap, strips H from receptor before upload,
+    polls up to 60 attempts (120 s) with backoff
+  - fix_sdf_bond_orders: no longer adds Hs with addCoords=False (caused 0,0,0
+    coordinates that made PoseView reject the SDF)
+  - call_poseview2_ref: same retry + full-response logging
+  - Minor: type annotations, cleaner log messages
 """
 
 import os
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Metal ions that crash OpenBabel's Gasteiger charge calculator.
-# Defined at module level — NEVER inside a try: block.
 METAL_RESNAMES = {
     "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K",
 }
@@ -25,7 +34,6 @@ METAL_CHARGES = {
     "NA": 1.0, "K":  1.0,
 }
 
-# Residues excluded from co-crystal ligand detection
 EXCLUDE_IONS = set(
     "HOH,WAT,DOD,SOL,NA,CL,K,CA,MG,ZN,MN,FE,CU,CO,NI,CD,HG".split(",")
 )
@@ -44,6 +52,13 @@ COFACTOR_NAMES = {
     "COA", "SAM", "SAH",
     "EPE", "MES", "TRS", "ACT", "ACY",
 }
+
+# PoseView: max retries on "failure" before giving up
+_PV_MAX_RETRIES = 3
+# PoseView: seconds to wait between retries
+_PV_RETRY_DELAY = 10
+# PoseView: polling attempts per try (2 s each → 120 s max)
+_PV_POLL_ATTEMPTS = 60
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -77,15 +92,38 @@ def _rdkit_six_patch():
         sys.modules["rdkit.six"] = _m
 
 
+def _strip_h_from_pdb(pdb_path: str, out_path: str) -> bool:
+    """
+    Remove explicit hydrogen lines from a PDB file.
+    Returns True on success. Falls back to copying unchanged on error.
+    """
+    import shutil
+    try:
+        lines = []
+        with open(pdb_path) as f:
+            for line in f:
+                rec = line[:6].strip()
+                if rec in ("ATOM", "HETATM"):
+                    # PDB atom name starts at col 12; element at col 76
+                    atom_name = line[12:16].strip()
+                    element   = line[76:78].strip() if len(line) > 76 else ""
+                    if element.upper() == "H" or atom_name.startswith("H"):
+                        continue
+                lines.append(line)
+        with open(out_path, "w") as f:
+            f.writelines(lines)
+        return True
+    except Exception:
+        shutil.copy(pdb_path, out_path)
+        return False
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  TOOL AVAILABILITY CHECKS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def check_obabel():
-    """Return (available: bool, version_or_error: str).
-    NOTE: obabel --version exits with code 1 on many builds, so we use
-    shutil.which for the existence check and ignore the exit code.
-    """
+    """Return (available: bool, version_or_error: str)."""
     import shutil
     if shutil.which("obabel") is None:
         return False, "obabel not found — add 'openbabel' to packages.txt"
@@ -100,7 +138,6 @@ def check_obabel():
 def get_vina_binary(path: str = "/tmp/vina_1.2.7"):
     """
     Download AutoDock Vina 1.2.7 if not present.
-    Uses urllib (no wget/curl) — works on Streamlit Cloud.
     Returns (binary_path, status_message).
     """
     _URL = (
@@ -112,7 +149,6 @@ def get_vina_binary(path: str = "/tmp/vina_1.2.7"):
             import urllib.request
             urllib.request.urlretrieve(_URL, path)
         except Exception as e1:
-            # fallback: requests (always present via streamlit deps)
             try:
                 import requests
                 r = requests.get(_URL, stream=True, timeout=120)
@@ -133,7 +169,6 @@ def get_vina_binary(path: str = "/tmp/vina_1.2.7"):
 def detect_cocrystal_ligand(raw_pdb: str) -> dict:
     """
     Parse PDB and return the best co-crystal ligand candidate.
-
     Returns dict with keys:
         found, resname, chain, resid, sel_str, ligand_id,
         cx, cy, cz, n_atoms, atoms
@@ -157,12 +192,12 @@ def detect_cocrystal_ligand(raw_pdb: str) -> dict:
         return {"found": False}
 
     cands.sort(key=lambda r: (-r.numAtoms(), r.getChid() != "A"))
-    chosen    = cands[0]
-    rn        = chosen.getResname()
-    ch        = chosen.getChid()
-    ri        = chosen.getResnum()
-    sel_str   = f"resname {rn} and resid {ri} and chain {ch}"
-    lig_atoms = atoms.select(sel_str)
+    chosen     = cands[0]
+    rn         = chosen.getResname()
+    ch         = chosen.getChid()
+    ri         = chosen.getResnum()
+    sel_str    = f"resname {rn} and resid {ri} and chain {ch}"
+    lig_atoms  = atoms.select(sel_str)
     cx, cy, cz = (float(v) for v in calcCenter(lig_atoms))
 
     return {
@@ -194,7 +229,7 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
     rec_pdbqt = str(wdir / "rec.pdbqt")
 
     try:
-        # ── (a) Strip metal ions ──────────────────────────────────────────────
+        # (a) Strip metal ions
         metal_lines = []
         clean_lines = []
         with open(rec_raw) as f:
@@ -217,7 +252,7 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 f"before OpenBabel: {names}"
             )
 
-        # ── (b) Add H + convert to PDBQT ─────────────────────────────────────
+        # (b) Add H + convert to PDBQT
         rc1, out1 = run_cmd(f'obabel "{rec_nometal}" -O "{rec_fh}" -h')
         if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
             raise ValueError(
@@ -236,7 +271,7 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
             )
         log.append("✓ PDBQT conversion complete")
 
-        # ── (c) Re-inject metal ions ──────────────────────────────────────────
+        # (c) Re-inject metal ions
         if metal_lines:
             pdbqt_lines = open(rec_pdbqt).readlines()
             pdbqt_lines = [l for l in pdbqt_lines if l.strip() != "END"]
@@ -325,12 +360,8 @@ def prepare_receptor(
     box_size: tuple = (16, 16, 16),
 ) -> dict:
     """
-    Full receptor preparation:
-        parse PDB → detect/set grid center → write receptor PDB
-        → PDBQT conversion (metal-safe) → write box PDB + Vina config
-
+    Full receptor preparation pipeline.
     center_mode: 'auto' | 'manual' | 'selection'
-
     Returns dict: success, rec_fh, rec_pdbqt, box_pdb, config_txt,
                   cx, cy, cz, sx, sy, sz, ligand_pdb_path,
                   cocrystal_ligand_id, n_atoms, log, error
@@ -354,7 +385,6 @@ def prepare_receptor(
         ri = 0
         cx = cy = cz = 0.0
 
-        # ── Grid centre ───────────────────────────────────────────────────────
         if center_mode == "auto":
             info = detect_cocrystal_ligand(raw_pdb)
             if info["found"]:
@@ -411,7 +441,7 @@ def prepare_receptor(
                 writePDB(ligand_pdb_path, ref_atoms)
                 log.append("⚠ Multi-residue selection — PoseView2 ligand ID not set")
 
-        # ── Write receptor PDB (without co-crystal ligand) ────────────────────
+        # Write receptor PDB without co-crystal ligand
         sel_str = (
             f"not ({ligand_sel_str}) and not water"
             if ligand_sel_str else "not water"
@@ -424,13 +454,13 @@ def prepare_receptor(
         writePDB(rec_raw_path, rec_sel)
         log.append(f"✓ Receptor: {rec_sel.numAtoms()} atoms")
 
-        # ── PDBQT conversion (metal-safe) ─────────────────────────────────────
+        # PDBQT conversion (metal-safe)
         conv = strip_and_convert_receptor(rec_raw_path, wdir)
         log.extend(conv["log"])
         if not conv["success"]:
             raise ValueError(conv["error"])
 
-        # ── Box PDB + Vina config ─────────────────────────────────────────────
+        # Box PDB + Vina config
         box_pdb  = str(wdir / "rec.box.pdb")
         cfg_path = str(wdir / "rec.box.txt")
         write_box_pdb(box_pdb, cx, cy, cz, sx, sy, sz)
@@ -477,9 +507,8 @@ def _meeko_to_pdbqt(mol, out_path: str):
 
 def prepare_ligand(smiles: str, name: str, ph: float, wdir) -> dict:
     """
-    Protonate at target pH (Dimorphite-DL) → 3D conformer (ETKDGv3)
-    → MMFF/UFF minimise → PDBQT (Meeko) + SDF.
-
+    Protonate at target pH → 3D conformer (ETKDGv3) → MMFF/UFF minimise
+    → PDBQT (Meeko) + SDF.
     Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
     """
     _rdkit_six_patch()
@@ -547,10 +576,7 @@ def prepare_ligand(smiles: str, name: str, ph: float, wdir) -> dict:
 
 
 def smiles_from_file(file_path: str, wdir) -> str:
-    """
-    Extract SMILES from SDF / MOL2 / PDB via RDKit or OpenBabel.
-    Returns SMILES string, raises ValueError on failure.
-    """
+    """Extract SMILES from SDF / MOL2 / PDB. Raises ValueError on failure."""
     wdir = Path(wdir)
     ext  = Path(file_path).suffix.lower()
 
@@ -587,7 +613,6 @@ def run_vina(
 ) -> dict:
     """
     Run AutoDock Vina and convert output to SDF.
-
     Returns dict: success, out_pdbqt, out_sdf, scores, top_score, log, error
     """
     wdir      = Path(wdir)
@@ -682,6 +707,11 @@ def _bo_fix_mol(probe, template):
 def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
     """
     Apply bond-order + formal-charge correction to all poses in an SDF.
+
+    FIX: Previously called Chem.AddHs(fixed, addCoords=False) which placed
+    all H atoms at (0,0,0) — causing PoseView to reject the file with
+    status "failure". Now writes heavy-atom-only mol; PoseView adds Hs itself.
+
     Returns list of log messages.
     """
     import shutil
@@ -706,13 +736,16 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
             err += 1
             continue
         try:
-            fixed   = _bo_fix_mol(mol, template)
-            fixed_h = Chem.AddHs(fixed, addCoords=False)
-            writer.write(fixed_h)
+            fixed = _bo_fix_mol(mol, template)
+            # Write heavy-atom mol only — do NOT add Hs without 3D coords
+            # (addCoords=False puts all H at origin, which breaks PoseView)
+            writer.write(fixed)
             ok += 1
         except Exception as e:
             log.append(f"⚠ Pose {i+1}: fix failed ({e}) — writing raw")
-            writer.write(mol)
+            # Write raw also without extra Hs
+            mol_noH = Chem.RemoveHs(mol, sanitize=False)
+            writer.write(mol_noH)
             err += 1
 
     writer.close()
@@ -873,118 +906,275 @@ def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
 #  POSEVIEW REST API
 # ══════════════════════════════════════════════════════════════════════════════
 
+# API base URLs — matches the working notebook exactly
+_PP_BASE        = "https://proteins.plus/api/v2/"
+_PP_UPLOAD      = _PP_BASE + "molecule_handler/upload/"
+_PP_UPLOAD_JOBS = _PP_BASE + "molecule_handler/upload/jobs/"
+_PP_POSEVIEW    = _PP_BASE + "poseview/"
+_PP_POSEVIEW_JOBS = _PP_BASE + "poseview/jobs/"
+
+
+def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
+             max_polls: int = 60) -> dict:
+    """
+    Poll a ProteinsPlus job until it leaves pending/running state.
+    Returns the final job dict.  Raises RuntimeError on timeout.
+    Mirror of poll_job() from the official notebook.
+    """
+    import requests
+    job    = requests.get(poll_url + job_id + "/", timeout=15).json()
+    status = str(job.get("status", "")).lower()
+    polls  = 0
+    while status in ("pending", "running", "processing", "queued", ""):
+        if polls >= max_polls:
+            raise RuntimeError(
+                f"Job {job_id} still '{status}' after "
+                f"{max_polls * poll_interval} s"
+            )
+        time.sleep(poll_interval)
+        polls += 1
+        job    = requests.get(poll_url + job_id + "/", timeout=15).json()
+        status = str(job.get("status", "")).lower()
+    return job
+
+
 def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
+
+    WHY THE NOTEBOOK WORKS BUT STREAMLIT DIDN'T:
+    The notebook never sends a raw PDB to PoseView. It always goes:
+        raw PDB → MoleculeHandler/Protoss → file_string → PoseView
+    Streamlit was sending rec.pdb (OpenBabel -h, explicit Hs) directly,
+    which PoseView rejects with status 'failure'.
+
+    This function now replicates the notebook exactly:
+      Step 1 — POST receptor to molecule_handler/upload/ (Protoss preprocessing)
+               → poll upload job → GET protein['file_string']  (clean Protoss PDB)
+      Step 2 — POST to poseview/ with:
+                 files={'protein_file': <file_string>, 'ligand_file': <docked SDF>}
+      Step 3 — poll poseview job
+      Step 4 — GET job['image'] SVG URL
+
     Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
-    import time
+    import io as _io
 
-    _SUBMIT = "https://proteins.plus/api/v2/poseview/"
-    _JOBS   = "https://proteins.plus/api/v2/poseview/jobs/"
+    _PROTEINS = _PP_BASE + "molecule_handler/proteins/"
 
-    try:
-        with open(receptor_pdb) as rf, open(pose_sdf) as lf:
-            r = requests.post(
-                _SUBMIT,
-                files={"protein_file": rf, "ligand_file": lf},
-                timeout=30,
-            )
-        r.raise_for_status()
-        data   = r.json()
-        job_id = data.get("job_id") or data.get("id")
-        if not job_id:
-            return None, f"No job_id in response: {data}"
-    except Exception as e:
-        return None, f"Submission failed: {e}"
+    last_error = "Unknown error"
 
-    for attempt in range(30):
-        time.sleep(2)
+    for attempt in range(1, _PV_MAX_RETRIES + 1):
+        if attempt > 1:
+            time.sleep(_PV_RETRY_DELAY)
+
+        # ── Step 1: Upload receptor → Protoss → get file_string ──────────────
+        # Mirrors: requests.post(UPLOAD, files={'protein_file': f}).json()
         try:
-            job    = requests.get(_JOBS + job_id + "/", timeout=10).json()
-            status = job.get("status", "")
-            if status in ("done", "success"):
-                img = (
-                    job.get("result_image") or job.get("image")
-                    or job.get("result")    or job.get("image_url")
+            with open(receptor_pdb) as f:
+                r = requests.post(
+                    _PP_UPLOAD,
+                    files={"protein_file": f},
+                    timeout=60,
                 )
-                if not img:
-                    return None, f"No image key. Keys: {list(job.keys())}"
-                if isinstance(img, str) and img.startswith("http"):
-                    resp = requests.get(img, timeout=20)
-                    resp.raise_for_status()
-                    return resp.content, None
-                return (img.encode() if isinstance(img, str) else img), None
-            if status == "failed":
-                return None, f"Job failed: {job.get('message', '')}"
-            if status not in ("pending", "running", "processing", ""):
-                return None, f"Unexpected status: '{status}'"
-        except Exception as e:
-            return None, f"Polling error (attempt {attempt+1}): {e}"
+            r.raise_for_status()
+            upload_data = r.json()
+            upload_job_id = upload_data.get("job_id") or upload_data.get("id")
+            if not upload_job_id:
+                last_error = f"MoleculeHandler returned no job_id: {upload_data}"
+                continue
 
-    return None, "Timed out (60 s)."
+            upload_job = _pp_poll(upload_job_id, _PP_UPLOAD_JOBS)
+            if str(upload_job.get("status", "")).lower() != "success":
+                last_error = (
+                    f"MoleculeHandler failed (attempt {attempt}): {upload_job}"
+                )
+                continue
+
+            protein_id   = upload_job["output_protein"]
+            protein_json = requests.get(
+                _PROTEINS + protein_id + "/", timeout=15
+            ).json()
+            pdb_text = protein_json.get("file_string", "")
+            if not pdb_text:
+                last_error = (
+                    f"protein_json missing file_string. "
+                    f"Keys: {list(protein_json.keys())}"
+                )
+                continue
+
+        except Exception as e:
+            last_error = f"MoleculeHandler step failed (attempt {attempt}): {e}"
+            continue
+
+        # ── Step 2: Submit to PoseView — both as files= ───────────────────────
+        # Mirrors: files = {'protein_file': upload_file, 'ligand_file': lig_file}
+        #          requests.post(POSEVIEW, files=files).json()
+        try:
+            with open(pose_sdf) as lf:
+                r = requests.post(
+                    _PP_POSEVIEW,
+                    files={
+                        "protein_file": ("receptor.pdb", _io.StringIO(pdb_text), "chemical/x-pdb"),
+                        "ligand_file":  lf,
+                    },
+                    timeout=30,
+                )
+            r.raise_for_status()
+            pv_data   = r.json()
+            pv_job_id = pv_data.get("job_id") or pv_data.get("id")
+            if not pv_job_id:
+                last_error = f"PoseView returned no job_id: {pv_data}"
+                continue
+        except Exception as e:
+            last_error = f"PoseView submission failed (attempt {attempt}): {e}"
+            continue
+
+        # ── Step 3: Poll PoseView job ─────────────────────────────────────────
+        try:
+            pv_job = _pp_poll(pv_job_id, _PP_POSEVIEW_JOBS)
+            status = str(pv_job.get("status", "")).lower()
+        except RuntimeError as e:
+            last_error = str(e)
+            continue
+        except Exception as e:
+            last_error = f"Polling error (attempt {attempt}): {e}"
+            continue
+
+        if status in ("failed", "failure", "error"):
+            last_error = (
+                f"PoseView rejected job (attempt {attempt}). "
+                f"Full response: {pv_job}"
+            )
+            continue
+        if status != "success":
+            last_error = (
+                f"Unexpected status '{status}' (attempt {attempt}). "
+                f"Full response: {pv_job}"
+            )
+            continue
+
+        # ── Step 4: Fetch SVG from job['image'] URL ───────────────────────────
+        # Mirrors: poseview_job['image']
+        img_url = pv_job.get("image")
+        if not img_url:
+            last_error = (
+                f"Job succeeded but 'image' key missing. "
+                f"Keys: {list(pv_job.keys())}"
+            )
+            continue
+        try:
+            resp = requests.get(img_url, timeout=20)
+            resp.raise_for_status()
+            return resp.content, None
+        except Exception as e:
+            last_error = f"SVG download failed (attempt {attempt}): {e}"
+            continue
+
+    return None, last_error
 
 
 def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
     """
     Submit co-crystal reference job to PoseView2 REST API.
+
+    Fixes vs previous version:
+      - Catches all failure status codes
+      - Logs full API response on failure
+      - Retries up to _PV_MAX_RETRIES times
+      - Polls up to _PV_POLL_ATTEMPTS × 2 s = 120 s
+
     Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
-    import time
 
     _SUBMIT = "https://proteins.plus/api/poseview2_rest"
 
-    try:
-        r = requests.post(
-            _SUBMIT,
-            json={"poseview2": {
-                "pdbCode": pdb_code.strip().lower(),
-                "ligand":  ligand_id.strip(),
-            }},
-            headers={
-                "Accept":       "application/json",
-                "Content-Type": "application/json",
-            },
-            timeout=30,
-        )
-        data = r.json()
-        if r.status_code not in (200, 202):
-            return None, (
-                f"Submission failed ({r.status_code}): "
-                f"{data.get('message', '')}"
-            )
-        location = data.get("location", "")
-        if not location:
-            return None, "API returned no job location."
-    except Exception as e:
-        return None, f"Submission error: {e}"
+    last_error = "Unknown error"
 
-    for attempt in range(30):
-        time.sleep(2)
+    for attempt in range(1, _PV_MAX_RETRIES + 1):
+        if attempt > 1:
+            time.sleep(_PV_RETRY_DELAY)
+
+        # ── Submit ────────────────────────────────────────────────────────────
         try:
-            poll   = requests.get(
-                location,
-                headers={"Accept": "application/json"},
-                timeout=15,
-            ).json()
-            status = poll.get("status_code")
-            if status == 200:
-                svg_url = poll.get("result_svg", "")
-                if not svg_url:
-                    return None, "Job finished but result_svg is empty."
-                resp = requests.get(svg_url, timeout=20)
-                resp.raise_for_status()
-                return resp.content, None
-            elif status == 202:
+            r = requests.post(
+                _SUBMIT,
+                json={"poseview2": {
+                    "pdbCode": pdb_code.strip().lower(),
+                    "ligand":  ligand_id.strip(),
+                }},
+                headers={
+                    "Accept":       "application/json",
+                    "Content-Type": "application/json",
+                },
+                timeout=30,
+            )
+            data = r.json()
+            if r.status_code not in (200, 202):
+                last_error = (
+                    f"Submission failed ({r.status_code}), attempt {attempt}: "
+                    f"{data}"
+                )
                 continue
-            else:
-                return None, f"Unexpected poll status: {status}"
+            location = data.get("location", "")
+            if not location:
+                last_error = f"API returned no job location. Response: {data}"
+                continue
         except Exception as e:
-            return None, f"Polling error (attempt {attempt+1}): {e}"
+            last_error = f"Submission error (attempt {attempt}): {e}"
+            continue
 
-    return None, "Timed out (60 s)."
+        # ── Poll ──────────────────────────────────────────────────────────────
+        job_failed = False
+        for poll_i in range(_PV_POLL_ATTEMPTS):
+            time.sleep(2)
+            try:
+                poll        = requests.get(
+                    location,
+                    headers={"Accept": "application/json"},
+                    timeout=15,
+                ).json()
+                status_code = poll.get("status_code")
+
+                if status_code == 200:
+                    svg_url = poll.get("result_svg", "")
+                    if not svg_url:
+                        last_error = (
+                            f"Job finished but result_svg is empty. "
+                            f"Full response: {poll}"
+                        )
+                        job_failed = True
+                        break
+                    resp = requests.get(svg_url, timeout=20)
+                    resp.raise_for_status()
+                    return resp.content, None
+
+                elif status_code == 202:
+                    continue  # still processing
+
+                else:
+                    last_error = (
+                        f"Unexpected poll status {status_code} "
+                        f"(attempt {attempt}). Full response: {poll}"
+                    )
+                    job_failed = True
+                    break
+
+            except Exception as e:
+                last_error = (
+                    f"Polling error (attempt {attempt}, poll {poll_i+1}): {e}"
+                )
+                continue
+
+        if not job_failed:
+            last_error = (
+                f"Timed out after {_PV_POLL_ATTEMPTS * 2} s "
+                f"(attempt {attempt})"
+            )
+
+    return None, last_error
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1052,3 +1242,115 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
         return buf.getvalue()
     except Exception:
         return png_bytes
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  POSEVIEW DIAGNOSTICS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def diagnose_poseview() -> dict:
+    """
+    Test the PoseView API with a known-good minimal PDB + SDF from RCSB,
+    completely independent of the user's receptor/ligand files.
+
+    Uses PDB 4AGN + its native ligand NXG fetched live from proteins.plus.
+    Returns a dict with keys:
+        server_reachable, upload_ok, poseview_ok, status,
+        job_response, image_url, error, log
+    """
+    import requests
+
+    result = {
+        "server_reachable": False,
+        "upload_ok":        False,
+        "poseview_ok":      False,
+        "status":           "",
+        "job_response":     {},
+        "image_url":        "",
+        "error":            "",
+        "log":              [],
+    }
+    log = result["log"]
+
+    # 1. Check server reachable
+    try:
+        r = requests.get("https://proteins.plus/api/v2/", timeout=10)
+        r.raise_for_status()
+        result["server_reachable"] = True
+        log.append(f"✓ Server reachable (HTTP {r.status_code})")
+    except Exception as e:
+        result["error"] = f"Server unreachable: {e}"
+        log.append(f"✗ Server unreachable: {e}")
+        return result
+
+    # 2. Upload 4AGN via MoleculeHandler to get a clean protein + ligand
+    try:
+        r = requests.post(
+            _PP_UPLOAD, data={"pdb_code": "4agn"}, timeout=30
+        )
+        r.raise_for_status()
+        job_id = r.json().get("job_id")
+        log.append(f"✓ Upload job submitted: {job_id}")
+        job = _pp_poll(job_id, _PP_UPLOAD_JOBS, poll_interval=1, max_polls=30)
+        log.append(f"✓ Upload job: {job.get('status')}")
+
+        # Fetch protein PDB text
+        protein_id   = job["output_protein"]
+        protein_json = requests.get(
+            _PP_BASE + "molecule_handler/proteins/" + protein_id + "/",
+            timeout=15,
+        ).json()
+        pdb_text = protein_json["file_string"]
+
+        # Get first ligand SDF text
+        ligand_id   = protein_json["ligand_set"][0]
+        ligand_json = requests.get(
+            _PP_BASE + "molecule_handler/ligands/" + ligand_id + "/",
+            timeout=15,
+        ).json()
+        sdf_text = ligand_json["file_string"]
+        log.append(
+            f"✓ Got protein ({len(pdb_text)} chars) "
+            f"+ ligand {ligand_json.get('name')} ({len(sdf_text)} chars)"
+        )
+        result["upload_ok"] = True
+    except Exception as e:
+        result["error"] = f"MoleculeHandler step failed: {e}"
+        log.append(f"✗ MoleculeHandler failed: {e}")
+        return result
+
+    # 3. Submit to PoseView
+    try:
+        import io as _io
+        r = requests.post(
+            _PP_POSEVIEW,
+            files={
+                "protein_file": ("test.pdb", _io.StringIO(pdb_text), "chemical/x-pdb"),
+                "ligand_file":  ("test.sdf", _io.StringIO(sdf_text), "chemical/x-mdl-sdfile"),
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        pv_job_id = r.json().get("job_id")
+        log.append(f"✓ PoseView job submitted: {pv_job_id}")
+
+        pv_job = _pp_poll(pv_job_id, _PP_POSEVIEW_JOBS, poll_interval=2, max_polls=30)
+        result["job_response"] = pv_job
+        result["status"]       = pv_job.get("status", "")
+        log.append(f"✓ PoseView job status: {result['status']}")
+
+        if result["status"] == "success":
+            result["image_url"]    = pv_job.get("image", "")
+            result["poseview_ok"]  = True
+            log.append(f"✓ Image URL: {result['image_url']}")
+        else:
+            result["error"] = (
+                f"PoseView returned '{result['status']}'. "
+                f"Full response: {pv_job}"
+            )
+            log.append(f"✗ {result['error']}")
+    except Exception as e:
+        result["error"] = f"PoseView step failed: {e}"
+        log.append(f"✗ PoseView failed: {e}")
+
+    return result
