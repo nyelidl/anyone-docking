@@ -575,56 +575,60 @@ def _poseview_ui(
         if _rdkit_stale and _rdkit_svg:
             st.caption("⚠️ Pose changed — click **Generate RDKit Diagrams** to update.")
 
+        _btn_style = (
+            "flex:1;display:inline-block;text-align:center;text-decoration:none;"
+            "padding:8px 0;border-radius:6px;font-size:13px;font-weight:500;"
+            "color:#24292F;background:#F6F8FA;border:1px solid #D0D7DE;"
+            "cursor:pointer;"
+        )
+
         def _show_rdkit_svg(svg_data, dl_key, dl_filename):
-            svg_str = svg_data.decode() if isinstance(svg_data, bytes) else svg_data
-            svg_str = svg_str.replace(
+            import base64
+            svg_str   = svg_data.decode() if isinstance(svg_data, bytes) else svg_data
+            svg_str   = svg_str.replace(
                 "<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1
             )
-            _legend_html = """
-<div style="display:flex;align-items:center;gap:24px;padding:10px 16px;
-     border-top:1px solid #D0D7DE;
-     font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;color:#333;">
-  <div style="display:flex;align-items:center;gap:7px;">
-    <div style="width:14px;height:14px;border-radius:50%;
-         background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;flex-shrink:0;"></div>
-    <span>H-bond / polar</span></div>
-  <div style="display:flex;align-items:center;gap:7px;">
-    <div style="width:14px;height:14px;border-radius:50%;
-         background:rgba(44,141,87,0.55);border:1px solid #2E8B57;flex-shrink:0;"></div>
-    <span>Hydrophobic</span></div>
-  <div style="display:flex;align-items:center;gap:7px;">
-    <div style="width:14px;height:14px;border-radius:50%;
-         background:rgba(204,95,138,0.55);border:1px solid #cc5f8a;flex-shrink:0;"></div>
-    <span>Other</span></div>
-</div>"""
-            components.html(
-                f'<div style="background:#fff;border-radius:8px;'
-                f'border:1px solid #D0D7DE;overflow:hidden;">'
-                f'{svg_str}'
-                f'{_legend_html}'
-                f'</div>',
-                height=700, scrolling=False,
-            )
-            # PNG + SVG download side by side
+            # Build PNG data URI for inline download link
             _png_bytes = svg_to_png(svg_data)
-            _dc1, _dc2 = st.columns(2)
-            with _dc1:
-                if _png_bytes:
-                    st.download_button(
-                        "⬇ PNG", data=_png_bytes,
-                        file_name=dl_filename.replace(".svg", ".png"),
-                        mime="image/png",
-                        key=dl_key + "_png",
-                        width='stretch',
-                    )
-            with _dc2:
-                st.download_button(
-                    "⬇ SVG", data=svg_data,
-                    file_name=dl_filename,
-                    mime="image/svg+xml",
-                    key=dl_key,
-                    width='stretch',
-                )
+            _png_b64   = base64.b64encode(_png_bytes).decode() if _png_bytes else ""
+            _svg_b64   = base64.b64encode(
+                svg_data if isinstance(svg_data, bytes) else svg_data.encode()
+            ).decode()
+            _png_fn    = dl_filename.replace(".svg", ".png")
+            _png_link  = (
+                f'<a href="data:image/png;base64,{_png_b64}" download="{_png_fn}"'
+                f' style="{_btn_style}">⬇ PNG</a>'
+            ) if _png_b64 else ""
+            _svg_link  = (
+                f'<a href="data:image/svg+xml;base64,{_svg_b64}" download="{dl_filename}"'
+                f' style="{_btn_style}">⬇ SVG</a>'
+            )
+
+            components.html(
+                f"""<div style="background:#fff;border-radius:8px;
+                    border:1px solid #D0D7DE;overflow:hidden;font-family:'Helvetica Neue',Arial,sans-serif;">
+                  {svg_str}
+                  <div style="display:flex;align-items:center;gap:24px;padding:10px 16px;
+                       border-top:1px solid #D0D7DE;font-size:13px;color:#333;">
+                    <div style="display:flex;align-items:center;gap:7px;">
+                      <div style="width:14px;height:14px;border-radius:50%;flex-shrink:0;
+                           background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;"></div>
+                      <span>H-bond / polar</span></div>
+                    <div style="display:flex;align-items:center;gap:7px;">
+                      <div style="width:14px;height:14px;border-radius:50%;flex-shrink:0;
+                           background:rgba(44,141,87,0.55);border:1px solid #2E8B57;"></div>
+                      <span>Hydrophobic</span></div>
+                    <div style="display:flex;align-items:center;gap:7px;">
+                      <div style="width:14px;height:14px;border-radius:50%;flex-shrink:0;
+                           background:rgba(204,95,138,0.55);border:1px solid #cc5f8a;"></div>
+                      <span>Other</span></div>
+                  </div>
+                  <div style="display:flex;gap:8px;padding:10px 12px;border-top:1px solid #D0D7DE;">
+                    {_png_link}{_svg_link}
+                  </div>
+                </div>""",
+                height=740, scrolling=False,
+            )
 
         if _rdkit_svg and not _rdkit_stale:
             col_l, col_r = st.columns(2)
