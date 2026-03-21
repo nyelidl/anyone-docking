@@ -941,18 +941,22 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
 def _pp_upload_protein(receptor_pdb: str) -> str:
     """
     Upload a receptor PDB to the ProteinsPlus MoleculeHandler preprocessor.
-    This runs Protoss (proper H placement) on the protein — required before
-    sending to PoseView, as PoseView expects a preprocessed structure.
+    Runs Protoss (proper H placement + protonation states) on the protein.
 
-    Returns protein_id (str).  Raises RuntimeError on any failure.
+    Returns the Protoss-processed PDB as a string (file_string).
+    Raises RuntimeError on any failure.
 
-    Mirrors the working notebook flow:
+    Exact notebook flow:
         query = {'protein_file': upload_file}
         job_submission = requests.post(UPLOAD, files=query).json()
         job = poll_job(job_submission['job_id'], UPLOAD_JOBS)
         protein_id = job['output_protein']
+        protein_json = requests.get(PROTEINS + protein_id + '/').json()
+        file_string = protein_json['file_string']   # ← Protoss-processed PDB
     """
     import requests
+    _PROTEINS = _PP_BASE + "molecule_handler/proteins/"
+
     with open(receptor_pdb) as f:
         r = requests.post(
             _PP_UPLOAD,
@@ -976,25 +980,34 @@ def _pp_upload_protein(receptor_pdb: str) -> str:
         raise RuntimeError(
             f"MoleculeHandler job succeeded but 'output_protein' missing: {job}"
         )
-    return protein_id
+
+    # Fetch the Protoss-processed PDB text
+    protein_json = requests.get(_PROTEINS + protein_id + "/", timeout=15).json()
+    file_string  = protein_json.get("file_string", "")
+    if not file_string:
+        raise RuntimeError(
+            f"protein_json has no 'file_string'. Keys: {list(protein_json.keys())}"
+        )
+    return file_string
 
 
 def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
 
-    Correct two-step flow (from official ProteinsPlus notebook):
-      Step 1 — Upload protein to MoleculeHandler/Protoss preprocessor
-               → returns protein_id (properly H-placed, protonated)
-      Step 2 — Submit PoseView with protein_id + ligand_file (docked SDF)
-               → poll → download SVG from job['image']
-
-    This is why the notebook always works and raw-file submissions fail:
-    PoseView requires a Protoss-preprocessed protein, not a raw PDB.
+    Exact flow from the official ProteinsPlus notebook:
+      Step 1 — Upload protein to MoleculeHandler → Protoss preprocessing
+               → fetch protein_json['file_string'] (Protoss-processed PDB text)
+      Step 2 — Submit PoseView with:
+                 files={'protein_file': <protoss_pdb>, 'ligand_file': <sdf>}
+               (both as files= — NOT data= + files=)
+      Step 3 — Poll until success
+      Step 4 — Fetch SVG from job['image'] URL
 
     Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
+    import io
 
     last_error = "Unknown error"
 
@@ -1002,20 +1015,25 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
 
-        # ── Step 1: Upload protein through MoleculeHandler (Protoss) ─────────
+        # ── Step 1: Protoss-preprocess the receptor ───────────────────────────
         try:
-            protein_id = _pp_upload_protein(receptor_pdb)
+            protoss_pdb = _pp_upload_protein(receptor_pdb)
         except Exception as e:
-            last_error = f"MoleculeHandler upload failed (attempt {attempt}): {e}"
+            last_error = f"MoleculeHandler/Protoss failed (attempt {attempt}): {e}"
             continue
 
-        # ── Step 2: Submit PoseView with protein_id + ligand SDF file ────────
+        # ── Step 2: Submit to PoseView — both protein & ligand as files= ──────
+        # This exactly mirrors the notebook:
+        #   files = {'protein_file': upload_file, 'ligand_file': upload_ligand_file}
+        #   job_submission = requests.post(POSEVIEW, files=files).json()
         try:
             with open(pose_sdf) as lf:
                 r = requests.post(
                     _PP_POSEVIEW,
-                    data={"protein_id": protein_id},   # preprocessed protein ID
-                    files={"ligand_file": lf},          # docked pose SDF
+                    files={
+                        "protein_file": ("receptor.pdb", io.StringIO(protoss_pdb), "chemical/x-pdb"),
+                        "ligand_file":  lf,
+                    },
                     timeout=30,
                 )
             r.raise_for_status()
@@ -1047,7 +1065,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             continue
 
         # ── Step 4: Download SVG from job['image'] URL ────────────────────────
-        # Image key is 'image' per notebook — it's a URL to an SVG file
+        # Notebook confirms the key is 'image', not 'result_image'
         img_url = job.get("image")
         if not img_url:
             last_error = (
