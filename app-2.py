@@ -471,7 +471,7 @@ def _poseview_ui(
                 help="Reduce to clean up busy diagrams.",
             )
 
-        if st.button("Generate 2D Diagrams using (RDkit)", key=btn_key + "_rdkit", type="primary"):
+        if st.button("🐍 Generate Both RDKit Diagrams", key=btn_key + "_rdkit", type="primary"):
             # Generates docked pose + co-crystal reference in one click
             with st.spinner("⏳ Generating docked pose diagram…"):
                 try:
@@ -568,7 +568,7 @@ def _poseview_ui(
         # Stale check — show warning if pose changed since last generation
         _rdkit_stale = st.session_state.get(pose_key_key + "_rdkit") != _pose_key
         if _rdkit_stale and _rdkit_svg:
-            st.caption("⚠️ Pose changed — click **Generate 2D Diagrams** to update.")
+            st.caption("⚠️ Pose changed — click **Generate RDKit Diagrams** to update.")
 
         _LEGEND_RDKIT = """
 <div style="background:#fff;border:1px solid #D0D7DE;border-radius:6px;
@@ -601,13 +601,26 @@ def _poseview_ui(
                 height=660, scrolling=False,
             )
             st.markdown(_LEGEND_RDKIT, unsafe_allow_html=True)
-            st.download_button(
-                "⬇ SVG", data=svg_data,
-                file_name=dl_filename,
-                mime="image/svg+xml",
-                key=dl_key,
-                width='stretch',
-            )
+            # PNG + SVG download side by side
+            _png_bytes = svg_to_png(svg_data)
+            _dc1, _dc2 = st.columns(2)
+            with _dc1:
+                if _png_bytes:
+                    st.download_button(
+                        "⬇ PNG", data=_png_bytes,
+                        file_name=dl_filename.replace(".svg", ".png"),
+                        mime="image/png",
+                        key=dl_key + "_png",
+                        width='stretch',
+                    )
+            with _dc2:
+                st.download_button(
+                    "⬇ SVG", data=svg_data,
+                    file_name=dl_filename,
+                    mime="image/svg+xml",
+                    key=dl_key,
+                    width='stretch',
+                )
 
         if _rdkit_svg and not _rdkit_stale:
             col_l, col_r = st.columns(2)
@@ -627,7 +640,7 @@ def _poseview_ui(
                         dl_filename = f"cocrystal_rdkit.svg",
                     )
                 elif _has_ref_rdkit:
-                    st.info("Click **Generate 2D Diagrams** to generate co-crystal diagram.")
+                    st.info("Click **Generate RDKit Diagrams** to generate co-crystal diagram.")
                 else:
                     st.caption("⚠️ No co-crystal ligand — use Auto-detect in receptor preparation.")
 
@@ -699,7 +712,7 @@ def _poseview_ui(
                     " · **Right:** PoseView2 — co-crystal" + _ref_note
                 )
         with _cb:
-            _run = st.button("Generate 2D Diagrams", key=btn_key, type="primary")
+            _run = st.button("🔬 Generate 2D Diagrams", key=btn_key, type="primary")
 
         with st.expander("🔍 Test PoseView API", expanded=False):
             st.caption(
@@ -2279,7 +2292,7 @@ with tab_batch:
 
         # 2D Interaction diagram
         st.markdown("---")
-        st.markdown("### 🧬 2D Interaction Diagram — PoseView2")
+        st.markdown("### 🧬 2D Interaction Diagram")
         pv_browsable = [
             r for r in browsable
             if r.get("out_sdf") and os.path.exists(r["out_sdf"])
@@ -2309,7 +2322,7 @@ with tab_batch:
                     else pv_sel_res.get("Top Score")
                 )
 
-                st.session_state["_b_pv2_smiles"] = pv_sel_res.get("SMILES", pv_sel_nm)
+                st.session_state["_b_pv2_smiles"] = pv_sel_res.get("prot_smiles") or pv_sel_res.get("SMILES", pv_sel_nm)
 
                 sp_pv2      = str(BATCH_WORKDIR / f"{pv_safe_nm}_pose{pv_pose_i+1}_pv2_ready.sdf")
                 pv_all_path = pv_sel_res.get("pv_sdf", "")
