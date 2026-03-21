@@ -1655,6 +1655,8 @@ def draw_interactions_rdkit(
     opts.highlightRadius     = 0.5
     opts.addAtomIndices      = False
     opts.padding             = 0.15
+    # Formal charges (+1, -1 etc.) are shown automatically by RDKit
+    # as long as the SMILES mol has correct charges (from Dimorphite-DL)
 
     # Reserve 40px at bottom for stamp — draw molecule in upper portion
     try:
