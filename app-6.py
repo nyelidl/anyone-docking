@@ -470,7 +470,7 @@ def _poseview_ui(
                 help="Reduce to clean up busy diagrams.",
             )
 
-        if st.button("🐍 Generate 2D interaction Diagrams (RDKit)", key=btn_key + "_rdkit", type="primary"):
+        if st.button("🐍 Generate Both RDKit Diagrams", key=btn_key + "_rdkit", type="primary"):
             # Generates docked pose + co-crystal reference in one click
             with st.spinner("⏳ Generating docked pose diagram…"):
                 try:
@@ -480,8 +480,8 @@ def _poseview_ui(
                         st.error("Could not read pose SDF.")
                     else:
                         _title = (
-                            f"{lig_name} · Pose {pose_idx+1}"
-                            + (f" · {binding_energy:.2f} kcal/mol"
+                            f"Pose {pose_idx+1}  ·  {lig_name}"
+                            + (f"  ·  {binding_energy:.2f} kcal/mol"
                                if binding_energy is not None else "")
                         )
                         _rdkit_svg = draw_interactions_rdkit(
@@ -538,8 +538,8 @@ def _poseview_ui(
                                 except Exception:
                                     _ref_smiles = ""
                             _ref_title = (
-                                f"{ref_lig_name or cocrystal_ligand_id} · Co-crystal"
-                                + (f" · {ref_lig_energy:.2f} kcal/mol"
+                                f"{ref_lig_name or cocrystal_ligand_id}  ·  Co-crystal"
+                                + (f"  ·  {ref_lig_energy:.2f} kcal/mol"
                                    if ref_lig_energy is not None else "")
                             )
                             _ref_rdkit_svg = draw_interactions_rdkit(
