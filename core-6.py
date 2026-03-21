@@ -1209,3 +1209,115 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
         return buf.getvalue()
     except Exception:
         return png_bytes
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  POSEVIEW DIAGNOSTICS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def diagnose_poseview() -> dict:
+    """
+    Test the PoseView API with a known-good minimal PDB + SDF from RCSB,
+    completely independent of the user's receptor/ligand files.
+
+    Uses PDB 4AGN + its native ligand NXG fetched live from proteins.plus.
+    Returns a dict with keys:
+        server_reachable, upload_ok, poseview_ok, status,
+        job_response, image_url, error, log
+    """
+    import requests
+
+    result = {
+        "server_reachable": False,
+        "upload_ok":        False,
+        "poseview_ok":      False,
+        "status":           "",
+        "job_response":     {},
+        "image_url":        "",
+        "error":            "",
+        "log":              [],
+    }
+    log = result["log"]
+
+    # 1. Check server reachable
+    try:
+        r = requests.get("https://proteins.plus/api/v2/", timeout=10)
+        r.raise_for_status()
+        result["server_reachable"] = True
+        log.append(f"✓ Server reachable (HTTP {r.status_code})")
+    except Exception as e:
+        result["error"] = f"Server unreachable: {e}"
+        log.append(f"✗ Server unreachable: {e}")
+        return result
+
+    # 2. Upload 4AGN via MoleculeHandler to get a clean protein + ligand
+    try:
+        r = requests.post(
+            _PP_UPLOAD, data={"pdb_code": "4agn"}, timeout=30
+        )
+        r.raise_for_status()
+        job_id = r.json().get("job_id")
+        log.append(f"✓ Upload job submitted: {job_id}")
+        job = _pp_poll(job_id, _PP_UPLOAD_JOBS, poll_interval=1, max_polls=30)
+        log.append(f"✓ Upload job: {job.get('status')}")
+
+        # Fetch protein PDB text
+        protein_id   = job["output_protein"]
+        protein_json = requests.get(
+            _PP_BASE + "molecule_handler/proteins/" + protein_id + "/",
+            timeout=15,
+        ).json()
+        pdb_text = protein_json["file_string"]
+
+        # Get first ligand SDF text
+        ligand_id   = protein_json["ligand_set"][0]
+        ligand_json = requests.get(
+            _PP_BASE + "molecule_handler/ligands/" + ligand_id + "/",
+            timeout=15,
+        ).json()
+        sdf_text = ligand_json["file_string"]
+        log.append(
+            f"✓ Got protein ({len(pdb_text)} chars) "
+            f"+ ligand {ligand_json.get('name')} ({len(sdf_text)} chars)"
+        )
+        result["upload_ok"] = True
+    except Exception as e:
+        result["error"] = f"MoleculeHandler step failed: {e}"
+        log.append(f"✗ MoleculeHandler failed: {e}")
+        return result
+
+    # 3. Submit to PoseView
+    try:
+        import io as _io
+        r = requests.post(
+            _PP_POSEVIEW,
+            files={
+                "protein_file": ("test.pdb", _io.StringIO(pdb_text), "chemical/x-pdb"),
+                "ligand_file":  ("test.sdf", _io.StringIO(sdf_text), "chemical/x-mdl-sdfile"),
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        pv_job_id = r.json().get("job_id")
+        log.append(f"✓ PoseView job submitted: {pv_job_id}")
+
+        pv_job = _pp_poll(pv_job_id, _PP_POSEVIEW_JOBS, poll_interval=2, max_polls=30)
+        result["job_response"] = pv_job
+        result["status"]       = pv_job.get("status", "")
+        log.append(f"✓ PoseView job status: {result['status']}")
+
+        if result["status"] == "success":
+            result["image_url"]    = pv_job.get("image", "")
+            result["poseview_ok"]  = True
+            log.append(f"✓ Image URL: {result['image_url']}")
+        else:
+            result["error"] = (
+                f"PoseView returned '{result['status']}'. "
+                f"Full response: {pv_job}"
+            )
+            log.append(f"✗ {result['error']}")
+    except Exception as e:
+        result["error"] = f"PoseView step failed: {e}"
+        log.append(f"✗ PoseView failed: {e}")
+
+    return result
