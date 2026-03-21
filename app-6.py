@@ -430,8 +430,8 @@ def _poseview_ui(
             if _err:
                 st.error(f"❌ PoseView v1 error:\n\n```\n{_err}\n```")
                 st.caption(
-                    "💡 If the error says 'Server rejected job', the proteins.plus server "
-                    "may be temporarily overloaded. Wait a few minutes and try again."
+                    "💡 If the error says 'Server rejected job', try clicking Generate again. "
+                    "If it persists, the proteins.plus server may be temporarily unavailable."
                 )
             else:
                 _png = svg_to_png(_svg)
