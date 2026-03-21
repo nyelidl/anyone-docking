@@ -33,10 +33,19 @@ from core import (
     call_poseview2_ref,
     svg_to_png,
     stamp_png,
-    warm_poseview_cache,
-    clear_poseview_cache,
-    draw_interactions_rdkit,
 )
+
+# Optional — only available in the latest core.py
+try:
+    from core import warm_poseview_cache, clear_poseview_cache
+except ImportError:
+    def warm_poseview_cache(path): return False, "core.py not updated yet"
+    def clear_poseview_cache(): pass
+
+try:
+    from core import draw_interactions_rdkit
+except ImportError:
+    draw_interactions_rdkit = None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
@@ -419,6 +428,9 @@ def _poseview_ui(
 
     # ── RDKit branch — instant, no server ────────────────────────────────────
     if _use_rdkit:
+        if draw_interactions_rdkit is None:
+            st.warning("⚠️ RDKit diagram requires the latest **core.py** — please update it on GitHub.")
+            return
         _rec = st.session_state.get(rec_key, "")
         _smiles = lig_smiles or st.session_state.get(smiles_key, "")
 
