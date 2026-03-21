@@ -470,8 +470,8 @@ def _poseview_ui(
                 help="Reduce to clean up busy diagrams.",
             )
 
-        if st.button("🐍 Generate RDKit Diagrams", key=btn_key + "_rdkit", type="primary"):
-            # Left: docked pose
+        if st.button("🐍 Generate Both RDKit Diagrams", key=btn_key + "_rdkit", type="primary"):
+            # Generates docked pose + co-crystal reference in one click
             with st.spinner("⏳ Generating docked pose diagram…"):
                 try:
                     _mols = load_mols_from_sdf(pose_sdf_path)
@@ -559,8 +559,15 @@ def _poseview_ui(
             st.rerun()
 
         # ── Display: left=docked, right=co-crystal ────────────────────────────
+        # Note: use `is not None` not `if ref_svg_key` — empty string "" = False
         _rdkit_svg     = st.session_state.get(img_svg_key + "_rdkit")
-        _ref_rdkit_svg = st.session_state.get(ref_svg_key + "_rdkit") if ref_svg_key else None
+        _ref_rdkit_svg = st.session_state.get(ref_svg_key + "_rdkit") \
+                         if ref_svg_key is not None else None
+
+        # Stale check — show warning if pose changed since last generation
+        _rdkit_stale = st.session_state.get(pose_key_key + "_rdkit") != _pose_key
+        if _rdkit_stale and _rdkit_svg:
+            st.caption("⚠️ Pose changed — click **Generate RDKit Diagrams** to update.")
 
         _LEGEND_RDKIT = """
 <div style="background:#fff;border:1px solid #D0D7DE;border-radius:6px;
@@ -601,7 +608,7 @@ def _poseview_ui(
                 width='stretch',
             )
 
-        if _rdkit_svg:
+        if _rdkit_svg and not _rdkit_stale:
             col_l, col_r = st.columns(2)
             with col_l:
                 st.markdown("##### 🧪 Docked Pose (RDKit)")
