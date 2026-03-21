@@ -917,7 +917,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
                     return resp.content, None
                 return (img.encode() if isinstance(img, str) else img), None
             if status in ("failed", "failure"):
-                return None, f"Job failed: {job.get('message', job.get('error', ''))}"
+                return None, f"Job failed. Full response: {job}" 
             if status not in ("pending", "running", "processing", ""):
                 return None, f"Unexpected status: '{status}'"
         except Exception as e:
