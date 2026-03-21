@@ -938,76 +938,33 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
     return job
 
 
-def _pp_upload_protein(receptor_pdb: str) -> str:
-    """
-    Upload a receptor PDB to the ProteinsPlus MoleculeHandler preprocessor.
-    Runs Protoss (proper H placement + protonation states) on the protein.
-
-    Returns the Protoss-processed PDB as a string (file_string).
-    Raises RuntimeError on any failure.
-
-    Exact notebook flow:
-        query = {'protein_file': upload_file}
-        job_submission = requests.post(UPLOAD, files=query).json()
-        job = poll_job(job_submission['job_id'], UPLOAD_JOBS)
-        protein_id = job['output_protein']
-        protein_json = requests.get(PROTEINS + protein_id + '/').json()
-        file_string = protein_json['file_string']   # ← Protoss-processed PDB
-    """
-    import requests
-    _PROTEINS = _PP_BASE + "molecule_handler/proteins/"
-
-    with open(receptor_pdb) as f:
-        r = requests.post(
-            _PP_UPLOAD,
-            files={"protein_file": f},
-            timeout=60,
-        )
-    r.raise_for_status()
-    data   = r.json()
-    job_id = data.get("job_id") or data.get("id")
-    if not job_id:
-        raise RuntimeError(f"MoleculeHandler upload returned no job_id: {data}")
-
-    job = _pp_poll(job_id, _PP_UPLOAD_JOBS)
-    if str(job.get("status", "")).lower() != "success":
-        raise RuntimeError(
-            f"MoleculeHandler preprocessing failed. Response: {job}"
-        )
-
-    protein_id = job.get("output_protein")
-    if not protein_id:
-        raise RuntimeError(
-            f"MoleculeHandler job succeeded but 'output_protein' missing: {job}"
-        )
-
-    # Fetch the Protoss-processed PDB text
-    protein_json = requests.get(_PROTEINS + protein_id + "/", timeout=15).json()
-    file_string  = protein_json.get("file_string", "")
-    if not file_string:
-        raise RuntimeError(
-            f"protein_json has no 'file_string'. Keys: {list(protein_json.keys())}"
-        )
-    return file_string
-
-
 def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
 
-    Exact flow from the official ProteinsPlus notebook:
-      Step 1 — Upload protein to MoleculeHandler → Protoss preprocessing
-               → fetch protein_json['file_string'] (Protoss-processed PDB text)
-      Step 2 — Submit PoseView with:
-                 files={'protein_file': <protoss_pdb>, 'ligand_file': <sdf>}
-               (both as files= — NOT data= + files=)
-      Step 3 — Poll until success
-      Step 4 — Fetch SVG from job['image'] URL
+    Root cause of Streamlit failures:
+      In Streamlit, receptor_pdb is rec.pdb — OpenBabel-H-added (obabel -h).
+      The PoseView API rejects explicit Hs with status 'failure'.
+      In the working notebook, a clean RCSB PDB (no explicit Hs) is used.
+      Fix: strip explicit Hs before submitting. PoseView adds its own via Protoss.
+
+    Flow (mirrors working notebook cell 6 exactly):
+      files = {'protein_file': <h-stripped pdb>, 'ligand_file': <sdf>}
+      job_submission = requests.post(POSEVIEW, files=files).json()
+      job = poll(job_submission['job_id'])
+      svg = requests.get(job['image'])   ← key is 'image', not 'result_image'
 
     Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
-    import io
+
+    # Strip explicit Hs — this is the one difference vs the working notebook.
+    # OpenBabel's -h flag adds Hs to rec.pdb; PoseView rejects them.
+    rec_noh = tempfile.NamedTemporaryFile(
+        suffix="_noh.pdb", delete=False, mode="w"
+    )
+    rec_noh.close()
+    _strip_h_from_pdb(receptor_pdb, rec_noh.name)
 
     last_error = "Unknown error"
 
@@ -1015,38 +972,25 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
 
-        # ── Step 1: Protoss-preprocess the receptor ───────────────────────────
+        # Submit — identical to notebook cell 6
         try:
-            protoss_pdb = _pp_upload_protein(receptor_pdb)
-        except Exception as e:
-            last_error = f"MoleculeHandler/Protoss failed (attempt {attempt}): {e}"
-            continue
-
-        # ── Step 2: Submit to PoseView — both protein & ligand as files= ──────
-        # This exactly mirrors the notebook:
-        #   files = {'protein_file': upload_file, 'ligand_file': upload_ligand_file}
-        #   job_submission = requests.post(POSEVIEW, files=files).json()
-        try:
-            with open(pose_sdf) as lf:
+            with open(rec_noh.name) as rf, open(pose_sdf) as lf:
                 r = requests.post(
                     _PP_POSEVIEW,
-                    files={
-                        "protein_file": ("receptor.pdb", io.StringIO(protoss_pdb), "chemical/x-pdb"),
-                        "ligand_file":  lf,
-                    },
+                    files={"protein_file": rf, "ligand_file": lf},
                     timeout=30,
                 )
             r.raise_for_status()
             data   = r.json()
             job_id = data.get("job_id") or data.get("id")
             if not job_id:
-                last_error = f"PoseView submission returned no job_id: {data}"
+                last_error = f"No job_id in response: {data}"
                 continue
         except Exception as e:
-            last_error = f"PoseView submission failed (attempt {attempt}): {e}"
+            last_error = f"Submission failed (attempt {attempt}): {e}"
             continue
 
-        # ── Step 3: Poll PoseView job ─────────────────────────────────────────
+        # Poll
         try:
             job    = _pp_poll(job_id, _PP_POSEVIEW_JOBS)
             status = str(job.get("status", "")).lower()
@@ -1057,30 +1001,44 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             last_error = f"Polling error (attempt {attempt}): {e}"
             continue
 
-        if status != "success":
+        if status in ("failed", "failure", "error"):
             last_error = (
-                f"PoseView job failed with status '{status}' "
-                f"(attempt {attempt}). Full response: {job}"
+                f"Server rejected job (attempt {attempt}). "
+                f"Full response: {job}"
             )
             continue
 
-        # ── Step 4: Download SVG from job['image'] URL ────────────────────────
-        # Notebook confirms the key is 'image', not 'result_image'
+        if status != "success":
+            last_error = (
+                f"Unexpected status '{status}' (attempt {attempt}). "
+                f"Full response: {job}"
+            )
+            continue
+
+        # Download SVG — key is 'image' per notebook, not 'result_image'
         img_url = job.get("image")
         if not img_url:
             last_error = (
                 f"Job succeeded but 'image' key missing. "
-                f"Available keys: {list(job.keys())}"
+                f"Keys: {list(job.keys())}"
             )
             continue
         try:
             resp = requests.get(img_url, timeout=20)
             resp.raise_for_status()
+            try:
+                os.unlink(rec_noh.name)
+            except Exception:
+                pass
             return resp.content, None
         except Exception as e:
             last_error = f"SVG download failed (attempt {attempt}): {e}"
             continue
 
+    try:
+        os.unlink(rec_noh.name)
+    except Exception:
+        pass
     return None, last_error
 
 
