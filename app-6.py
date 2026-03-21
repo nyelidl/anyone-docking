@@ -471,13 +471,13 @@ def _poseview_ui(
                     st.download_button(
                         "⬇ PNG", data=_png_data,
                         file_name=f"pose{pose_idx+1}_docked.png",
-                        mime="image/png", key=dl_png_key, use_container_width=True,
+                        mime="image/png", key=dl_png_key, width='stretch',
                     )
             with _d2:
                 st.download_button(
                     "⬇ SVG", data=_pose_svg,
                     file_name=f"pose{pose_idx+1}_docked.svg",
-                    mime="image/svg+xml", key=dl_svg_key, use_container_width=True,
+                    mime="image/svg+xml", key=dl_svg_key, width='stretch',
                 )
 
         with col_r:
@@ -498,7 +498,7 @@ def _poseview_ui(
                             file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
                             mime="image/png",
                             key=dl_png_key + "_ref",
-                            use_container_width=True,
+                            width='stretch',
                         )
                 with _r2:
                     st.download_button(
@@ -506,7 +506,7 @@ def _poseview_ui(
                         file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
                         mime="image/svg+xml",
                         key=dl_svg_key + "_ref",
-                        use_container_width=True,
+                        width='stretch',
                     )
             elif _has_ref:
                 st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
@@ -1111,7 +1111,7 @@ with tab_basic:
                         subset=["Affinity (kcal/mol)"],
                         gmap=-df["Affinity (kcal/mol)"],
                     ),
-                    hide_index=True, use_container_width=True,
+                    hide_index=True, width='stretch',
                 )
         with cc:
             st.markdown("**Affinity by Pose**")
@@ -1135,7 +1135,7 @@ with tab_basic:
                 for sp in ax.spines.values():
                     sp.set_edgecolor(_cc["border"])
                 fig.tight_layout()
-                st.pyplot(fig, use_container_width=True)
+                st.pyplot(fig, width='stretch')
                 plt.close(fig)
 
         st.markdown("---")
@@ -1237,14 +1237,14 @@ with tab_basic:
                     open(sp_raw, "rb"),
                     file_name=f"pose_{pose_idx+1}.sdf",
                     key=f"dl_p_{pose_idx}",
-                    use_container_width=True,
+                    width='stretch',
                 )
                 st.download_button(
                     "⬇ All poses (.pdbqt)",
                     open(st.session_state.output_pdbqt, "rb"),
                     file_name=f"{st.session_state.dock_base}_out.pdbqt",
                     key="dl_pdbqt",
-                    use_container_width=True,
+                    width='stretch',
                 )
                 if df is not None:
                     st.download_button(
@@ -1253,7 +1253,7 @@ with tab_basic:
                         file_name=f"{st.session_state.dock_base}_scores.csv",
                         mime="text/csv",
                         key="dl_csv",
-                        use_container_width=True,
+                        width='stretch',
                     )
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                     st.download_button(
@@ -1261,7 +1261,7 @@ with tab_basic:
                         open(st.session_state.receptor_fh, "rb"),
                         file_name="receptor.pdb",
                         key="dl_rec",
-                        use_container_width=True,
+                        width='stretch',
                     )
 
             st.markdown("---")
@@ -1726,7 +1726,7 @@ with tab_batch:
                             else f"📌 Use pose {b_pose_i+1} as reference",
                             key="b_confirm_ref_btn",
                             type="secondary" if already else "primary",
-                            use_container_width=True,
+                            width='stretch',
                         ):
                             st.session_state.update({
                                 "b_confirmed_ref_score": this_score,
@@ -1738,7 +1738,7 @@ with tab_batch:
                             if st.button(
                                 "🔄 Reset reference",
                                 key="b_reset_ref_btn",
-                                use_container_width=True,
+                                width='stretch',
                             ):
                                 st.session_state.update({
                                     "b_confirmed_ref_score": None,
@@ -1755,7 +1755,7 @@ with tab_batch:
                         open(sp3, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf",
                         key="b_dl_pose",
-                        use_container_width=True,
+                        width='stretch',
                     )
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
                         st.download_button(
@@ -1763,7 +1763,7 @@ with tab_batch:
                             open(sel_res["out_pdbqt"], "rb"),
                             file_name=f"{safe_nm}_out.pdbqt",
                             key="b_dl_pdbqt",
-                            use_container_width=True,
+                            width='stretch',
                         )
 
         st.markdown("---")
@@ -1831,7 +1831,7 @@ with tab_batch:
                 ct2, cp2 = st.columns([1, 1.6])
                 with ct2:
                     st.markdown("**Score Table**")
-                    st.dataframe(df_res, hide_index=True, use_container_width=True)
+                    st.dataframe(df_res, hide_index=True, width='stretch')
                 with cp2:
                     st.markdown("**Top Score per Ligand**")
                     fig, ax = plt.subplots(figsize=(max(5, _n * 0.6 + 1.5), 3.5))
@@ -1844,7 +1844,7 @@ with tab_batch:
                     )
                     _buf.seek(0)
                     st.session_state["b_plot_png"] = _buf.getvalue()
-                    st.pyplot(fig, use_container_width=True)
+                    st.pyplot(fig, width='stretch')
                     plt.close(fig)
             else:
                 st.markdown("**Top Score per Ligand**")
@@ -1858,13 +1858,13 @@ with tab_batch:
                 )
                 _buf.seek(0)
                 st.session_state["b_plot_png"] = _buf.getvalue()
-                st.pyplot(fig, use_container_width=True)
+                st.pyplot(fig, width='stretch')
                 plt.close(fig)
                 st.markdown("**Score Table**")
-                st.dataframe(df_res, hide_index=True, use_container_width=True)
+                st.dataframe(df_res, hide_index=True, width='stretch')
         else:
             st.markdown("**Score Table**")
-            st.dataframe(df_res, hide_index=True, use_container_width=True)
+            st.dataframe(df_res, hide_index=True, width='stretch')
 
         st.markdown("---")
         st.markdown("**⬇ Download All Results**")
@@ -1877,7 +1877,7 @@ with tab_batch:
                     file_name="batch_scores.csv",
                     mime="text/csv",
                     key="b_dl_csv",
-                    use_container_width=True,
+                    width='stretch',
                 )
         with c_zip:
             zb = io.BytesIO()
@@ -1909,7 +1909,7 @@ with tab_batch:
                 file_name="anyone_can_dock.zip",
                 mime="application/zip",
                 key="b_dl_zip",
-                use_container_width=True,
+                width='stretch',
             )
 
         # 2D Interaction diagram
