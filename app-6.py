@@ -470,7 +470,7 @@ def _poseview_ui(
                 help="Reduce to clean up busy diagrams.",
             )
 
-        if st.button("🐍 Generate Both RDKit Diagrams", key=btn_key + "_rdkit", type="primary"):
+        if st.button("🐍 Generate 2D Interaction Diagrams using RDKit", key=btn_key + "_rdkit", type="primary"):
             # Generates docked pose + co-crystal reference in one click
             with st.spinner("⏳ Generating docked pose diagram…"):
                 try:
@@ -490,7 +490,7 @@ def _poseview_ui(
                             smiles       = _smiles,
                             title        = _title,
                             cutoff       = _cutoff_rdkit,
-                            size         = (500, 500),
+                            size         = (650, 620),
                             max_residues = _max_res,
                         )
                         st.session_state[img_svg_key + "_rdkit"]  = _rdkit_svg
@@ -548,7 +548,7 @@ def _poseview_ui(
                                 smiles       = _ref_smiles,
                                 title        = _ref_title,
                                 cutoff       = _cutoff_rdkit,
-                                size         = (500, 500),
+                                size         = (650, 620),
                                 max_residues = _max_res,
                             )
                             st.session_state[ref_svg_key + "_rdkit"] = _ref_rdkit_svg
@@ -597,7 +597,7 @@ def _poseview_ui(
             components.html(
                 f'<div style="background:#fff;border-radius:8px;padding:10px;'
                 f'border:1px solid #D0D7DE;">{svg_str}</div>',
-                height=530, scrolling=False,
+                height=660, scrolling=False,
             )
             st.markdown(_LEGEND_RDKIT, unsafe_allow_html=True)
             st.download_button(
@@ -1148,7 +1148,7 @@ margin:0;font-weight:700;padding-top:29px;">nyone can dock, everyone can do!</h1
 
 st.markdown(
     "Molecular docking powered by **AutoDock Vina 1.2.7**, "
-    "**Dimorphite-DL**, and **PoseView2**."
+    "**Dimorphite-DL**, **PoseView2**, and **RDkit**."
 )
 st.markdown(
     "**Basic** — single ligand. **Batch** — multiple ligands. "
