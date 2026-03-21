@@ -33,7 +33,6 @@ from core import (
     call_poseview2_ref,
     svg_to_png,
     stamp_png,
-    diagnose_poseview,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -426,27 +425,33 @@ def _poseview_ui(
         )
         if st.button("▶ Run API Test", key=btn_key + "_diag"):
             with st.spinner("Testing proteins.plus PoseView API…"):
-                _diag = diagnose_poseview()
-            for _line in _diag["log"]:
-                if _line.startswith("✓"):
-                    st.success(_line)
+                try:
+                    from core import diagnose_poseview as _diagnose_poseview
+                    _diag = _diagnose_poseview()
+                except ImportError:
+                    st.error("❌ diagnose_poseview not found — please deploy the latest core.py")
+                    _diag = None
+            if _diag:
+                for _line in _diag["log"]:
+                    if _line.startswith("✓"):
+                        st.success(_line)
+                    else:
+                        st.error(_line)
+                if _diag["poseview_ok"]:
+                    st.success(
+                        "✅ API is working fine — if your docking diagram fails, "
+                        "the issue is with your specific receptor/ligand files."
+                    )
+                    if _diag["image_url"]:
+                        st.markdown(f"[View test SVG]({_diag['image_url']})")
+                elif _diag["server_reachable"]:
+                    st.warning(
+                        f"⚠️ Server reachable but PoseView failed: {_diag['error']}"
+                    )
                 else:
-                    st.error(_line)
-            if _diag["poseview_ok"]:
-                st.success(
-                    "✅ API is working fine — if your docking diagram fails, "
-                    "the issue is with your specific receptor/ligand files."
-                )
-                if _diag["image_url"]:
-                    st.markdown(f"[View test SVG]({_diag['image_url']})")
-            elif _diag["server_reachable"]:
-                st.warning(
-                    f"⚠️ Server reachable but PoseView failed: {_diag['error']}"
-                )
-            else:
-                st.error(
-                    f"❌ Server unreachable: {_diag['error']}"
-                )
+                    st.error(
+                        f"❌ Server unreachable: {_diag['error']}"
+                    )
 
     if _run:
         _rec = st.session_state.get(rec_key, "")
