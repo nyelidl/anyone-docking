@@ -448,6 +448,11 @@ def _poseview_ui(
             st.warning("No ligand SMILES available.")
             return
 
+        # Show which SMILES will be used — helps diagnose charge issues
+        with st.expander("🔎 SMILES used for 2D diagram", expanded=False):
+            st.code(_smiles, language=None)
+            st.caption("This should be the Dimorphite-DL protonated SMILES (includes charges like [O-], [NH3+]).")
+
         # Co-crystal ligand PDB — saved during receptor prep
         # Use same session state key pattern as rec_key e.g. "" → "ligand_pdb_path"
         #                                                     "b_" → "b_ligand_pdb_path"
@@ -570,37 +575,36 @@ def _poseview_ui(
         if _rdkit_stale and _rdkit_svg:
             st.caption("⚠️ Pose changed — click **Generate RDKit Diagrams** to update.")
 
-        _LEGEND_RDKIT = """
-<div style="background:#fff;border:1px solid #D0D7DE;border-radius:6px;
-     padding:10px 18px;font-family:'Helvetica Neue',Arial,sans-serif;
-     font-size:13px;color:#333;margin-top:6px;">
-  <div style="display:flex;align-items:center;gap:28px;">
-    <div style="display:flex;align-items:center;gap:7px;">
-      <div style="width:14px;height:14px;border-radius:50%;
-           background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;"></div>
-      <span>H-bond / polar</span></div>
-    <div style="display:flex;align-items:center;gap:7px;">
-      <div style="width:14px;height:14px;border-radius:50%;
-           background:rgba(44,141,87,0.55);border:1px solid #2E8B57;"></div>
-      <span>Hydrophobic</span></div>
-    <div style="display:flex;align-items:center;gap:7px;">
-      <div style="width:14px;height:14px;border-radius:50%;
-           background:rgba(204,95,138,0.55);border:1px solid #cc5f8a;"></div>
-      <span>Other</span></div>
-  </div>
-</div>"""
-
         def _show_rdkit_svg(svg_data, dl_key, dl_filename):
             svg_str = svg_data.decode() if isinstance(svg_data, bytes) else svg_data
             svg_str = svg_str.replace(
                 "<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1
             )
+            _legend_html = """
+<div style="display:flex;align-items:center;gap:24px;padding:10px 16px;
+     border-top:1px solid #D0D7DE;
+     font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;color:#333;">
+  <div style="display:flex;align-items:center;gap:7px;">
+    <div style="width:14px;height:14px;border-radius:50%;
+         background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;flex-shrink:0;"></div>
+    <span>H-bond / polar</span></div>
+  <div style="display:flex;align-items:center;gap:7px;">
+    <div style="width:14px;height:14px;border-radius:50%;
+         background:rgba(44,141,87,0.55);border:1px solid #2E8B57;flex-shrink:0;"></div>
+    <span>Hydrophobic</span></div>
+  <div style="display:flex;align-items:center;gap:7px;">
+    <div style="width:14px;height:14px;border-radius:50%;
+         background:rgba(204,95,138,0.55);border:1px solid #cc5f8a;flex-shrink:0;"></div>
+    <span>Other</span></div>
+</div>"""
             components.html(
-                f'<div style="background:#fff;border-radius:8px;padding:10px;'
-                f'border:1px solid #D0D7DE;">{svg_str}</div>',
-                height=660, scrolling=False,
+                f'<div style="background:#fff;border-radius:8px;'
+                f'border:1px solid #D0D7DE;overflow:hidden;">'
+                f'{svg_str}'
+                f'{_legend_html}'
+                f'</div>',
+                height=700, scrolling=False,
             )
-            st.markdown(_LEGEND_RDKIT, unsafe_allow_html=True)
             # PNG + SVG download side by side
             _png_bytes = svg_to_png(svg_data)
             _dc1, _dc2 = st.columns(2)
@@ -2089,7 +2093,7 @@ with tab_batch:
                             "SES", {"opacity": 0.2, "color": "lightblue"},
                             {"model": 0}, {"model": bmi},
                         )
-                        vb.zoomTo({"model": bmi})
+                        vb.zoomTo()
                         vb.center({"model": bmi})
                         show3d(vb, height=420)
                     except Exception as e:
