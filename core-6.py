@@ -904,7 +904,7 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
         try:
             job    = requests.get(_JOBS + job_id + "/", timeout=10).json()
             status = job.get("status", "")
-            if status in ("done", "success"):
+            if status in ("done", "success", "completed")::
                 img = (
                     job.get("result_image") or job.get("image")
                     or job.get("result")    or job.get("image_url")
@@ -916,8 +916,8 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
                     resp.raise_for_status()
                     return resp.content, None
                 return (img.encode() if isinstance(img, str) else img), None
-            if status == "failed":
-                return None, f"Job failed: {job.get('message', '')}"
+            if status in ("failed", "failure"):
+                return None, f"Job failed: {job.get('message', job.get('error', ''))}"
             if status not in ("pending", "running", "processing", ""):
                 return None, f"Unexpected status: '{status}'"
         except Exception as e:
