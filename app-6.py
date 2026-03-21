@@ -1153,7 +1153,7 @@ margin:0;font-weight:700;padding-top:29px;">nyone can dock, everyone can do!</h1
 </div>""", unsafe_allow_html=True)
 
 st.markdown(
-    "Molecular docking powered by **AutoDock Vina 1.2.7** "
+    "Molecular docking powered by **AutoDock Vina 1.2.7,** "
     "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown(
