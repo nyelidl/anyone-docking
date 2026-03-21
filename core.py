@@ -773,6 +773,28 @@ def write_single_pose(mol, path: str) -> None:
         w.write(mol)
 
 
+def convert_sdf_to_v2000(sdf_path: str) -> str:
+    """
+    Convert an SDF to clean V2000 format via obabel.
+    PoseView requires V2000 — RDKit may write V3000 for large molecules.
+    Returns path to converted file (tmp), or original path on failure.
+    """
+    out = sdf_path.replace(".sdf", "_v2000.sdf")
+    if out == sdf_path:
+        out = sdf_path + "_v2000.sdf"
+    rc, log = run_cmd(
+        f'obabel "{sdf_path}" -O "{out}" --gen3d -h 2>/dev/null'
+    )
+    # --gen3d keeps 3D coords; -h adds Hs so PoseView can detect H-bonds
+    if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
+        return out
+    # fallback: try without --gen3d
+    rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" 2>/dev/null')
+    if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
+        return out
+    return sdf_path
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  STRUCTURAL ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1005,8 +1027,10 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
         # MoleculeHandler does NOT accept standalone ligand uploads (400 error).
         # Ligand SDF is submitted directly as ligand_file — same as notebook cell 6
         # where the SDF was obtained from MoleculeHandler's ligand_set file_string.
+        # Convert to V2000 first — PoseView crashes on V3000/malformed SDF.
         try:
-            with open(pose_sdf) as lf:
+            ligand_v2000 = convert_sdf_to_v2000(pose_sdf)
+            with open(ligand_v2000) as lf:
                 r = requests.post(
                     _PP_POSEVIEW,
                     files={
