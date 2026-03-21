@@ -1178,7 +1178,8 @@ st.markdown(
     "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown(
-    "**Basic** — single ligand. **Batch** — multiple ligands. "
+    "**Basic** — single ligand. **Batch** — multiple ligands. "๗
+st.markdown(
     "**☁️ Cloud-ready | 📱 Mobile-compatible**"
 )
 
