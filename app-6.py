@@ -425,10 +425,14 @@ def _poseview_ui(
         elif not os.path.exists(pose_sdf_path):
             st.error("Pose SDF not found.")
         else:
-            with st.spinner("⏳ PoseView v1 — docked pose… (10–60 s)"):
+            with st.spinner("⏳ PoseView v1 — docked pose… (may retry up to 3×, 10–120 s)"):
                 _svg, _err = call_poseview_v1(_rec, pose_sdf_path)
             if _err:
-                st.error(f"❌ PoseView error: {_err}")
+                st.error(f"❌ PoseView v1 error:\n\n```\n{_err}\n```")
+                st.caption(
+                    "💡 If the error says 'Server rejected job', the proteins.plus server "
+                    "may be temporarily overloaded. Wait a few minutes and try again."
+                )
             else:
                 _png = svg_to_png(_svg)
                 st.session_state[img_png_key]  = _png
@@ -437,11 +441,11 @@ def _poseview_ui(
 
             if _has_ref and ref_png_key and ref_svg_key:
                 with st.spinner(
-                    f"⏳ PoseView2 — {pdb_id.upper()} / {cocrystal_ligand_id}… (10–60 s)"
+                    f"⏳ PoseView2 — {pdb_id.upper()} / {cocrystal_ligand_id}… (may retry up to 3×)"
                 ):
                     _ref_svg, _ref_err = call_poseview2_ref(pdb_id, cocrystal_ligand_id)
                 if _ref_err:
-                    st.warning(f"⚠️ PoseView2 error: {_ref_err}")
+                    st.warning(f"⚠️ PoseView2 error:\n\n```\n{_ref_err}\n```")
                 else:
                     st.session_state[ref_png_key] = svg_to_png(_ref_svg)
                     st.session_state[ref_svg_key] = _ref_svg
@@ -794,7 +798,6 @@ st.markdown(
     "**☁️ Cloud-ready | 📱 Mobile-compatible**"
 )
 
-# Tool availability banners
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
     st.stop()
@@ -827,7 +830,6 @@ tab_basic, tab_batch = st.tabs([
 # ╚════════════════════════════════════════════════════════════════════════════╝
 with tab_basic:
 
-    # ── Step 1: Receptor ──────────────────────────────────────────────────────
     _receptor_section(pfx="", wdir=WORKDIR, step_label="Step 1 of 4")
 
     # ── Step 2: Ligand ────────────────────────────────────────────────────────
@@ -1099,7 +1101,6 @@ with tab_basic:
         df   = st.session_state.score_df
         mols = st.session_state.pose_mols or []
 
-        # ── Score table + bar chart ───────────────────────────────────────────
         ct, cc = st.columns([1, 1.4])
         with ct:
             st.markdown("**Score Table**")
@@ -1139,7 +1140,6 @@ with tab_basic:
 
         st.markdown("---")
 
-        # ── Animated viewer ───────────────────────────────────────────────────
         st.markdown("**🎬 Animated Pose Viewer**")
         anim_spd = st.slider("Interval (ms)", 500, 3000, 1500, 250, key="anim_spd")
         if st.session_state.output_sdf and os.path.exists(st.session_state.output_sdf):
@@ -1171,7 +1171,6 @@ with tab_basic:
 
         st.markdown("---")
 
-        # ── Pose selector ─────────────────────────────────────────────────────
         st.markdown("**🔎 Interactive Pose Selector**")
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
@@ -1265,7 +1264,6 @@ with tab_basic:
                         use_container_width=True,
                     )
 
-            # ── Binding pocket ────────────────────────────────────────────────
             st.markdown("---")
             st.markdown("**🔬 Binding Pocket View**")
             _bpl, _bpr = st.columns([2, 1])
@@ -1327,7 +1325,7 @@ with tab_basic:
             except Exception as _e:
                 st.info(f"Binding pocket viewer error: {_e}")
 
-            # ── PoseView 2D ───────────────────────────────────────────────────
+            # PoseView 2D
             pv_sdf_all = st.session_state.get("output_pv_sdf", "")
             sp_pv = str(WORKDIR / f"pose_{pose_idx+1}_pv_ready.sdf")
             if pv_sdf_all and os.path.exists(pv_sdf_all):
@@ -1436,7 +1434,6 @@ with tab_batch:
         config    = st.session_state.get("b_config_txt")
         b_ph_val  = st.session_state.get("b_ph", 7.4)
 
-        # Parse SMILES input
         smiles_pairs = []
         try:
             if st.session_state.get("b_input_mode") == "SMILES list (text)":
@@ -1464,7 +1461,6 @@ with tab_batch:
             st.error(f"❌ Input parsing failed: {e}")
             st.stop()
 
-        # Redocking
         redock_score  = None
         redock_result = None
         if st.session_state.get("b_do_redock"):
@@ -1512,7 +1508,6 @@ with tab_batch:
                 else:
                     st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
 
-        # Batch loop
         results  = []
         n        = len(smiles_pairs)
         prog     = st.progress(0, text=f"Docking 0/{n}…")
@@ -1780,7 +1775,6 @@ with tab_batch:
                 unsafe_allow_html=True,
             )
 
-        # ── Score table + plot ────────────────────────────────────────────────
         df_res = pd.DataFrame([{
             "Name":                  r["Name"],
             "Top Score (kcal/mol)":  r["Top Score"],
@@ -1872,7 +1866,6 @@ with tab_batch:
             st.markdown("**Score Table**")
             st.dataframe(df_res, hide_index=True, use_container_width=True)
 
-        # ── Downloads ─────────────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("**⬇ Download All Results**")
         c_csv, c_zip = st.columns(2)
@@ -1919,7 +1912,7 @@ with tab_batch:
                 use_container_width=True,
             )
 
-        # ── 2D Interaction diagram ────────────────────────────────────────────
+        # 2D Interaction diagram
         st.markdown("---")
         st.markdown("### 🧬 2D Interaction Diagram — PoseView2")
         pv_browsable = [
