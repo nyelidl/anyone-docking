@@ -1546,17 +1546,54 @@ def draw_interactions_rdkit(
     Returns SVG bytes.
     """
     from rdkit import Chem
-    from rdkit.Chem import Draw, rdDepictor
+    from rdkit.Chem import Draw, rdDepictor, AllChem
     import numpy as np
 
-    # ── 1. Clean 2D mol from SMILES ───────────────────────────────────────────
-    mol2d = Chem.MolFromSmiles(smiles)
+    # ── 1. Clean 2D mol from SMILES — preserving formal charges ──────────────
+    # prot_smiles from Dimorphite-DL may use aromatic ketone notation
+    # e.g. "O=c1cc(...)oc2..." which RDKit parses as kekulized form.
+    # Try multiple parsing strategies to preserve [O-], [NH3+] etc.
+    mol2d = None
+
+    for _smi in [smiles, smiles]:
+        if not _smi:
+            break
+        # Strategy 1: direct parse
+        _m = Chem.MolFromSmiles(_smi)
+        if _m is not None:
+            mol2d = _m
+            break
+        # Strategy 2: sanitize with partial flags (preserve charges, fix aromaticity)
+        try:
+            _m = Chem.MolFromSmiles(_smi, sanitize=False)
+            if _m is not None:
+                Chem.SanitizeMol(
+                    _m,
+                    Chem.SanitizeFlags.SANITIZE_ALL
+                    ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
+                )
+                mol2d = _m
+                break
+        except Exception:
+            pass
+
     if mol2d is None:
+        # Fallback: strip Hs from 3D mol — charges may be lost
         mol2d = Chem.RemoveHs(lig_mol, sanitize=False)
         try:
             Chem.SanitizeMol(mol2d)
         except Exception:
             pass
+
+    # Canonicalise to ensure consistent atom ordering + charge display
+    try:
+        _canon = Chem.MolToSmiles(mol2d)
+        _reparse = Chem.MolFromSmiles(_canon)
+        if _reparse is not None:
+            mol2d = _reparse
+    except Exception:
+        pass
+
     rdDepictor.Compute2DCoords(mol2d)
     n2d = mol2d.GetNumAtoms()
 
