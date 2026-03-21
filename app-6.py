@@ -436,7 +436,8 @@ def _poseview_ui(
         if draw_interactions_rdkit is None:
             st.warning("⚠️ RDKit diagram requires the latest **core.py** — please update it on GitHub.")
             return
-        _rec = st.session_state.get(rec_key, "")
+
+        _rec    = st.session_state.get(rec_key, "")
         _smiles = lig_smiles or st.session_state.get(smiles_key, "")
 
         if not _rec or not os.path.exists(_rec):
@@ -446,78 +447,207 @@ def _poseview_ui(
             st.warning("No ligand SMILES available.")
             return
 
-        _cutoff_rdkit = st.slider(
-            "Interaction cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
-            key=btn_key + "_rdkit_cutoff"
+        # Co-crystal ligand PDB — saved during receptor prep
+        # Use same session state key pattern as rec_key e.g. "" → "ligand_pdb_path"
+        #                                                     "b_" → "b_ligand_pdb_path"
+        _pfx = rec_key.replace("receptor_fh", "")   # extract prefix: "" or "b_"
+        _lig_pdb_path = st.session_state.get(_pfx + "ligand_pdb_path", "")
+        _has_ref_rdkit = bool(
+            _lig_pdb_path and os.path.exists(_lig_pdb_path)
         )
 
-        if st.button("🐍 Generate RDKit Diagram", key=btn_key + "_rdkit", type="primary"):
-            with st.spinner("⏳ Generating local 2D diagram…"):
+        # Controls
+        _ctrl_l, _ctrl_r = st.columns(2)
+        with _ctrl_l:
+            _cutoff_rdkit = st.slider(
+                "Interaction cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
+                key=btn_key + "_rdkit_cutoff",
+            )
+        with _ctrl_r:
+            _max_res = st.slider(
+                "Max residues shown", 4, 20, 10, 1,
+                key=btn_key + "_rdkit_maxres",
+                help="Reduce to clean up busy diagrams.",
+            )
+
+        if st.button("🐍 Generate RDKit Diagrams", key=btn_key + "_rdkit", type="primary"):
+            # Left: docked pose
+            with st.spinner("⏳ Generating docked pose diagram…"):
                 try:
-                    from core import load_mols_from_sdf
                     _mols = load_mols_from_sdf(pose_sdf_path)
                     _mol  = _mols[0] if _mols else None
                     if _mol is None:
                         st.error("Could not read pose SDF.")
-                        return
-                    _title = (
-                        f"{lig_name} · Pose {pose_idx+1}"
-                        + (f" · {binding_energy:.2f} kcal/mol"
-                           if binding_energy is not None else "")
-                    )
-                    _rdkit_svg = draw_interactions_rdkit(
-                        lig_mol      = _mol,
-                        receptor_pdb = _rec,
-                        smiles       = _smiles,
-                        title        = _title,
-                        cutoff       = _cutoff_rdkit,
-                        size         = (620, 520),
-                    )
-                    st.session_state[img_svg_key + "_rdkit"] = _rdkit_svg
-                    st.session_state[pose_key_key + "_rdkit"] = _pose_key
+                    else:
+                        _title = (
+                            f"{lig_name} · Pose {pose_idx+1}"
+                            + (f" · {binding_energy:.2f} kcal/mol"
+                               if binding_energy is not None else "")
+                        )
+                        _rdkit_svg = draw_interactions_rdkit(
+                            lig_mol      = _mol,
+                            receptor_pdb = _rec,
+                            smiles       = _smiles,
+                            title        = _title,
+                            cutoff       = _cutoff_rdkit,
+                            size         = (500, 500),
+                            max_residues = _max_res,
+                        )
+                        st.session_state[img_svg_key + "_rdkit"]  = _rdkit_svg
+                        st.session_state[pose_key_key + "_rdkit"] = _pose_key
                 except Exception as e:
-                    st.error(f"❌ RDKit diagram error: {e}")
+                    st.error(f"❌ RDKit docked pose error: {e}")
 
-        _rdkit_svg = st.session_state.get(img_svg_key + "_rdkit")
-        if _rdkit_svg:
-            svg_str = (
-                _rdkit_svg.decode() if isinstance(_rdkit_svg, bytes)
-                else _rdkit_svg
-            )
+            # Right: co-crystal reference
+            if _has_ref_rdkit:
+                with st.spinner("⏳ Generating co-crystal reference diagram…"):
+                    try:
+                        from rdkit import Chem
+                        _ref_mol = Chem.MolFromPDBFile(
+                            _lig_pdb_path, sanitize=True, removeHs=True
+                        )
+                        if _ref_mol is None:
+                            _ref_mol = Chem.MolFromPDBFile(
+                                _lig_pdb_path, sanitize=False, removeHs=True
+                            )
+                        if _ref_mol is not None:
+                            # Get SMILES for clean 2D — use ref_lig_smiles if provided
+                            _ref_smiles = (
+                                ref_lig_smiles
+                                or Chem.MolToSmiles(Chem.RemoveHs(_ref_mol))
+                            )
+                            _ref_title = (
+                                f"{ref_lig_name or cocrystal_ligand_id} · Co-crystal"
+                                + (f" · {ref_lig_energy:.2f} kcal/mol"
+                                   if ref_lig_energy is not None else "")
+                            )
+                            _ref_rdkit_svg = draw_interactions_rdkit(
+                                lig_mol      = _ref_mol,
+                                receptor_pdb = _rec,
+                                smiles       = _ref_smiles,
+                                title        = _ref_title,
+                                cutoff       = _cutoff_rdkit,
+                                size         = (500, 500),
+                                max_residues = _max_res,
+                            )
+                            st.session_state[ref_svg_key + "_rdkit"] = _ref_rdkit_svg
+                        else:
+                            st.warning("⚠️ Could not read co-crystal ligand PDB.")
+                    except Exception as e:
+                        st.warning(f"⚠️ Co-crystal RDKit diagram error: {e}")
+            st.rerun()
+
+        # ── Display: left=docked, right=co-crystal ────────────────────────────
+        _rdkit_svg     = st.session_state.get(img_svg_key + "_rdkit")
+        _ref_rdkit_svg = st.session_state.get(ref_svg_key + "_rdkit") if ref_svg_key else None
+
+        _LEGEND_RDKIT = """
+<div style="background:#fff;border:1px solid #D0D7DE;border-radius:6px;
+     padding:10px 18px;font-family:'Helvetica Neue',Arial,sans-serif;
+     font-size:13px;color:#333;margin-top:6px;">
+  <div style="display:flex;align-items:center;gap:28px;">
+    <div style="display:flex;align-items:center;gap:7px;">
+      <div style="width:14px;height:14px;border-radius:50%;
+           background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;"></div>
+      <span>H-bond / polar</span></div>
+    <div style="display:flex;align-items:center;gap:7px;">
+      <div style="width:14px;height:14px;border-radius:50%;
+           background:rgba(44,141,87,0.55);border:1px solid #2E8B57;"></div>
+      <span>Hydrophobic</span></div>
+    <div style="display:flex;align-items:center;gap:7px;">
+      <div style="width:14px;height:14px;border-radius:50%;
+           background:rgba(204,95,138,0.55);border:1px solid #cc5f8a;"></div>
+      <span>Other</span></div>
+  </div>
+</div>"""
+
+        def _show_rdkit_svg(svg_data, dl_key, dl_filename):
+            svg_str = svg_data.decode() if isinstance(svg_data, bytes) else svg_data
             svg_str = svg_str.replace(
                 "<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1
             )
             components.html(
-                f'<div style="background:#fff;border-radius:8px;padding:12px;'
+                f'<div style="background:#fff;border-radius:8px;padding:10px;'
                 f'border:1px solid #D0D7DE;">{svg_str}</div>',
-                height=560, scrolling=True,
+                height=530, scrolling=False,
             )
-            # Legend
-            st.markdown("""
-<div style="background:#fff;border:1px solid #D0D7DE;border-radius:6px;
-     padding:10px 18px;font-family:'Helvetica Neue',Arial,sans-serif;
-     font-size:13px;color:#333;margin-top:6px;">
-  <div style="display:flex;align-items:center;gap:32px;">
-    <div style="display:flex;align-items:center;gap:8px;">
-      <div style="width:16px;height:16px;border-radius:50%;
-           background:rgba(89,156,214,0.6);border:1px solid #5B9BD5;"></div>
-      <span>H-bond / polar</span></div>
-    <div style="display:flex;align-items:center;gap:8px;">
-      <div style="width:16px;height:16px;border-radius:50%;
-           background:rgba(44,141,87,0.6);border:1px solid #2E8B57;"></div>
-      <span>Hydrophobic</span></div>
-    <div style="display:flex;align-items:center;gap:8px;">
-      <div style="width:16px;height:16px;border-radius:50%;
-           background:rgba(204,95,138,0.6);border:1px solid #cc5f8a;"></div>
-      <span>Other</span></div>
-  </div>
-</div>""", unsafe_allow_html=True)
+            st.markdown(_LEGEND_RDKIT, unsafe_allow_html=True)
             st.download_button(
-                "⬇ SVG", data=_rdkit_svg,
-                file_name=f"pose{pose_idx+1}_rdkit.svg",
+                "⬇ SVG", data=svg_data,
+                file_name=dl_filename,
                 mime="image/svg+xml",
-                key=dl_svg_key + "_rdkit",
+                key=dl_key,
+                width='stretch',
             )
+
+        if _rdkit_svg:
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.markdown("##### 🧪 Docked Pose (RDKit)")
+                _show_rdkit_svg(
+                    _rdkit_svg,
+                    dl_key      = dl_svg_key + "_rdkit",
+                    dl_filename = f"pose{pose_idx+1}_rdkit.svg",
+                )
+            with col_r:
+                st.markdown("##### 🔬 Co-Crystal Reference (RDKit)")
+                if _ref_rdkit_svg:
+                    _show_rdkit_svg(
+                        _ref_rdkit_svg,
+                        dl_key      = dl_svg_key + "_rdkit_ref",
+                        dl_filename = f"cocrystal_rdkit.svg",
+                    )
+                elif _has_ref_rdkit:
+                    st.info("Click **Generate RDKit Diagrams** to generate co-crystal diagram.")
+                else:
+                    st.caption("⚠️ No co-crystal ligand — use Auto-detect in receptor preparation.")
+
+            # ── AI prompt — same logic as PoseView ───────────────────────────
+            st.markdown("---")
+            _energy_str = (
+                f"{binding_energy:.2f} kcal/mol"
+                if binding_energy is not None else "[binding energy]"
+            )
+            _lig_str = (
+                f"{lig_name} (SMILES: {_smiles})"
+                if lig_name else _smiles or "[ligand]"
+            )
+            _has_ref_b = bool(_ref_rdkit_svg)
+            _ref_clause = ""
+            if _has_ref_b and (ref_lig_name or ref_lig_smiles):
+                _rf  = (
+                    f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
+                    if ref_lig_name and ref_lig_smiles
+                    else ref_lig_name or ref_lig_smiles
+                )
+                _re_ = (
+                    f", binding energy {ref_lig_energy:.2f} kcal/mol"
+                    if ref_lig_energy is not None else ""
+                )
+                _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
+
+            _prompt = (
+                f"Analyze the RDKit interaction diagram for PDB ID "
+                f"{pdb_id.upper() or '[PDB ID]'}, "
+                f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
+                f"binding energy {_energy_str}{_ref_clause}.\n\n"
+                "Legend: Blue circle = H-bond/polar · Green circle = hydrophobic"
+                " · Pink circle = other interaction\n\n"
+                "1. Identify key ligand-protein interactions.\n"
+                "2. List main interacting residues and their roles.\n"
+                + (
+                    "3. Compare docked pose with the co-crystal reference.\n"
+                    "4. Highlight similarities/differences in binding mode.\n"
+                    "5. Evaluate whether interactions support the predicted binding energy.\n\n"
+                    if _has_ref_b else
+                    "3. Evaluate whether interactions support the predicted binding energy.\n\n"
+                )
+                + "Provide a concise structural interpretation of the binding mode."
+            )
+            st.markdown("### 🤖 AI Prompt")
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
+            st.code(_prompt, language=None)
+
         return   # ← skip PoseView UI entirely when RDKit is selected
 
     _ci, _cb = st.columns([3, 1])
