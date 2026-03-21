@@ -33,6 +33,7 @@ from core import (
     call_poseview2_ref,
     svg_to_png,
     stamp_png,
+    diagnose_poseview,
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -417,6 +418,35 @@ def _poseview_ui(
             )
     with _cb:
         _run = st.button("🔬 Generate 2D Diagrams", key=btn_key, type="primary")
+
+    with st.expander("🔍 Test PoseView API", expanded=False):
+        st.caption(
+            "Sends a known-good test structure (PDB 4AGN) to PoseView "
+            "to check if the server is working — independent of your files."
+        )
+        if st.button("▶ Run API Test", key=btn_key + "_diag"):
+            with st.spinner("Testing proteins.plus PoseView API…"):
+                _diag = diagnose_poseview()
+            for _line in _diag["log"]:
+                if _line.startswith("✓"):
+                    st.success(_line)
+                else:
+                    st.error(_line)
+            if _diag["poseview_ok"]:
+                st.success(
+                    "✅ API is working fine — if your docking diagram fails, "
+                    "the issue is with your specific receptor/ligand files."
+                )
+                if _diag["image_url"]:
+                    st.markdown(f"[View test SVG]({_diag['image_url']})")
+            elif _diag["server_reachable"]:
+                st.warning(
+                    f"⚠️ Server reachable but PoseView failed: {_diag['error']}"
+                )
+            else:
+                st.error(
+                    f"❌ Server unreachable: {_diag['error']}"
+                )
 
     if _run:
         _rec = st.session_state.get(rec_key, "")
