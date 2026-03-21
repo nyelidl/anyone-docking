@@ -470,7 +470,7 @@ def _poseview_ui(
                 help="Reduce to clean up busy diagrams.",
             )
 
-        if st.button("🐍 Generate 2D Interaction Diagrams using RDKit", key=btn_key + "_rdkit", type="primary"):
+        if st.button("🐍 Generate Both RDKit Diagrams", key=btn_key + "_rdkit", type="primary"):
             # Generates docked pose + co-crystal reference in one click
             with st.spinner("⏳ Generating docked pose diagram…"):
                 try:
@@ -705,30 +705,59 @@ def _poseview_ui(
                 try:
                     from core import diagnose_poseview as _diagnose_poseview
                     _diag = _diagnose_poseview()
+                    st.session_state[btn_key + "_diag_result"] = _diag
                 except ImportError:
                     st.error("❌ diagnose_poseview not found — please deploy the latest core.py")
-                    _diag = None
-            if _diag:
-                for _line in _diag["log"]:
-                    if _line.startswith("✓"):
-                        st.success(_line)
-                    else:
-                        st.error(_line)
-                if _diag["poseview_ok"]:
-                    st.success(
-                        "✅ API is working fine — if your docking diagram fails, "
-                        "the issue is with your specific receptor/ligand files."
-                    )
-                    if _diag["image_url"]:
-                        st.markdown(f"[View test SVG]({_diag['image_url']})")
-                elif _diag["server_reachable"]:
-                    st.warning(
-                        f"⚠️ Server reachable but PoseView failed: {_diag['error']}"
-                    )
+        _diag = st.session_state.get(btn_key + "_diag_result")
+        if _diag:
+            for _line in _diag["log"]:
+                if _line.startswith("✓"):
+                    st.success(_line)
                 else:
-                    st.error(
-                        f"❌ Server unreachable: {_diag['error']}"
-                    )
+                    st.error(_line)
+            if _diag["poseview_ok"]:
+                st.success(
+                    "✅ API is working — if your diagram still fails, "
+                    "the issue is with your specific receptor/ligand files."
+                )
+                if _diag["image_url"]:
+                    st.markdown(f"[View test SVG]({_diag['image_url']})")
+            elif _diag["server_reachable"]:
+                st.warning(f"⚠️ Server reachable but PoseView failed: {_diag['error']}")
+            else:
+                st.error(f"❌ Server unreachable: {_diag['error']}")
+
+    with st.expander("⬇ Download files for manual PoseView upload", expanded=False):
+        st.caption(
+            "If the diagram above fails, download these files and upload manually at "
+            "[proteins.plus/poseview](https://proteins.plus/help/poseview)."
+        )
+        _rec_path = st.session_state.get(rec_key, "")
+        _dl_c1, _dl_c2 = st.columns(2)
+        with _dl_c1:
+            if _rec_path and os.path.exists(_rec_path):
+                st.download_button(
+                    "⬇ receptor.pdb",
+                    data      = open(_rec_path, "rb"),
+                    file_name = "receptor.pdb",
+                    mime      = "chemical/x-pdb",
+                    key       = btn_key + "_dl_rec",
+                    width     = 'stretch',
+                )
+            else:
+                st.caption("Receptor not ready.")
+        with _dl_c2:
+            if os.path.exists(pose_sdf_path):
+                st.download_button(
+                    "⬇ docked_pose.sdf",
+                    data      = open(pose_sdf_path, "rb"),
+                    file_name = f"pose_{pose_idx+1}_docked.sdf",
+                    mime      = "chemical/x-mdl-sdfile",
+                    key       = btn_key + "_dl_sdf",
+                    width     = 'stretch',
+                )
+            else:
+                st.caption("Pose SDF not ready.")
 
     if _run:
         _rec = st.session_state.get(rec_key, "")
@@ -741,9 +770,16 @@ def _poseview_ui(
                 _svg, _err = call_poseview_v1(_rec, pose_sdf_path)
             if _err:
                 st.error(f"❌ PoseView v1 error:\n\n```\n{_err}\n```")
-                st.caption(
-                    "💡 If the error says 'Server rejected job', try clicking Generate again. "
-                    "If it persists, the proteins.plus server may be temporarily unavailable."
+                st.markdown(
+                    """
+**💡 What to do:**
+- **Switch to RDKit** — select **🐍 RDKit (local, always works)** above and click Generate. Works instantly, no server needed.
+- **Try again** — click Generate again, the server may be temporarily busy.
+- **Upload manually** — expand **⬇ Download files for manual PoseView upload** above,
+  download `receptor.pdb` + `docked_pose.sdf`, then upload at
+  [proteins.plus/poseview](https://proteins.plus/help/poseview).
+                    """,
+                    unsafe_allow_html=False,
                 )
             else:
                 _png = svg_to_png(_svg)
