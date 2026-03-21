@@ -503,19 +503,40 @@ def _poseview_ui(
                 with st.spinner("⏳ Generating co-crystal reference diagram…"):
                     try:
                         from rdkit import Chem
-                        _ref_mol = Chem.MolFromPDBFile(
-                            _lig_pdb_path, sanitize=True, removeHs=True
-                        )
+                        # Convert PDB → SDF via obabel to get proper bond orders
+                        # (PDB format has no bond orders; RDKit reads everything as single)
+                        _ref_sdf_tmp = _lig_pdb_path.replace(".pdb", "_ref.sdf")
+                        import subprocess as _sp
+                        _rc = _sp.run(
+                            f'obabel "{_lig_pdb_path}" -O "{_ref_sdf_tmp}" 2>/dev/null',
+                            shell=True, capture_output=True,
+                        ).returncode
+                        _ref_mol = None
+                        if _rc == 0 and os.path.exists(_ref_sdf_tmp):
+                            _sup = Chem.SDMolSupplier(_ref_sdf_tmp, sanitize=True, removeHs=True)
+                            _ref_mol = next((m for m in _sup if m is not None), None)
+                        # fallback to direct PDB read
                         if _ref_mol is None:
                             _ref_mol = Chem.MolFromPDBFile(
                                 _lig_pdb_path, sanitize=False, removeHs=True
                             )
+                            if _ref_mol is not None:
+                                try:
+                                    Chem.SanitizeMol(_ref_mol)
+                                except Exception:
+                                    pass
+
                         if _ref_mol is not None:
-                            # Get SMILES for clean 2D — use ref_lig_smiles if provided
-                            _ref_smiles = (
-                                ref_lig_smiles
-                                or Chem.MolToSmiles(Chem.RemoveHs(_ref_mol))
-                            )
+                            # Use ref_lig_smiles if available for clean 2D structure
+                            # otherwise derive from the mol
+                            _ref_smiles = ref_lig_smiles or ""
+                            if not _ref_smiles:
+                                try:
+                                    _ref_smiles = Chem.MolToSmiles(
+                                        Chem.RemoveHs(_ref_mol)
+                                    )
+                                except Exception:
+                                    _ref_smiles = ""
                             _ref_title = (
                                 f"{ref_lig_name or cocrystal_ligand_id} · Co-crystal"
                                 + (f" · {ref_lig_energy:.2f} kcal/mol"
