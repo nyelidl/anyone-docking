@@ -8,9 +8,7 @@
 
 ---
 
-## 🚀 Try it live
-
-**[anyone-docking.streamlit.app](https://anyone-docking.streamlit.app/)**
+Batch docking with 4 docking engines: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1e23e0145ja6zJi0HibA6_JBO7p78Xvyw?usp=sharing)
 
 ---
 
