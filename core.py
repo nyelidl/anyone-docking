@@ -1158,6 +1158,9 @@ def warm_poseview_cache(receptor_pdb: str) -> tuple:
 def clear_poseview_cache():
     """Clear receptor upload cache when a new receptor is prepared."""
     _PP_PROTEIN_CACHE.clear()
+
+
+def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
     """
     Submit co-crystal reference job to PoseView2 REST API.
 
@@ -1527,24 +1530,26 @@ def draw_interactions_rdkit(
     smiles: str,
     title: str = "",
     cutoff: float = 3.5,
-    size: tuple = (600, 500),
+    size: tuple = (500, 500),
+    max_residues: int = 10,
 ) -> bytes:
     """
-    Generate a local 2D protein–ligand interaction diagram using pure RDKit.
-    No external server — works on Streamlit Cloud, locally, everywhere.
+    Generate a 2D protein–ligand interaction diagram using pure RDKit.
+    Replicates exactly Greg Landrum's blog approach (Sep 2025).
 
-    Approach (Greg Landrum, RDKit blog Sep 2025):
-      - Interacting residues become labelled dummy atoms
-      - Connected to nearest ligand atom(s) via ZERO-order bonds
-      - RDKit 2D layout places residue labels naturally around the ligand
-      - Colour coding: blue = H-bond, green = hydrophobic, pink = other
+    Key: uses clean 2D SMILES mol + maps 3D pose indices → 2D SMILES indices
+    via substructure match, then calls the exact blog pattern:
+        res.SetProp('atomLabel', name)
+        AddBond(aid, oaid, BondType.ZERO)
+        DrawMolecule(..., highlightAtoms=pts, highlightAtomColors=clrs)
 
     Returns SVG bytes.
     """
     from rdkit import Chem
     from rdkit.Chem import Draw, rdDepictor
+    import numpy as np
 
-    # Clean 2D ligand from SMILES
+    # ── 1. Clean 2D mol from SMILES ───────────────────────────────────────────
     mol2d = Chem.MolFromSmiles(smiles)
     if mol2d is None:
         mol2d = Chem.RemoveHs(lig_mol, sanitize=False)
@@ -1555,63 +1560,104 @@ def draw_interactions_rdkit(
     rdDepictor.Compute2DCoords(mol2d)
     n2d = mol2d.GetNumAtoms()
 
-    # Get interacting residues
-    residues = get_interacting_residues(receptor_pdb, lig_mol, cutoff=cutoff)
+    # ── 2. Map 3D heavy atom indices → 2D SMILES atom indices ─────────────────
+    mol3d_noH = Chem.RemoveHs(lig_mol, sanitize=False)
+    try:
+        Chem.SanitizeMol(mol3d_noH)
+    except Exception:
+        pass
 
+    idx3d_to_2d = {}
+    try:
+        # mol3d_noH.GetSubstructMatch(mol2d) returns:
+        #   match[i] = index in mol3d_noH matching mol2d atom i
+        match = mol3d_noH.GetSubstructMatch(mol2d)
+        for i2d, i3d in enumerate(match):
+            idx3d_to_2d[i3d] = i2d
+    except Exception:
+        for i in range(min(mol3d_noH.GetNumAtoms(), n2d)):
+            idx3d_to_2d[i] = i
+
+    # ── 3. Get interacting residues, sort by distance, cap ────────────────────
+    residues = get_interacting_residues(receptor_pdb, lig_mol, cutoff=cutoff)
     if not residues:
         d2d = Draw.MolDraw2DSVG(size[0], size[1])
         d2d.DrawMolecule(mol2d, legend=title or "No interactions found")
         d2d.FinishDrawing()
         return d2d.GetDrawingText().encode()
 
-    # Build mol with pseudo-atoms for each residue
-    rwmol      = Chem.RWMol(mol2d)
-    highlights = []
-    colors     = {}
+    def _min_dist(res):
+        try:
+            from prody import parsePDB
+            rec = parsePDB(receptor_pdb)
+            r   = rec.select(f"chain {res['chain']} resnum {res['resi']}")
+            if r is None:
+                return 999.0
+            conf    = lig_mol.GetConformer()
+            lig_xyz = np.array([[conf.GetAtomPosition(i).x,
+                                  conf.GetAtomPosition(i).y,
+                                  conf.GetAtomPosition(i).z]
+                                 for i in range(lig_mol.GetNumAtoms())])
+            return float(min(
+                np.linalg.norm(lp - rp)
+                for lp in lig_xyz for rp in r.getCoords()
+            ))
+        except Exception:
+            return 999.0
 
+    residues = sorted(residues, key=_min_dist)[:max_residues]
+
+    # ── 4. Build interactions list: (label, (2d_idx,), color) ─────────────────
+    interactions = []
     for res in residues:
         chain = res["chain"]
         resid = res["resi"]
         resn  = res["resn"]
         label = f"{resn} {resid}"
 
-        close_atoms = [i for i in
-                       _closest_lig_atoms(lig_mol, receptor_pdb, chain, resid)
-                       if i < n2d]
-        if not close_atoms:
-            close_atoms = [0]
+        # Closest 3D atom → map to 2D index
+        close_3d = _closest_lig_atoms(lig_mol, receptor_pdb, chain, resid,
+                                       max_atoms=1)
+        idx3d = close_3d[0] if close_3d else 0
+        idx2d = idx3d_to_2d.get(idx3d, 0)
+        if idx2d >= n2d:
+            idx2d = 0
 
         itype = _classify_interaction(receptor_pdb, lig_mol, chain, resid)
-        color = {"hbond": _COLOR_HBOND,
+        color = {"hbond":      _COLOR_HBOND,
                  "hydrophobic": _COLOR_HYDROPHOB}.get(itype, _COLOR_OTHER)
 
-        dummy = Chem.Atom(0)
-        dummy.SetProp("atomLabel", label)
-        aid = rwmol.AddAtom(dummy)
-        highlights.append(aid)
-        colors[aid] = color
+        interactions.append((label, (idx2d,), color))
 
-        for lig_idx in close_atoms:
-            rwmol.AddBond(aid, lig_idx, Chem.BondType.ZERO)
+    # ── 5. Blog pattern exactly ───────────────────────────────────────────────
+    lig_with_interactions = Chem.RWMol(mol2d)
+    pts  = []
+    clrs = {}
 
-    try:
-        rdDepictor.Compute2DCoords(rwmol)
-    except Exception:
-        pass
+    for (aname, oaids, color) in interactions:
+        res_atom = Chem.Atom(0)
+        res_atom.SetProp("atomLabel", aname)
+        aid = lig_with_interactions.AddAtom(res_atom)
+        pts.append(aid)
+        clrs[aid] = color
+        for oaid in oaids:
+            lig_with_interactions.AddBond(aid, oaid, Chem.BondType.ZERO)
 
-    d2d  = Draw.MolDraw2DSVG(size[0], size[1])
-    opts = d2d.drawOptions()
-    opts.circleAtoms         = True
-    opts.fillHighlights      = True
-    opts.continuousHighlight = False
-    opts.highlightRadius     = 0.6
-    opts.addAtomIndices      = False
+    rdDepictor.Compute2DCoords(lig_with_interactions)
+
+    # ── 6. Draw options — blog values exactly ─────────────────────────────────
+    d2d = Draw.MolDraw2DSVG(size[0], size[1])
+    d2d.drawOptions().circleAtoms        = True
+    d2d.drawOptions().fillHighlights     = True
+    d2d.drawOptions().continuousHighlight = False
+    d2d.drawOptions().highlightRadius    = 0.5
+    d2d.drawOptions().addAtomIndices     = False
 
     d2d.DrawMolecule(
-        rwmol,
+        lig_with_interactions,
         legend=title,
-        highlightAtoms=highlights,
-        highlightAtomColors=colors,
+        highlightAtoms=pts,
+        highlightAtomColors=clrs,
     )
     d2d.FinishDrawing()
     return d2d.GetDrawingText().encode()
