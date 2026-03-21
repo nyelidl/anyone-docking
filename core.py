@@ -1645,41 +1645,60 @@ def draw_interactions_rdkit(
 
     rdDepictor.Compute2DCoords(lig_with_interactions)
 
-    # ── 6. Draw options — blog values exactly ─────────────────────────────────
-    d2d = Draw.MolDraw2DSVG(size[0], size[1])
-    d2d.drawOptions().circleAtoms        = True
-    d2d.drawOptions().fillHighlights     = True
-    d2d.drawOptions().continuousHighlight = False
-    d2d.drawOptions().highlightRadius    = 0.5
-    d2d.drawOptions().addAtomIndices     = False
+    # ── 6. Draw — larger canvas, reserved stamp area ──────────────────────────
+    w, h = size[0], size[1]
+    d2d  = Draw.MolDraw2DSVG(w, h)
+    opts = d2d.drawOptions()
+    opts.circleAtoms         = True
+    opts.fillHighlights      = True
+    opts.continuousHighlight = False
+    opts.highlightRadius     = 0.5
+    opts.addAtomIndices      = False
+    opts.padding             = 0.15
+
+    # Reserve 40px at bottom for stamp — draw molecule in upper portion
+    try:
+        d2d.SetDrawBounds(0, 0, w, h - 40)
+    except AttributeError:
+        pass   # older RDKit — stamp may overlap slightly
 
     d2d.DrawMolecule(
         lig_with_interactions,
-        legend=title,
         highlightAtoms=pts,
         highlightAtomColors=clrs,
     )
     d2d.FinishDrawing()
     svg_text = d2d.GetDrawingText()
 
-    # Stamp the title as a centred pill at the bottom of the SVG
-    # (same visual idea as stamp_png for PoseView images)
+    # ── 7. Stamp: fixed-px pill, always visible ────────────────────────────────
     if title:
-        _esc = (title
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;"))
-        _stamp = (
-            f'<g>'
-            f'<rect x="5%" y="92%" width="90%" height="28"'
-            f' rx="14" ry="14"'
-            f' fill="#E8E8E8" fill-opacity="0.92" stroke="none"/>'
-            f'<text x="50%" y="92%" dy="18"'
-            f' text-anchor="middle"'
-            f' font-family="Helvetica Neue, Arial, sans-serif"'
-            f' font-size="13" fill="#1A1A1A">{_esc}</text>'
-            f'</g>'
-        )
-        svg_text = svg_text.replace("</svg>", f"{_stamp}</svg>")
+        svg_text = _svg_stamp(svg_text, title, w, h)
 
     return svg_text.encode()
+
+
+def _svg_stamp(svg_text: str, title: str, w: int, h: int) -> str:
+    """Inject a centred rounded-rect label at the bottom of an SVG."""
+    _esc  = (title
+             .replace("&", "&amp;")
+             .replace("<", "&lt;")
+             .replace(">", "&gt;"))
+    pad       = int(w * 0.05)
+    pill_w    = w - 2 * pad
+    pill_h    = 28
+    pill_y    = h - pill_h - 8          # 8px from bottom edge
+    text_y    = pill_y + pill_h // 2    # vertical centre of pill
+    radius    = pill_h // 2
+    stamp = (
+        f'<g>'
+        f'<rect x="{pad}" y="{pill_y}" width="{pill_w}" height="{pill_h}"'
+        f' rx="{radius}" ry="{radius}"'
+        f' fill="#E8E8E8" fill-opacity="0.93"'
+        f' stroke="#C8C8C8" stroke-width="0.5"/>'
+        f'<text x="{w // 2}" y="{text_y}"'
+        f' text-anchor="middle" dominant-baseline="middle"'
+        f' font-family="Helvetica Neue, Arial, sans-serif"'
+        f' font-size="13" font-weight="500" fill="#1A1A1A">{_esc}</text>'
+        f'</g>'
+    )
+    return svg_text.replace("</svg>", f"{stamp}</svg>")
