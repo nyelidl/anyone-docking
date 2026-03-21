@@ -30,10 +30,27 @@ from core import (
     get_interacting_residues,
     calc_rmsd_heavy,
     call_poseview_v1,
-    call_poseview2_ref,
     svg_to_png,
     stamp_png,
 )
+
+# Graceful fallbacks for functions added in newer core.py versions
+try:
+    from core import call_poseview2_ref
+except ImportError:
+    def call_poseview2_ref(pdb_code, ligand_id):
+        return None, "call_poseview2_ref not available — please update core.py"
+
+try:
+    from core import warm_poseview_cache, clear_poseview_cache
+except ImportError:
+    def warm_poseview_cache(path): return False, "core.py not updated yet"
+    def clear_poseview_cache(): pass
+
+try:
+    from core import draw_interactions_rdkit
+except ImportError:
+    draw_interactions_rdkit = None
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
@@ -401,171 +418,512 @@ def _poseview_ui(
         st.markdown("---")
         st.markdown("**🧬 2D Interaction Diagrams**")
 
-    _ci, _cb = st.columns([3, 1])
-    with _ci:
-        if _stale and st.session_state.get(img_svg_key):
-            st.caption("⚠️ Pose changed — click **Generate** to update.")
-        else:
-            _ref_note = (
-                f" · PoseView2 reference: **{pdb_id.upper()}** `{cocrystal_ligand_id}`"
-                if _has_ref else
-                " · No co-crystal ID — only docked pose diagram will be generated."
-            )
-            st.caption(
-                "**Left:** PoseView v1 — docked pose"
-                " · **Right:** PoseView2 — co-crystal" + _ref_note
-            )
-    with _cb:
-        _run = st.button("🔬 Generate 2D Diagrams", key=btn_key, type="primary")
+    # ── Engine selector ───────────────────────────────────────────────────────
+    _engine = st.radio(
+        "2D diagram engine",
+        ["🐍 RDKit (local, always works)", "🔬 PoseView (proteins.plus)"],
+        horizontal=True,
+        key=btn_key + "_engine",
+        help=(
+            "RDKit: local, no server, always works — default. "
+            "PoseView: higher quality but requires proteins.plus server "
+            "(may fail on Streamlit Cloud)."
+        ),
+    )
+    _use_rdkit = "RDKit" in _engine
 
-    if _run:
-        _rec = st.session_state.get(rec_key, "")
+    # ── RDKit branch — instant, no server ────────────────────────────────────
+    if _use_rdkit:
+        if draw_interactions_rdkit is None:
+            st.warning("⚠️ RDKit diagram requires the latest **core.py** — please update it on GitHub.")
+            return
+
+        _rec    = st.session_state.get(rec_key, "")
+        _smiles = lig_smiles or st.session_state.get(smiles_key, "")
+
         if not _rec or not os.path.exists(_rec):
-            st.error("Receptor PDB not found — complete receptor preparation first.")
-        elif not os.path.exists(pose_sdf_path):
-            st.error("Pose SDF not found.")
-        else:
-            with st.spinner("⏳ PoseView v1 — docked pose… (10–60 s)"):
-                _svg, _err = call_poseview_v1(_rec, pose_sdf_path)
-            if _err:
-                st.error(f"❌ PoseView error: {_err}")
-            else:
-                _png = svg_to_png(_svg)
-                st.session_state[img_png_key]  = _png
-                st.session_state[img_svg_key]  = _svg
-                st.session_state[pose_key_key] = _pose_key
+            st.warning("Complete receptor preparation first.")
+            return
+        if not _smiles:
+            st.warning("No ligand SMILES available.")
+            return
 
-            if _has_ref and ref_png_key and ref_svg_key:
-                with st.spinner(
-                    f"⏳ PoseView2 — {pdb_id.upper()} / {cocrystal_ligand_id}… (10–60 s)"
-                ):
-                    _ref_svg, _ref_err = call_poseview2_ref(pdb_id, cocrystal_ligand_id)
-                if _ref_err:
-                    st.warning(f"⚠️ PoseView2 error: {_ref_err}")
-                else:
-                    st.session_state[ref_png_key] = svg_to_png(_ref_svg)
-                    st.session_state[ref_svg_key] = _ref_svg
+        # Co-crystal ligand PDB — saved during receptor prep
+        # Use same session state key pattern as rec_key e.g. "" → "ligand_pdb_path"
+        #                                                     "b_" → "b_ligand_pdb_path"
+        _pfx = rec_key.replace("receptor_fh", "")   # extract prefix: "" or "b_"
+        _lig_pdb_path = st.session_state.get(_pfx + "ligand_pdb_path", "")
+        _has_ref_rdkit = bool(
+            _lig_pdb_path and os.path.exists(_lig_pdb_path)
+        )
+
+        # Controls
+        _ctrl_l, _ctrl_r = st.columns(2)
+        with _ctrl_l:
+            _cutoff_rdkit = st.slider(
+                "Interaction cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
+                key=btn_key + "_rdkit_cutoff",
+            )
+        with _ctrl_r:
+            _max_res = st.slider(
+                "Max residues shown", 4, 20, 10, 1,
+                key=btn_key + "_rdkit_maxres",
+                help="Reduce to clean up busy diagrams.",
+            )
+
+        if st.button("Generate 2D Diagrams using (RDkit)", key=btn_key + "_rdkit", type="primary"):
+            # Generates docked pose + co-crystal reference in one click
+            with st.spinner("⏳ Generating docked pose diagram…"):
+                try:
+                    _mols = load_mols_from_sdf(pose_sdf_path)
+                    _mol  = _mols[0] if _mols else None
+                    if _mol is None:
+                        st.error("Could not read pose SDF.")
+                    else:
+                        _title = (
+                            f"Pose {pose_idx+1}  ·  {lig_name}"
+                            + (f"  ·  {binding_energy:.2f} kcal/mol"
+                               if binding_energy is not None else "")
+                        )
+                        _rdkit_svg = draw_interactions_rdkit(
+                            lig_mol      = _mol,
+                            receptor_pdb = _rec,
+                            smiles       = _smiles,
+                            title        = _title,
+                            cutoff       = _cutoff_rdkit,
+                            size         = (650, 620),
+                            max_residues = _max_res,
+                        )
+                        st.session_state[img_svg_key + "_rdkit"]  = _rdkit_svg
+                        st.session_state[pose_key_key + "_rdkit"] = _pose_key
+                except Exception as e:
+                    st.error(f"❌ RDKit docked pose error: {e}")
+
+            # Right: co-crystal reference
+            if _has_ref_rdkit:
+                with st.spinner("⏳ Generating co-crystal reference diagram…"):
+                    try:
+                        from rdkit import Chem
+                        # Convert PDB → SDF via obabel to get proper bond orders
+                        # (PDB format has no bond orders; RDKit reads everything as single)
+                        _ref_sdf_tmp = _lig_pdb_path.replace(".pdb", "_ref.sdf")
+                        import subprocess as _sp
+                        _rc = _sp.run(
+                            f'obabel "{_lig_pdb_path}" -O "{_ref_sdf_tmp}" 2>/dev/null',
+                            shell=True, capture_output=True,
+                        ).returncode
+                        _ref_mol = None
+                        if _rc == 0 and os.path.exists(_ref_sdf_tmp):
+                            _sup = Chem.SDMolSupplier(_ref_sdf_tmp, sanitize=True, removeHs=True)
+                            _ref_mol = next((m for m in _sup if m is not None), None)
+                        # fallback to direct PDB read
+                        if _ref_mol is None:
+                            _ref_mol = Chem.MolFromPDBFile(
+                                _lig_pdb_path, sanitize=False, removeHs=True
+                            )
+                            if _ref_mol is not None:
+                                try:
+                                    Chem.SanitizeMol(_ref_mol)
+                                except Exception:
+                                    pass
+
+                        if _ref_mol is not None:
+                            # Use ref_lig_smiles if available for clean 2D structure
+                            # otherwise derive from the mol
+                            _ref_smiles = ref_lig_smiles or ""
+                            if not _ref_smiles:
+                                try:
+                                    _ref_smiles = Chem.MolToSmiles(
+                                        Chem.RemoveHs(_ref_mol)
+                                    )
+                                except Exception:
+                                    _ref_smiles = ""
+                            _ref_title = (
+                                f"{ref_lig_name or cocrystal_ligand_id}  ·  Co-crystal"
+                                + (f"  ·  {ref_lig_energy:.2f} kcal/mol"
+                                   if ref_lig_energy is not None else "")
+                            )
+                            _ref_rdkit_svg = draw_interactions_rdkit(
+                                lig_mol      = _ref_mol,
+                                receptor_pdb = _rec,
+                                smiles       = _ref_smiles,
+                                title        = _ref_title,
+                                cutoff       = _cutoff_rdkit,
+                                size         = (650, 620),
+                                max_residues = _max_res,
+                            )
+                            st.session_state[ref_svg_key + "_rdkit"] = _ref_rdkit_svg
+                        else:
+                            st.warning("⚠️ Could not read co-crystal ligand PDB.")
+                    except Exception as e:
+                        st.warning(f"⚠️ Co-crystal RDKit diagram error: {e}")
             st.rerun()
 
-    _pose_svg = st.session_state.get(img_svg_key)
-    _ref_svg2 = st.session_state.get(ref_svg_key) if ref_svg_key else None
+        # ── Display: left=docked, right=co-crystal ────────────────────────────
+        # Note: use `is not None` not `if ref_svg_key` — empty string "" = False
+        _rdkit_svg     = st.session_state.get(img_svg_key + "_rdkit")
+        _ref_rdkit_svg = st.session_state.get(ref_svg_key + "_rdkit") \
+                         if ref_svg_key is not None else None
 
-    if _pose_svg and not _stale:
-        col_l, col_r = st.columns(2)
-        with col_l:
-            st.markdown("##### 🧪 Docked Pose (PoseView v1)")
-            _png_data = st.session_state.get(img_png_key)
-            _show_poseview_image(
-                _png_data, _pose_svg,
-                f"Docked pose {pose_idx+1} — {_lbl}",
-                full_legend=False,
-                stamp=f"Pose {pose_idx+1}  ·  {_lbl}",
+        # Stale check — show warning if pose changed since last generation
+        _rdkit_stale = st.session_state.get(pose_key_key + "_rdkit") != _pose_key
+        if _rdkit_stale and _rdkit_svg:
+            st.caption("⚠️ Pose changed — click **Generate 2D Diagrams** to update.")
+
+        _LEGEND_RDKIT = """
+<div style="background:#fff;border:1px solid #D0D7DE;border-radius:6px;
+     padding:10px 18px;font-family:'Helvetica Neue',Arial,sans-serif;
+     font-size:13px;color:#333;margin-top:6px;">
+  <div style="display:flex;align-items:center;gap:28px;">
+    <div style="display:flex;align-items:center;gap:7px;">
+      <div style="width:14px;height:14px;border-radius:50%;
+           background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;"></div>
+      <span>H-bond / polar</span></div>
+    <div style="display:flex;align-items:center;gap:7px;">
+      <div style="width:14px;height:14px;border-radius:50%;
+           background:rgba(44,141,87,0.55);border:1px solid #2E8B57;"></div>
+      <span>Hydrophobic</span></div>
+    <div style="display:flex;align-items:center;gap:7px;">
+      <div style="width:14px;height:14px;border-radius:50%;
+           background:rgba(204,95,138,0.55);border:1px solid #cc5f8a;"></div>
+      <span>Other</span></div>
+  </div>
+</div>"""
+
+        def _show_rdkit_svg(svg_data, dl_key, dl_filename):
+            svg_str = svg_data.decode() if isinstance(svg_data, bytes) else svg_data
+            svg_str = svg_str.replace(
+                "<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1
             )
-            _d1, _d2 = st.columns(2)
-            with _d1:
-                if _png_data:
-                    st.download_button(
-                        "⬇ PNG", data=_png_data,
-                        file_name=f"pose{pose_idx+1}_docked.png",
-                        mime="image/png", key=dl_png_key, use_container_width=True,
-                    )
-            with _d2:
-                st.download_button(
-                    "⬇ SVG", data=_pose_svg,
-                    file_name=f"pose{pose_idx+1}_docked.svg",
-                    mime="image/svg+xml", key=dl_svg_key, use_container_width=True,
-                )
+            components.html(
+                f'<div style="background:#fff;border-radius:8px;padding:10px;'
+                f'border:1px solid #D0D7DE;">{svg_str}</div>',
+                height=660, scrolling=False,
+            )
+            st.markdown(_LEGEND_RDKIT, unsafe_allow_html=True)
+            st.download_button(
+                "⬇ SVG", data=svg_data,
+                file_name=dl_filename,
+                mime="image/svg+xml",
+                key=dl_key,
+                width='stretch',
+            )
 
-        with col_r:
-            st.markdown("##### 🔬 Co-Crystal Reference (PoseView2)")
-            if _ref_svg2:
-                _ref_png2 = st.session_state.get(ref_png_key) if ref_png_key else None
-                _show_poseview_image(
-                    _ref_png2, _ref_svg2,
-                    f"Co-crystal: {pdb_id.upper()} · {cocrystal_ligand_id}",
-                    full_legend=True,
-                    stamp=f"{pdb_id.upper()}  ·  {cocrystal_ligand_id}",
+        if _rdkit_svg and not _rdkit_stale:
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.markdown("##### 🧪 Docked Pose (RDKit)")
+                _show_rdkit_svg(
+                    _rdkit_svg,
+                    dl_key      = dl_svg_key + "_rdkit",
+                    dl_filename = f"pose{pose_idx+1}_rdkit.svg",
                 )
-                _r1, _r2 = st.columns(2)
-                with _r1:
-                    if _ref_png2:
-                        st.download_button(
-                            "⬇ PNG", data=_ref_png2,
-                            file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
-                            mime="image/png",
-                            key=dl_png_key + "_ref",
-                            use_container_width=True,
-                        )
-                with _r2:
-                    st.download_button(
-                        "⬇ SVG", data=_ref_svg2,
-                        file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
-                        mime="image/svg+xml",
-                        key=dl_svg_key + "_ref",
-                        use_container_width=True,
+            with col_r:
+                st.markdown("##### 🔬 Co-Crystal Reference (RDKit)")
+                if _ref_rdkit_svg:
+                    _show_rdkit_svg(
+                        _ref_rdkit_svg,
+                        dl_key      = dl_svg_key + "_rdkit_ref",
+                        dl_filename = f"cocrystal_rdkit.svg",
                     )
-            elif _has_ref:
-                st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
+                elif _has_ref_rdkit:
+                    st.info("Click **Generate 2D Diagrams** to generate co-crystal diagram.")
+                else:
+                    st.caption("⚠️ No co-crystal ligand — use Auto-detect in receptor preparation.")
+
+            # ── AI prompt — same logic as PoseView ───────────────────────────
+            st.markdown("---")
+            _energy_str = (
+                f"{binding_energy:.2f} kcal/mol"
+                if binding_energy is not None else "[binding energy]"
+            )
+            _lig_str = (
+                f"{lig_name} (SMILES: {_smiles})"
+                if lig_name else _smiles or "[ligand]"
+            )
+            _has_ref_b = bool(_ref_rdkit_svg)
+            _ref_clause = ""
+            if _has_ref_b and (ref_lig_name or ref_lig_smiles):
+                _rf  = (
+                    f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
+                    if ref_lig_name and ref_lig_smiles
+                    else ref_lig_name or ref_lig_smiles
+                )
+                _re_ = (
+                    f", binding energy {ref_lig_energy:.2f} kcal/mol"
+                    if ref_lig_energy is not None else ""
+                )
+                _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
+
+            _prompt = (
+                f"Analyze the RDKit interaction diagram for PDB ID "
+                f"{pdb_id.upper() or '[PDB ID]'}, "
+                f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
+                f"binding energy {_energy_str}{_ref_clause}.\n\n"
+                "Legend: Blue circle = H-bond/polar · Green circle = hydrophobic"
+                " · Pink circle = other interaction\n\n"
+                "1. Identify key ligand-protein interactions.\n"
+                "2. List main interacting residues and their roles.\n"
+                + (
+                    "3. Compare docked pose with the co-crystal reference.\n"
+                    "4. Highlight similarities/differences in binding mode.\n"
+                    "5. Evaluate whether interactions support the predicted binding energy.\n\n"
+                    if _has_ref_b else
+                    "3. Evaluate whether interactions support the predicted binding energy.\n\n"
+                )
+                + "Provide a concise structural interpretation of the binding mode."
+            )
+            st.markdown("### 🤖 AI Prompt")
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
+            st.code(_prompt, language=None)
+
+        return   # ← skip PoseView UI entirely when RDKit is selected
+
+    with st.expander("🔬 PoseView (proteins.plus) — optional, may not work on Streamlit Cloud", expanded=False):
+        st.caption(
+            "Uses the proteins.plus server. Higher quality but requires network access. "
+            "May fail if the server blocks Streamlit Cloud IPs — use RDKit above instead."
+        )
+        _ci, _cb = st.columns([3, 1])
+        with _ci:
+            if _stale and st.session_state.get(img_svg_key):
+                st.caption("⚠️ Pose changed — click **Generate** to update.")
             else:
-                st.caption(
-                    "⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation."
+                _ref_note = (
+                    f" · PoseView2 reference: **{pdb_id.upper()}** `{cocrystal_ligand_id}`"
+                    if _has_ref else
+                    " · No co-crystal ID — only docked pose diagram will be generated."
                 )
+                st.caption(
+                    "**Left:** PoseView v1 — docked pose"
+                    " · **Right:** PoseView2 — co-crystal" + _ref_note
+                )
+        with _cb:
+            _run = st.button("Generate 2D Diagrams", key=btn_key, type="primary")
 
-        # AI analysis prompt
-        st.markdown("---")
-        _energy_str = (
-            f"{binding_energy:.2f} kcal/mol"
-            if binding_energy is not None else "[binding energy]"
-        )
-        _lig_str = (
-            f"{lig_name} (SMILES: {lig_smiles})"
-            if lig_name and lig_smiles else lig_name or "[ligand]"
-        )
-        _has_ref_b = bool(ref_lig_name or ref_lig_smiles)
-        _both      = bool(_pose_svg and _ref_svg2)
+        with st.expander("🔍 Test PoseView API", expanded=False):
+            st.caption(
+                "Sends a known-good test structure (PDB 4AGN) to PoseView "
+                "to check if the server is working — independent of your files."
+            )
+            if st.button("▶ Run API Test", key=btn_key + "_diag"):
+                with st.spinner("Testing proteins.plus PoseView API…"):
+                    try:
+                        from core import diagnose_poseview as _diagnose_poseview
+                        _diag = _diagnose_poseview()
+                        st.session_state[btn_key + "_diag_result"] = _diag
+                    except ImportError:
+                        st.error("❌ diagnose_poseview not found — please deploy the latest core.py")
+            _diag = st.session_state.get(btn_key + "_diag_result")
+            if _diag:
+                for _line in _diag["log"]:
+                    if _line.startswith("✓"):
+                        st.success(_line)
+                    else:
+                        st.error(_line)
+                if _diag["poseview_ok"]:
+                    st.success(
+                        "✅ API is working — if your diagram still fails, "
+                        "the issue is with your specific receptor/ligand files."
+                    )
+                    if _diag["image_url"]:
+                        st.markdown(f"[View test SVG]({_diag['image_url']})")
+                elif _diag["server_reachable"]:
+                    st.warning(f"⚠️ Server reachable but PoseView failed: {_diag['error']}")
+                else:
+                    st.error(f"❌ Server unreachable: {_diag['error']}")
 
-        _ref_clause = ""
-        if _has_ref_b:
-            _rf  = (
-                f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
-                if ref_lig_name and ref_lig_smiles
-                else ref_lig_name or ref_lig_smiles
+        with st.expander("⬇ Download files for manual PoseView upload", expanded=False):
+            st.caption(
+                "If the diagram above fails, download these files and upload manually at "
+                "[proteins.plus/poseview](https://proteins.plus/help/poseview)."
             )
-            _re_ = (
-                f", binding energy {ref_lig_energy:.2f} kcal/mol"
-                if ref_lig_energy is not None else ""
-            )
-            _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
+            _rec_path = st.session_state.get(rec_key, "")
+            _dl_c1, _dl_c2 = st.columns(2)
+            with _dl_c1:
+                if _rec_path and os.path.exists(_rec_path):
+                    st.download_button(
+                        "⬇ receptor.pdb",
+                        data      = open(_rec_path, "rb"),
+                        file_name = "receptor.pdb",
+                        mime      = "chemical/x-pdb",
+                        key       = btn_key + "_dl_rec",
+                        width     = 'stretch',
+                    )
+                else:
+                    st.caption("Receptor not ready.")
+            with _dl_c2:
+                if os.path.exists(pose_sdf_path):
+                    st.download_button(
+                        "⬇ docked_pose.sdf",
+                        data      = open(pose_sdf_path, "rb"),
+                        file_name = f"pose_{pose_idx+1}_docked.sdf",
+                        mime      = "chemical/x-mdl-sdfile",
+                        key       = btn_key + "_dl_sdf",
+                        width     = 'stretch',
+                    )
+                else:
+                    st.caption("Pose SDF not ready.")
 
-        _prompt = (
-            f"Analyze the PoseView2 interaction diagram for PDB ID "
-            f"{pdb_id.upper() or '[PDB ID]'}, "
-            f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
-            f"binding energy {_energy_str}{_ref_clause}.\n\n"
-            + (
-                "Legend (docked pose): Black dashed = H-bond"
-                " · Dark green solid = hydrophobic\n"
-                "Legend (co-crystal):  Blue dashed = H-bond"
-                " · Pink dashed = ionic · Yellow dashed = metal\n"
-                "  Green dot-dash = cation-pi · Cyan dot-dash = pi-pi"
-                " · Dark green solid = hydrophobic\n\n"
-                if _both else
-                "Legend: Black dashed = H-bond · Dark green solid = hydrophobic\n\n"
+        if _run:
+            _rec = st.session_state.get(rec_key, "")
+            if not _rec or not os.path.exists(_rec):
+                st.error("Receptor PDB not found — complete receptor preparation first.")
+            elif not os.path.exists(pose_sdf_path):
+                st.error("Pose SDF not found.")
+            else:
+                with st.spinner("⏳ PoseView v1 — generating 2D diagram… (30–60 s)"):
+                    _svg, _err = call_poseview_v1(_rec, pose_sdf_path)
+                if _err:
+                    st.error(f"❌ PoseView v1 error:\n\n```\n{_err}\n```")
+                    st.markdown(
+                        """
+**💡 What to do:**
+- **Switch to RDKit** — select **🐍 RDKit (local, always works)** above and click Generate. Works instantly, no server needed.
+- **Try again** — click Generate again, the server may be temporarily busy.
+- **Upload manually** — expand **⬇ Download files for manual PoseView upload** above,
+  download `receptor.pdb` + `docked_pose.sdf`, then upload at
+  [proteins.plus/poseview](https://proteins.plus/help/poseview).
+                        """,
+                        unsafe_allow_html=False,
+                    )
+                else:
+                    _png = svg_to_png(_svg)
+                    st.session_state[img_png_key]  = _png
+                    st.session_state[img_svg_key]  = _svg
+                    st.session_state[pose_key_key] = _pose_key
+
+                if _has_ref and ref_png_key and ref_svg_key:
+                    with st.spinner(
+                        f"⏳ PoseView2 — {pdb_id.upper()} / {cocrystal_ligand_id}… (may retry up to 3×)"
+                    ):
+                        _ref_svg, _ref_err = call_poseview2_ref(pdb_id, cocrystal_ligand_id)
+                    if _ref_err:
+                        st.warning(f"⚠️ PoseView2 error:\n\n```\n{_ref_err}\n```")
+                    else:
+                        st.session_state[ref_png_key] = svg_to_png(_ref_svg)
+                        st.session_state[ref_svg_key] = _ref_svg
+                st.rerun()
+
+        _pose_svg = st.session_state.get(img_svg_key)
+        _ref_svg2 = st.session_state.get(ref_svg_key) if ref_svg_key else None
+
+        if _pose_svg and not _stale:
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.markdown("##### 🧪 Docked Pose (PoseView v1)")
+                _png_data = st.session_state.get(img_png_key)
+                _show_poseview_image(
+                    _png_data, _pose_svg,
+                    f"Docked pose {pose_idx+1} — {_lbl}",
+                    full_legend=False,
+                    stamp=f"Pose {pose_idx+1}  ·  {_lbl}",
+                )
+                _d1, _d2 = st.columns(2)
+                with _d1:
+                    if _png_data:
+                        st.download_button(
+                            "⬇ PNG", data=_png_data,
+                            file_name=f"pose{pose_idx+1}_docked.png",
+                            mime="image/png", key=dl_png_key, width='stretch',
+                        )
+                with _d2:
+                    st.download_button(
+                        "⬇ SVG", data=_pose_svg,
+                        file_name=f"pose{pose_idx+1}_docked.svg",
+                        mime="image/svg+xml", key=dl_svg_key, width='stretch',
+                    )
+
+            with col_r:
+                st.markdown("##### 🔬 Co-Crystal Reference (PoseView2)")
+                if _ref_svg2:
+                    _ref_png2 = st.session_state.get(ref_png_key) if ref_png_key else None
+                    _show_poseview_image(
+                        _ref_png2, _ref_svg2,
+                        f"Co-crystal: {pdb_id.upper()} · {cocrystal_ligand_id}",
+                        full_legend=True,
+                        stamp=f"{pdb_id.upper()}  ·  {cocrystal_ligand_id}",
+                    )
+                    _r1, _r2 = st.columns(2)
+                    with _r1:
+                        if _ref_png2:
+                            st.download_button(
+                                "⬇ PNG", data=_ref_png2,
+                                file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
+                                mime="image/png",
+                                key=dl_png_key + "_ref",
+                                width='stretch',
+                            )
+                    with _r2:
+                        st.download_button(
+                            "⬇ SVG", data=_ref_svg2,
+                            file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
+                            mime="image/svg+xml",
+                            key=dl_svg_key + "_ref",
+                            width='stretch',
+                        )
+                elif _has_ref:
+                    st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
+                else:
+                    st.caption(
+                        "⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation."
+                    )
+
+            # AI analysis prompt
+            st.markdown("---")
+            _energy_str = (
+                f"{binding_energy:.2f} kcal/mol"
+                if binding_energy is not None else "[binding energy]"
             )
-            + "1. Identify key ligand-protein interactions.\n"
-            + "2. List main interacting residues and their roles.\n"
-            + (
-                "3. Compare docked pose with the reference ligand.\n"
-                "4. Highlight similarities/differences in binding orientation.\n"
-                "5. Evaluate whether interactions support the predicted binding energy.\n\n"
-                if _has_ref_b else
-                "3. Evaluate whether interactions support the predicted binding energy.\n\n"
+            _lig_str = (
+                f"{lig_name} (SMILES: {lig_smiles})"
+                if lig_name and lig_smiles else lig_name or "[ligand]"
             )
-            + "Provide a concise structural interpretation of the binding mode."
-        )
-        st.markdown("### 🤖 AI Prompt")
-        st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
-        st.code(_prompt, language=None)
+            _has_ref_b = bool(ref_lig_name or ref_lig_smiles)
+            _both      = bool(_pose_svg and _ref_svg2)
+
+            _ref_clause = ""
+            if _has_ref_b:
+                _rf  = (
+                    f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
+                    if ref_lig_name and ref_lig_smiles
+                    else ref_lig_name or ref_lig_smiles
+                )
+                _re_ = (
+                    f", binding energy {ref_lig_energy:.2f} kcal/mol"
+                    if ref_lig_energy is not None else ""
+                )
+                _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
+
+            _prompt = (
+                f"Analyze the PoseView2 interaction diagram for PDB ID "
+                f"{pdb_id.upper() or '[PDB ID]'}, "
+                f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
+                f"binding energy {_energy_str}{_ref_clause}.\n\n"
+                + (
+                    "Legend (docked pose): Black dashed = H-bond"
+                    " · Dark green solid = hydrophobic\n"
+                    "Legend (co-crystal):  Blue dashed = H-bond"
+                    " · Pink dashed = ionic · Yellow dashed = metal\n"
+                    "  Green dot-dash = cation-pi · Cyan dot-dash = pi-pi"
+                    " · Dark green solid = hydrophobic\n\n"
+                    if _both else
+                    "Legend: Black dashed = H-bond · Dark green solid = hydrophobic\n\n"
+                )
+                + "1. Identify key ligand-protein interactions.\n"
+                + "2. List main interacting residues and their roles.\n"
+                + (
+                    "3. Compare docked pose with the reference ligand.\n"
+                    "4. Highlight similarities/differences in binding orientation.\n"
+                    "5. Evaluate whether interactions support the predicted binding energy.\n\n"
+                    if _has_ref_b else
+                    "3. Evaluate whether interactions support the predicted binding energy.\n\n"
+                )
+                + "Provide a concise structural interpretation of the binding mode."
+            )
+            st.markdown("### 🤖 AI Prompt")
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
+            st.code(_prompt, language=None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -698,6 +1056,15 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 pfx + "receptor_done":       True,
                 pfx + "receptor_log":        "\n".join(result["log"]),
             })
+            # Pre-upload receptor to MoleculeHandler/Protoss in background
+            # so PoseView calls later are fast (no 30-60 s upload wait)
+            clear_poseview_cache()
+            with st.spinner("⏳ Pre-processing receptor for PoseView (Protoss)…"):
+                _wok, _wmsg = warm_poseview_cache(result["rec_fh"])
+            if _wok:
+                st.toast(f"✓ PoseView receptor ready: {_wmsg}", icon="🧬")
+            else:
+                st.toast(f"⚠️ PoseView pre-processing skipped: {_wmsg}", icon="⚠️")
         else:
             st.error(f"❌ Receptor preparation failed: {result['error']}")
             st.session_state[pfx + "receptor_done"] = False
@@ -786,15 +1153,14 @@ margin:0;font-weight:700;padding-top:29px;">nyone can dock, everyone can do!</h1
 </div>""", unsafe_allow_html=True)
 
 st.markdown(
-    "Molecular docking powered by **AutoDock Vina 1.2.7**, "
-    "**Dimorphite-DL**, and **PoseView2**."
+    "Molecular docking powered by **AutoDock Vina 1.2.7,** "
+    "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown(
     "**Basic** — single ligand. **Batch** — multiple ligands. "
     "**☁️ Cloud-ready | 📱 Mobile-compatible**"
 )
 
-# Tool availability banners
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
     st.stop()
@@ -827,7 +1193,6 @@ tab_basic, tab_batch = st.tabs([
 # ╚════════════════════════════════════════════════════════════════════════════╝
 with tab_basic:
 
-    # ── Step 1: Receptor ──────────────────────────────────────────────────────
     _receptor_section(pfx="", wdir=WORKDIR, step_label="Step 1 of 4")
 
     # ── Step 2: Ligand ────────────────────────────────────────────────────────
@@ -1099,7 +1464,6 @@ with tab_basic:
         df   = st.session_state.score_df
         mols = st.session_state.pose_mols or []
 
-        # ── Score table + bar chart ───────────────────────────────────────────
         ct, cc = st.columns([1, 1.4])
         with ct:
             st.markdown("**Score Table**")
@@ -1110,7 +1474,7 @@ with tab_basic:
                         subset=["Affinity (kcal/mol)"],
                         gmap=-df["Affinity (kcal/mol)"],
                     ),
-                    hide_index=True, use_container_width=True,
+                    hide_index=True, width='stretch',
                 )
         with cc:
             st.markdown("**Affinity by Pose**")
@@ -1134,12 +1498,11 @@ with tab_basic:
                 for sp in ax.spines.values():
                     sp.set_edgecolor(_cc["border"])
                 fig.tight_layout()
-                st.pyplot(fig, use_container_width=True)
+                st.pyplot(fig, width='stretch')
                 plt.close(fig)
 
         st.markdown("---")
 
-        # ── Animated viewer ───────────────────────────────────────────────────
         st.markdown("**🎬 Animated Pose Viewer**")
         anim_spd = st.slider("Interval (ms)", 500, 3000, 1500, 250, key="anim_spd")
         if st.session_state.output_sdf and os.path.exists(st.session_state.output_sdf):
@@ -1171,7 +1534,6 @@ with tab_basic:
 
         st.markdown("---")
 
-        # ── Pose selector ─────────────────────────────────────────────────────
         st.markdown("**🔎 Interactive Pose Selector**")
         if mols:
             pose_idx = st.slider("Select pose", 1, len(mols), 1, key="pose_sel") - 1
@@ -1238,14 +1600,14 @@ with tab_basic:
                     open(sp_raw, "rb"),
                     file_name=f"pose_{pose_idx+1}.sdf",
                     key=f"dl_p_{pose_idx}",
-                    use_container_width=True,
+                    width='stretch',
                 )
                 st.download_button(
                     "⬇ All poses (.pdbqt)",
                     open(st.session_state.output_pdbqt, "rb"),
                     file_name=f"{st.session_state.dock_base}_out.pdbqt",
                     key="dl_pdbqt",
-                    use_container_width=True,
+                    width='stretch',
                 )
                 if df is not None:
                     st.download_button(
@@ -1254,7 +1616,7 @@ with tab_basic:
                         file_name=f"{st.session_state.dock_base}_scores.csv",
                         mime="text/csv",
                         key="dl_csv",
-                        use_container_width=True,
+                        width='stretch',
                     )
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                     st.download_button(
@@ -1262,10 +1624,9 @@ with tab_basic:
                         open(st.session_state.receptor_fh, "rb"),
                         file_name="receptor.pdb",
                         key="dl_rec",
-                        use_container_width=True,
+                        width='stretch',
                     )
 
-            # ── Binding pocket ────────────────────────────────────────────────
             st.markdown("---")
             st.markdown("**🔬 Binding Pocket View**")
             _bpl, _bpr = st.columns([2, 1])
@@ -1327,7 +1688,7 @@ with tab_basic:
             except Exception as _e:
                 st.info(f"Binding pocket viewer error: {_e}")
 
-            # ── PoseView 2D ───────────────────────────────────────────────────
+            # PoseView 2D
             pv_sdf_all = st.session_state.get("output_pv_sdf", "")
             sp_pv = str(WORKDIR / f"pose_{pose_idx+1}_pv_ready.sdf")
             if pv_sdf_all and os.path.exists(pv_sdf_all):
@@ -1436,7 +1797,6 @@ with tab_batch:
         config    = st.session_state.get("b_config_txt")
         b_ph_val  = st.session_state.get("b_ph", 7.4)
 
-        # Parse SMILES input
         smiles_pairs = []
         try:
             if st.session_state.get("b_input_mode") == "SMILES list (text)":
@@ -1464,7 +1824,6 @@ with tab_batch:
             st.error(f"❌ Input parsing failed: {e}")
             st.stop()
 
-        # Redocking
         redock_score  = None
         redock_result = None
         if st.session_state.get("b_do_redock"):
@@ -1494,6 +1853,7 @@ with tab_batch:
                             "Name":        f"⭐ {rd_nm} (co-crystal ref)",
                             "ref_name":    rd_nm,
                             "SMILES":      rd_smi,
+                            "prot_smiles": rd_prep["prot_smiles"],
                             "Charge":      rd_prep["charge"],
                             "Top Score":   redock_score,
                             "pose_scores": [s["affinity"] for s in rd_dock["scores"]],
@@ -1512,7 +1872,6 @@ with tab_batch:
                 else:
                     st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
 
-        # Batch loop
         results  = []
         n        = len(smiles_pairs)
         prog     = st.progress(0, text=f"Docking 0/{n}…")
@@ -1565,6 +1924,7 @@ with tab_batch:
             results.append({
                 "Name":        name,
                 "SMILES":      smi,
+                "prot_smiles": prep["prot_smiles"],   # protonated — has correct charges
                 "Charge":      prep["charge"],
                 "Top Score":   dock["top_score"],
                 "pose_scores": [s["affinity"] for s in dock["scores"]],
@@ -1731,7 +2091,7 @@ with tab_batch:
                             else f"📌 Use pose {b_pose_i+1} as reference",
                             key="b_confirm_ref_btn",
                             type="secondary" if already else "primary",
-                            use_container_width=True,
+                            width='stretch',
                         ):
                             st.session_state.update({
                                 "b_confirmed_ref_score": this_score,
@@ -1743,7 +2103,7 @@ with tab_batch:
                             if st.button(
                                 "🔄 Reset reference",
                                 key="b_reset_ref_btn",
-                                use_container_width=True,
+                                width='stretch',
                             ):
                                 st.session_state.update({
                                     "b_confirmed_ref_score": None,
@@ -1760,7 +2120,7 @@ with tab_batch:
                         open(sp3, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf",
                         key="b_dl_pose",
-                        use_container_width=True,
+                        width='stretch',
                     )
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
                         st.download_button(
@@ -1768,7 +2128,7 @@ with tab_batch:
                             open(sel_res["out_pdbqt"], "rb"),
                             file_name=f"{safe_nm}_out.pdbqt",
                             key="b_dl_pdbqt",
-                            use_container_width=True,
+                            width='stretch',
                         )
 
         st.markdown("---")
@@ -1780,7 +2140,6 @@ with tab_batch:
                 unsafe_allow_html=True,
             )
 
-        # ── Score table + plot ────────────────────────────────────────────────
         df_res = pd.DataFrame([{
             "Name":                  r["Name"],
             "Top Score (kcal/mol)":  r["Top Score"],
@@ -1837,7 +2196,7 @@ with tab_batch:
                 ct2, cp2 = st.columns([1, 1.6])
                 with ct2:
                     st.markdown("**Score Table**")
-                    st.dataframe(df_res, hide_index=True, use_container_width=True)
+                    st.dataframe(df_res, hide_index=True, width='stretch')
                 with cp2:
                     st.markdown("**Top Score per Ligand**")
                     fig, ax = plt.subplots(figsize=(max(5, _n * 0.6 + 1.5), 3.5))
@@ -1850,7 +2209,7 @@ with tab_batch:
                     )
                     _buf.seek(0)
                     st.session_state["b_plot_png"] = _buf.getvalue()
-                    st.pyplot(fig, use_container_width=True)
+                    st.pyplot(fig, width='stretch')
                     plt.close(fig)
             else:
                 st.markdown("**Top Score per Ligand**")
@@ -1864,15 +2223,14 @@ with tab_batch:
                 )
                 _buf.seek(0)
                 st.session_state["b_plot_png"] = _buf.getvalue()
-                st.pyplot(fig, use_container_width=True)
+                st.pyplot(fig, width='stretch')
                 plt.close(fig)
                 st.markdown("**Score Table**")
-                st.dataframe(df_res, hide_index=True, use_container_width=True)
+                st.dataframe(df_res, hide_index=True, width='stretch')
         else:
             st.markdown("**Score Table**")
-            st.dataframe(df_res, hide_index=True, use_container_width=True)
+            st.dataframe(df_res, hide_index=True, width='stretch')
 
-        # ── Downloads ─────────────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("**⬇ Download All Results**")
         c_csv, c_zip = st.columns(2)
@@ -1884,7 +2242,7 @@ with tab_batch:
                     file_name="batch_scores.csv",
                     mime="text/csv",
                     key="b_dl_csv",
-                    use_container_width=True,
+                    width='stretch',
                 )
         with c_zip:
             zb = io.BytesIO()
@@ -1916,10 +2274,10 @@ with tab_batch:
                 file_name="anyone_can_dock.zip",
                 mime="application/zip",
                 key="b_dl_zip",
-                use_container_width=True,
+                width='stretch',
             )
 
-        # ── 2D Interaction diagram ────────────────────────────────────────────
+        # 2D Interaction diagram
         st.markdown("---")
         st.markdown("### 🧬 2D Interaction Diagram — PoseView2")
         pv_browsable = [
@@ -1981,10 +2339,10 @@ with tab_batch:
                     ref_svg_key         = "b_pv2_ref_svg",
                     label_suffix        = f"_pv2_{pv_safe_nm}",
                     lig_name            = pv_safe_nm,
-                    lig_smiles          = pv_sel_res.get("SMILES", ""),
+                    lig_smiles          = pv_sel_res.get("prot_smiles") or pv_sel_res.get("SMILES", ""),
                     binding_energy      = pv_score,
                     ref_lig_name        = redock_result.get("ref_name", "") if redock_result else "",
-                    ref_lig_smiles      = redock_result.get("SMILES", "")   if redock_result else "",
+                    ref_lig_smiles      = (redock_result.get("prot_smiles") or redock_result.get("SMILES", "")) if redock_result else "",
                     ref_lig_energy      = redock_result.get("Top Score")     if redock_result else None,
                     show_header         = False,
                 )
