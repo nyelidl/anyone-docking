@@ -54,6 +54,14 @@
       color: #999;
       margin-top: 1.5rem;
     }
+    /* Hidden iframe container for background waking */
+    .wake-pool {
+      position: absolute;
+      width: 0;
+      height: 0;
+      overflow: hidden;
+      visibility: hidden;
+    }
   </style>
 </head>
 <body>
@@ -62,6 +70,9 @@
   <p>Finding the best available server for you...</p>
   <div class="spinner"></div>
   <div class="hint">You will be redirected automatically.</div>
+
+  <!-- Hidden iframes that silently wake all apps in background -->
+  <div class="wake-pool" id="wakePool"></div>
 
   <script>
     const apps = [
@@ -77,9 +88,24 @@
       "https://anyone-docking-10.streamlit.app/"
     ];
 
-    const random = apps[Math.floor(Math.random() * apps.length)];
+    // ── 1. Wake ALL apps in background via hidden iframes ──
+    // Each visitor silently pings every instance, keeping them alive.
+    // Streamlit detects the page load and resets its inactivity timer.
+    const pool = document.getElementById("wakePool");
+    apps.forEach((url, i) => {
+      setTimeout(() => {
+        const iframe = document.createElement("iframe");
+        iframe.src = url;
+        iframe.width = "0";
+        iframe.height = "0";
+        iframe.tabIndex = -1;
+        iframe.setAttribute("aria-hidden", "true");
+        pool.appendChild(iframe);
+      }, i * 500);  // stagger by 500ms to avoid burst
+    });
 
-    // Redirect after 1.5 seconds
+    // ── 2. Redirect user to a random instance after 1.5s ──
+    const random = apps[Math.floor(Math.random() * apps.length)];
     setTimeout(() => {
       window.location.href = random;
     }, 1500);
