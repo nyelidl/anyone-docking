@@ -230,6 +230,9 @@ _DEFAULTS = dict(
     # Basic docking
     output_pdbqt=None, output_sdf=None, output_pv_sdf=None, dock_base=None,
     docking_done=False, docking_log="", score_df=None, pose_mols=None,
+    # Basic redocking
+    redock_done=False, redock_score=None, redock_result=None,
+    confirmed_ref_score=None, confirmed_ref_pose=None, confirmed_ref_name=None,
     # Basic PoseView
     pv_image_png=None, pv_image_svg=None, pv_pose_key=None,
     pv_ref_png=None, pv_ref_svg=None,
@@ -1416,6 +1419,23 @@ with tab_basic:
             f'</div>',
             unsafe_allow_html=True,
         )
+        st.markdown("**Redocking validation**")
+        do_redock = st.checkbox(
+            "Dock co-crystal ligand as reference", value=False, key="do_redock",
+            help="Dock the co-crystal ligand first as a reference. "
+                 "Its score appears as a dashed line in the plot, "
+                 "and RMSD is calculated against the crystal pose.",
+        )
+        if do_redock:
+            st.text_input(
+                "Co-crystal SMILES [name]",
+                value=(
+                    "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC "
+                    "Erlotinib"
+                ),
+                key="redock_smiles",
+            )
+            st.caption("Score shown as dashed reference line in plot.")
 
     if not st.session_state.ligand_done:
         st.caption("⚠ Complete Steps 1 & 2 first.")
@@ -1426,6 +1446,59 @@ with tab_basic:
         base   = st.session_state.ligand_name
         pv_sdf = str(WORKDIR / f"{base}_pv_ready.sdf")
 
+        # ── Redocking (if enabled) ────────────────────────────────────────
+        redock_score  = None
+        redock_result = None
+        if st.session_state.get("do_redock"):
+            raw_rd = st.session_state.get("redock_smiles", "").strip()
+            pts    = raw_rd.split(None, 1)
+            rd_smi = pts[0]
+            rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
+            ph_val = st.session_state.get("ph_in", 7.4)
+            with st.spinner(f"Docking reference ligand ({rd_nm})…"):
+                rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, ph_val, WORKDIR)
+                if rd_prep["success"]:
+                    rd_dock = run_vina(
+                        st.session_state.receptor_pdbqt,
+                        rd_prep["pdbqt"],
+                        st.session_state.config_txt,
+                        VINA_PATH, exh, nm, er,
+                        WORKDIR, "redock_" + rd_nm,
+                    )
+                    if rd_dock["success"] and rd_dock["top_score"] is not None:
+                        redock_score = rd_dock["top_score"]
+                        rd_pv_sdf    = str(WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
+                        fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
+                        if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
+                            rd_pv_sdf = rd_dock["out_sdf"]
+                        rd_n = (
+                            len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False))
+                            if os.path.exists(rd_dock["out_sdf"]) else 0
+                        )
+                        redock_result = {
+                            "Name":        f"⭐ {rd_nm} (co-crystal ref)",
+                            "ref_name":    rd_nm,
+                            "SMILES":      rd_smi,
+                            "prot_smiles": rd_prep["prot_smiles"],
+                            "Charge":      rd_prep["charge"],
+                            "Top Score":   redock_score,
+                            "pose_scores": [s["affinity"] for s in rd_dock["scores"]],
+                            "Poses":       rd_n,
+                            "out_pdbqt":   rd_dock["out_pdbqt"],
+                            "out_sdf":     rd_dock["out_sdf"],
+                            "pv_sdf":      rd_pv_sdf,
+                            "Status":      "OK",
+                            "is_redock":   True,
+                        }
+                        st.success(
+                            f"✓ Reference score: **{redock_score:.2f} kcal/mol** ({rd_nm})"
+                        )
+                    else:
+                        st.warning("⚠ Redocking failed — no score returned")
+                else:
+                    st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
+
+        # ── Main ligand docking ───────────────────────────────────────────
         with st.spinner(f"Running Vina (exhaustiveness={exh})… ⏳"):
             dock = run_vina(
                 receptor_pdbqt = st.session_state.receptor_pdbqt,
@@ -1480,10 +1553,24 @@ with tab_basic:
                 "pv_image_png":  None,
                 "pv_image_svg":  None,
                 "pv_pose_key":   None,
+                # Redocking results
+                "redock_done":          redock_result is not None,
+                "redock_score":         redock_score,
+                "redock_result":        redock_result,
+                "confirmed_ref_score":  None,
+                "confirmed_ref_pose":   None,
+                "confirmed_ref_name":   None,
             })
 
     if st.session_state.docking_done:
-        st.markdown(_pill("Docking complete", "success"), unsafe_allow_html=True)
+        _redock_score = st.session_state.get("redock_score")
+        _redock_done  = st.session_state.get("redock_done", False)
+        st.markdown(
+            _pill("Docking complete", "success")
+            + (_pill(f"Ref: {_redock_score:.2f} kcal/mol", "warn")
+               if _redock_score is not None else ""),
+            unsafe_allow_html=True,
+        )
         with st.expander("📋 Vina output log", expanded=False):
             st.markdown(
                 f'<div class="log-box">{st.session_state.docking_log}</div>',
@@ -1552,6 +1639,21 @@ with tab_basic:
                     color=cols, edgecolor=_cc["border"], linewidth=0.6,
                 )
                 ax.invert_yaxis()
+                # ── Reference line from redocking ─────────────────────────
+                _ref_score_plot = st.session_state.get("confirmed_ref_score")
+                if _ref_score_plot is None:
+                    _ref_score_plot = st.session_state.get("redock_score")
+                if _ref_score_plot is not None:
+                    _ref_nm  = st.session_state.get("confirmed_ref_name") or "co-crystal ref"
+                    _ref_lbl = f"{_ref_nm}: {_ref_score_plot:.2f}"
+                    ax.axhline(
+                        _ref_score_plot, color="#f85149", linewidth=1.8,
+                        linestyle="--", label=_ref_lbl,
+                    )
+                    ax.legend(
+                        facecolor=_cc["legend_bg"], edgecolor=_cc["border"],
+                        labelcolor=_cc["text"], fontsize=8,
+                    )
                 ax.set_xlabel("Pose",                color=_cc["muted"], fontsize=9)
                 ax.set_ylabel("Affinity (kcal/mol)", color=_cc["muted"], fontsize=9)
                 ax.tick_params(colors=_cc["muted"], labelsize=8)
@@ -1562,6 +1664,128 @@ with tab_basic:
                 plt.close(fig)
 
         st.markdown("---")
+
+        # ── Redocking Reference Browser ──────────────────────────────────
+        _redock_result = st.session_state.get("redock_result")
+        _redock_score  = st.session_state.get("redock_score")
+        if _redock_result and _redock_result.get("out_sdf") and os.path.exists(_redock_result["out_sdf"]):
+            st.markdown("**⭐ Redocking Reference**")
+            _rd_mols = load_mols_from_sdf(_redock_result["out_sdf"], sanitize=False)
+            if _rd_mols:
+                _rd_pose_i    = st.slider("Reference pose", 1, len(_rd_mols), 1, key="rd_pose_sel") - 1
+                _rd_scores    = _redock_result.get("pose_scores", [])
+                _rd_this_score = (
+                    _rd_scores[_rd_pose_i]
+                    if _rd_pose_i < len(_rd_scores)
+                    else _redock_result.get("Top Score")
+                )
+                _rd_pills = _pill(f"Pose {_rd_pose_i+1}/{len(_rd_mols)}")
+                _rsk      = "success" if (_rd_this_score is not None and _rd_this_score < -8) else "warn"
+                _rd_pills += f" {_pill(f'{_rd_this_score:.2f} kcal/mol', _rsk)}" if _rd_this_score is not None else ""
+
+                # RMSD vs crystal
+                _cryst_pdb_rd = st.session_state.get("ligand_pdb_path") or ""
+                if _cryst_pdb_rd and os.path.exists(_cryst_pdb_rd):
+                    _rmsd_rd = calc_rmsd_heavy(_rd_mols[_rd_pose_i], _cryst_pdb_rd)
+                    if _rmsd_rd is not None:
+                        _rk = (
+                            "success" if _rmsd_rd <= 2.0 else
+                            "warn"    if _rmsd_rd <= 3.0 else "info"
+                        )
+                        _rd_pills += f" {_pill(f'RMSD {_rmsd_rd:.2f} A vs crystal', _rk)}"
+
+                st.markdown(
+                    _pill("⭐ Co-crystal reference ligand", "warn") + " " + _rd_pills,
+                    unsafe_allow_html=True,
+                )
+
+                _rd_v_col, _rd_a_col = st.columns([3, 1])
+                with _rd_v_col:
+                    try:
+                        _vrd = py3Dmol.view(width="100%", height=400)
+                        _vrd.setBackgroundColor(_viewer_bg())
+                        _mrd = 0
+                        if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
+                            _vrd.addModel(open(st.session_state.receptor_fh).read(), "pdb")
+                            _vrd.setStyle({"model": _mrd}, {
+                                "cartoon": {"color": "spectrum", "opacity": 0.7},
+                                "stick":   {"radius": 0.08, "opacity": 0.15},
+                            })
+                            _mrd += 1
+                        _lig_p_rd = st.session_state.get("ligand_pdb_path")
+                        if _lig_p_rd and os.path.exists(_lig_p_rd):
+                            _vrd.addModel(open(_lig_p_rd).read(), "pdb")
+                            _vrd.setStyle({"model": _mrd}, {
+                                "stick": {"colorscheme": "magentaCarbon", "radius": 0.2}
+                            })
+                            _mrd += 1
+                        _vrd.addModel(Chem.MolToMolBlock(_rd_mols[_rd_pose_i]), "mol")
+                        _vrd.setStyle({"model": _mrd}, {
+                            "stick": {"colorscheme": "cyanCarbon", "radius": 0.28}
+                        })
+                        _vrd.addSurface(
+                            "SES", {"opacity": 0.2, "color": "lightblue"},
+                            {"model": 0}, {"model": _mrd},
+                        )
+                        _vrd.zoomTo()
+                        _vrd.center({"model": _mrd})
+                        show3d(_vrd, height=400)
+                    except Exception as _e:
+                        st.info(f"Viewer error: {_e}")
+
+                with _rd_a_col:
+                    st.markdown("**Actions**")
+                    _c_ref_score = st.session_state.get("confirmed_ref_score")
+                    _c_ref_pose  = st.session_state.get("confirmed_ref_pose")
+                    if _rd_this_score is not None:
+                        _already = (_c_ref_score == _rd_this_score and _c_ref_pose == _rd_pose_i + 1)
+                        if st.button(
+                            f"✅ Confirmed (pose {_rd_pose_i+1})" if _already
+                            else f"📌 Use pose {_rd_pose_i+1} as reference",
+                            key="confirm_ref_btn",
+                            type="secondary" if _already else "primary",
+                            width='stretch',
+                        ):
+                            _rd_nm = _redock_result.get("ref_name", "co-crystal ref")
+                            st.session_state.update({
+                                "confirmed_ref_score": _rd_this_score,
+                                "confirmed_ref_pose":  _rd_pose_i + 1,
+                                "confirmed_ref_name":  _rd_nm,
+                            })
+                            st.rerun()
+                        if _c_ref_score is not None and not _already:
+                            if st.button(
+                                "🔄 Reset reference",
+                                key="reset_ref_btn",
+                                width='stretch',
+                            ):
+                                st.session_state.update({
+                                    "confirmed_ref_score": None,
+                                    "confirmed_ref_pose":  None,
+                                    "confirmed_ref_name":  None,
+                                })
+                                st.rerun()
+                    st.markdown("**Download**")
+                    _rd_safe = _redock_result.get("ref_name", "redock")
+                    _sp_rd   = str(WORKDIR / f"redock_pose{_rd_pose_i+1}.sdf")
+                    write_single_pose(_rd_mols[_rd_pose_i], _sp_rd)
+                    st.download_button(
+                        f"⬇ Ref pose {_rd_pose_i+1} (.sdf)",
+                        open(_sp_rd, "rb"),
+                        file_name=f"redock_{_rd_safe}_pose{_rd_pose_i+1}.sdf",
+                        key="dl_rd_pose",
+                        width='stretch',
+                    )
+                    if _redock_result.get("out_pdbqt") and os.path.exists(_redock_result["out_pdbqt"]):
+                        st.download_button(
+                            "⬇ All ref poses (.pdbqt)",
+                            open(_redock_result["out_pdbqt"], "rb"),
+                            file_name=f"redock_{_rd_safe}_out.pdbqt",
+                            key="dl_rd_pdbqt",
+                            width='stretch',
+                        )
+
+            st.markdown("---")
 
         st.markdown("**🎬 Animated Pose Viewer**")
         anim_spd = st.slider("Interval (ms)", 500, 3000, 1500, 250, key="anim_spd")
@@ -1782,6 +2006,19 @@ with tab_basic:
                     float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
                     if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0
                     else None
+                ),
+                ref_lig_name   = (
+                    st.session_state.get("redock_result", {}).get("ref_name", "")
+                    if st.session_state.get("redock_result") else ""
+                ),
+                ref_lig_smiles = (
+                    (st.session_state.get("redock_result", {}).get("prot_smiles")
+                     or st.session_state.get("redock_result", {}).get("SMILES", ""))
+                    if st.session_state.get("redock_result") else ""
+                ),
+                ref_lig_energy = (
+                    st.session_state.get("redock_result", {}).get("Top Score")
+                    if st.session_state.get("redock_result") else None
                 ),
             )
 
