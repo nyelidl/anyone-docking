@@ -221,15 +221,39 @@ def check_obabel():
 #  VINA BINARY
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_vina_binary(path: str = "/tmp/vina_1.2.7"):
+def get_vina_binary(path: str = ""):
     """
-    Download AutoDock Vina 1.2.7 if not present.
+    Download AutoDock Vina 1.2.7 for the current platform if not present.
+    Supports Linux (x86_64), macOS (x86_64, arm64), and Windows (x86_64).
     Returns (binary_path, status_message).
     """
-    _URL = (
-        "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/"
-        "v1.2.7/vina_1.2.7_linux_x86_64"
+    import platform
+
+    system  = platform.system().lower()    # 'linux', 'darwin', 'windows'
+    machine = platform.machine().lower()   # 'x86_64', 'amd64', 'arm64', 'aarch64'
+
+    _BASE = (
+        "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/"
     )
+
+    if system == "linux":
+        _FNAME = "vina_1.2.7_linux_x86_64"
+    elif system == "darwin":
+        if machine in ("arm64", "aarch64"):
+            _FNAME = "vina_1.2.7_mac_arm64"
+        else:
+            _FNAME = "vina_1.2.7_mac_x86_64"
+    elif system == "windows":
+        _FNAME = "vina_1.2.7_windows_x86_64.exe"
+    else:
+        return None, f"Unsupported platform: {system}/{machine}"
+
+    _URL = _BASE + _FNAME
+
+    # Default path: use temp directory (cross-platform)
+    if not path:
+        path = os.path.join(tempfile.gettempdir(), _FNAME)
+
     if not os.path.exists(path) or os.path.getsize(path) < 100_000:
         try:
             import urllib.request
@@ -244,8 +268,9 @@ def get_vina_binary(path: str = "/tmp/vina_1.2.7"):
                         f.write(chunk)
             except Exception as e2:
                 return None, f"Download failed: {e1} / {e2}"
-    os.chmod(path, 0o755)
-    return path, "ok"
+    if system != "windows":
+        os.chmod(path, 0o755)
+    return path, f"ok ({system}/{machine})"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
