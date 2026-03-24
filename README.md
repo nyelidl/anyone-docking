@@ -96,22 +96,24 @@ Available in **both single and batch** docking modes:
 ## 🖥️ Run locally
 
 ### Linux (Ubuntu / Debian)
-
 ```bash
-sudo apt install openbabel libcairo2-dev libpangocairo-1.0-0
-git clone https://github.com/nyelidl/anyone-docking.git
-cd anyone-docking
-pip install -r requirements.txt
+sudo apt install python3.11 python3.11-venv openbabel libcairo2-dev libpangocairo-1.0-0 && \
+git clone https://github.com/nyelidl/anyone-docking.git && \
+cd anyone-docking && \
+python3.11 -m venv venv && \
+source venv/bin/activate && \
+pip install -r requirements.txt && \
 streamlit run app.py
 ```
 
 ### macOS
-
 ```bash
-brew install open-babel cairo pango
-git clone https://github.com/nyelidl/anyone-docking.git
-cd anyone-docking
-pip install -r requirements.txt
+brew install python@3.11 open-babel cairo pango && \
+git clone https://github.com/nyelidl/anyone-docking.git && \
+cd anyone-docking && \
+python3.11 -m venv venv && \
+source venv/bin/activate && \
+pip install -r requirements.txt && \
 streamlit run app.py
 ```
 
@@ -119,19 +121,21 @@ streamlit run app.py
 
 ### Windows
 
-```bash
-# 1. Install OpenBabel from https://openbabel.org/wiki/Category:Installation
-#    (download the Windows installer and add to PATH)
-# 2. Install GTK3 runtime for Cairo: https://github.com/nicodemus26/arch-wiki-docs/blob/master/CairoGraphics.md
-#    (or use conda: conda install -c conda-forge cairo pango)
+> **Recommended:** Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/) with Ubuntu and follow the Linux instructions above — it's the simplest and most reliable path.
 
-git clone https://github.com/nyelidl/anyone-docking.git
-cd anyone-docking
-pip install -r requirements.txt
+For native Windows, install dependencies manually first:
+1. **OpenBabel** — download the installer from [openbabel.org](https://openbabel.org/wiki/Category:Installation) and add it to PATH
+2. **Cairo & Pango** — easiest via conda: `conda install -c conda-forge cairo pango`
+
+Then:
+```bash
+git clone https://github.com/nyelidl/anyone-docking.git && \
+cd anyone-docking && \
+python -m venv venv && \
+venv\Scripts\activate && \
+pip install -r requirements.txt && \
 streamlit run app.py
 ```
-
-> **Windows tip:** Using [WSL2](https://learn.microsoft.com/en-us/windows/wsl/) (Windows Subsystem for Linux) with Ubuntu is the easiest path — follow the Linux instructions above inside WSL2.
 
 ### All platforms
 
