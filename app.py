@@ -32,6 +32,8 @@ from core import (
     call_poseview_v1,
     svg_to_png,
     stamp_png,
+    is_cif_file,
+    convert_cif_to_pdb,
 )
 
 # Graceful fallbacks for functions added in newer core.py versions
@@ -967,15 +969,27 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
     col_a, col_b = st.columns([1.2, 1])
     with col_a:
         src = st.radio(
-            "PDB source", ["Download from RCSB", "Upload PDB file"],
+            "Structure source", ["Download from RCSB", "Upload PDB / CIF file"],
             horizontal=True, key=pfx + "src_mode",
         )
         if src == "Download from RCSB":
-            pdb_id     = st.text_input("PDB ID", value="1M17", max_chars=4, key=pfx + "pdb_id")
-            upload_pdb = None
+            _id_col, _fmt_col = st.columns([1.5, 1])
+            with _id_col:
+                pdb_id = st.text_input("PDB ID", value="1M17", max_chars=4, key=pfx + "pdb_id")
+            with _fmt_col:
+                rcsb_fmt = st.radio(
+                    "Format", ["PDB", "CIF"],
+                    horizontal=True, key=pfx + "rcsb_fmt",
+                    help="CIF (mmCIF) is recommended for large or newer entries that may lack PDB-format files.",
+                )
+            upload_file = None
         else:
-            upload_pdb = st.file_uploader("Upload .pdb", type=["pdb"], key=pfx + "pdb_upload")
-            pdb_id     = None
+            upload_file = st.file_uploader(
+                "Upload .pdb or .cif", type=["pdb", "cif", "mmcif"],
+                key=pfx + "pdb_upload",
+            )
+            pdb_id   = None
+            rcsb_fmt = None
 
         center_mode = st.radio(
             "Grid center",
@@ -1016,26 +1030,50 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         st.markdown(f"Box volume: **{sx*sy*sz:,} Å³**")
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
-        raw_path = str(wdir / "raw.pdb")
 
         if src == "Download from RCSB":
             token = pdb_id.strip().upper()
+            _fmt  = st.session_state.get(pfx + "rcsb_fmt", "PDB")
+            if _fmt == "CIF":
+                raw_path = str(wdir / "raw.cif")
+                _dl_url  = f"https://files.rcsb.org/download/{token}.cif"
+            else:
+                raw_path = str(wdir / "raw.pdb")
+                _dl_url  = f"https://files.rcsb.org/download/{token}.pdb"
             rc, _ = _run_cmd([
-                "curl", "-sf",
-                f"https://files.rcsb.org/download/{token}.pdb",
-                "-o", raw_path,
+                "curl", "-sf", _dl_url, "-o", raw_path,
             ])
             if rc != 0 or not os.path.exists(raw_path) or os.path.getsize(raw_path) < 200:
-                st.error(f"❌ Download failed for {token}")
-                st.stop()
+                # If PDB download failed, try CIF as fallback (some entries lack .pdb)
+                if _fmt == "PDB":
+                    raw_path_cif = str(wdir / "raw.cif")
+                    rc2, _ = _run_cmd([
+                        "curl", "-sf",
+                        f"https://files.rcsb.org/download/{token}.cif",
+                        "-o", raw_path_cif,
+                    ])
+                    if rc2 == 0 and os.path.exists(raw_path_cif) and os.path.getsize(raw_path_cif) > 200:
+                        raw_path = raw_path_cif
+                        st.info(f"ℹ️ PDB format unavailable for {token} — using CIF instead.")
+                    else:
+                        st.error(f"❌ Download failed for {token} (tried both PDB and CIF)")
+                        st.stop()
+                else:
+                    st.error(f"❌ Download failed for {token}")
+                    st.stop()
             st.session_state[pfx + "pdb_token"] = token
         else:
-            if upload_pdb is None:
-                st.error("Please upload a PDB file first.")
+            if upload_file is None:
+                st.error("Please upload a PDB or CIF file first.")
                 st.stop()
+            _up_ext  = Path(upload_file.name).suffix.lower()
+            if _up_ext in (".cif", ".mmcif"):
+                raw_path = str(wdir / "raw.cif")
+            else:
+                raw_path = str(wdir / "raw.pdb")
             with open(raw_path, "wb") as f:
-                f.write(upload_pdb.read())
-            st.session_state[pfx + "pdb_token"] = Path(upload_pdb.name).stem
+                f.write(upload_file.read())
+            st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
         _mode_map = {
             "Auto-detect co-crystal ligand":      "auto",
