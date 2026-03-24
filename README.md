@@ -20,7 +20,7 @@ Batch docking with 4 docking engines: [![Open In Colab](https://colab.research.g
 | 🏗️ | **Automatic receptor prep** — download any PDB/CIF, strip solvent, add hydrogens |
 | 📄 | **PDB & mmCIF support** — upload `.pdb` or `.cif` files, or download either format from RCSB (auto-fallback to CIF for large/newer entries) |
 | 🎯 | **Auto grid detection** from co-crystal ligand centroid with XYZ axis & box overlay |
-| ✏️ | **3-way ligand input** — SMILES text, file upload (.sdf/.mol2/.pdb), or **draw in Ketcher** |
+| ✏️ | **3-way ligand input** — SMILES text, file upload (.pdb), or **draw in Ketcher** |
 | ♻️ | **Redocking validation** in both single & batch mode — dock the co-crystal ligand as a reference with RMSD vs crystal, score comparison, and reference line in plots |
 | 🧪 | **Bond-order correction** — fixes PDBQT aromaticity artifacts before visualization |
 | 🗺️ | **2D interaction diagrams** — docked pose via RDKit (local) or PoseView v1 (proteins.plus) + co-crystal reference via PoseView2, side-by-side (PNG + SVG download) |
