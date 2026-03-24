@@ -240,7 +240,7 @@ def get_vina_binary(path: str = ""):
         _FNAME = "vina_1.2.7_linux_x86_64"
     elif system == "darwin":
         if machine in ("arm64", "aarch64"):
-            _FNAME = "vina_1.2.7_mac_arm64"
+            _FNAME = "vina_1.2.7_mac_aarch64"
         else:
             _FNAME = "vina_1.2.7_mac_x86_64"
     elif system == "windows":
