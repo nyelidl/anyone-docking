@@ -107,8 +107,9 @@ streamlit run app.py
 ```
 
 ### macOS
+> **Apple Silicon (M1/M2/M3/M4):** Install `autodock-vina` via Homebrew before running — the app expects a local Vina binary.
 ```bash
-brew install python@3.11 open-babel cairo pango && \
+brew install python@3.11 open-babel cairo pango autodock-vina && \
 git clone https://github.com/nyelidl/anyone-docking.git && \
 cd anyone-docking && \
 python3.11 -m venv venv && \
@@ -117,15 +118,13 @@ pip install -r requirements.txt && \
 streamlit run app.py
 ```
 
-> **Apple Silicon (M1/M2/M3/M4):** Fully supported — the app downloads the native `arm64` Vina binary automatically.
-
 ### Windows
-
 > **Recommended:** Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/) with Ubuntu and follow the Linux instructions above — it's the simplest and most reliable path.
 
 For native Windows, install dependencies manually first:
 1. **OpenBabel** — download the installer from [openbabel.org](https://openbabel.org/wiki/Category:Installation) and add it to PATH
 2. **Cairo & Pango** — easiest via conda: `conda install -c conda-forge cairo pango`
+3. **AutoDock-Vina** — download the Windows binary from [github.com/ccsb-scripps/AutoDock-Vina/releases](https://github.com/ccsb-scripps/AutoDock-Vina/releases) and add it to PATH
 
 Then:
 ```bash
