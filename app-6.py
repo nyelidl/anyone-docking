@@ -1121,12 +1121,12 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             # Pre-upload receptor to MoleculeHandler/Protoss in background
             # so PoseView calls later are fast (no 30-60 s upload wait)
             clear_poseview_cache()
-            with st.spinner("⏳ Pre-processing receptor for PoseView (Protoss)…"):
+            with st.spinner("⏳ Pre-processing receptor …"):
                 _wok, _wmsg = warm_poseview_cache(result["rec_fh"])
             if _wok:
                 st.toast(f"✓ PoseView receptor ready: {_wmsg}", icon="🧬")
             else:
-                st.toast(f"⚠️ PoseView pre-processing skipped: {_wmsg}", icon="⚠️")
+                st.toast(f"⚠️ Pre-processing skipped: {_wmsg}", icon="⚠️")
         else:
             st.error(f"❌ Receptor preparation failed: {result['error']}")
             st.session_state[pfx + "receptor_done"] = False
