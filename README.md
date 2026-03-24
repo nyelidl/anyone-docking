@@ -31,6 +31,21 @@ Batch docking with 4 docking engines: [![Open In Colab](https://colab.research.g
 
 ---
 
+## 💻 Platform compatibility
+
+| Platform | Vina binary | OpenBabel | Status |
+|---|---|---|---|
+| **Linux x86_64** | ✅ Auto-download | `apt install openbabel` | Fully supported (primary) |
+| **macOS Intel** | ✅ Auto-download | `brew install open-babel` | Fully supported |
+| **macOS Apple Silicon** (M1–M4) | ✅ Native arm64 | `brew install open-babel` | Fully supported |
+| **Windows x86_64** | ✅ Auto-download | [Installer](https://openbabel.org/wiki/Category:Installation) | Supported (WSL2 recommended) |
+| **Streamlit Cloud** | ✅ Auto-download | via `packages.txt` | Fully supported |
+| **Google Colab** | ✅ Auto-download | `!apt install openbabel` | Fully supported |
+
+> **Easiest option:** Use the [hosted Streamlit app](https://nyelidl.github.io/anyone-docking/) — no installation needed.
+
+---
+
 ## 🏗️ Receptor input formats
 
 | Format | Source | Notes |
@@ -80,15 +95,49 @@ Available in **both single and batch** docking modes:
 
 ## 🖥️ Run locally
 
+### Linux (Ubuntu / Debian)
+
 ```bash
+sudo apt install openbabel libcairo2-dev libpangocairo-1.0-0
 git clone https://github.com/nyelidl/anyone-docking.git
 cd anyone-docking
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-> Requires Python 3.10+, OpenBabel (`apt install openbabel`), and libcairo2 (`apt install libcairo2-dev libpangocairo-1.0-0`).
-> AutoDock Vina binary is downloaded automatically on first launch.
+### macOS
+
+```bash
+brew install open-babel cairo pango
+git clone https://github.com/nyelidl/anyone-docking.git
+cd anyone-docking
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+> **Apple Silicon (M1/M2/M3/M4):** Fully supported — the app downloads the native `arm64` Vina binary automatically.
+
+### Windows
+
+```bash
+# 1. Install OpenBabel from https://openbabel.org/wiki/Category:Installation
+#    (download the Windows installer and add to PATH)
+# 2. Install GTK3 runtime for Cairo: https://github.com/nicodemus26/arch-wiki-docs/blob/master/CairoGraphics.md
+#    (or use conda: conda install -c conda-forge cairo pango)
+
+git clone https://github.com/nyelidl/anyone-docking.git
+cd anyone-docking
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+> **Windows tip:** Using [WSL2](https://learn.microsoft.com/en-us/windows/wsl/) (Windows Subsystem for Linux) with Ubuntu is the easiest path — follow the Linux instructions above inside WSL2.
+
+### All platforms
+
+- Python 3.10+ required
+- AutoDock Vina 1.2.7 binary is **downloaded automatically** on first launch (Linux, macOS Intel/ARM, Windows)
+- The app auto-detects your OS and CPU architecture
 
 ### Optional: CIF support
 
