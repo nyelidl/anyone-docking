@@ -117,7 +117,7 @@ pip install -r requirements.txt && \
 streamlit run app.py
 ```
 
-> **Apple Silicon (M1/M2/M3/M4):** Fully supported — the app auto-downloads the correct `aarch64` Vina binary.
+> **Apple Silicon (M1/M2/M3/M4/M5):** Fully supported — the app auto-downloads the correct `aarch64` Vina binary.
 
 ### Windows
 
