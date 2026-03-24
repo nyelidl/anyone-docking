@@ -47,7 +47,7 @@ CIF files are automatically converted to PDB using a multi-strategy cascade: **g
 | Mode | Description |
 |---|---|
 | **SMILES string** | Type or paste any valid SMILES |
-| **Upload file** | `.sdf` / `.mol2` / `.pdb` — converted automatically |
+| **Upload file** | `.pdb` — converted automatically |
 | **Draw in Ketcher** | Full 2D chemical sketcher in the browser → SMILES exported automatically |
 
 ---
