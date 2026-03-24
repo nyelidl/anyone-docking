@@ -98,8 +98,8 @@ Available in **both single and batch** docking modes:
 ### Linux (Ubuntu / Debian)
 ```bash
 sudo apt install python3.11 python3.11-venv openbabel libcairo2-dev libpangocairo-1.0-0 && \
-git clone https://github.com/nyelidl/anyone-docking.git && \
-cd anyone-docking/local && \
+git clone https://github.com/nyelidl/anyone-docking-local.git && \
+cd anyone-docking-local && \
 python3.11 -m venv venv && \
 source venv/bin/activate && \
 pip install -r requirements.txt && \
@@ -109,15 +109,15 @@ streamlit run app.py
 ### macOS
 ```bash
 brew install python@3.11 open-babel cairo pango && \
-git clone https://github.com/nyelidl/anyone-docking.git && \
-cd anyone-docking/local && \
+git clone https://github.com/nyelidl/anyone-docking-local.git && \
+cd anyone-docking-local && \
 python3.11 -m venv venv && \
 source venv/bin/activate && \
 pip install -r requirements.txt && \
 streamlit run app.py
 ```
 
-> **Apple Silicon (M1/M2/M3/M4/M5):** Fully supported — the app auto-downloads the correct `aarch64` Vina binary.
+> **Apple Silicon (M1/M2/M3/M4):** Fully supported — the app auto-downloads the correct `aarch64` Vina binary.
 
 ### Windows
 
@@ -129,8 +129,8 @@ For native Windows, install dependencies manually first:
 
 Then:
 ```bash
-git clone https://github.com/nyelidl/anyone-docking.git && \
-cd anyone-docking/local && \
+git clone https://github.com/nyelidl/anyone-docking-local.git && \
+cd anyone-docking-local && \
 python -m venv venv && \
 venv\Scripts\activate && \
 pip install -r requirements.txt && \
