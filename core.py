@@ -118,6 +118,92 @@ def _strip_h_from_pdb(pdb_path: str, out_path: str) -> bool:
         return False
 
 
+def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
+    """
+    Convert an mmCIF (.cif) file to PDB format.
+    Tries gemmi first (preserves metadata better), then OpenBabel as fallback.
+    Returns dict: success, pdb_path, log, error
+    """
+    log = []
+
+    # ── Strategy A: gemmi (best quality) ──────────────────────────────────────
+    try:
+        import gemmi
+        doc = gemmi.cif.read(cif_path)
+        block = doc.sole_block()
+        st_obj = gemmi.make_structure_from_block(block)
+        st_obj.setup_entities()
+        st_obj.assign_label_seq_id()
+        pdb_str = st_obj.make_pdb_headers() + st_obj.make_pdb_string()
+        with open(pdb_out_path, "w") as f:
+            f.write(pdb_str)
+        if os.path.exists(pdb_out_path) and os.path.getsize(pdb_out_path) > 100:
+            log.append("✓ CIF → PDB conversion via gemmi")
+            return {"success": True, "pdb_path": pdb_out_path, "log": log}
+        else:
+            log.append("⚠ gemmi produced empty PDB — trying OpenBabel")
+    except ImportError:
+        log.append("⚠ gemmi not installed — trying OpenBabel")
+    except Exception as e:
+        log.append(f"⚠ gemmi failed ({e}) — trying OpenBabel")
+
+    # ── Strategy B: OpenBabel ─────────────────────────────────────────────────
+    try:
+        rc, out = run_cmd(f'obabel "{cif_path}" -O "{pdb_out_path}" -ipdb')
+        # obabel may not recognise -ipdb for cif; try without format hint
+        if not os.path.exists(pdb_out_path) or os.path.getsize(pdb_out_path) < 100:
+            rc, out = run_cmd(f'obabel "{cif_path}" -O "{pdb_out_path}"')
+        if os.path.exists(pdb_out_path) and os.path.getsize(pdb_out_path) > 100:
+            log.append("✓ CIF → PDB conversion via OpenBabel")
+            return {"success": True, "pdb_path": pdb_out_path, "log": log}
+        else:
+            log.append(f"⚠ OpenBabel CIF→PDB produced empty file (exit {rc}): {out[:300]}")
+    except Exception as e:
+        log.append(f"⚠ OpenBabel CIF→PDB failed: {e}")
+
+    # ── Strategy C: ProDy parseMMCIF ──────────────────────────────────────────
+    try:
+        from prody import parseMMCIF, writePDB as _writePDB
+        atoms = parseMMCIF(cif_path)
+        if atoms is not None and atoms.numAtoms() > 0:
+            _writePDB(pdb_out_path, atoms)
+            if os.path.exists(pdb_out_path) and os.path.getsize(pdb_out_path) > 100:
+                log.append("✓ CIF → PDB conversion via ProDy parseMMCIF")
+                return {"success": True, "pdb_path": pdb_out_path, "log": log}
+            else:
+                log.append("⚠ ProDy parseMMCIF produced empty PDB")
+        else:
+            log.append("⚠ ProDy parseMMCIF returned None or 0 atoms")
+    except ImportError:
+        log.append("⚠ ProDy parseMMCIF not available")
+    except Exception as e:
+        log.append(f"⚠ ProDy parseMMCIF failed: {e}")
+
+    return {
+        "success": False,
+        "pdb_path": pdb_out_path,
+        "log": log,
+        "error": "All CIF→PDB conversion methods failed. "
+                 "Install gemmi (`pip install gemmi`) for best results.",
+    }
+
+
+def is_cif_file(filepath: str) -> bool:
+    """Check if a file is in mmCIF format by extension or content sniffing."""
+    ext = Path(filepath).suffix.lower()
+    if ext in (".cif", ".mmcif"):
+        return True
+    # Content sniff: mmCIF files start with data_ block
+    try:
+        with open(filepath) as f:
+            first_lines = f.read(512)
+        if first_lines.strip().startswith("data_"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  TOOL AVAILABILITY CHECKS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -361,6 +447,7 @@ def prepare_receptor(
 ) -> dict:
     """
     Full receptor preparation pipeline.
+    Accepts PDB or mmCIF (.cif) files — CIF is auto-converted to PDB first.
     center_mode: 'auto' | 'manual' | 'selection'
     Returns dict: success, rec_fh, rec_pdbqt, box_pdb, config_txt,
                   cx, cy, cz, sx, sy, sz, ligand_pdb_path,
@@ -373,6 +460,18 @@ def prepare_receptor(
     sx, sy, sz = box_size
 
     try:
+        # ── CIF auto-detection and conversion ─────────────────────────────
+        if is_cif_file(raw_pdb):
+            log.append("📄 Detected mmCIF format — converting to PDB…")
+            converted_pdb = str(wdir / "converted_from_cif.pdb")
+            cif_result = convert_cif_to_pdb(raw_pdb, converted_pdb)
+            log.extend(cif_result["log"])
+            if not cif_result["success"]:
+                raise ValueError(
+                    f"CIF → PDB conversion failed: {cif_result.get('error', 'unknown')}"
+                )
+            raw_pdb = converted_pdb
+
         atoms = parsePDB(raw_pdb)
         if atoms is None:
             raise ValueError("ProDy parsePDB returned None")
