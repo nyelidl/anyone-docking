@@ -1,8 +1,8 @@
 streamlit>=1.35
-streamlit-ketcher==0.0.1
+streamlit-ketcher>=0.0.3
 prody>=2.4
 rdkit>=2023.3
-meeko==0.7.1
+meeko>=0.5,<1.0 
 gemmi>=0.6
 py3Dmol>=2.0
 stmol>=0.0.9
