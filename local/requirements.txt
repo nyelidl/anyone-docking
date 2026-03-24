@@ -1,5 +1,5 @@
 streamlit>=1.35
-streamlit-ketcher>=0.0.3
+streamlit-ketcher>=0.0.1
 prody>=2.4
 rdkit>=2023.3
 meeko>=0.5,<1.0 
