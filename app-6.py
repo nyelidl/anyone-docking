@@ -1268,7 +1268,7 @@ with tab_basic:
 
     lig_input_mode = st.radio(
         "Input mode",
-        ["SMILES string", "Upload structure (.sdf/.mol2/.pdb)", "Draw structure (Ketcher)"],
+        ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
         horizontal=True, key="lig_input_mode",
     )
 
@@ -1279,7 +1279,7 @@ with tab_basic:
             value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
             key="smiles_in",
         )
-    elif lig_input_mode == "Upload structure (.sdf/.mol2/.pdb)":
+    elif lig_input_mode == "Upload structure (.pdb)":
         st.file_uploader(
             "Upload structure file", type=["sdf", "mol2", "pdb"],
             key="lig_struct_file",
