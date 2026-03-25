@@ -5,11 +5,12 @@ No Streamlit imports. All functions return plain dicts / tuples.
 Safe to import in Colab notebooks, pytest, or any UI framework.
 
 Fixes vs previous version:
+  - load_mols_from_sdf: suppress RDKit kekulize noise, fallback sanitize loop
+  - fix_sdf_bond_orders: AddHs with addCoords=True preserves docked pose coords
+  - convert_sdf_to_v2000: removed --gen3d flag (was destroying docked pose)
   - call_poseview_v1: handles "failure"/"error" status, logs full API response,
     retries up to 3 times with 10 s gap, strips H from receptor before upload,
     polls up to 60 attempts (120 s) with backoff
-  - fix_sdf_bond_orders: no longer adds Hs with addCoords=False (caused 0,0,0
-    coordinates that made PoseView reject the SDF)
   - call_poseview2_ref: same retry + full-response logging
   - Minor: type annotations, cleaner log messages
 """
@@ -104,7 +105,6 @@ def _strip_h_from_pdb(pdb_path: str, out_path: str) -> bool:
             for line in f:
                 rec = line[:6].strip()
                 if rec in ("ATOM", "HETATM"):
-                    # PDB atom name starts at col 12; element at col 76
                     atom_name = line[12:16].strip()
                     element   = line[76:78].strip() if len(line) > 76 else ""
                     if element.upper() == "H" or atom_name.startswith("H"):
@@ -126,11 +126,11 @@ def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
     """
     log = []
 
-    # ── Strategy A: gemmi (best quality) ──────────────────────────────────────
+    # ── Strategy A: gemmi ─────────────────────────────────────────────────────
     try:
         import gemmi
-        doc = gemmi.cif.read(cif_path)
-        block = doc.sole_block()
+        doc    = gemmi.cif.read(cif_path)
+        block  = doc.sole_block()
         st_obj = gemmi.make_structure_from_block(block)
         st_obj.setup_entities()
         st_obj.assign_label_seq_id()
@@ -150,7 +150,6 @@ def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
     # ── Strategy B: OpenBabel ─────────────────────────────────────────────────
     try:
         rc, out = run_cmd(f'obabel "{cif_path}" -O "{pdb_out_path}" -ipdb')
-        # obabel may not recognise -ipdb for cif; try without format hint
         if not os.path.exists(pdb_out_path) or os.path.getsize(pdb_out_path) < 100:
             rc, out = run_cmd(f'obabel "{cif_path}" -O "{pdb_out_path}"')
         if os.path.exists(pdb_out_path) and os.path.getsize(pdb_out_path) > 100:
@@ -193,7 +192,6 @@ def is_cif_file(filepath: str) -> bool:
     ext = Path(filepath).suffix.lower()
     if ext in (".cif", ".mmcif"):
         return True
-    # Content sniff: mmCIF files start with data_ block
     try:
         with open(filepath) as f:
             first_lines = f.read(512)
@@ -229,8 +227,8 @@ def get_vina_binary(path: str = ""):
     """
     import platform
 
-    system  = platform.system().lower()    # 'linux', 'darwin', 'windows'
-    machine = platform.machine().lower()   # 'x86_64', 'amd64', 'arm64', 'aarch64'
+    system  = platform.system().lower()
+    machine = platform.machine().lower()
 
     _BASE = (
         "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/"
@@ -250,7 +248,6 @@ def get_vina_binary(path: str = ""):
 
     _URL = _BASE + _FNAME
 
-    # Default path: use temp directory (cross-platform)
     if not path:
         path = os.path.join(tempfile.gettempdir(), _FNAME)
 
@@ -832,20 +829,26 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
     """
     Apply bond-order + formal-charge correction to all poses in an SDF.
 
-    FIX: Previously called Chem.AddHs(fixed, addCoords=False) which placed
-    all H atoms at (0,0,0) — causing PoseView to reject the file with
-    status "failure". Now writes heavy-atom-only mol; PoseView adds Hs itself.
+    FIX: Adds Hs with addCoords=True to preserve docked pose coordinates.
+    Validates that no H atom landed at origin before writing with Hs.
+    Falls back to heavy-atom-only mol if addCoords fails.
 
     Returns list of log messages.
     """
     import shutil
-    from rdkit import Chem
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import AllChem
+
+    # Suppress kekulize noise from raw Vina SDF
+    RDLogger.DisableLog("rdApp.*")
+
     log = []
 
     try:
         template = _bo_template(smiles)
     except Exception as e:
         log.append(f"⚠ Could not build template: {e} — skipping fix")
+        RDLogger.EnableLog("rdApp.error")
         shutil.copy(raw_sdf, fixed_sdf)
         return log
 
@@ -861,18 +864,33 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
             continue
         try:
             fixed = _bo_fix_mol(mol, template)
-            # Write heavy-atom mol only — do NOT add Hs without 3D coords
-            # (addCoords=False puts all H at origin, which breaks PoseView)
-            writer.write(fixed)
+
+            # Add Hs with real 3D coordinates (preserves docked pose)
+            try:
+                fixed_h = Chem.AddHs(fixed, addCoords=True)
+                conf    = fixed_h.GetConformer()
+                # Reject if any H landed at origin (addCoords=True failed silently)
+                bad = any(
+                    abs(conf.GetAtomPosition(j).x)
+                    + abs(conf.GetAtomPosition(j).y)
+                    + abs(conf.GetAtomPosition(j).z) < 0.01
+                    for j in range(fixed_h.GetNumAtoms())
+                    if fixed_h.GetAtomWithIdx(j).GetAtomicNum() == 1
+                )
+                writer.write(fixed if bad else fixed_h)
+            except Exception:
+                # Fallback: heavy atoms only — PoseView can add its own Hs
+                writer.write(fixed)
+
             ok += 1
         except Exception as e:
             log.append(f"⚠ Pose {i+1}: fix failed ({e}) — writing raw")
-            # Write raw also without extra Hs
             mol_noH = Chem.RemoveHs(mol, sanitize=False)
             writer.write(mol_noH)
             err += 1
 
     writer.close()
+    RDLogger.EnableLog("rdApp.error")
     log.append(f"Bond-order fix: {ok} OK, {err} fallback")
     return log
 
@@ -882,12 +900,47 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def load_mols_from_sdf(sdf_path: str, sanitize: bool = True) -> list:
-    """Load all valid mols from an SDF file."""
-    from rdkit import Chem
-    return [
-        m for m in Chem.SDMolSupplier(sdf_path, sanitize=sanitize, removeHs=False)
-        if m is not None
-    ]
+    """
+    Load all valid mols from an SDF file.
+
+    FIX: Suppresses RDKit kekulize / sanitize noise from raw Vina output SDFs.
+    Falls back to per-mol sanitize on failure so poses are never silently lost.
+    """
+    from rdkit import Chem, RDLogger
+
+    # Suppress "Can't kekulize" / sanitize errors —
+    # Vina SDF aromatic bonds cause these on every pose when sanitize=True.
+    RDLogger.DisableLog("rdApp.*")
+
+    mols = []
+    try:
+        sup = Chem.SDMolSupplier(sdf_path, sanitize=sanitize, removeHs=False)
+        for m in sup:
+            if m is not None:
+                mols.append(m)
+    except Exception:
+        pass
+
+    # If sanitize=True produced 0 (or fewer than raw), fall back per-mol
+    if sanitize:
+        try:
+            sup2 = Chem.SDMolSupplier(sdf_path, sanitize=False, removeHs=False)
+            raw  = [m for m in sup2 if m is not None]
+            if len(raw) > len(mols):
+                result = []
+                for m in raw:
+                    try:
+                        Chem.SanitizeMol(m)
+                    except Exception:
+                        pass   # keep mol even if partially unsanitized
+                    result.append(m)
+                RDLogger.EnableLog("rdApp.error")
+                return result
+        except Exception:
+            pass
+
+    RDLogger.EnableLog("rdApp.error")
+    return mols
 
 
 def write_single_pose(mol, path: str) -> None:
@@ -901,21 +954,28 @@ def convert_sdf_to_v2000(sdf_path: str) -> str:
     """
     Convert an SDF to clean V2000 format via obabel.
     PoseView requires V2000 — RDKit may write V3000 for large molecules.
-    Returns path to converted file (tmp), or original path on failure.
+
+    FIX: Removed --gen3d flag which was rebuilding 3D coords from scratch and
+    destroying the docked pose. Now uses -h only (place Hs from geometry)
+    to add hydrogens while preserving all heavy-atom coordinates.
+
+    Returns path to converted file, or original path on failure.
     """
     out = sdf_path.replace(".sdf", "_v2000.sdf")
     if out == sdf_path:
         out = sdf_path + "_v2000.sdf"
-    rc, log = run_cmd(
-        f'obabel "{sdf_path}" -O "{out}" --gen3d -h 2>/dev/null'
-    )
-    # --gen3d keeps 3D coords; -h adds Hs so PoseView can detect H-bonds
+
+    # -h: add Hs from existing 3D geometry (preserves docked pose coords)
+    # NO --gen3d: that rebuilds coords from scratch, destroying the pose
+    rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" -h 2>/dev/null')
     if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
         return out
-    # fallback: try without --gen3d
+
+    # Fallback: plain format conversion, no extra Hs
     rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" 2>/dev/null')
     if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
         return out
+
     return sdf_path
 
 
@@ -1052,15 +1112,12 @@ def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
 #  POSEVIEW REST API
 # ══════════════════════════════════════════════════════════════════════════════
 
-# API base URLs — matches the working notebook exactly
 _PP_BASE          = "https://proteins.plus/api/v2/"
 _PP_UPLOAD        = _PP_BASE + "molecule_handler/upload/"
 _PP_UPLOAD_JOBS   = _PP_BASE + "molecule_handler/upload/jobs/"
 _PP_POSEVIEW      = _PP_BASE + "poseview/"
 _PP_POSEVIEW_JOBS = _PP_BASE + "poseview/jobs/"
 
-# Mimic a real browser — proteins.plus rate-limits automated server IPs
-# (Streamlit Cloud) but not browser requests from user IPs.
 _PP_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1071,8 +1128,6 @@ _PP_HEADERS = {
     "Origin":  "https://proteins.plus",
 }
 
-# Cache: receptor_pdb path → Protoss file_string
-# Avoids re-uploading the full receptor on every PoseView call
 _PP_PROTEIN_CACHE: dict = {}
 
 
@@ -1080,8 +1135,7 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
              max_polls: int = 60) -> dict:
     """
     Poll a ProteinsPlus job until it leaves pending/running state.
-    Returns the final job dict.  Raises RuntimeError on timeout.
-    Mirror of poll_job() from the official notebook.
+    Returns the final job dict. Raises RuntimeError on timeout.
     """
     import requests
     job    = requests.get(poll_url + job_id + "/", headers=_PP_HEADERS, timeout=15).json()
@@ -1104,19 +1158,10 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
 
-    Correct flow — MoleculeHandler only accepts protein files, not ligand SDFs:
+    Flow:
       Step 1 — Upload protein → MoleculeHandler/Protoss → get file_string
-               (clean Protoss-processed PDB text)
-      Step 2 — POST to poseview/ with both as files=:
-                 protein_file = file_string  (Protoss-processed)
-                 ligand_file  = docked SDF   (submitted directly)
+      Step 2 — POST to poseview/ with protein file_string + ligand SDF
       Step 3 — Poll → GET job['image'] SVG
-
-    Mirrors notebook cell 6:
-        files = {'protein_file': open('4agn.pdb'),
-                 'ligand_file':  open('NXG_A_1294.sdf')}
-        requests.post(POSEVIEW, files=files)
-    where 4agn.pdb was previously saved from protein_json['file_string'].
 
     Returns (svg_bytes, error_string) — one will be None.
     """
@@ -1132,8 +1177,6 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             time.sleep(_PV_RETRY_DELAY)
 
         # ── Step 1: Upload protein → MoleculeHandler → file_string ───────────
-        # Cached — full receptor upload + Protoss takes 30-60 s for large PDBs.
-        # We cache by file path so repeated PoseView calls reuse the result.
         try:
             if receptor_pdb in _PP_PROTEIN_CACHE:
                 pdb_text = _PP_PROTEIN_CACHE[receptor_pdb]
@@ -1171,10 +1214,8 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             continue
 
         # ── Step 2: POST to PoseView — protein file_string + ligand SDF ──────
-        # MoleculeHandler does NOT accept standalone ligand uploads (400 error).
-        # Ligand SDF is submitted directly as ligand_file — same as notebook cell 6
-        # where the SDF was obtained from MoleculeHandler's ligand_set file_string.
-        # Convert to V2000 first — PoseView crashes on V3000/malformed SDF.
+        # convert_sdf_to_v2000 now uses -h only (no --gen3d),
+        # preserving docked pose coordinates exactly.
         try:
             ligand_v2000 = convert_sdf_to_v2000(pose_sdf)
             with open(ligand_v2000) as lf:
@@ -1244,7 +1285,6 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
 def warm_poseview_cache(receptor_pdb: str) -> tuple:
     """
     Pre-upload receptor to MoleculeHandler so first PoseView call is instant.
-    Call this right after receptor preparation completes.
     Returns (success: bool, message: str).
     """
     import requests
@@ -1287,13 +1327,6 @@ def clear_poseview_cache():
 def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
     """
     Submit co-crystal reference job to PoseView2 REST API.
-
-    Fixes vs previous version:
-      - Catches all failure status codes
-      - Logs full API response on failure
-      - Retries up to _PV_MAX_RETRIES times
-      - Polls up to _PV_POLL_ATTEMPTS × 2 s = 120 s
-
     Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
@@ -1306,7 +1339,6 @@ def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
 
-        # ── Submit ────────────────────────────────────────────────────────────
         try:
             r = requests.post(
                 _SUBMIT,
@@ -1335,7 +1367,6 @@ def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
             last_error = f"Submission error (attempt {attempt}): {e}"
             continue
 
-        # ── Poll ──────────────────────────────────────────────────────────────
         job_failed = False
         for poll_i in range(_PV_POLL_ATTEMPTS):
             time.sleep(2)
@@ -1361,7 +1392,7 @@ def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
                     return resp.content, None
 
                 elif status_code == 202:
-                    continue  # still processing
+                    continue
 
                 else:
                     last_error = (
@@ -1461,11 +1492,7 @@ def diagnose_poseview() -> dict:
     """
     Test the PoseView API with a known-good minimal PDB + SDF from RCSB,
     completely independent of the user's receptor/ligand files.
-
     Uses PDB 4AGN + its native ligand NXG fetched live from proteins.plus.
-    Returns a dict with keys:
-        server_reachable, upload_ok, poseview_ok, status,
-        job_response, image_url, error, log
     """
     import requests
 
@@ -1481,7 +1508,6 @@ def diagnose_poseview() -> dict:
     }
     log = result["log"]
 
-    # 1. Check server reachable
     try:
         r = requests.get("https://proteins.plus/api/v2/", timeout=10)
         r.raise_for_status()
@@ -1492,7 +1518,6 @@ def diagnose_poseview() -> dict:
         log.append(f"✗ Server unreachable: {e}")
         return result
 
-    # 2. Upload 4AGN via MoleculeHandler to get a clean protein + ligand
     try:
         r = requests.post(
             _PP_UPLOAD, data={"pdb_code": "4agn"}, timeout=30
@@ -1503,7 +1528,6 @@ def diagnose_poseview() -> dict:
         job = _pp_poll(job_id, _PP_UPLOAD_JOBS, poll_interval=1, max_polls=30)
         log.append(f"✓ Upload job: {job.get('status')}")
 
-        # Fetch protein PDB text
         protein_id   = job["output_protein"]
         protein_json = requests.get(
             _PP_BASE + "molecule_handler/proteins/" + protein_id + "/",
@@ -1511,7 +1535,6 @@ def diagnose_poseview() -> dict:
         ).json()
         pdb_text = protein_json["file_string"]
 
-        # Get first ligand SDF text
         ligand_id   = protein_json["ligand_set"][0]
         ligand_json = requests.get(
             _PP_BASE + "molecule_handler/ligands/" + ligand_id + "/",
@@ -1528,7 +1551,6 @@ def diagnose_poseview() -> dict:
         log.append(f"✗ MoleculeHandler failed: {e}")
         return result
 
-    # 3. Submit to PoseView
     try:
         import io as _io
         r = requests.post(
@@ -1549,8 +1571,8 @@ def diagnose_poseview() -> dict:
         log.append(f"✓ PoseView job status: {result['status']}")
 
         if result["status"] == "success":
-            result["image_url"]    = pv_job.get("image", "")
-            result["poseview_ok"]  = True
+            result["image_url"]   = pv_job.get("image", "")
+            result["poseview_ok"] = True
             log.append(f"✓ Image URL: {result['image_url']}")
         else:
             result["error"] = (
@@ -1567,17 +1589,14 @@ def diagnose_poseview() -> dict:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  RDKIT LOCAL 2D INTERACTION DIAGRAM
-#  Based on: greglandrum.github.io/rdkit-blog/posts/2025-09-26-drawing-interactions-1.html
-#  Strategy: add pseudo-atoms for each interacting residue connected to the
-#  nearest ligand atom via ZERO bonds → RDKit 2D layout handles placement.
 # ══════════════════════════════════════════════════════════════════════════════
 
 _HBOND_CUTOFF       = 3.5
 _HYDROPHOBIC_CUTOFF = 4.5
 
-_COLOR_HBOND     = (0.35, 0.61, 0.84, 0.35)   # blue  — H-bond / polar
-_COLOR_HYDROPHOB = (0.17, 0.55, 0.34, 0.35)   # green — hydrophobic
-_COLOR_OTHER     = (0.80, 0.37, 0.54, 0.35)   # pink  — other
+_COLOR_HBOND     = (0.35, 0.61, 0.84, 0.35)
+_COLOR_HYDROPHOB = (0.17, 0.55, 0.34, 0.35)
+_COLOR_OTHER     = (0.80, 0.37, 0.54, 0.35)
 
 _POLAR_RES = {
     "SER","THR","TYR","ASN","GLN","HIS","LYS","ARG",
@@ -1659,37 +1678,18 @@ def draw_interactions_rdkit(
 ) -> bytes:
     """
     Generate a 2D protein–ligand interaction diagram using pure RDKit.
-    Replicates exactly Greg Landrum's blog approach (Sep 2025).
-
-    Key: uses clean 2D SMILES mol + maps 3D pose indices → 2D SMILES indices
-    via substructure match, then calls the exact blog pattern:
-        res.SetProp('atomLabel', name)
-        AddBond(aid, oaid, BondType.ZERO)
-        DrawMolecule(..., highlightAtoms=pts, highlightAtomColors=clrs)
-
     Returns SVG bytes.
     """
     from rdkit import Chem
     from rdkit.Chem import Draw, rdDepictor, AllChem
     import numpy as np
 
-    # ── 1. Clean 2D mol from SMILES — preserving formal charges ──────────────
-    # Dimorphite-DL may produce aromatic-ketone SMILES like "O=c1cc(...)oc2..."
-    # which RDKit's direct parser rejects. Strategy:
-    #   A) Direct parse (works for most SMILES)
-    #   B) sanitize=False + UpdatePropertyCache + SetAromaticity → canonicalize
-    #      (handles aromatic-ketone notation, preserves [O-] [NH3+] etc.)
-    #   C) Fallback to 3D mol (last resort, loses charges)
-
     def _parse_smiles_robust(smi: str):
-        """Return RDKit mol from SMILES, preserving formal charges."""
         if not smi:
             return None
-        # A: direct
         m = Chem.MolFromSmiles(smi)
         if m is not None:
             return m
-        # B: fix aromatic-ketone notation
         try:
             m = Chem.MolFromSmiles(smi, sanitize=False)
             if m is None:
@@ -1697,13 +1697,10 @@ def draw_interactions_rdkit(
             m.UpdatePropertyCache(strict=False)
             Chem.FastFindRings(m)
             Chem.SetAromaticity(m)
-            # Get canonical SMILES from the fixed mol — this preserves charges
             canon = Chem.MolToSmiles(m)
-            # Reparse canonical — now RDKit can handle it cleanly
             m2 = Chem.MolFromSmiles(canon)
             if m2 is not None:
                 return m2
-            # If reparse failed, return the partially sanitized mol
             try:
                 Chem.SanitizeMol(m, catchErrors=True)
             except Exception:
@@ -1715,7 +1712,6 @@ def draw_interactions_rdkit(
     mol2d = _parse_smiles_robust(smiles)
 
     if mol2d is None:
-        # Fallback: strip Hs from 3D mol — charges may be lost
         mol2d = Chem.RemoveHs(lig_mol, sanitize=False)
         try:
             Chem.SanitizeMol(mol2d)
@@ -1725,7 +1721,6 @@ def draw_interactions_rdkit(
     rdDepictor.Compute2DCoords(mol2d)
     n2d = mol2d.GetNumAtoms()
 
-    # ── 2. Map 3D heavy atom indices → 2D SMILES atom indices ─────────────────
     mol3d_noH = Chem.RemoveHs(lig_mol, sanitize=False)
     try:
         Chem.SanitizeMol(mol3d_noH)
@@ -1744,28 +1739,18 @@ def draw_interactions_rdkit(
         pass
 
     if not match_ok:
-        # Substructure match failed (SMILES mismatch between 3D mol and 2D mol).
-        # Fall back: map each 3D atom to the 2D atom with the most similar
-        # atomic number, distributing residues across the molecule instead of
-        # all collapsing to atom 0.
-        from rdkit.Chem import rdMolDescriptors
-        n3 = mol3d_noH.GetNumAtoms()
-        # Build a list of (atomic_num, idx) for mol2d
         mol2d_atoms = [(mol2d.GetAtomWithIdx(i).GetAtomicNum(), i)
                        for i in range(n2d)]
-        used = {}  # atomic_num → cycle index for round-robin assignment
-        for i3d in range(n3):
+        used = {}
+        for i3d in range(mol3d_noH.GetNumAtoms()):
             an = mol3d_noH.GetAtomWithIdx(i3d).GetAtomicNum()
-            # Find all 2D atoms with matching atomic number
             candidates = [i for a, i in mol2d_atoms if a == an]
             if not candidates:
                 candidates = list(range(n2d))
-            # Round-robin to spread across candidates
             k = used.get(an, 0) % len(candidates)
             idx3d_to_2d[i3d] = candidates[k]
             used[an] = k + 1
 
-    # ── 3. Get interacting residues, sort by distance, cap ────────────────────
     residues = get_interacting_residues(receptor_pdb, lig_mol, cutoff=cutoff)
     if not residues:
         d2d = Draw.MolDraw2DSVG(size[0], size[1])
@@ -1794,7 +1779,6 @@ def draw_interactions_rdkit(
 
     residues = sorted(residues, key=_min_dist)[:max_residues]
 
-    # ── 4. Build interactions list: (label, (2d_idx,), color) ─────────────────
     interactions = []
     for res in residues:
         chain = res["chain"]
@@ -1802,7 +1786,6 @@ def draw_interactions_rdkit(
         resn  = res["resn"]
         label = f"{resn} {resid}"
 
-        # Closest 3D atom → map to 2D index
         close_3d = _closest_lig_atoms(lig_mol, receptor_pdb, chain, resid,
                                        max_atoms=1)
         idx3d = close_3d[0] if close_3d else 0
@@ -1816,7 +1799,6 @@ def draw_interactions_rdkit(
 
         interactions.append((label, (idx2d,), color))
 
-    # ── 5. Blog pattern exactly ───────────────────────────────────────────────
     lig_with_interactions = Chem.RWMol(mol2d)
     pts  = []
     clrs = {}
@@ -1832,7 +1814,6 @@ def draw_interactions_rdkit(
 
     rdDepictor.Compute2DCoords(lig_with_interactions)
 
-    # ── 6. Draw — larger canvas, reserved stamp area ──────────────────────────
     w, h = size[0], size[1]
     d2d  = Draw.MolDraw2DSVG(w, h)
     opts = d2d.drawOptions()
@@ -1842,14 +1823,11 @@ def draw_interactions_rdkit(
     opts.highlightRadius     = 0.5
     opts.addAtomIndices      = False
     opts.padding             = 0.15
-    # Formal charges (+1, -1 etc.) are shown automatically by RDKit
-    # as long as the SMILES mol has correct charges (from Dimorphite-DL)
 
-    # Reserve 40px at bottom for stamp — draw molecule in upper portion
     try:
         d2d.SetDrawBounds(0, 0, w, h - 40)
     except AttributeError:
-        pass   # older RDKit — stamp may overlap slightly
+        pass
 
     d2d.DrawMolecule(
         lig_with_interactions,
@@ -1859,7 +1837,6 @@ def draw_interactions_rdkit(
     d2d.FinishDrawing()
     svg_text = d2d.GetDrawingText()
 
-    # ── 7. Stamp: fixed-px pill, always visible ────────────────────────────────
     if title:
         svg_text = _svg_stamp(svg_text, title, w, h)
 
@@ -1875,8 +1852,8 @@ def _svg_stamp(svg_text: str, title: str, w: int, h: int) -> str:
     pad       = int(w * 0.05)
     pill_w    = w - 2 * pad
     pill_h    = 28
-    pill_y    = h - pill_h - 8          # 8px from bottom edge
-    text_y    = pill_y + pill_h // 2    # vertical centre of pill
+    pill_y    = h - pill_h - 8
+    text_y    = pill_y + pill_h // 2
     radius    = pill_h // 2
     stamp = (
         f'<g>'
