@@ -8,10 +8,12 @@ Fixes vs previous version:
   - load_mols_from_sdf: suppress RDKit kekulize noise, fallback sanitize loop
   - fix_sdf_bond_orders: AddHs with addCoords=True preserves docked pose coords
   - convert_sdf_to_v2000: removed --gen3d flag (was destroying docked pose)
-  - call_poseview_v1: handles "failure"/"error" status, logs full API response,
-    retries up to 3 times with 10 s gap, strips H from receptor before upload,
-    polls up to 60 attempts (120 s) with backoff
-  - call_poseview2_ref: same retry + full-response logging
+  - call_poseview_v1: posts receptor PDB *directly* to /api/v2/poseview/ —
+    old MoleculeHandler/Protoss round-trip returned re-protonated coords that
+    mismatched the ligand, causing "failure". Direct POST guarantees consistency.
+    Retries up to 3x, strips explicit Hs from receptor, polls up to 120 s.
+  - warm_poseview_cache: now a no-op (MoleculeHandler pre-upload removed)
+  - call_poseview2_ref: retry + full-response logging
   - Minor: type annotations, cleaner log messages
 """
 
@@ -1158,74 +1160,54 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
 
+    FIX: Posts the receptor PDB **directly** to /api/v2/poseview/ without
+    going through MoleculeHandler/Protoss first.  The previous approach
+    retrieved a Protoss-processed file_string whose atom coordinates or
+    numbering could differ from the original; PoseView's internal geometry
+    checker then found no valid contacts and returned "failure".
+    Posting the exact PDB that Vina used guarantees coordinate consistency.
+
     Flow:
-      Step 1 — Upload protein → MoleculeHandler/Protoss → get file_string
-      Step 2 — POST to poseview/ with protein file_string + ligand SDF
-      Step 3 — Poll → GET job['image'] SVG
+      1 — Convert ligand SDF to V2000 (obabel -h, no --gen3d)
+      2 — Strip explicit Hs from receptor (PoseView adds its own)
+      3 — POST both files directly to /api/v2/poseview/
+      4 — Poll → GET job['image'] SVG
 
     Returns (svg_bytes, error_string) — one will be None.
     """
     import requests
-    import io as _io
-
-    _PROTEINS = _PP_BASE + "molecule_handler/proteins/"
 
     last_error = "Unknown error"
+
+    # Strip receptor Hs once (cached alongside the original path)
+    rec_noH = receptor_pdb.replace(".pdb", "_pv_noH.pdb")
+    if not os.path.exists(rec_noH) or os.path.getsize(rec_noH) < 100:
+        _strip_h_from_pdb(receptor_pdb, rec_noH)
+    rec_to_send = (
+        rec_noH
+        if os.path.exists(rec_noH) and os.path.getsize(rec_noH) > 100
+        else receptor_pdb
+    )
 
     for attempt in range(1, _PV_MAX_RETRIES + 1):
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
 
-        # ── Step 1: Upload protein → MoleculeHandler → file_string ───────────
-        try:
-            if receptor_pdb in _PP_PROTEIN_CACHE:
-                pdb_text = _PP_PROTEIN_CACHE[receptor_pdb]
-            else:
-                with open(receptor_pdb) as f:
-                    r = requests.post(
-                        _PP_UPLOAD,
-                        files={"protein_file": f},
-                        headers=_PP_HEADERS,
-                        timeout=60,
-                    )
-                r.raise_for_status()
-                job_id = r.json().get("job_id") or r.json().get("id")
-                if not job_id:
-                    last_error = f"Protein upload: no job_id in {r.json()}"
-                    continue
-                job = _pp_poll(job_id, _PP_UPLOAD_JOBS)
-                if str(job.get("status", "")).lower() != "success":
-                    last_error = f"Protein MoleculeHandler failed (attempt {attempt}): {job}"
-                    continue
-                protein_id   = job["output_protein"]
-                protein_json = requests.get(
-                    _PROTEINS + protein_id + "/", headers=_PP_HEADERS, timeout=15
-                ).json()
-                pdb_text = protein_json.get("file_string", "")
-                if not pdb_text:
-                    last_error = (
-                        f"protein_json missing file_string. "
-                        f"Keys: {list(protein_json.keys())}"
-                    )
-                    continue
-                _PP_PROTEIN_CACHE[receptor_pdb] = pdb_text
-        except Exception as e:
-            last_error = f"Protein upload failed (attempt {attempt}): {e}"
-            continue
-
-        # ── Step 2: POST to PoseView — protein file_string + ligand SDF ──────
-        # convert_sdf_to_v2000 now uses -h only (no --gen3d),
-        # preserving docked pose coordinates exactly.
+        # ── Step 1: Convert ligand SDF → V2000 ───────────────────────────────
         try:
             ligand_v2000 = convert_sdf_to_v2000(pose_sdf)
-            with open(ligand_v2000) as lf:
+        except Exception as e:
+            last_error = f"SDF V2000 conversion failed (attempt {attempt}): {e}"
+            continue
+
+        # ── Step 2: POST receptor + ligand directly to PoseView ───────────────
+        try:
+            with open(rec_to_send) as rf, open(ligand_v2000) as lf:
                 r = requests.post(
                     _PP_POSEVIEW,
                     files={
-                        "protein_file": ("receptor.pdb",
-                                         _io.StringIO(pdb_text),
-                                         "chemical/x-pdb"),
-                        "ligand_file":  lf,
+                        "protein_file": ("receptor.pdb", rf, "chemical/x-pdb"),
+                        "ligand_file":  ("ligand.sdf",   lf, "chemical/x-mdl-sdfile"),
                     },
                     headers=_PP_HEADERS,
                     timeout=30,
@@ -1284,39 +1266,11 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
 
 def warm_poseview_cache(receptor_pdb: str) -> tuple:
     """
-    Pre-upload receptor to MoleculeHandler so first PoseView call is instant.
-    Returns (success: bool, message: str).
+    No-op — call_poseview_v1 now posts the receptor directly to PoseView
+    without a MoleculeHandler/Protoss pre-upload step, so there is nothing
+    to pre-cache.  Kept for API compatibility with app.py.
     """
-    import requests
-    _PROTEINS = _PP_BASE + "molecule_handler/proteins/"
-    try:
-        if receptor_pdb in _PP_PROTEIN_CACHE:
-            return True, "Already cached"
-        with open(receptor_pdb) as f:
-            r = requests.post(
-                _PP_UPLOAD,
-                files={"protein_file": f},
-                headers=_PP_HEADERS,
-                timeout=60,
-            )
-        r.raise_for_status()
-        job_id = r.json().get("job_id") or r.json().get("id")
-        if not job_id:
-            return False, f"No job_id: {r.json()}"
-        job = _pp_poll(job_id, _PP_UPLOAD_JOBS)
-        if str(job.get("status", "")).lower() != "success":
-            return False, f"Upload failed: {job}"
-        protein_id   = job["output_protein"]
-        protein_json = requests.get(
-            _PROTEINS + protein_id + "/", headers=_PP_HEADERS, timeout=15
-        ).json()
-        pdb_text = protein_json.get("file_string", "")
-        if not pdb_text:
-            return False, "No file_string in response"
-        _PP_PROTEIN_CACHE[receptor_pdb] = pdb_text
-        return True, f"Cached ({len(pdb_text)} chars)"
-    except Exception as e:
-        return False, str(e)
+    return True, "Direct POST mode — no pre-upload needed"
 
 
 def clear_poseview_cache():
