@@ -1,5 +1,5 @@
 """
-core_2d_diagram_patch.py
+core.py
 ========================
 Drop-in replacement for the 2D interaction diagram section of core.py.
 All measurements verified against pose1_interaction.svg (800 × 758.84 px,
