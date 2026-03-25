@@ -1647,274 +1647,865 @@ def diagnose_poseview() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  RDKIT LOCAL 2D INTERACTION DIAGRAM
+#  CUSTOM 2D INTERACTION DIAGRAM
+#  Detects: H-bond, hydrophobic, π-π, cation-π, ionic, metal, halogen bond
+#  Pure Python + RDKit + ProDy — zero server dependency
 # ══════════════════════════════════════════════════════════════════════════════
 
-_HBOND_CUTOFF       = 3.5
-_HYDROPHOBIC_CUTOFF = 4.5
+_ITYPE_PRIORITY = [
+    "metal", "ionic", "halogen", "hbond_to_halogen", "hbond", "pi_pi", "cation_pi", "hydrophobic"
+]
 
-_COLOR_HBOND     = (0.35, 0.61, 0.84, 0.35)
-_COLOR_HYDROPHOB = (0.17, 0.55, 0.34, 0.35)
-_COLOR_OTHER     = (0.80, 0.37, 0.54, 0.35)
-
-_POLAR_RES = {
-    "SER","THR","TYR","ASN","GLN","HIS","LYS","ARG",
-    "ASP","GLU","CYS","TRP","HOH","WAT",
+_ITYPE_STYLE = {
+    "hbond":       dict(stroke="#3B8BD4", fill="#E6F1FB", border="#185FA5",
+                        text="#0C447C",  dash="5,3",      label="H-bond"),
+    "hydrophobic": dict(stroke="#1D9E75", fill="#E1F5EE", border="#0F6E56",
+                        text="#085041",  dash="",          label="Hydrophobic"),
+    "pi_pi":       dict(stroke="#7F77DD", fill="#EEEDFE", border="#534AB7",
+                        text="#3C3489",  dash="4,3",       label="π-π stack"),
+    "cation_pi":   dict(stroke="#BA7517", fill="#FAEEDA", border="#854F0B",
+                        text="#633806",  dash="4,3",       label="Cation-π"),
+    "ionic":       dict(stroke="#D85A30", fill="#FAECE7", border="#993C1D",
+                        text="#712B13",  dash="6,2,2,2",   label="Ionic"),
+    "metal":       dict(stroke="#EF9F27", fill="#FAEEDA", border="#BA7517",
+                        text="#633806",  dash="2,2",        label="Metal"),
+    "halogen":     dict(stroke="#D4537E", fill="#FBEAF0", border="#993556",
+                        text="#72243E",  dash="4,2",        label="Halogen bond"),
+    "hbond_to_halogen": dict(stroke="#7F77DD", fill="#EEEDFE", border="#534AB7",
+                        text="#3C3489",  dash="3,2,1,2",    label="H···Halogen"),
 }
-_HYDROPHOBIC_RES = {"ALA","VAL","ILE","LEU","MET","PHE","TRP","PRO","GLY"}
+
+_ATOM_STYLE = {
+    "N":  dict(fill="#B5D4F4", stroke="#185FA5", tc="#0C447C"),
+    "O":  dict(fill="#F09595", stroke="#A32D2D", tc="#501313"),
+    "S":  dict(fill="#FAC775", stroke="#BA7517", tc="#633806"),
+    "F":  dict(fill="#9FE1CB", stroke="#0F6E56", tc="#04342C"),
+    "CL": dict(fill="#9FE1CB", stroke="#0F6E56", tc="#04342C"),
+    "BR": dict(fill="#F5C4B3", stroke="#993C1D", tc="#4A1B0C"),
+    "I":  dict(fill="#CECBF6", stroke="#534AB7", tc="#26215C"),
+    "P":  dict(fill="#FAC775", stroke="#854F0B", tc="#412402"),
+}
+
+_AROM_ATOMS = {"PHE", "TYR", "TRP", "HIS"}
+_AROM_ATOM_NAMES = {
+    "CG","CD1","CD2","CE1","CE2","CZ",
+    "ND1","NE2","CE3","CZ2","CZ3","CH2",
+}
+_METALS = {
+    "MG","ZN","CA","MN","FE","CU","CO","NI","CD","HG","NA","K",
+}
 
 
-def _classify_interaction(receptor_pdb: str, lig_mol, chain: str,
-                          resid: int) -> str:
-    """Return 'hbond', 'hydrophobic', or 'other' for a residue–ligand pair."""
-    try:
-        import numpy as np
-        from prody import parsePDB
-
-        rec = parsePDB(receptor_pdb)
-        res = rec.select(f"chain {chain} resnum {resid}")
-        if res is None:
-            return "other"
-
-        conf    = lig_mol.GetConformer()
-        lig_xyz = np.array([
+def _get_aromatic_ring_data(mol, conf):
+    """
+    Return list of (centroid: ndarray, normal: ndarray) for each aromatic ring
+    in mol using the provided 3D conformer.
+    """
+    import numpy as np
+    results = []
+    ring_info = mol.GetRingInfo()
+    for ring in ring_info.AtomRings():
+        if len(ring) not in (5, 6):
+            continue
+        if not all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in ring):
+            continue
+        coords = np.array([
             [conf.GetAtomPosition(i).x,
              conf.GetAtomPosition(i).y,
              conf.GetAtomPosition(i).z]
-            for i in range(lig_mol.GetNumAtoms())
+            for i in ring
         ])
-        res_xyz  = res.getCoords()
-        min_dist = min(
-            float(np.linalg.norm(lp - rp))
-            for lp in lig_xyz for rp in res_xyz
+        centroid = coords.mean(axis=0)
+        v1 = coords[1] - coords[0]
+        v2 = coords[2] - coords[0]
+        normal = np.cross(v1, v2)
+        n = np.linalg.norm(normal)
+        if n > 0:
+            normal /= n
+        results.append((centroid, normal))
+    return results
+
+
+def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
+                              cutoff: float = 4.5) -> list:
+    """
+    Geometry-based detection of all 7 interaction types.
+    Returns list of dicts: resname, chain, resid, itype, distance, lig_atom_idx.
+    """
+    import numpy as np
+    from prody import parsePDB
+
+    rec = parsePDB(receptor_pdb)
+    if rec is None:
+        return []
+
+    rec_coords   = rec.getCoords()
+    rec_resnames = rec.getResnames()
+    rec_chains   = rec.getChids()
+    rec_resids   = rec.getResnums()
+    rec_names    = rec.getNames()
+    rec_elements = rec.getElements()
+
+    conf   = lig_mol_3d.GetConformer()
+    n_lig  = lig_mol_3d.GetNumAtoms()
+    lig_xyz = np.array([
+        [conf.GetAtomPosition(i).x,
+         conf.GetAtomPosition(i).y,
+         conf.GetAtomPosition(i).z]
+        for i in range(n_lig)
+    ])
+    lig_atoms    = [lig_mol_3d.GetAtomWithIdx(i) for i in range(n_lig)]
+    lig_el       = [a.GetSymbol().upper() for a in lig_atoms]
+    lig_aromatic = [a.GetIsAromatic()         for a in lig_atoms]
+    lig_charge   = [a.GetFormalCharge()        for a in lig_atoms]
+
+    POLAR    = {"N", "O", "S", "F"}
+    HYDRO_L  = {"C", "S", "CL", "BR", "I", "F"}
+    HYDRO_RN = {
+        "ALA","VAL","ILE","LEU","MET","PHE","TRP",
+        "PRO","GLY","TYR","HIS",
+    }
+
+    results = []
+
+    # Pre-compute per-ligand-atom distances to all receptor atoms (batch)
+    # Limit scan to atoms within broad prefilter
+    for j in range(len(rec_coords)):
+        rn   = rec_resnames[j].strip()
+        ch   = rec_chains[j].strip()
+        ri   = int(rec_resids[j])
+        an   = rec_names[j].strip()
+        el   = (rec_elements[j].strip().upper()
+                if rec_elements[j] and rec_elements[j].strip()
+                else an[:1].upper())
+        rp   = rec_coords[j]
+
+        dists    = np.linalg.norm(lig_xyz - rp, axis=1)
+        min_dist = float(dists.min())
+        min_idx  = int(dists.argmin())
+
+        if min_dist > max(cutoff + 1.0, 5.6):
+            continue
+
+        # ── H-bond ──────────────────────────────────────────────────────────
+        if el in POLAR:
+            for i in range(n_lig):
+                if lig_el[i] not in POLAR:
+                    continue
+                d = float(dists[i])
+                if d < 3.5:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                                        itype="hbond", distance=d,
+                                        lig_atom_idx=i))
+                    break
+
+        # ── Hydrophobic ──────────────────────────────────────────────────────
+        if el in {"C", "S", "CL", "BR", "I"} and rn in HYDRO_RN:
+            for i in range(n_lig):
+                if lig_el[i] not in HYDRO_L:
+                    continue
+                d = float(dists[i])
+                if d < cutoff:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                                        itype="hydrophobic", distance=d,
+                                        lig_atom_idx=i))
+                    break
+
+        # ── Ionic ────────────────────────────────────────────────────────────
+        if rn in {"ASP", "GLU"} and el == "O":
+            for i in range(n_lig):
+                if lig_charge[i] > 0 and float(dists[i]) < 4.0:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                                        itype="ionic", distance=float(dists[i]),
+                                        lig_atom_idx=i))
+                    break
+        if rn in {"LYS", "ARG"} and el == "N":
+            for i in range(n_lig):
+                if lig_charge[i] < 0 and float(dists[i]) < 4.0:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                                        itype="ionic", distance=float(dists[i]),
+                                        lig_atom_idx=i))
+                    break
+
+        # ── Metal coordination ───────────────────────────────────────────────
+        if rn.strip().upper() in _METALS or el in _METALS:
+            if min_dist < 2.8:
+                results.append(dict(
+                    resname=rn if rn.strip().upper() in _METALS else el.capitalize(),
+                    chain=ch, resid=ri,
+                    itype="metal", distance=min_dist,
+                    lig_atom_idx=min_idx,
+                ))
+
+    # ── π-π stacking ─────────────────────────────────────────────────────────
+    lig_rings = _get_aromatic_ring_data(lig_mol_3d, conf)
+    if lig_rings:
+        for j in range(len(rec_coords)):
+            rn = rec_resnames[j].strip()
+            ch = rec_chains[j].strip()
+            ri = int(rec_resids[j])
+            an = rec_names[j].strip()
+            if rn not in _AROM_ATOMS or an not in _AROM_ATOM_NAMES:
+                continue
+            rp = rec_coords[j]
+            for lig_centroid, lig_normal in lig_rings:
+                dist = float(np.linalg.norm(lig_centroid - rp))
+                if dist < 5.5:
+                    # Closest aromatic ligand atom
+                    best_i = min(
+                        (i for i in range(n_lig) if lig_aromatic[i]),
+                        key=lambda i: float(np.linalg.norm(lig_xyz[i] - rp)),
+                        default=0,
+                    )
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                                        itype="pi_pi", distance=dist,
+                                        lig_atom_idx=best_i))
+                    break
+
+    # ── Cation-π ─────────────────────────────────────────────────────────────
+    if lig_rings:
+        for j in range(len(rec_coords)):
+            rn = rec_resnames[j].strip()
+            ch = rec_chains[j].strip()
+            ri = int(rec_resids[j])
+            el = (rec_elements[j].strip().upper()
+                  if rec_elements[j] and rec_elements[j].strip()
+                  else rec_names[j][:1].upper())
+            if rn not in {"LYS", "ARG"} or el != "N":
+                continue
+            rp = rec_coords[j]
+            for lig_centroid, _ in lig_rings:
+                dist = float(np.linalg.norm(lig_centroid - rp))
+                if dist < 5.0:
+                    best_i = min(
+                        (i for i in range(n_lig) if lig_aromatic[i]),
+                        key=lambda i: float(np.linalg.norm(lig_xyz[i] - rp)),
+                        default=0,
+                    )
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                                        itype="cation_pi", distance=dist,
+                                        lig_atom_idx=best_i))
+                    break
+
+    # ── VDW radii (Å) for halogen geometry checks ──────────────────────────
+    _VDW = {
+        "H":  1.20, "C":  1.70, "N":  1.55, "O":  1.52, "S":  1.80,
+        "P":  1.80, "F":  1.47, "CL": 1.75, "BR": 1.85, "I":  1.98,
+    }
+
+    # ── Halogen bond  C-X···A  (sigma-hole donor) ────────────────────────────
+    #   X in {Cl, Br, I}   (F excluded — sigma-hole too weak)
+    #   A in {O, N, S, P, F, Cl, Br, I, aromatic-π}
+    #   d(X,A) < vdw(X) + vdw(A)
+    #   angle(R-X···A) >= 140°
+    _XB_DONORS   = {17: "CL", 35: "BR", 53: "I"}
+    _XB_ACCEPTORS = {"O", "N", "S", "P", "F", "CL", "BR", "I"}
+
+    for i in range(n_lig):
+        ano = lig_atoms[i].GetAtomicNum()
+        if ano not in _XB_DONORS:
+            continue
+        x_el  = _XB_DONORS[ano]
+        x_pos = lig_xyz[i]
+        vdw_x = _VDW.get(x_el, 1.80)
+
+        # R = the carbon bonded to X (defines sigma-hole direction)
+        r_idx = next(
+            (nb.GetIdx() for nb in lig_atoms[i].GetNeighbors()
+             if nb.GetAtomicNum() == 6),
+            None,
         )
-        res_names = set(res.getResnames())
+        if r_idx is None:
+            continue
+        r_pos = lig_xyz[r_idx]
 
-        if any(r in _POLAR_RES for r in res_names) and min_dist <= _HBOND_CUTOFF:
-            return "hbond"
-        if any(r in _HYDROPHOBIC_RES for r in res_names):
-            return "hydrophobic"
-        return "other"
-    except Exception:
-        return "other"
+        for j in range(len(rec_coords)):
+            a_el = (rec_elements[j].strip().upper()
+                    if rec_elements[j] and rec_elements[j].strip()
+                    else rec_names[j][:1].upper())
+
+            # Accept aromatic-π residues via their C atoms too
+            is_arom_pi = (
+                rec_resnames[j].strip() in _AROM_ATOMS
+                and rec_names[j].strip() in _AROM_ATOM_NAMES
+                and a_el == "C"
+            )
+            if a_el not in _XB_ACCEPTORS and not is_arom_pi:
+                continue
+
+            a_pos  = rec_coords[j]
+            dist   = float(np.linalg.norm(x_pos - a_pos))
+            vdw_a  = _VDW.get(a_el, 1.70)
+            if dist > vdw_x + vdw_a:
+                continue
+
+            # Angle  R-X···A  at X
+            vRX = r_pos - x_pos
+            vXA = a_pos - x_pos
+            cos_a = np.dot(vRX, vXA) / (
+                np.linalg.norm(vRX) * np.linalg.norm(vXA) + 1e-9
+            )
+            angle = float(np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0))))
+            if angle >= 140:
+                rn = rec_resnames[j].strip()
+                ch = rec_chains[j].strip()
+                ri = int(rec_resids[j])
+                results.append(dict(resname=rn, chain=ch, resid=ri,
+                                    itype="halogen", distance=dist,
+                                    lig_atom_idx=i))
+
+    # ── H-bond to halogen  D-H···X  (halogen as acceptor) ──────────────────
+    #   X in {F, Cl, Br, I}  on ligand
+    #   D (donor heavy atom) in {O, N, S, activated_C}  on protein
+    #   d(H, X) < vdw(H) + vdw(X)           — distance criterion
+    #   angle(D-H···X) >= 120°               — linearity at H
+    #   70 <= angle(R-X···H) <= 120°         — lone-pair cone at X
+    _HBX_DONORS_REC  = {"O", "N", "S"}
+    _HBX_ACC_ANO     = {9: "F", 17: "CL", 35: "BR", 53: "I"}
+
+    for i in range(n_lig):
+        ano = lig_atoms[i].GetAtomicNum()
+        if ano not in _HBX_ACC_ANO:
+            continue
+        x_el   = _HBX_ACC_ANO[ano]
+        x_pos  = lig_xyz[i]
+        vdw_x  = _VDW.get(x_el, 1.80)
+
+        # R on ligand bonded to X (defines lone-pair cone)
+        r_lig_idx = next(
+            (nb.GetIdx() for nb in lig_atoms[i].GetNeighbors()),
+            None,
+        )
+        if r_lig_idx is None:
+            continue
+        r_lig_pos = lig_xyz[r_lig_idx]
+
+        for j in range(len(rec_coords)):
+            # We need explicit H on the protein — skip heavy-atom-only PDBs
+            h_el = (rec_elements[j].strip().upper()
+                    if rec_elements[j] and rec_elements[j].strip()
+                    else rec_names[j][:1].upper())
+            if h_el != "H":
+                continue
+
+            h_pos  = rec_coords[j]
+            dist_hx = float(np.linalg.norm(h_pos - x_pos))
+            if dist_hx > _VDW["H"] + vdw_x:
+                continue
+
+            # Find the donor heavy atom D bonded to H
+            # (closest N/O/S within 1.15 Å of H)
+            d_pos = None
+            for k in range(len(rec_coords)):
+                if k == j:
+                    continue
+                d_el_k = (rec_elements[k].strip().upper()
+                          if rec_elements[k] and rec_elements[k].strip()
+                          else rec_names[k][:1].upper())
+                if d_el_k not in _HBX_DONORS_REC:
+                    continue
+                if float(np.linalg.norm(rec_coords[k] - h_pos)) < 1.15:
+                    d_pos = rec_coords[k]
+                    break
+            if d_pos is None:
+                continue
+
+            # Angle D-H···X at H >= 120°
+            vHD = d_pos  - h_pos
+            vHX = x_pos  - h_pos
+            cos_dhx = np.dot(vHD, vHX) / (
+                np.linalg.norm(vHD) * np.linalg.norm(vHX) + 1e-9
+            )
+            ang_dhx = float(np.degrees(np.arccos(np.clip(cos_dhx, -1.0, 1.0))))
+            if ang_dhx < 120:
+                continue
+
+            # Angle R-X···H at X in [70, 120]  (lone-pair cone)
+            vXR = r_lig_pos - x_pos
+            vXH = h_pos     - x_pos
+            cos_rxh = np.dot(vXR, vXH) / (
+                np.linalg.norm(vXR) * np.linalg.norm(vXH) + 1e-9
+            )
+            ang_rxh = float(np.degrees(np.arccos(np.clip(cos_rxh, -1.0, 1.0))))
+            if not (70 <= ang_rxh <= 120):
+                continue
+
+            rn = rec_resnames[j].strip()
+            ch = rec_chains[j].strip()
+            ri = int(rec_resids[j])
+            results.append(dict(resname=rn, chain=ch, resid=ri,
+                                itype="hbond_to_halogen", distance=dist_hx,
+                                lig_atom_idx=i))
+
+    return results
 
 
-def _closest_lig_atoms(lig_mol, receptor_pdb: str,
-                       chain: str, resid: int,
-                       max_atoms: int = 2) -> list:
-    """Return indices of up to max_atoms ligand atoms closest to residue."""
-    try:
-        import numpy as np
-        from prody import parsePDB
-
-        rec = parsePDB(receptor_pdb)
-        res = rec.select(f"chain {chain} resnum {resid}")
-        if res is None:
-            return [0]
-
-        conf    = lig_mol.GetConformer()
-        res_xyz = res.getCoords()
-        dists   = []
-        for i in range(lig_mol.GetNumAtoms()):
-            pos = conf.GetAtomPosition(i)
-            lp  = np.array([pos.x, pos.y, pos.z])
-            d   = min(float(np.linalg.norm(lp - rp)) for rp in res_xyz)
-            dists.append((d, i))
-        dists.sort()
-        return [idx for _, idx in dists[:max_atoms]]
-    except Exception:
-        return [0]
-
-
-def draw_interactions_rdkit(
-    lig_mol,
-    receptor_pdb: str,
-    smiles: str,
-    title: str = "",
-    cutoff: float = 3.5,
-    size: tuple = (500, 500),
-    max_residues: int = 10,
-) -> bytes:
+def _deduplicate_interactions(interactions: list) -> list:
     """
-    Generate a 2D protein–ligand interaction diagram using pure RDKit.
-    Returns SVG bytes.
+    Keep one interaction per (chain, resid) — highest-priority type.
+    Where two entries tie on type, keep the shorter distance.
     """
-    from rdkit import Chem
-    from rdkit.Chem import Draw, rdDepictor, AllChem
+    priority = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    best: dict = {}
+    for ix in interactions:
+        key = (ix["chain"], ix["resid"])
+        if key not in best:
+            best[key] = ix
+        else:
+            p_new = priority.get(ix["itype"],   99)
+            p_old = priority.get(best[key]["itype"], 99)
+            if p_new < p_old or (p_new == p_old and ix["distance"] < best[key]["distance"]):
+                best[key] = ix
+    return list(best.values())
+
+
+def _compute_svg_coords(mol2d, cx: float, cy: float,
+                         target_size: float = 200) -> dict:
+    """
+    Map 2D RDKit conformer atom coords → SVG (x, y).
+    Y-axis is flipped (RDKit y up → SVG y down).
+    Returns {atom_idx: (svg_x, svg_y)}.
+    """
+    from rdkit.Chem import rdDepictor
+    if mol2d.GetNumConformers() == 0:
+        rdDepictor.Compute2DCoords(mol2d)
+    conf = mol2d.GetConformer()
+    n    = mol2d.GetNumAtoms()
+    if n == 0:
+        return {}
+    xs = [conf.GetAtomPosition(i).x for i in range(n)]
+    ys = [conf.GetAtomPosition(i).y for i in range(n)]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    span  = max(max_x - min_x, max_y - min_y, 0.01)
+    scale = target_size / span
+    mid_x = (min_x + max_x) / 2
+    mid_y = (min_y + max_y) / 2
+    return {
+        i: (cx + (xs[i] - mid_x) * scale,
+            cy - (ys[i] - mid_y) * scale)
+        for i in range(n)
+    }
+
+
+def _place_residues(interactions: list, svg_coords: dict,
+                    cx: float, cy: float,
+                    R: float = 235,
+                    box_w: float = 120, box_h: float = 44) -> list:
+    """
+    Place residue label boxes radially around (cx, cy) at radius R.
+    Runs iterative collision-avoidance pushes.
+    Returns list of placement dicts (augmented interaction dicts).
+    """
     import numpy as np
 
-    def _parse_smiles_robust(smi: str):
-        if not smi:
-            return None
-        m = Chem.MolFromSmiles(smi)
-        if m is not None:
-            return m
-        try:
-            m = Chem.MolFromSmiles(smi, sanitize=False)
-            if m is None:
-                return None
-            m.UpdatePropertyCache(strict=False)
-            Chem.FastFindRings(m)
-            Chem.SetAromaticity(m)
-            canon = Chem.MolToSmiles(m)
-            m2 = Chem.MolFromSmiles(canon)
-            if m2 is not None:
-                return m2
-            try:
-                Chem.SanitizeMol(m, catchErrors=True)
-            except Exception:
-                pass
-            return m
-        except Exception:
-            return None
+    placements = []
+    for ix in interactions:
+        ai   = ix.get("lig_atom_idx", 0)
+        ax, ay = svg_coords.get(ai, (cx, cy))
+        dx, dy = ax - cx, ay - cy
+        angle  = float(np.arctan2(dy, dx)) if (dx != 0 or dy != 0) else 0.0
+        placements.append({
+            **ix,
+            "angle": angle,
+            "bx": cx + R * np.cos(angle),
+            "by": cy + R * np.sin(angle),
+            "box_w": box_w,
+            "box_h": box_h,
+        })
 
-    mol2d = _parse_smiles_robust(smiles)
+    # Iterative angular push-apart
+    for _ in range(60):
+        moved = False
+        for a in range(len(placements)):
+            for b in range(a + 1, len(placements)):
+                pa, pb = placements[a], placements[b]
+                overlap_x = abs(pb["bx"] - pa["bx"]) < box_w + 8
+                overlap_y = abs(pb["by"] - pa["by"]) < box_h + 6
+                if overlap_x and overlap_y:
+                    push = 0.07  # radians per step
+                    placements[a]["angle"] -= push
+                    placements[b]["angle"] += push
+                    placements[a]["bx"] = cx + R * np.cos(placements[a]["angle"])
+                    placements[a]["by"] = cy + R * np.sin(placements[a]["angle"])
+                    placements[b]["bx"] = cx + R * np.cos(placements[b]["angle"])
+                    placements[b]["by"] = cy + R * np.sin(placements[b]["angle"])
+                    moved = True
+        if not moved:
+            break
 
+    return placements
+
+
+def _box_edge_point(bx: float, by: float, bw: float, bh: float,
+                    tx: float, ty: float):
+    """Return the point on box edge closest to target (tx, ty)."""
+    dx, dy = tx - bx, ty - by
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return bx, by
+    # Clip to box edge
+    sx = abs(dx) / (bw / 2 + 1e-9)
+    sy = abs(dy) / (bh / 2 + 1e-9)
+    if sx >= sy:
+        t = (bw / 2) / (abs(dx) + 1e-9)
+    else:
+        t = (bh / 2) / (abs(dy) + 1e-9)
+    return bx + dx * t, by + dy * t
+
+
+def _render_diagram_svg(mol2d, svg_coords: dict, placements: list,
+                         title: str, W: int, H: int) -> str:
+    """Build and return the complete SVG string."""
+    import numpy as np
+    from rdkit import Chem
+
+    parts = []
+    parts.append(f'<svg width="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">')
+    parts.append('<defs>')
+    parts.append(
+        '<marker id="iarr" viewBox="0 0 10 10" refX="8" refY="5" '
+        'markerWidth="5" markerHeight="5" orient="auto-start-reverse">'
+        '<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" '
+        'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+        '</marker>'
+    )
+    parts.append('</defs>')
+
+    # Title
+    if title:
+        esc = (title.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+        parts.append(
+            f'<text x="{W//2}" y="22" text-anchor="middle" '
+            f'font-family="system-ui,sans-serif" font-size="12" '
+            f'fill="var(--color-text-secondary,#57606a)">{esc}</text>'
+        )
+
+    # ── Interaction lines (drawn first — behind everything) ──────────────────
+    for p in placements:
+        st   = _ITYPE_STYLE.get(p["itype"], _ITYPE_STYLE["hydrophobic"])
+        ai   = p.get("lig_atom_idx", 0)
+        lx, ly = svg_coords.get(ai, (W//2, H//2))
+        bx, by = p["bx"], p["by"]
+        ex, ey = _box_edge_point(bx, by, p["box_w"], p["box_h"], lx, ly)
+        dash   = f' stroke-dasharray="{st["dash"]}"' if st["dash"] else ""
+        parts.append(
+            f'<line x1="{lx:.1f}" y1="{ly:.1f}" x2="{ex:.1f}" y2="{ey:.1f}"'
+            f' stroke="{st["stroke"]}" stroke-width="1.8"{dash} opacity="0.85"/>'
+        )
+
+    # ── Bonds ────────────────────────────────────────────────────────────────
+    ring_info = mol2d.GetRingInfo()
+    arom_bonds = set()
+    for ring in ring_info.AtomRings():
+        if all(mol2d.GetAtomWithIdx(i).GetIsAromatic() for i in ring):
+            for k in range(len(ring)):
+                arom_bonds.add(frozenset([ring[k], ring[(k+1) % len(ring)]]))
+
+    color = "var(--color-text-primary,#24292f)"
+    for bond in mol2d.GetBonds():
+        i1, i2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        x1, y1 = svg_coords.get(i1, (W//2, H//2))
+        x2, y2 = svg_coords.get(i2, (W//2, H//2))
+        bt = bond.GetBondType()
+        if frozenset([i1, i2]) in arom_bonds:
+            parts.append(
+                f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}"'
+                f' stroke="{color}" stroke-width="1.8" opacity="0.9"/>'
+            )
+        elif bt == Chem.BondType.DOUBLE:
+            dx, dy = x2 - x1, y2 - y1
+            L = np.sqrt(dx*dx + dy*dy) + 1e-9
+            px, py = -dy/L*2.2, dx/L*2.2
+            for sign in (1, -1):
+                parts.append(
+                    f'<line x1="{x1+px*sign:.1f}" y1="{y1+py*sign:.1f}"'
+                    f' x2="{x2+px*sign:.1f}" y2="{y2+py*sign:.1f}"'
+                    f' stroke="{color}" stroke-width="1.4" opacity="0.9"/>'
+                )
+        elif bt == Chem.BondType.TRIPLE:
+            dx, dy = x2 - x1, y2 - y1
+            L = np.sqrt(dx*dx + dy*dy) + 1e-9
+            px, py = -dy/L*3.0, dx/L*3.0
+            for mult in (-1, 0, 1):
+                parts.append(
+                    f'<line x1="{x1+px*mult:.1f}" y1="{y1+py*mult:.1f}"'
+                    f' x2="{x2+px*mult:.1f}" y2="{y2+py*mult:.1f}"'
+                    f' stroke="{color}" stroke-width="1.3" opacity="0.9"/>'
+                )
+        else:
+            parts.append(
+                f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}"'
+                f' stroke="{color}" stroke-width="1.8" opacity="0.9"/>'
+            )
+
+    # ── Aromatic ring circles (dashed inner circle convention) ───────────────
+    for ring in ring_info.AtomRings():
+        if not all(mol2d.GetAtomWithIdx(i).GetIsAromatic() for i in ring):
+            continue
+        rcoords = [svg_coords.get(i, (W//2, H//2)) for i in ring]
+        rcx = sum(x for x, y in rcoords) / len(rcoords)
+        rcy = sum(y for x, y in rcoords) / len(rcoords)
+        avg_r = (sum(np.sqrt((x-rcx)**2+(y-rcy)**2) for x,y in rcoords)
+                 / len(rcoords))
+        cr = avg_r * 0.55
+        parts.append(
+            f'<circle cx="{rcx:.1f}" cy="{rcy:.1f}" r="{cr:.1f}"'
+            f' fill="none" stroke="{color}" stroke-width="1.2"'
+            f' stroke-dasharray="3,2" opacity="0.65"/>'
+        )
+
+    # ── Heteroatom labels ────────────────────────────────────────────────────
+    for i in range(mol2d.GetNumAtoms()):
+        atom = mol2d.GetAtomWithIdx(i)
+        sym  = atom.GetSymbol()
+        if sym == "C":
+            continue
+        ax, ay = svg_coords.get(i, (W//2, H//2))
+        st  = _ATOM_STYLE.get(sym.upper(),
+                               dict(fill="#D3D1C7", stroke="#5F5E5A", tc="#2C2C2A"))
+        rad = 10 if len(sym) == 1 else 13
+        parts.append(
+            f'<circle cx="{ax:.1f}" cy="{ay:.1f}" r="{rad}" '
+            f'fill="{st["fill"]}" stroke="{st["stroke"]}" stroke-width="1.5"/>'
+        )
+        parts.append(
+            f'<text x="{ax:.1f}" y="{ay:.1f}" text-anchor="middle" '
+            f'dominant-baseline="central" '
+            f'font-family="system-ui,sans-serif" font-size="11" '
+            f'font-weight="500" fill="{st["tc"]}">{sym}</text>'
+        )
+        fc = atom.GetFormalCharge()
+        if fc != 0:
+            fc_lbl = "+" if fc == 1 else "−" if fc == -1 else f"{fc:+d}"
+            parts.append(
+                f'<text x="{ax+rad:.1f}" y="{ay-rad+2:.1f}" '
+                f'font-family="system-ui,sans-serif" font-size="9" '
+                f'fill="{st["tc"]}">{fc_lbl}</text>'
+            )
+
+    # ── Residue boxes ────────────────────────────────────────────────────────
+    for p in placements:
+        st   = _ITYPE_STYLE.get(p["itype"], _ITYPE_STYLE["hydrophobic"])
+        bx, by   = p["bx"], p["by"]
+        bw, bh   = p["box_w"], p["box_h"]
+        rn       = p["resname"]
+        ri       = p["resid"]
+        itype_lbl = st["label"]
+        dist_str  = f'{p["distance"]:.1f} \u00c5'
+
+        # Clamp to canvas edges with padding
+        rx = max(6, min(bx - bw/2, W - bw - 6))
+        ry = max(6, min(by - bh/2, H - bh - 60))
+        # Recalculate center after clamping
+        bx = rx + bw/2
+        by = ry + bh/2
+
+        parts.append(
+            f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{bw:.0f}" height="{bh:.0f}"'
+            f' rx="8" fill="{st["fill"]}" stroke="{st["border"]}" stroke-width="1.5"/>'
+        )
+        parts.append(
+            f'<text x="{bx:.1f}" y="{by-6:.1f}" text-anchor="middle" '
+            f'font-family="system-ui,sans-serif" font-size="12" '
+            f'font-weight="500" fill="{st["text"]}">{rn} {ri}</text>'
+        )
+        parts.append(
+            f'<text x="{bx:.1f}" y="{by+8:.1f}" text-anchor="middle" '
+            f'font-family="system-ui,sans-serif" font-size="10" '
+            f'fill="{st["border"]}">{itype_lbl} \u00b7 {dist_str}</text>'
+        )
+
+    # ── Legend ───────────────────────────────────────────────────────────────
+    ly0  = H - 55
+    lw   = W - 40
+    items = list(_ITYPE_STYLE.items())
+    iw   = lw / len(items)
+    parts.append(
+        f'<rect x="20" y="{ly0}" width="{lw}" height="46" rx="8" '
+        f'fill="var(--color-background-secondary,#f6f8fa)" '
+        f'stroke="var(--color-border-tertiary,#d0d7de)" stroke-width="0.5"/>'
+    )
+    for idx, (itype, st) in enumerate(items):
+        lx   = 20 + iw * idx + iw / 2
+        ly_l = ly0 + 15
+        ly_t = ly0 + 33
+        dash = f' stroke-dasharray="{st["dash"]}"' if st["dash"] else ""
+        parts.append(
+            f'<line x1="{lx-14:.0f}" y1="{ly_l}" '
+            f'x2="{lx+14:.0f}" y2="{ly_l}" '
+            f'stroke="{st["stroke"]}" stroke-width="2.2"{dash}/>'
+        )
+        parts.append(
+            f'<text x="{lx:.0f}" y="{ly_t}" text-anchor="middle" '
+            f'font-family="system-ui,sans-serif" font-size="10" '
+            f'fill="var(--color-text-secondary,#57606a)">{st["label"]}</text>'
+        )
+
+    parts.append('</svg>')
+    return "\n".join(parts)
+
+
+def draw_interaction_diagram(
+    receptor_pdb: str,
+    pose_sdf: str,
+    smiles: str,
+    title: str = "",
+    cutoff: float = 4.5,
+    size: tuple = (680, 640),
+    max_residues: int = 14,
+) -> bytes:
+    """
+    Generate a publication-quality 2D protein-ligand interaction diagram.
+
+    Detects seven interaction types from 3D geometry:
+      H-bond, hydrophobic, π-π stack, cation-π, ionic, metal coordination,
+      halogen bond (C-X···A, angle > 120°, for F/Cl/Br/I on ligand).
+
+    All detection is local — no server calls, works on Streamlit Cloud.
+
+    Args:
+        receptor_pdb : path to receptor PDB (ProDy or obabel output)
+        pose_sdf     : path to single-pose SDF (raw Vina output is fine)
+        smiles       : ligand SMILES for 2D layout (Dimorphite-DL protonated)
+        title        : optional title stamped at top of diagram
+        cutoff       : hydrophobic contact cutoff in Å (default 4.5)
+        size         : (width, height) of SVG canvas
+        max_residues : cap on displayed residues (sorted by priority + distance)
+
+    Returns:
+        SVG as bytes — embed with Streamlit ``components.html()`` or save as .svg
+    """
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdDepictor
+
+    RDLogger.DisableLog("rdApp.*")
+    W, H = size
+
+    # ── Load 3D pose ──────────────────────────────────────────────────────────
+    try:
+        mol3d = None
+        for sanitize in (True, False):
+            sup = Chem.SDMolSupplier(pose_sdf, sanitize=sanitize, removeHs=False)
+            mol3d = next((m for m in sup if m is not None), None)
+            if mol3d is not None:
+                if not sanitize:
+                    try:
+                        Chem.SanitizeMol(mol3d)
+                    except Exception:
+                        pass
+                break
+        if mol3d is None or mol3d.GetNumConformers() == 0:
+            raise ValueError("No valid 3D pose found in SDF")
+    except Exception as e:
+        RDLogger.EnableLog("rdApp.error")
+        return (f'<svg viewBox="0 0 680 100" xmlns="http://www.w3.org/2000/svg">'
+                f'<text x="340" y="55" text-anchor="middle" '
+                f'font-family="system-ui,sans-serif" font-size="13" '
+                f'fill="#E24B4A">Error: {e}</text></svg>').encode()
+
+    # ── Build clean 2D mol for layout ─────────────────────────────────────────
+    mol2d = None
+    if smiles and smiles.strip():
+        mol2d = Chem.MolFromSmiles(smiles.strip())
     if mol2d is None:
-        mol2d = Chem.RemoveHs(lig_mol, sanitize=False)
+        mol2d = Chem.RemoveHs(mol3d, sanitize=False)
         try:
             Chem.SanitizeMol(mol2d)
         except Exception:
             pass
-
+    mol2d = Chem.RemoveHs(mol2d)
     rdDepictor.Compute2DCoords(mol2d)
-    n2d = mol2d.GetNumAtoms()
 
-    mol3d_noH = Chem.RemoveHs(lig_mol, sanitize=False)
+    # ── Map 3D atom indices → 2D atom indices via substructure match ──────────
+    mol3d_noH = Chem.RemoveHs(mol3d, sanitize=False)
     try:
         Chem.SanitizeMol(mol3d_noH)
     except Exception:
         pass
-
-    idx3d_to_2d = {}
-    match_ok = False
+    match_3d_to_2d = {}
     try:
         match = mol3d_noH.GetSubstructMatch(mol2d)
         if len(match) == mol2d.GetNumAtoms():
-            for i2d, i3d in enumerate(match):
-                idx3d_to_2d[i3d] = i2d
-            match_ok = True
+            for idx2d, idx3d in enumerate(match):
+                match_3d_to_2d[idx3d] = idx2d
     except Exception:
         pass
 
-    if not match_ok:
-        mol2d_atoms = [(mol2d.GetAtomWithIdx(i).GetAtomicNum(), i)
-                       for i in range(n2d)]
-        used = {}
-        for i3d in range(mol3d_noH.GetNumAtoms()):
-            an = mol3d_noH.GetAtomWithIdx(i3d).GetAtomicNum()
-            candidates = [i for a, i in mol2d_atoms if a == an]
-            if not candidates:
-                candidates = list(range(n2d))
-            k = used.get(an, 0) % len(candidates)
-            idx3d_to_2d[i3d] = candidates[k]
-            used[an] = k + 1
-
-    residues = get_interacting_residues(receptor_pdb, lig_mol, cutoff=cutoff)
-    if not residues:
-        d2d = Draw.MolDraw2DSVG(size[0], size[1])
-        d2d.DrawMolecule(mol2d, legend=title or "No interactions found")
-        d2d.FinishDrawing()
-        return d2d.GetDrawingText().encode()
-
-    def _min_dist(res):
-        try:
-            from prody import parsePDB
-            rec = parsePDB(receptor_pdb)
-            r   = rec.select(f"chain {res['chain']} resnum {res['resi']}")
-            if r is None:
-                return 999.0
-            conf    = lig_mol.GetConformer()
-            lig_xyz = np.array([[conf.GetAtomPosition(i).x,
-                                  conf.GetAtomPosition(i).y,
-                                  conf.GetAtomPosition(i).z]
-                                 for i in range(lig_mol.GetNumAtoms())])
-            return float(min(
-                np.linalg.norm(lp - rp)
-                for lp in lig_xyz for rp in r.getCoords()
-            ))
-        except Exception:
-            return 999.0
-
-    residues = sorted(residues, key=_min_dist)[:max_residues]
-
-    interactions = []
-    for res in residues:
-        chain = res["chain"]
-        resid = res["resi"]
-        resn  = res["resn"]
-        label = f"{resn} {resid}"
-
-        close_3d = _closest_lig_atoms(lig_mol, receptor_pdb, chain, resid,
-                                       max_atoms=1)
-        idx3d = close_3d[0] if close_3d else 0
-        idx2d = idx3d_to_2d.get(idx3d, 0)
-        if idx2d >= n2d:
-            idx2d = 0
-
-        itype = _classify_interaction(receptor_pdb, lig_mol, chain, resid)
-        color = {"hbond":      _COLOR_HBOND,
-                 "hydrophobic": _COLOR_HYDROPHOB}.get(itype, _COLOR_OTHER)
-
-        interactions.append((label, (idx2d,), color))
-
-    lig_with_interactions = Chem.RWMol(mol2d)
-    pts  = []
-    clrs = {}
-
-    for (aname, oaids, color) in interactions:
-        res_atom = Chem.Atom(0)
-        res_atom.SetProp("atomLabel", aname)
-        aid = lig_with_interactions.AddAtom(res_atom)
-        pts.append(aid)
-        clrs[aid] = color
-        for oaid in oaids:
-            lig_with_interactions.AddBond(aid, oaid, Chem.BondType.ZERO)
-
-    rdDepictor.Compute2DCoords(lig_with_interactions)
-
-    w, h = size[0], size[1]
-    d2d  = Draw.MolDraw2DSVG(w, h)
-    opts = d2d.drawOptions()
-    opts.circleAtoms         = True
-    opts.fillHighlights      = True
-    opts.continuousHighlight = False
-    opts.highlightRadius     = 0.5
-    opts.addAtomIndices      = False
-    opts.padding             = 0.15
-
+    # ── Detect interactions ───────────────────────────────────────────────────
     try:
-        d2d.SetDrawBounds(0, 0, w, h - 40)
-    except AttributeError:
-        pass
+        raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
+    except Exception:
+        raw = []
 
-    d2d.DrawMolecule(
-        lig_with_interactions,
-        highlightAtoms=pts,
-        highlightAtomColors=clrs,
+    # Remap 3D lig_atom_idx → 2D
+    for ix in raw:
+        ix["lig_atom_idx"] = match_3d_to_2d.get(ix.get("lig_atom_idx", 0), 0)
+
+    # Deduplicate, sort, cap
+    deduped = _deduplicate_interactions(raw)
+    pri_map = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    deduped.sort(key=lambda x: (pri_map.get(x["itype"], 99), x["distance"]))
+    deduped = deduped[:max_residues]
+
+    if not deduped:
+        # Return plain 2D ligand with "no interactions" note
+        cx, cy = W // 2, H // 2
+        svg_coords = _compute_svg_coords(mol2d, cx, cy, target_size=200)
+        svg = _render_diagram_svg(mol2d, svg_coords, [], title, W, H)
+        RDLogger.EnableLog("rdApp.error")
+        return svg.encode()
+
+    # ── Compute SVG layout ────────────────────────────────────────────────────
+    cx, cy = W // 2, int(H * 0.46)
+    svg_coords = _compute_svg_coords(mol2d, cx, cy, target_size=200)
+    placements = _place_residues(deduped, svg_coords, cx, cy, R=240)
+
+    # ── Render ────────────────────────────────────────────────────────────────
+    svg = _render_diagram_svg(mol2d, svg_coords, placements, title, W, H)
+    RDLogger.EnableLog("rdApp.error")
+    return svg.encode()
+
+
+# Keep old name as alias for backward compatibility
+def draw_interactions_rdkit(lig_mol, receptor_pdb: str, smiles: str,
+                            title: str = "", cutoff: float = 3.5,
+                            size: tuple = (500, 500),
+                            max_residues: int = 10) -> bytes:
+    """
+    Deprecated alias — kept for backward compatibility with app.py.
+    New code should call draw_interaction_diagram() instead.
+    This wrapper writes lig_mol to a temp SDF and delegates.
+    """
+    import tempfile
+    from rdkit import Chem
+    tmp = tempfile.NamedTemporaryFile(suffix=".sdf", delete=False)
+    with Chem.SDWriter(tmp.name) as w:
+        w.write(lig_mol)
+    return draw_interaction_diagram(
+        receptor_pdb=receptor_pdb,
+        pose_sdf=tmp.name,
+        smiles=smiles,
+        title=title,
+        cutoff=cutoff,
+        size=(680, 640),
+        max_residues=max_residues,
     )
-    d2d.FinishDrawing()
-    svg_text = d2d.GetDrawingText()
-
-    if title:
-        svg_text = _svg_stamp(svg_text, title, w, h)
-
-    return svg_text.encode()
 
 
 def _svg_stamp(svg_text: str, title: str, w: int, h: int) -> str:
     """Inject a centred rounded-rect label at the bottom of an SVG."""
-    _esc  = (title
-             .replace("&", "&amp;")
-             .replace("<", "&lt;")
-             .replace(">", "&gt;"))
-    pad       = int(w * 0.05)
-    pill_w    = w - 2 * pad
-    pill_h    = 28
-    pill_y    = h - pill_h - 8
-    text_y    = pill_y + pill_h // 2
-    radius    = pill_h // 2
-    stamp = (
+    _esc = (title.replace("&", "&amp;")
+                 .replace("<", "&lt;")
+                 .replace(">", "&gt;"))
+    pad    = int(w * 0.05)
+    pill_w = w - 2 * pad
+    pill_h = 28
+    pill_y = h - pill_h - 8
+    text_y = pill_y + pill_h // 2
+    radius = pill_h // 2
+    stamp  = (
         f'<g>'
         f'<rect x="{pad}" y="{pill_y}" width="{pill_w}" height="{pill_h}"'
         f' rx="{radius}" ry="{radius}"'
