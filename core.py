@@ -1980,14 +1980,23 @@ def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
                  "by": cy + R * _math.sin(a),
                  "slot_angle": a}]
 
-    # 3. Minimum pixel distance between label centers
-    #    Label text e.g. "MET 769A" ≈ 8 chars × 8.5px = 68px wide at 14.29px
-    #    Use half of that as "radius": ~34px. Circle bg r = 24.55.
-    #    Effective min center-to-center = 2 × max(34, 24.55) + 8px margin = 76px
-    min_dist_px = 76.0
+    # 3. Break ties: items sharing the same anchor angle start at distance=0
+    #    and the push loop can never separate them. Add a tiny jitter so each
+    #    gets a unique starting angle before the push loop runs.
+    for i in range(n):
+        for j in range(i + 1, n):
+            if abs(items[j]["angle"] - items[i]["angle"]) < 0.001:
+                items[j]["angle"] += 0.05 * (j - i)  # spread by 0.05 rad each
 
-    # 4. Simultaneous-delta push-apart — O(n²) all-pairs, 400 iterations
-    for iteration in range(400):
+    # 4. Minimum pixel distance between label centers.
+    #    "MET 769A" = 8 chars × ~8.5px = 68px + circle r 24.55 on each side.
+    #    Effective min = text_width + 2*circle_r + margin ≈ 78px.
+    min_dist_px = 78.0
+
+    # 5. Simultaneous-delta push-apart — O(n²) all-pairs, 500 iterations.
+    #    Key: accumulate ALL deltas before applying so sequential pairs
+    #    don't contaminate each other within one pass.
+    for _ in range(500):
         delta = [0.0] * n
         any_overlap = False
 
@@ -2000,23 +2009,16 @@ def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
                 dx, dy = xj - xi, yj - yi
                 dist = _math.sqrt(dx * dx + dy * dy)
 
-                if dist < min_dist_px and dist > 0.001:
-                    # Push i and j apart along their connecting arc
-                    # Convert pixel overlap to angular push
-                    overlap_px   = min_dist_px - dist
-                    push_angle   = overlap_px / R  # arc ≈ chord for small angles
-                    # i is earlier in sorted order → push left; j push right
-                    # But check actual angular relationship to stay consistent
-                    raw_gap = (items[j]["angle"] - items[i]["angle"]) % (2 * _math.pi)
-                    if raw_gap <= _math.pi:
-                        delta[i] -= push_angle * 0.5
-                        delta[j] += push_angle * 0.5
-                    else:
-                        delta[i] += push_angle * 0.5
-                        delta[j] -= push_angle * 0.5
+                if dist < min_dist_px:
+                    overlap_px = min_dist_px - dist
+                    # Convert pixel overlap to angular push (chord ≈ arc for small angles)
+                    push_angle = overlap_px / max(R, 1.0)
+                    # Always push i counter-clockwise and j clockwise relative to sorted order
+                    # (sorted order is guaranteed by step 2, so i always precedes j)
+                    delta[i] -= push_angle * 0.5
+                    delta[j] += push_angle * 0.5
                     any_overlap = True
 
-        # Apply all deltas simultaneously
         for i in range(n):
             items[i]["angle"] += delta[i]
 
@@ -2261,42 +2263,57 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
                 "ionic":"Ionic","metal":"Metal","halogen":"Halogen bond"}
     active=[t for t in _LEG_ORDER if any(p["itype"]==t for p in placements)]
     if active:
-        ly0=H-52; n_l=len(active); iw=min(115,(W-40)/max(n_l,1)); lx0=(W-iw*n_l)/2
-        # Legend box: st17 — stroke #f2f2f2, fill none (rect border only)
-        parts.append(f'<rect x="{lx0-8:.0f}" y="{ly0-5}" width="{iw*n_l+16:.0f}"'
-                     f' height="44" fill="none" stroke="#f2f2f2"'
-                     f' stroke-miterlimit="10"/>')
+        ly0 = H - 52
+        # Compute per-entry widths: circle(19) + line(32 if not hydrophobic) + text + gaps
+        def _entry_w(t):
+            txt = _LEG_LABEL.get(t, t)
+            return 9.54*2 + (4+28 if t != "hydrophobic" else 0) + 6 + len(txt)*9.5 + 20
+        total_w = sum(_entry_w(t) for t in active)
+        total_w = min(total_w, W - 40)
+        lx0 = (W - total_w) / 2
+        parts.append(f'<rect x="{lx0-8:.0f}" y="{ly0-5}" width="{total_w+16:.0f}"'
+                     f' height="44" fill="white" stroke="#e0e0e0"'
+                     f' stroke-width="0.8" rx="6"/>')
         for k,it in enumerate(active):
-            ix2=lx0+iw*k+iw/2
-            bg=_RES_CIRCLE.get(it,dict(fill="#ccc",opacity=0.2))
-            # Legend glyph: circle for hydrophobic, dashed line for hbond/pi-pi
-            if it=="hydrophobic":
-                # st4 circle r=9.54
-                parts.append(f'<circle cx="{ix2-22:.0f}" cy="{ly0+10}" r="9.54"'
-                             f' fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
-            elif it in ("hbond","hbond_to_halogen"):
-                # st13: green dashed line
-                parts.append(f'<line x1="{ix2-32:.0f}" y1="{ly0+10}"'
-                             f' x2="{ix2-10:.0f}" y2="{ly0+10}"'
-                             f' stroke="{_CLR_HBOND}" stroke-width="1.6"'
+            # Layout: circle (r=9.54) + dashed line for all types except hydrophobic
+            # Hydrophobic: circle only (no line)
+            # All others: circle + dashed line in that type's color
+            bg   = _RES_CIRCLE.get(it, dict(fill="#ccc", opacity=0.2))
+            clr  = _LINE_CLR.get(it, bg["fill"])  # line color = interaction color
+            lbl  = _LEG_LABEL.get(it, it)
+
+            # Dynamic width: circle(9.54) + optional line(28) + gap(4) + text
+            text_w  = len(lbl) * 9.5 + 6
+            glyph_w = 9.54*2 + (4 + 28 if it != "hydrophobic" else 0)
+            entry_w = glyph_w + 6 + text_w
+            ix2     = lx0 + sum(
+                (9.54*2 + (4+28 if active[kk]!="hydrophobic" else 0) + 6 + len(_LEG_LABEL.get(active[kk],active[kk]))*9.5 + 6 + 20)
+                for kk in range(k)
+            ) + entry_w/2
+
+            # Circle glyph
+            circ_cx = lx0 + sum(
+                (9.54*2 + (4+28 if active[kk]!="hydrophobic" else 0) + 6 + len(_LEG_LABEL.get(active[kk],active[kk]))*9.5 + 6 + 20)
+                for kk in range(k)
+            ) + 9.54
+            parts.append(f'<circle cx="{circ_cx:.1f}" cy="{ly0+10}" r="9.54"'
+                         f' fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
+
+            # Dashed line (all except hydrophobic)
+            line_x1 = circ_cx + 9.54 + 4
+            line_x2 = line_x1 + 28
+            if it != "hydrophobic":
+                parts.append(f'<line x1="{line_x1:.1f}" y1="{ly0+10}"'
+                             f' x2="{line_x2:.1f}" y2="{ly0+10}"'
+                             f' stroke="{clr}" stroke-width="2"'
                              f' stroke-dasharray="5 3" opacity="0.85"/>')
-            elif it in ("pi_pi","cation_pi"):
-                # st3: magenta dashed line
-                parts.append(f'<line x1="{ix2-32:.0f}" y1="{ly0+10}"'
-                             f' x2="{ix2-10:.0f}" y2="{ly0+10}"'
-                             f' stroke="{_CLR_PIPI}" stroke-width="1.6"'
-                             f' stroke-dasharray="5 3" opacity="0.85"/>')
-            else:
-                clr_l=_LINE_CLR.get(it,"#888")
-                parts.append(f'<line x1="{ix2-32:.0f}" y1="{ly0+10}"'
-                             f' x2="{ix2-10:.0f}" y2="{ly0+10}"'
-                             f' stroke="{clr_l}" stroke-width="1.8"'
-                             f' stroke-dasharray="5 3" opacity="0.85"/>')
-            # Gray 16px text (st8)
-            parts.append(f'<text x="{ix2-6:.0f}" y="{ly0+10}" text-anchor="start"'
+
+            # Label text
+            text_x = (line_x2 if it != "hydrophobic" else circ_cx + 9.54) + 6
+            parts.append(f'<text x="{text_x:.1f}" y="{ly0+10}" text-anchor="start"'
                          f' dominant-baseline="central"'
                          f' font-family="Arial,sans-serif" font-size="16"'
-                         f' fill="#555">{_LEG_LABEL.get(it,it)}</text>')
+                         f' font-weight="700" fill="#555">{lbl}</text>')
 
     parts.append('</svg>')
     return "\n".join(parts)
