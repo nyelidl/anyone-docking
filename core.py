@@ -1943,33 +1943,64 @@ def _ring_centroid_2d(ring_atom_indices, svg_coords):
 
 
 def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
-    """Angular-sort — lines never cross."""
+    """
+    Place residue labels at their natural ligand-atom direction, then
+    iteratively push overlapping labels apart — preserving organic clustering
+    while guaranteeing no line crossings.
+
+    Unlike uniform slot assignment (which forces a perfect clock-face ring),
+    this keeps residues near their actual interaction atoms so the layout
+    feels natural rather than circular.
+    """
     if not interactions: return []
-    anchored=[]
+
+    # 1. Compute natural angle for each residue from its ligand atom
+    items = []
     for ix in interactions:
-        # For π-π: anchor angle from ring centroid, not single atom
         if ix.get("ring_atom_indices"):
-            ax,ay=_ring_centroid_2d(ix["ring_atom_indices"],svg_coords)
-            if ax is None: ax,ay=svg_coords.get(ix.get("lig_atom_idx",0),(cx,cy))
+            ax, ay = _ring_centroid_2d(ix["ring_atom_indices"], svg_coords)
+            if ax is None:
+                ax, ay = svg_coords.get(ix.get("lig_atom_idx", 0), (cx, cy))
         else:
-            ai=ix.get("lig_atom_idx",0)
-            ax,ay=svg_coords.get(ai,(cx,cy))
-        anchored.append({**ix,"anchor_angle":_math.atan2(ay-cy,ax-cx)})
-    anchored.sort(key=lambda x:x["anchor_angle"])
-    n=len(anchored)
-    slots=[-_math.pi/2+(2*_math.pi*k/n) for k in range(n)]
-    used=[False]*n; result=[]
-    for res in anchored:
-        aa=res["anchor_angle"]; bd,bs=float("inf"),0
-        for s in range(n):
-            if used[s]: continue
-            d=abs(_math.atan2(_math.sin(slots[s]-aa),_math.cos(slots[s]-aa)))
-            if d<bd: bd,bs=d,s
-        used[bs]=True
-        result.append({**res,
-            "bx":cx+R*_math.cos(slots[bs]),
-            "by":cy+R*_math.sin(slots[bs]),
-            "slot_angle":slots[bs]})
+            ai = ix.get("lig_atom_idx", 0)
+            ax, ay = svg_coords.get(ai, (cx, cy))
+        angle = _math.atan2(ay - cy, ax - cx)
+        items.append({**ix, "angle": angle, "anchor_angle": angle})
+
+    # 2. Sort by natural angle (guarantees no crossings as long as order is preserved)
+    items.sort(key=lambda x: x["angle"])
+    n = len(items)
+
+    # 3. Minimum angular gap so label circles do not overlap
+    #    Label half-width ~52px at radius R expressed as angle
+    min_gap = 2.0 * _math.asin(min(52.0 / max(R, 1), 1.0))
+
+    # 4. Iterative push-apart in angular space (preserves sorted order -> no crossings)
+    for _ in range(150):
+        moved = False
+        for i in range(n):
+            j = (i + 1) % n
+            a_i = items[i]["angle"]
+            a_j = items[j]["angle"]
+            gap = (a_j - a_i) % (2 * _math.pi)
+            if gap < min_gap:
+                push = (min_gap - gap) / 2.0
+                items[i]["angle"] = items[i]["angle"] - push
+                items[j]["angle"] = items[j]["angle"] + push
+                moved = True
+        if not moved:
+            break
+
+    # 5. Build final placements
+    result = []
+    for item in items:
+        a = item["angle"]
+        result.append({
+            **item,
+            "bx": cx + R * _math.cos(a),
+            "by": cy + R * _math.sin(a),
+            "slot_angle": a,
+        })
     return result
 
 
