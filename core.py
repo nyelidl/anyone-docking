@@ -954,26 +954,69 @@ def write_single_pose(mol, path: str) -> None:
 
 def convert_sdf_to_v2000(sdf_path: str) -> str:
     """
-    Convert an SDF to clean V2000 format via obabel.
-    PoseView requires V2000 — RDKit may write V3000 for large molecules.
+    Convert an SDF to Kekulized V2000 format suitable for PoseView.
 
-    FIX: Removed --gen3d flag which was rebuilding 3D coords from scratch and
-    destroying the docked pose. Now uses -h only (place Hs from geometry)
-    to add hydrogens while preserving all heavy-atom coordinates.
+    PoseView's bundled CDK mol parser requires:
+      - V2000 format (not V3000)
+      - Fully Kekulized bonds: explicit single/double (type 1/2), NOT aromatic
+        bond type 4.  obabel preserves aromatic type 4 which PoseView rejects.
+      - No explicit Hs (PoseView adds its own for H-bond detection)
 
-    Returns path to converted file, or original path on failure.
+    Strategy:
+      1. RDKit: read → RemoveHs → Kekulize → SDWriter(SetKekulize=True)
+         This is the canonical fix — guarantees type-1/2 bond encoding.
+      2. Fallback: obabel plain format conversion (no -h, no --gen3d).
+
+    Returns path to converted file, or original sdf_path on failure.
     """
+    from rdkit import Chem, RDLogger
+
     out = sdf_path.replace(".sdf", "_v2000.sdf")
     if out == sdf_path:
         out = sdf_path + "_v2000.sdf"
 
-    # -h: add Hs from existing 3D geometry (preserves docked pose coords)
-    # NO --gen3d: that rebuilds coords from scratch, destroying the pose
-    rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" -h 2>/dev/null')
-    if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
-        return out
+    # ── Strategy 1: RDKit Kekulized V2000 ─────────────────────────────────────
+    RDLogger.DisableLog("rdApp.*")
+    try:
+        # Try sanitized read first; fall back to unsanitized
+        mol = None
+        for sanitize in (True, False):
+            sup = Chem.SDMolSupplier(sdf_path, sanitize=sanitize, removeHs=True)
+            mol = next((m for m in sup if m is not None), None)
+            if mol is not None:
+                if not sanitize:
+                    try:
+                        Chem.SanitizeMol(mol)
+                    except Exception:
+                        pass
+                break
 
-    # Fallback: plain format conversion, no extra Hs
+        if mol is not None and mol.GetNumConformers() > 0:
+            mol_noH = Chem.RemoveHs(mol, sanitize=False)
+            try:
+                Chem.SanitizeMol(mol_noH)
+            except Exception:
+                pass
+            # Kekulize: convert aromatic bonds → alternating single/double
+            # PoseView rejects MDL bond type 4 (aromatic)
+            try:
+                Chem.Kekulize(mol_noH, clearAromaticFlags=True)
+            except Exception:
+                pass  # SDWriter will attempt its own Kekulize
+
+            w = Chem.SDWriter(out)
+            w.SetKekulize(True)   # write type-1/2 bonds only, never type-4
+            w.write(mol_noH)
+            w.close()
+
+            if os.path.exists(out) and os.path.getsize(out) > 10:
+                RDLogger.EnableLog("rdApp.error")
+                return out
+    except Exception:
+        pass
+    RDLogger.EnableLog("rdApp.error")
+
+    # ── Strategy 2: obabel plain conversion (no -h, no --gen3d) ──────────────
     rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" 2>/dev/null')
     if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
         return out
