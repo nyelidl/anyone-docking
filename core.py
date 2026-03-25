@@ -1199,22 +1199,93 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
     return job
 
 
+def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
+    """
+    Write a minimal, clean PDB suitable for PoseView's CDK-based parser.
+
+    PoseView's Java engine is strict:
+      - Accepts only ATOM / HETATM / TER / END records
+      - Chokes on ANISOU, SIGUIJ, CONECT, non-standard REMARK variants
+      - Must have no explicit Hs (PoseView adds its own for H-bond detection)
+      - Serial numbers must be contiguous integers
+
+    Source priority:
+      1. receptor_atoms.pdb in the same directory  — ProDy writePDB, cleanest
+      2. The passed receptor_pdb (obabel-processed rec.pdb)
+
+    Returns path to the clean PDB, or original path on any failure.
+    """
+    # Prefer ProDy's clean output over obabel's processed file
+    rec_dir = os.path.dirname(os.path.abspath(receptor_pdb))
+    candidates = [
+        os.path.join(rec_dir, "receptor_atoms.pdb"),
+        receptor_pdb,
+    ]
+    source = next((p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 100), receptor_pdb)
+
+    out = os.path.join(rec_dir, "receptor_pv_clean.pdb")
+    try:
+        kept   = []
+        serial = 0
+        with open(source) as f:
+            for line in f:
+                rec = line[:6].strip()
+
+                # Only standard coordinate records
+                if rec not in ("ATOM", "HETATM", "TER", "END"):
+                    continue
+
+                if rec in ("ATOM", "HETATM"):
+                    # Strip hydrogen atoms
+                    atom_name = line[12:16].strip()
+                    element   = line[76:78].strip() if len(line) > 76 else ""
+                    if element.upper() == "H" or (not element and atom_name.startswith("H")):
+                        continue
+
+                    # Renumber serials to stay contiguous (PDBs from obabel
+                    # can have gaps after H removal that confuse CDK)
+                    serial += 1
+                    line = f"{line[:6]}{serial:5d}{line[11:]}"
+
+                kept.append(line if line.endswith("\n") else line + "\n")
+
+        if not kept:
+            return receptor_pdb
+
+        # Ensure file ends with END
+        if not any(l.startswith("END") for l in kept):
+            kept.append("END\n")
+
+        with open(out, "w") as f:
+            f.writelines(kept)
+
+        if os.path.exists(out) and os.path.getsize(out) > 100:
+            return out
+    except Exception:
+        pass
+
+    return receptor_pdb
+
+
 def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     """
     Submit receptor PDB + docked pose SDF to PoseView v1 REST API.
 
-    FIX: Posts the receptor PDB **directly** to /api/v2/poseview/ without
-    going through MoleculeHandler/Protoss first.  The previous approach
-    retrieved a Protoss-processed file_string whose atom coordinates or
-    numbering could differ from the original; PoseView's internal geometry
-    checker then found no valid contacts and returned "failure".
-    Posting the exact PDB that Vina used guarantees coordinate consistency.
+    Submits a clean receptor PDB + raw pose SDF directly to PoseView v1.
+
+    KEY FINDING: the raw pose SDF (as downloaded by the user) works when
+    uploaded manually to proteins.plus. All previous SDF transforms
+    (fix_sdf_bond_orders → convert_sdf_to_v2000) were corrupting the file.
+    Solution: send pose_sdf as-is — zero transformation.
+
+    Protein: _prepare_pdb_for_poseview strips non-coordinate records,
+    removes Hs, renumbers serials — using receptor_atoms.pdb (ProDy) as
+    source where available (cleaner than obabel-processed rec.pdb).
 
     Flow:
-      1 — Convert ligand SDF to V2000 (obabel -h, no --gen3d)
-      2 — Strip explicit Hs from receptor (PoseView adds its own)
-      3 — POST both files directly to /api/v2/poseview/
-      4 — Poll → GET job['image'] SVG
+      1 — _prepare_pdb_for_poseview → clean PDB
+      2 — POST receptor + raw pose_sdf directly to /api/v2/poseview/
+      3 — Poll → GET job['image'] SVG
 
     Returns (svg_bytes, error_string) — one will be None.
     """
@@ -1222,30 +1293,21 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
 
     last_error = "Unknown error"
 
-    # Strip receptor Hs once (cached alongside the original path)
-    rec_noH = receptor_pdb.replace(".pdb", "_pv_noH.pdb")
-    if not os.path.exists(rec_noH) or os.path.getsize(rec_noH) < 100:
-        _strip_h_from_pdb(receptor_pdb, rec_noH)
-    rec_to_send = (
-        rec_noH
-        if os.path.exists(rec_noH) and os.path.getsize(rec_noH) > 100
-        else receptor_pdb
-    )
+    # Clean the receptor once — CDK-safe: only ATOM/HETATM/TER/END,
+    # no Hs, contiguous serials, sourced from ProDy receptor_atoms.pdb.
+    rec_to_send = _prepare_pdb_for_poseview(receptor_pdb)
 
     for attempt in range(1, _PV_MAX_RETRIES + 1):
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
 
-        # ── Step 1: Convert ligand SDF → V2000 ───────────────────────────────
+        # ── POST receptor + raw SDF directly to PoseView ──────────────────────
+        # IMPORTANT: send pose_sdf as-is — no bond-order fixing, no V2000
+        # conversion. The raw Vina→obabel SDF is exactly what the user
+        # downloads and what works when uploaded manually. Any transform
+        # (fix_sdf_bond_orders, convert_sdf_to_v2000) was corrupting the file.
         try:
-            ligand_v2000 = convert_sdf_to_v2000(pose_sdf)
-        except Exception as e:
-            last_error = f"SDF V2000 conversion failed (attempt {attempt}): {e}"
-            continue
-
-        # ── Step 2: POST receptor + ligand directly to PoseView ───────────────
-        try:
-            with open(rec_to_send) as rf, open(ligand_v2000) as lf:
+            with open(rec_to_send) as rf, open(pose_sdf) as lf:
                 r = requests.post(
                     _PP_POSEVIEW,
                     files={
