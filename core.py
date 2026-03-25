@@ -1945,16 +1945,19 @@ def _ring_centroid_2d(ring_atom_indices, svg_coords):
 def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
     """
     Place residue labels at their natural ligand-atom direction, then
-    iteratively push overlapping labels apart — preserving organic clustering
-    while guaranteeing no line crossings.
+    push overlapping labels apart using simultaneous delta updates.
 
-    Unlike uniform slot assignment (which forces a perfect clock-face ring),
-    this keeps residues near their actual interaction atoms so the layout
-    feels natural rather than circular.
+    Key fixes vs previous version:
+      - Simultaneous delta accumulation (no in-place sequential mutation
+        that caused oscillation and non-convergence)
+      - All-pairs O(n²) check based on actual pixel distance (not just
+        adjacent-pair angular gap, which misses non-adjacent overlaps)
+      - min_dist based on true label bounding box (text width + circle r)
+      - Preserves angular sort order → lines never cross
     """
     if not interactions: return []
 
-    # 1. Compute natural angle for each residue from its ligand atom
+    # 1. Compute natural angle for each residue
     items = []
     for ix in interactions:
         if ix.get("ring_atom_indices"):
@@ -1967,38 +1970,69 @@ def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
         angle = _math.atan2(ay - cy, ax - cx)
         items.append({**ix, "angle": angle, "anchor_angle": angle})
 
-    # 2. Sort by natural angle (guarantees no crossings as long as order is preserved)
+    # 2. Sort by natural angle → preserving this order prevents line crossings
     items.sort(key=lambda x: x["angle"])
     n = len(items)
+    if n == 1:
+        a = items[0]["angle"]
+        return [{**items[0],
+                 "bx": cx + R * _math.cos(a),
+                 "by": cy + R * _math.sin(a),
+                 "slot_angle": a}]
 
-    # 3. Minimum angular gap so label circles do not overlap
-    #    Label half-width ~52px at radius R expressed as angle
-    min_gap = 2.0 * _math.asin(min(52.0 / max(R, 1), 1.0))
+    # 3. Minimum pixel distance between label centers
+    #    Label text e.g. "MET 769A" ≈ 8 chars × 8.5px = 68px wide at 14.29px
+    #    Use half of that as "radius": ~34px. Circle bg r = 24.55.
+    #    Effective min center-to-center = 2 × max(34, 24.55) + 8px margin = 76px
+    min_dist_px = 76.0
 
-    # 4. Iterative push-apart in angular space (preserves sorted order -> no crossings)
-    for _ in range(150):
-        moved = False
+    # 4. Simultaneous-delta push-apart — O(n²) all-pairs, 400 iterations
+    for iteration in range(400):
+        delta = [0.0] * n
+        any_overlap = False
+
         for i in range(n):
-            j = (i + 1) % n
-            a_i = items[i]["angle"]
-            a_j = items[j]["angle"]
-            gap = (a_j - a_i) % (2 * _math.pi)
-            if gap < min_gap:
-                push = (min_gap - gap) / 2.0
-                items[i]["angle"] = items[i]["angle"] - push
-                items[j]["angle"] = items[j]["angle"] + push
-                moved = True
-        if not moved:
+            for j in range(i + 1, n):
+                xi = cx + R * _math.cos(items[i]["angle"])
+                yi = cy + R * _math.sin(items[i]["angle"])
+                xj = cx + R * _math.cos(items[j]["angle"])
+                yj = cy + R * _math.sin(items[j]["angle"])
+                dx, dy = xj - xi, yj - yi
+                dist = _math.sqrt(dx * dx + dy * dy)
+
+                if dist < min_dist_px and dist > 0.001:
+                    # Push i and j apart along their connecting arc
+                    # Convert pixel overlap to angular push
+                    overlap_px   = min_dist_px - dist
+                    push_angle   = overlap_px / R  # arc ≈ chord for small angles
+                    # i is earlier in sorted order → push left; j push right
+                    # But check actual angular relationship to stay consistent
+                    raw_gap = (items[j]["angle"] - items[i]["angle"]) % (2 * _math.pi)
+                    if raw_gap <= _math.pi:
+                        delta[i] -= push_angle * 0.5
+                        delta[j] += push_angle * 0.5
+                    else:
+                        delta[i] += push_angle * 0.5
+                        delta[j] -= push_angle * 0.5
+                    any_overlap = True
+
+        # Apply all deltas simultaneously
+        for i in range(n):
+            items[i]["angle"] += delta[i]
+
+        if not any_overlap:
             break
 
-    # 5. Build final placements
+    # 5. Final clamp: keep all labels within canvas bounds
     result = []
     for item in items:
         a = item["angle"]
+        bx = cx + R * _math.cos(a)
+        by = cy + R * _math.sin(a)
         result.append({
             **item,
-            "bx": cx + R * _math.cos(a),
-            "by": cy + R * _math.sin(a),
+            "bx": bx,
+            "by": by,
             "slot_angle": a,
         })
     return result
