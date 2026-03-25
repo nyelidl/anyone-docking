@@ -2205,9 +2205,20 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
                          f' x2="{cbx:.2f}" y2="{cby:.2f}"'
                          f' stroke="{clr}" stroke-width="1.6"'
                          f'{da} opacity="0.85"/>')
-            # Distance on line: st1 14px bold green
+            # Distance label — offset perpendicular to the line so it never
+            # sits ON the dashed line or overlaps another label from same atom
             if p.get("distance") is not None:
-                mx2=lx*0.70+cbx*0.30; my2=ly*0.70+cby*0.30
+                # Point 40% from ligand atom along the line
+                t_along = 0.40
+                bx_l = lx + (cbx - lx) * t_along
+                by_l = ly + (cby - ly) * t_along
+                # Perpendicular unit vector (rotate line direction 90°)
+                dx_l = cbx - lx; dy_l = cby - ly
+                _len = _math.sqrt(dx_l*dx_l + dy_l*dy_l) + 1e-9
+                px_l = -dy_l / _len; py_l = dx_l / _len  # perpendicular
+                # Offset 14px perpendicular (always to the "left" of line direction)
+                mx2 = bx_l + px_l * 14
+                my2 = by_l + py_l * 14
                 ds=f"{p['distance']}\u00c5"
                 tw2=len(ds)*7+8
                 parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}"'
@@ -2225,7 +2236,14 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
                          f' stroke="{clr}" stroke-width="1.8"'
                          f' stroke-dasharray="{da}" opacity="0.85"/>')
             if p.get("distance") is not None:
-                mx2=lx*0.70+cbx*0.30; my2=ly*0.70+cby*0.30
+                t_along = 0.40
+                bx_l = lx + (cbx - lx) * t_along
+                by_l = ly + (cby - ly) * t_along
+                dx_l = cbx - lx; dy_l = cby - ly
+                _len = _math.sqrt(dx_l*dx_l + dy_l*dy_l) + 1e-9
+                px_l = -dy_l / _len; py_l = dx_l / _len
+                mx2 = bx_l + px_l * 14
+                my2 = by_l + py_l * 14
                 ds=f"{p['distance']}\u00c5"; tw2=len(ds)*7+8
                 parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}"'
                              f' width="{tw2:.0f}" height="17" rx="4"'
