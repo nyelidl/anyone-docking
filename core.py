@@ -2207,7 +2207,7 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
                          f'{da} opacity="0.85"/>')
             # Distance on line: st1 14px bold green
             if p.get("distance") is not None:
-                mx2=(lx+cbx)/2; my2=(ly+cby)/2
+                mx2=lx*0.70+cbx*0.30; my2=ly*0.70+cby*0.30
                 ds=f"{p['distance']}\u00c5"
                 tw2=len(ds)*7+8
                 parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}"'
@@ -2225,7 +2225,7 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
                          f' stroke="{clr}" stroke-width="1.8"'
                          f' stroke-dasharray="{da}" opacity="0.85"/>')
             if p.get("distance") is not None:
-                mx2=(lx+cbx)/2; my2=(ly+cby)/2
+                mx2=lx*0.70+cbx*0.30; my2=ly*0.70+cby*0.30
                 ds=f"{p['distance']}\u00c5"; tw2=len(ds)*7+8
                 parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}"'
                              f' width="{tw2:.0f}" height="17" rx="4"'
