@@ -1647,19 +1647,35 @@ def diagnose_poseview() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CUSTOM 2D INTERACTION DIAGRAM  —  matches pose1_interaction.svg reference
+#  CUSTOM 2D INTERACTION DIAGRAM  —  exact match to pose1_interaction.svg
 #
-#  Exact style extracted from Adobe Illustrator SVG:
-#    TITLE:       Rounded pill #f2f2f2 bg, ~25px bold text
-#    LIGAND:      Single bond 1.77px, double bond 2.44px
-#                 N=#1a5fa8 17.65px, O=#c22 17.65px, H=#555 16px (text only)
-#                 Aromatic = dashed circle (opacity 0.7) + green dot r=5.43
-#    H-BOND:      Green dashed line #1a7a1a + translucent green circle behind
-#                 label + 23px bold green label + 14px distance on line
-#    π-π:         Magenta dashed #e200e8 + translucent magenta circle + label
-#    HYDROPHOBIC: Curved blue bezier path #2287ff + blue bold label (NO circle)
-#    IONIC/METAL/HALOGEN: colored label + line
-#    LAYOUT:      Angular-sort — lines never cross
+#  Decoded from Adobe Illustrator SVG:
+#
+#  HYDROPHOBIC  st6/st16:  NO line. Translucent blue circle (#2287ff op 0.2)
+#                          + blue 23px bold label. Nothing else.
+#
+#  H-BOND       st13/st15/st2/st1:
+#               Green dashed line (#1a7a1a, dasharray 5 3, 1.6px, op 0.85)
+#               + translucent green circle (#80dd80 op 0.2) r=39.52
+#               + green 23px bold label
+#               + green 14px distance label on line
+#
+#  π-π          st5/st11/st3:
+#               Magenta dashed line (#e200e8, dasharray 5 3, 1.6px, op 0.85)
+#               FROM aromatic ring centroid in ligand → residue position
+#               + translucent magenta circle (#e200e8 op 0.2) r=39.52
+#               + magenta 23px bold label
+#
+#  LIGAND:      st4  single/arom bond: 1.77px, op 0.9
+#               st10 double bond:      2.44px, op 0.9
+#               st14 aromatic circle:  1.77px, op 0.7, dasharray 5.43 2.72
+#               st18 green dot:        r=5.43, fill #1a7a1a
+#               st0  N text:           #1a5fa8 17.65px bold
+#               st12 O text:           #c22    17.65px bold
+#
+#  TITLE:       st19 pill fill #f2f2f2, st7 text 24.93px bold
+#  LEGEND:      small colored circles (r=9.54) + gray 16px text
+#               legend box: stroke #f2f2f2 only, no fill bg
 # ══════════════════════════════════════════════════════════════════════════════
 
 import math as _math
@@ -1669,73 +1685,61 @@ _ITYPE_PRIORITY = [
     "hbond", "pi_pi", "cation_pi", "hydrophobic",
 ]
 
-# ── Exact colors from SVG ────────────────────────────────────────────────────
-_CLR_HBOND    = "#1a7a1a"   # green  — h-bond line + label
-_CLR_PIPI     = "#e200e8"   # magenta — π-π line + label
-_CLR_HYDRO    = "#2287ff"   # blue   — hydrophobic curve + label
-_CLR_IONIC    = "#aa0077"
-_CLR_METAL    = "#cc8800"
-_CLR_HAL      = "#cc2277"
-_CLR_HBXHAL   = "#6633aa"
-_CLR_CATPI    = "#e200e8"   # treat same as π-π
+# Exact colors from SVG
+_CLR_HBOND   = "#1a7a1a"   # st1/st2/st13/st15/st18
+_CLR_PIPI    = "#e200e8"   # st3/st5/st11
+_CLR_HYDRO   = "#2287ff"   # st6/st16
+_CLR_IONIC   = "#aa0077"
+_CLR_METAL   = "#cc8800"
+_CLR_HAL     = "#cc2277"
+_CLR_HBXHAL  = "#6633aa"
 
-# Ligand atom colors from SVG
-_ATOM_CLR = {
-    "C":  "#1a1a1a",
-    "N":  "#1a5fa8",   # st10 fill
-    "O":  "#cc2222",   # st4 fill (#c22 expanded)
-    "S":  "#c8a800",
-    "P":  "#e07000",
-    "F":  "#1a7a1a",
-    "CL": "#1a7a1a",
-    "BR": "#8b2500",
-    "I":  "#5c2d8a",
-    "H":  "#555555",   # st5 fill
+# Residue circle backgrounds (fill + opacity) from SVG
+_RES_CIRCLE = {
+    "hbond":            dict(fill="#80dd80", opacity=0.2),   # st15
+    "hbond_to_halogen": dict(fill="#80dd80", opacity=0.2),
+    "pi_pi":            dict(fill="#e200e8", opacity=0.2),   # st11
+    "cation_pi":        dict(fill="#e200e8", opacity=0.2),
+    "hydrophobic":      dict(fill="#2287ff", opacity=0.2),   # st6
+    "ionic":            dict(fill="#ffaae0", opacity=0.2),
+    "metal":            dict(fill="#ffe080", opacity=0.2),
+    "halogen":          dict(fill="#ffb0d0", opacity=0.2),
 }
 
-_AROM_DOT_CLR = "#1a7a1a"   # st17 fill
+_LBL_CLR = {
+    "hbond":            _CLR_HBOND,   # st2
+    "hbond_to_halogen": _CLR_HBOND,
+    "pi_pi":            _CLR_PIPI,    # st3
+    "cation_pi":        _CLR_PIPI,
+    "hydrophobic":      _CLR_HYDRO,   # st16
+    "ionic":            _CLR_IONIC,
+    "metal":            _CLR_METAL,
+    "halogen":          _CLR_HAL,
+}
+
+_LINE_CLR = {
+    "hbond":            _CLR_HBOND,   # st13
+    "hbond_to_halogen": _CLR_HBXHAL,
+    "pi_pi":            _CLR_PIPI,    # st5
+    "cation_pi":        _CLR_PIPI,
+    "ionic":            _CLR_IONIC,
+    "metal":            _CLR_METAL,
+    "halogen":          _CLR_HAL,
+    # hydrophobic: NO LINE
+}
+
+_ATOM_CLR = {
+    "C":"#1a1a1a", "N":"#1a5fa8", "O":"#cc2222",
+    "S":"#c8a800", "P":"#e07000", "F":"#1a7a1a",
+    "CL":"#1a7a1a", "BR":"#8b2500", "I":"#5c2d8a", "H":"#555555",
+}
+_AROM_DOT_CLR = "#1a7a1a"   # st18
 
 _METALS_SET = {"MG","ZN","CA","MN","FE","CU","CO","NI","CD","HG","NA","K"}
 _AROM_ATOMS = {"PHE","TYR","TRP","HIS"}
 _AROM_ATOM_NAMES = {
     "CG","CD1","CD2","CE1","CE2","CZ",
     "ND1","NE2","CE3","CZ2","CZ3","CH2",
-}
-
-# ── Per-type rendering spec ──────────────────────────────────────────────────
-_ITYPE_SPEC = {
-    "hbond":            dict(line_clr=_CLR_HBOND,  lbl_clr=_CLR_HBOND,
-                             dash="5,3", lw=1.6,
-                             circle_bg="#80dd80", circle_opacity=0.3,
-                             show_dist=True),
-    "hbond_to_halogen": dict(line_clr=_CLR_HBXHAL, lbl_clr=_CLR_HBXHAL,
-                             dash="4,2,1,2", lw=1.6,
-                             circle_bg="#d0a0ff", circle_opacity=0.3,
-                             show_dist=True),
-    "pi_pi":            dict(line_clr=_CLR_PIPI,   lbl_clr=_CLR_PIPI,
-                             dash="5,3", lw=1.6,
-                             circle_bg=_CLR_PIPI, circle_opacity=0.3,
-                             show_dist=False),
-    "cation_pi":        dict(line_clr=_CLR_CATPI,  lbl_clr=_CLR_CATPI,
-                             dash="5,3", lw=1.6,
-                             circle_bg=_CLR_CATPI, circle_opacity=0.3,
-                             show_dist=False),
-    "hydrophobic":      dict(line_clr=_CLR_HYDRO,  lbl_clr=_CLR_HYDRO,
-                             dash="",    lw=2.0,
-                             circle_bg=None, circle_opacity=0,
-                             show_dist=False),
-    "ionic":            dict(line_clr=_CLR_IONIC,  lbl_clr=_CLR_IONIC,
-                             dash="6,2,2,2", lw=1.8,
-                             circle_bg="#ffaae0", circle_opacity=0.3,
-                             show_dist=True),
-    "metal":            dict(line_clr=_CLR_METAL,  lbl_clr=_CLR_METAL,
-                             dash="3,2", lw=1.8,
-                             circle_bg="#ffe080", circle_opacity=0.3,
-                             show_dist=True),
-    "halogen":          dict(line_clr=_CLR_HAL,    lbl_clr=_CLR_HAL,
-                             dash="5,2", lw=1.6,
-                             circle_bg="#ffb0d0", circle_opacity=0.3,
-                             show_dist=True),
 }
 
 
@@ -1753,10 +1757,10 @@ def _get_aromatic_ring_data(mol, conf):
                                conf.GetAtomPosition(i).y,
                                conf.GetAtomPosition(i).z] for i in ring])
         centroid = coords.mean(axis=0)
-        v1 = coords[1] - coords[0]; v2 = coords[2] - coords[0]
-        n  = np.cross(v1, v2); nl = np.linalg.norm(n)
+        v1 = coords[1]-coords[0]; v2 = coords[2]-coords[0]
+        n  = np.cross(v1,v2); nl = np.linalg.norm(n)
         if nl > 0: n /= nl
-        results.append((centroid, n))
+        results.append((centroid, n, list(ring)))   # include atom indices
     return results
 
 
@@ -1792,7 +1796,8 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                 if d<3.5:
                     results.append(dict(resname=rn,chain=ch,resid=ri,
                         itype="hbond",distance=round(d,1),lig_atom_idx=i,
-                        prot_el=el,is_donor=(el=="N"))); break
+                        prot_el=el,is_donor=(el=="N"),ring_atom_indices=None))
+                    break
         if el in {"C","S","CL","BR","I"} and rn in HYDR:
             for i in range(nl):
                 if lel[i] not in HYDL: continue
@@ -1800,52 +1805,56 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                 if d<cutoff:
                     results.append(dict(resname=rn,chain=ch,resid=ri,
                         itype="hydrophobic",distance=round(d,1),lig_atom_idx=i,
-                        prot_el=el,is_donor=False)); break
+                        prot_el=el,is_donor=False,ring_atom_indices=None))
+                    break
         if rn in {"ASP","GLU"} and el=="O":
             for i in range(nl):
                 if lchg[i]>0 and float(dists[i])<4.0:
                     results.append(dict(resname=rn,chain=ch,resid=ri,
                         itype="ionic",distance=round(float(dists[i]),1),
-                        lig_atom_idx=i,prot_el=el,is_donor=False)); break
+                        lig_atom_idx=i,prot_el=el,is_donor=False,ring_atom_indices=None)); break
         if rn in {"LYS","ARG"} and el=="N":
             for i in range(nl):
                 if lchg[i]<0 and float(dists[i])<4.0:
                     results.append(dict(resname=rn,chain=ch,resid=ri,
                         itype="ionic",distance=round(float(dists[i]),1),
-                        lig_atom_idx=i,prot_el=el,is_donor=True)); break
+                        lig_atom_idx=i,prot_el=el,is_donor=True,ring_atom_indices=None)); break
         if rn.strip().upper() in _METALS_SET or el in _METALS_SET:
             if md<2.8:
                 results.append(dict(resname=rn,chain=ch,resid=ri,
                     itype="metal",distance=round(md,1),lig_atom_idx=mi,
-                    prot_el=el,is_donor=False))
+                    prot_el=el,is_donor=False,ring_atom_indices=None))
+    # π-π: line must start from ring CENTROID → store ring atom indices
     lr=_get_aromatic_ring_data(lig_mol_3d,conf)
     if lr:
         for j in range(len(rc)):
             rn=rrn[j].strip(); ch=rch[j].strip(); ri=int(rri[j]); an=ran[j].strip()
             if rn not in _AROM_ATOMS or an not in _AROM_ATOM_NAMES: continue
             rp=rc[j]
-            for lc,_ in lr:
+            for lc,_,ring_idxs in lr:
                 d=float(np.linalg.norm(lc-rp))
                 if d<5.5:
-                    bi=min((i for i in range(nl) if larom[i]),
-                           key=lambda i:float(np.linalg.norm(lxyz[i]-rp)),default=0)
+                    # Use the first atom of the ring as lig_atom_idx for angle calculation;
+                    # ring_atom_indices carries the full ring for centroid computation in 2D
                     results.append(dict(resname=rn,chain=ch,resid=ri,
-                        itype="pi_pi",distance=round(d,1),lig_atom_idx=bi,
-                        prot_el="C",is_donor=False)); break
+                        itype="pi_pi",distance=round(d,1),
+                        lig_atom_idx=ring_idxs[0],
+                        prot_el="C",is_donor=False,
+                        ring_atom_indices=ring_idxs)); break
         for j in range(len(rc)):
             rn=rrn[j].strip(); ch=rch[j].strip(); ri=int(rri[j])
             el2=(rel[j].strip().upper() if rel[j] and rel[j].strip() else ran[j][:1].upper())
             if rn not in {"LYS","ARG"} or el2!="N": continue
             rp=rc[j]
-            for lc,_ in lr:
+            for lc,_,ring_idxs in lr:
                 d=float(np.linalg.norm(lc-rp))
                 if d<5.0:
-                    bi=min((i for i in range(nl) if larom[i]),
-                           key=lambda i:float(np.linalg.norm(lxyz[i]-rp)),default=0)
                     results.append(dict(resname=rn,chain=ch,resid=ri,
-                        itype="cation_pi",distance=round(d,1),lig_atom_idx=bi,
-                        prot_el="N",is_donor=True)); break
-    _V={"H":1.20,"C":1.70,"N":1.55,"O":1.52,"S":1.80,"P":1.80,"F":1.47,"CL":1.75,"BR":1.85,"I":1.98}
+                        itype="cation_pi",distance=round(d,1),
+                        lig_atom_idx=ring_idxs[0],prot_el="N",is_donor=True,
+                        ring_atom_indices=ring_idxs)); break
+    _V={"H":1.20,"C":1.70,"N":1.55,"O":1.52,"S":1.80,"P":1.80,
+        "F":1.47,"CL":1.75,"BR":1.85,"I":1.98}
     _XD={17:"CL",35:"BR",53:"I"}; _XA={"O","N","S","P","F","CL","BR","I"}
     for i in range(nl):
         ano=latom[i].GetAtomicNum()
@@ -1860,13 +1869,13 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
             if ael not in _XA and not isp: continue
             ap=rc[j]; d=float(np.linalg.norm(xp-ap))
             if d>vx+_V.get(ael,1.70): continue
-            import numpy as _np2
             vRX=rp2-xp; vXA=ap-xp
+            import numpy as _np2
             ca=_np2.dot(vRX,vXA)/(_np2.linalg.norm(vRX)*_np2.linalg.norm(vXA)+1e-9)
             if _math.degrees(_math.acos(max(-1.0,min(1.0,ca))))>=140:
                 results.append(dict(resname=rrn[j].strip(),chain=rch[j].strip(),
                     resid=int(rri[j]),itype="halogen",distance=round(d,1),
-                    lig_atom_idx=i,prot_el=ael,is_donor=False))
+                    lig_atom_idx=i,prot_el=ael,is_donor=False,ring_atom_indices=None))
     _HA={9:"F",17:"CL",35:"BR",53:"I"}; _HD={"O","N","S"}
     for i in range(nl):
         ano=latom[i].GetAtomicNum()
@@ -1888,15 +1897,16 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                 if float(np.linalg.norm(rc[k]-hp))<1.15: dp=rc[k]; break
             if dp is None: continue
             vHD=dp-hp; vHX=xp-hp
-            cd=np.dot(vHD,vHX)/(np.linalg.norm(vHD)*np.linalg.norm(vHX)+1e-9)
+            import numpy as _np3
+            cd=_np3.dot(vHD,vHX)/(_np3.linalg.norm(vHD)*_np3.linalg.norm(vHX)+1e-9)
             if _math.degrees(_math.acos(max(-1.0,min(1.0,cd))))<120: continue
             vXR=rlp-xp; vXH=hp-xp
-            cr2=np.dot(vXR,vXH)/(np.linalg.norm(vXR)*np.linalg.norm(vXH)+1e-9)
+            cr2=_np3.dot(vXR,vXH)/(_np3.linalg.norm(vXR)*_np3.linalg.norm(vXH)+1e-9)
             arx=_math.degrees(_math.acos(max(-1.0,min(1.0,cr2))))
             if not(70<=arx<=120): continue
             results.append(dict(resname=rrn[j].strip(),chain=rch[j].strip(),
                 resid=int(rri[j]),itype="hbond_to_halogen",distance=round(dhx,1),
-                lig_atom_idx=i,prot_el="N",is_donor=True))
+                lig_atom_idx=i,prot_el="N",is_donor=True,ring_atom_indices=None))
     return results
 
 
@@ -1924,12 +1934,26 @@ def _compute_svg_coords(mol2d, cx, cy, target_size=310):
     return {i:(cx+(xs[i]-mx)*sc, cy-(ys[i]-my)*sc) for i in range(n)}
 
 
+def _ring_centroid_2d(ring_atom_indices, svg_coords):
+    """Compute 2D centroid of an aromatic ring from SVG coordinates."""
+    xs=[svg_coords[i][0] for i in ring_atom_indices if i in svg_coords]
+    ys=[svg_coords[i][1] for i in ring_atom_indices if i in svg_coords]
+    if not xs: return None, None
+    return sum(xs)/len(xs), sum(ys)/len(ys)
+
+
 def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=310):
-    """Angular-sort placement — lines never cross."""
+    """Angular-sort — lines never cross."""
     if not interactions: return []
     anchored=[]
     for ix in interactions:
-        ai=ix.get("lig_atom_idx",0); ax,ay=svg_coords.get(ai,(cx,cy))
+        # For π-π: anchor angle from ring centroid, not single atom
+        if ix.get("ring_atom_indices"):
+            ax,ay=_ring_centroid_2d(ix["ring_atom_indices"],svg_coords)
+            if ax is None: ax,ay=svg_coords.get(ix.get("lig_atom_idx",0),(cx,cy))
+        else:
+            ai=ix.get("lig_atom_idx",0)
+            ax,ay=svg_coords.get(ai,(cx,cy))
         anchored.append({**ix,"anchor_angle":_math.atan2(ay-cy,ax-cx)})
     anchored.sort(key=lambda x:x["anchor_angle"])
     n=len(anchored)
@@ -1950,17 +1974,10 @@ def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=310):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  LIGAND SVG — exact style from SVG reference
+#  LIGAND SVG
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _render_ligand_svg(mol2d, svg_coords):
-    """
-    Render ligand matching the reference SVG:
-    - Single bonds: stroke-width 1.77px (st0)
-    - Double bonds: two parallel lines stroke-width 2.44px (st6), separation ±3.8
-    - N/O/H as colored text (no surrounding circle, just white bg rect to clear bonds)
-    - Aromatic: dashed circle opacity 0.7 + green dot r=5.43
-    """
     from rdkit import Chem
     parts=[]
     ri=mol2d.GetRingInfo()
@@ -1972,15 +1989,12 @@ def _render_ligand_svg(mol2d, svg_coords):
             arom_rings.append(ring)
 
     def _sh(fx,fy,tx,ty,sym):
-        """Shorten bond end at heteroatom."""
         if sym not in ("C",""):
             dx,dy=tx-fx,ty-fy; L=_math.sqrt(dx*dx+dy*dy)+1e-9
-            # clearance radius per atom — based on text width
             r={"H":8,"N":9,"O":9,"S":11,"P":11,"F":8,"CL":13,"BR":13,"I":11}.get(sym,9)
             return fx+dx/L*r, fy+dy/L*r
         return fx,fy
 
-    # ── Bonds ────────────────────────────────────────────────────────────────
     for bond in mol2d.GetBonds():
         i1,i2=bond.GetBeginAtomIdx(),bond.GetEndAtomIdx()
         x1,y1=svg_coords.get(i1,(0,0)); x2,y2=svg_coords.get(i2,(0,0))
@@ -1989,9 +2003,7 @@ def _render_ligand_svg(mol2d, svg_coords):
         x1s,y1s=_sh(x1,y1,x2,y2,s1); x2s,y2s=_sh(x2,y2,x1,y1,s2)
         bt=bond.GetBondType()
         if frozenset([i1,i2]) in arom_bonds:
-            # Aromatic bond — single line, 1.77px (st0 style)
-            parts.append(f'<line x1="{x1s:.2f}" y1="{y1s:.2f}"'
-                         f' x2="{x2s:.2f}" y2="{y2s:.2f}"'
+            parts.append(f'<line x1="{x1s:.2f}" y1="{y1s:.2f}" x2="{x2s:.2f}" y2="{y2s:.2f}"'
                          f' stroke="#1a1a1a" stroke-width="1.77" opacity="0.9"/>')
         elif bt==Chem.BondType.DOUBLE:
             dx,dy=x2s-x1s,y2s-y1s; L=_math.sqrt(dx*dx+dy*dy)+1e-9
@@ -2024,35 +2036,29 @@ def _render_ligand_svg(mol2d, svg_coords):
                                  f' x2="{mx2+px*w:.2f}" y2="{my2+py*w:.2f}"'
                                  f' stroke="#1a1a1a" stroke-width="1.8"/>')
             else:
-                # Default single bond — st0 style: 1.77px
-                parts.append(f'<line x1="{x1s:.2f}" y1="{y1s:.2f}"'
-                             f' x2="{x2s:.2f}" y2="{y2s:.2f}"'
+                parts.append(f'<line x1="{x1s:.2f}" y1="{y1s:.2f}" x2="{x2s:.2f}" y2="{y2s:.2f}"'
                              f' stroke="#1a1a1a" stroke-width="1.77" opacity="0.9"/>')
 
-    # ── Aromatic: dashed circle (st8) + green dot (st17) ─────────────────────
+    # Aromatic: dashed circle (st14) + green dot (st18)
     for ring in arom_rings:
         rcoords=[svg_coords.get(i,(0,0)) for i in ring]
         rcx=sum(x for x,y in rcoords)/len(rcoords)
         rcy=sum(y for x,y in rcoords)/len(rcoords)
         avg=sum(_math.sqrt((x-rcx)**2+(y-rcy)**2) for x,y in rcoords)/len(rcoords)
         cr=avg*0.58
-        # Dashed circle — st8: opacity 0.7, dasharray "5.43 2.72", stroke-width 1.77
         parts.append(f'<circle cx="{rcx:.2f}" cy="{rcy:.2f}" r="{cr:.2f}"'
                      f' fill="none" stroke="#1a1a1a" stroke-width="1.77"'
                      f' stroke-dasharray="5.43 2.72" opacity="0.7"/>')
-        # Green filled dot — st17: r=5.43, fill #1a7a1a
         parts.append(f'<circle cx="{rcx:.2f}" cy="{rcy:.2f}" r="5.43"'
-                     f' fill="{_AROM_DOT_CLR}" stroke="none"/>')
+                     f' fill="{_AROM_DOT_CLR}"/>')
 
-    # ── Heteroatom labels (text only, with white bg rect to clear bond lines) ──
+    # Heteroatom labels: white bg rect + colored bold text (no circle border)
     for i in range(mol2d.GetNumAtoms()):
         atom=mol2d.GetAtomWithIdx(i); sym=atom.GetSymbol()
         if sym=="C": continue
         ax,ay=svg_coords.get(i,(0,0))
         clr=_ATOM_CLR.get(sym.upper(),"#555")
-        # Font sizes from SVG: N/O = 17.65px, H = 16px, others = 17.65px
-        fs={"H":16}.get(sym, 17.65)
-        # White bg rect (clears bond lines)
+        fs={"H":16}.get(sym,17.65)   # st0/st12 = 17.65px, H = 16px
         hw={"H":7,"N":9,"O":9,"S":11,"P":11,"F":8,"CL":16,"BR":16,"I":11}.get(sym.upper(),9)
         parts.append(f'<rect x="{ax-hw:.1f}" y="{ay-11:.1f}"'
                      f' width="{hw*2:.0f}" height="22" fill="white" stroke="none"/>')
@@ -2060,7 +2066,6 @@ def _render_ligand_svg(mol2d, svg_coords):
                      f' dominant-baseline="central"'
                      f' font-family="Arial,sans-serif" font-size="{fs}"'
                      f' font-weight="700" fill="{clr}">{sym}</text>')
-        # Formal charge
         fc=atom.GetFormalCharge()
         if fc!=0:
             fcs="+" if fc==1 else "−" if fc==-1 else f"{fc:+d}"
@@ -2079,119 +2084,134 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
     parts.append(f'<svg width="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">')
     parts.append(f'<rect width="{W}" height="{H}" fill="white"/>')
 
-    # ── Title pill (st19 style: fill #f2f2f2, rounded pill) ──────────────────
+    # ── Title pill: st19 fill #f2f2f2, st7 font 24.93px bold ─────────────────
     if title:
         esc=title.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-        tw=len(esc)*14+40  # approximate pill width
-        tw=max(tw,220); tw=min(tw,W-40)
-        pill_x=(W-tw)/2; pill_h=46; pill_r=pill_h/2
-        parts.append(f'<rect x="{pill_x:.1f}" y="14" width="{tw:.0f}" height="{pill_h}"'
-                     f' rx="{pill_r:.1f}" ry="{pill_r:.1f}" fill="#f2f2f2" stroke="none"/>')
+        tw=len(esc)*14.5+48; tw=max(tw,240); tw=min(tw,W-40)
+        px=(W-tw)/2; ph=46; pr=ph/2
+        parts.append(f'<rect x="{px:.1f}" y="14" width="{tw:.0f}" height="{ph}"'
+                     f' rx="{pr:.1f}" ry="{pr:.1f}" fill="#f2f2f2" stroke="none"/>')
         parts.append(f'<text x="{W/2:.1f}" y="37" text-anchor="middle"'
                      f' dominant-baseline="central"'
-                     f' font-family="Arial,sans-serif" font-size="20"'
+                     f' font-family="Arial,sans-serif" font-size="24.93"'
                      f' font-weight="700" fill="#1a1a1a">{esc}</text>')
 
-    # ── PASS 1: Lines behind everything ──────────────────────────────────────
+    # ── PASS 1: Residue background circles (drawn first — behind lines) ───────
     for p in placements:
-        itype=p["itype"]; spec=_ITYPE_SPEC.get(itype,_ITYPE_SPEC["hbond"])
-        ai=p.get("lig_atom_idx",0); lx,ly=svg_coords.get(ai,(W//2,H//2))
+        itype=p["itype"]
         bx,by=p["bx"],p["by"]
-        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-60))
-        clr=spec["line_clr"]; dash=spec["dash"]; lw=spec["lw"]
-        dash_attr=f' stroke-dasharray="{dash}"' if dash else ""
+        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
+        bg=_RES_CIRCLE.get(itype,dict(fill="#cccccc",opacity=0.2))
+        parts.append(f'<circle cx="{cbx:.1f}" cy="{cby:.1f}" r="39.52"'
+                     f' fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
 
-        if itype=="hydrophobic":
-            # Curved bezier path (st12 style: blue #2287ff, solid, 2px)
-            # Control point: perpendicular deflection for organic curve
-            mx=(lx+cbx)/2; my=(ly+cby)/2
-            dx,dy=cbx-lx,cby-ly; L=_math.sqrt(dx*dx+dy*dy)+1e-9
-            # Perpendicular deflection — curve bows to the right of direction
-            perp_x=-dy/L; perp_y=dx/L
-            bow=min(L*0.28,55)
-            cpx=mx+perp_x*bow; cpy=my+perp_y*bow
-            parts.append(f'<path d="M {lx:.1f},{ly:.1f} Q {cpx:.1f},{cpy:.1f} {cbx:.1f},{cby:.1f}"'
-                         f' fill="none" stroke="{clr}" stroke-width="{lw}"'
-                         f' stroke-miterlimit="10"/>')
+    # ── PASS 2: Interaction lines ─────────────────────────────────────────────
+    for p in placements:
+        itype=p["itype"]
+        if itype=="hydrophobic": continue   # NO LINE — circle + label only
+
+        bx,by=p["bx"],p["by"]
+        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
+
+        # Line start: ring centroid for π-π, else ligand atom position
+        if itype in ("pi_pi","cation_pi") and p.get("ring_atom_indices"):
+            lx,ly=_ring_centroid_2d(p["ring_atom_indices"],svg_coords)
+            if lx is None:
+                ai=p.get("lig_atom_idx",0); lx,ly=svg_coords.get(ai,(W//2,H//2))
         else:
-            # Straight dashed line
-            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{cbx:.2f}" y2="{cby:.2f}"'
-                         f' stroke="{clr}" stroke-width="{lw}"{dash_attr} opacity="0.85"/>')
-            # Distance label on H-bond / show_dist types
-            if spec["show_dist"] and p.get("distance") is not None:
+            ai=p.get("lig_atom_idx",0); lx,ly=svg_coords.get(ai,(W//2,H//2))
+
+        clr=_LINE_CLR.get(itype,"#888")
+        dash_attr=' stroke-dasharray="5 3"'
+        dash_attr_hbx=' stroke-dasharray="4 2 1 2"'
+
+        if itype in ("pi_pi","cation_pi"):
+            # st5: stroke #e200e8, dasharray "5 3", stroke-width 1.6, opacity 0.85
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}"'
+                         f' x2="{cbx:.2f}" y2="{cby:.2f}"'
+                         f' stroke="{clr}" stroke-width="1.6"'
+                         f'{dash_attr} opacity="0.85"/>')
+        elif itype in ("hbond","hbond_to_halogen"):
+            # st13: stroke #1a7a1a, dasharray "5 3", stroke-width 1.6, opacity 0.85
+            da=dash_attr if itype=="hbond" else dash_attr_hbx
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}"'
+                         f' x2="{cbx:.2f}" y2="{cby:.2f}"'
+                         f' stroke="{clr}" stroke-width="1.6"'
+                         f'{da} opacity="0.85"/>')
+            # Distance on line: st1 14px bold green
+            if p.get("distance") is not None:
                 mx2=(lx+cbx)/2; my2=(ly+cby)/2
                 ds=f"{p['distance']}\u00c5"
                 tw2=len(ds)*7+8
                 parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}"'
-                             f' width="{tw2:.0f}" height="16" rx="4"'
+                             f' width="{tw2:.0f}" height="17" rx="4"'
                              f' fill="white" stroke="{clr}" stroke-width="0.5"/>')
                 parts.append(f'<text x="{mx2:.1f}" y="{my2:.1f}" text-anchor="middle"'
                              f' dominant-baseline="central"'
                              f' font-family="Arial,sans-serif" font-size="14"'
-                             f' fill="{clr}">{ds}</text>')
+                             f' font-weight="700" fill="{clr}">{ds}</text>')
+        else:
+            # ionic / metal / halogen
+            da={"ionic":"6 2 2 2","metal":"3 2","halogen":"5 2"}.get(itype,"5 3")
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}"'
+                         f' x2="{cbx:.2f}" y2="{cby:.2f}"'
+                         f' stroke="{clr}" stroke-width="1.8"'
+                         f' stroke-dasharray="{da}" opacity="0.85"/>')
+            if p.get("distance") is not None:
+                mx2=(lx+cbx)/2; my2=(ly+cby)/2
+                ds=f"{p['distance']}\u00c5"; tw2=len(ds)*7+8
+                parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}"'
+                             f' width="{tw2:.0f}" height="17" rx="4"'
+                             f' fill="white" stroke="{clr}" stroke-width="0.5"/>')
+                parts.append(f'<text x="{mx2:.1f}" y="{my2:.1f}" text-anchor="middle"'
+                             f' dominant-baseline="central"'
+                             f' font-family="Arial,sans-serif" font-size="14"'
+                             f' font-weight="700" fill="{clr}">{ds}</text>')
 
-    # ── PASS 2: Ligand structure ──────────────────────────────────────────────
+    # ── PASS 3: Ligand structure ──────────────────────────────────────────────
     parts.append(_render_ligand_svg(mol2d, svg_coords))
 
-    # ── PASS 3: Residue labels ────────────────────────────────────────────────
+    # ── PASS 4: Residue labels ────────────────────────────────────────────────
     for p in placements:
-        itype=p["itype"]; spec=_ITYPE_SPEC.get(itype,_ITYPE_SPEC["hbond"])
+        itype=p["itype"]
         bx,by=p["bx"],p["by"]
-        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-60))
+        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
         rn=p["resname"]; ri=p["resid"]; ch=p.get("chain","")
-        lbl=f"{rn.upper()} {ri}{ch}"  # e.g. "MET 742A"
-        lbl_clr=spec["lbl_clr"]
-
-        # Translucent circle behind label (for h-bond, pi-pi, ionic, metal, halogen)
-        bg=spec["circle_bg"]; opacity=spec["circle_opacity"]
-        if bg:
-            parts.append(f'<circle cx="{cbx:.1f}" cy="{cby:.1f}" r="39.52"'
-                         f' fill="{bg}" opacity="{opacity}"/>')
-
-        # Label text: 23px bold (st11/st15/st16 style from SVG)
+        lbl=f"{rn.upper()} {ri}{ch}"     # e.g. "MET 742A"
+        lbl_clr=_LBL_CLR.get(itype,"#333")
+        # st2/st3/st16: 23px bold
         parts.append(f'<text x="{cbx:.1f}" y="{cby:.1f}" text-anchor="middle"'
                      f' dominant-baseline="central"'
                      f' font-family="Arial,sans-serif" font-size="23"'
                      f' font-weight="700" fill="{lbl_clr}">{lbl}</text>')
 
-    # ── PASS 4: Legend (active types only) ───────────────────────────────────
-    _LEG_ORDER = ["hydrophobic","hbond","hbond_to_halogen",
-                  "pi_pi","cation_pi","ionic","metal","halogen"]
-    _LEG_LABEL = {
-        "hbond":"Hydrogen bond","hbond_to_halogen":"H···Halogen",
-        "pi_pi":"π-π stacking","cation_pi":"Cation-π",
-        "hydrophobic":"Hydrophobic","ionic":"Ionic",
-        "metal":"Metal","halogen":"Halogen bond",
-    }
+    # ── PASS 5: Legend ────────────────────────────────────────────────────────
+    # Exact SVG legend: small colored circles r=9.54 + gray 16px text
+    # Legend box: stroke #f2f2f2 (barely visible), no fill
+    _LEG_ORDER=["hydrophobic","hbond","pi_pi","cation_pi",
+                "hbond_to_halogen","ionic","metal","halogen"]
+    _LEG_LABEL={"hydrophobic":"Hydrophobic","hbond":"Hydrogen bond",
+                "hbond_to_halogen":"H···Halogen",
+                "pi_pi":"π-π stacking","cation_pi":"Cation-π",
+                "ionic":"Ionic","metal":"Metal","halogen":"Halogen bond"}
     active=[t for t in _LEG_ORDER if any(p["itype"]==t for p in placements)]
     if active:
-        ly0=H-52; n_leg=len(active)
-        iw=min(115,(W-40)/max(n_leg,1)); lx0=(W-iw*n_leg)/2
-        parts.append(f'<rect x="{lx0-8:.0f}" y="{ly0-5}"'
-                     f' width="{iw*n_leg+16:.0f}" height="44" rx="7"'
-                     f' fill="#f8f8f8" stroke="#ddd" stroke-width="0.68"/>')
+        ly0=H-52; n_l=len(active); iw=min(115,(W-40)/max(n_l,1)); lx0=(W-iw*n_l)/2
+        # Legend box: st17 — stroke #f2f2f2, fill none (rect border only)
+        parts.append(f'<rect x="{lx0-8:.0f}" y="{ly0-5}" width="{iw*n_l+16:.0f}"'
+                     f' height="44" fill="none" stroke="#f2f2f2"'
+                     f' stroke-miterlimit="10"/>')
         for k,it in enumerate(active):
-            sp=_ITYPE_SPEC.get(it,_ITYPE_SPEC["hbond"])
             ix2=lx0+iw*k+iw/2
-            clr2=sp["line_clr"]; dash2=sp["dash"]
-            if it=="hydrophobic":
-                # Show curved line in legend
-                parts.append(f'<path d="M {ix2-18:.0f},{ly0+10} Q {ix2:.0f},{ly0+2} {ix2+18:.0f},{ly0+10}"'
-                             f' fill="none" stroke="{clr2}" stroke-width="2"'
-                             f' stroke-miterlimit="10"/>')
-            elif dash2:
-                parts.append(f'<line x1="{ix2-18:.0f}" y1="{ly0+10}"'
-                             f' x2="{ix2+18:.0f}" y2="{ly0+10}"'
-                             f' stroke="{clr2}" stroke-width="2"'
-                             f' stroke-dasharray="{dash2}"/>')
-            else:
-                parts.append(f'<line x1="{ix2-18:.0f}" y1="{ly0+10}"'
-                             f' x2="{ix2+18:.0f}" y2="{ly0+10}"'
-                             f' stroke="{clr2}" stroke-width="2"/>')
-            lbl_leg=_LEG_LABEL.get(it,it)
-            parts.append(f'<text x="{ix2:.0f}" y="{ly0+32}" text-anchor="middle"'
+            bg=_RES_CIRCLE.get(it,dict(fill="#ccc",opacity=0.2))
+            # Small colored circle (matches st6/st15/st11 r=9.54)
+            parts.append(f'<circle cx="{ix2-22:.0f}" cy="{ly0+10}" r="9.54"'
+                         f' fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
+            # Gray 16px text (st9)
+            parts.append(f'<text x="{ix2-8:.0f}" y="{ly0+10}" text-anchor="start"'
+                         f' dominant-baseline="central"'
                          f' font-family="Arial,sans-serif" font-size="16"'
-                         f' font-weight="700" fill="#555">{lbl_leg}</text>')
+                         f' fill="#555">{_LEG_LABEL.get(it,it)}</text>')
 
     parts.append('</svg>')
     return "\n".join(parts)
@@ -2211,15 +2231,12 @@ def draw_interaction_diagram(
     max_residues: int = 14,
 ) -> bytes:
     """
-    2D interaction diagram matching pose1_interaction.svg style.
+    2D interaction diagram — exact style matching pose1_interaction.svg.
 
-    Title: rounded pill #f2f2f2, 20px bold.
-    H-bond: green dashed + translucent green circle + 23px bold label + distance.
-    π-π: magenta dashed + translucent magenta circle + label.
-    Hydrophobic: curved blue bezier + bold label (no circle).
-    Ionic/Metal/Halogen: dashed + translucent circle + label + distance.
-    Ligand: 1.77px single, 2.44px double, N/O as bold colored text,
-            aromatic = dashed circle + green dot.
+    Hydrophobic: translucent blue circle + blue label ONLY (no line).
+    H-bond:      green dashed line + translucent green circle + label + distance.
+    π-π/Cat-π:   magenta dashed line FROM ring centroid → residue circle + label.
+    Ionic/Metal/Halogen: dashed line + circle + label + distance.
     Lines never cross (angular-sort placement).
     """
     from rdkit import Chem, RDLogger
@@ -2264,7 +2281,10 @@ def draw_interaction_diagram(
     except: pass
     try: raw=_detect_all_interactions(mol3d,receptor_pdb,cutoff=cutoff)
     except: raw=[]
-    for ix in raw: ix["lig_atom_idx"]=m3to2d.get(ix.get("lig_atom_idx",0),0)
+    for ix in raw:
+        ix["lig_atom_idx"]=m3to2d.get(ix.get("lig_atom_idx",0),0)
+        if ix.get("ring_atom_indices"):
+            ix["ring_atom_indices"]=[m3to2d.get(i,i) for i in ix["ring_atom_indices"]]
     pm={t:i for i,t in enumerate(_ITYPE_PRIORITY)}
     ded=_deduplicate_interactions(raw)
     ded.sort(key=lambda x:(pm.get(x["itype"],99),x["distance"]))
