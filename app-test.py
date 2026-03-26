@@ -75,12 +75,6 @@ st.set_page_config(
 #  THEME + COLOUR HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-"""
-_render_interactive_diagram(data, height)
-Generates a self-contained HTML string for the drag-mode 2D interaction diagram.
-`data` is the dict returned by draw_interaction_diagram_data().
-"""
-
 import json as _json
 
 def _render_interactive_diagram(data: dict, height: int = 800) -> str:
