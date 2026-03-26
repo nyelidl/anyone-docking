@@ -1087,10 +1087,14 @@ def _poseview_ui(
     with _tab_rdkit:
         _rec2    = st.session_state.get(rec_key, "")
         _smiles2 = lig_smiles or st.session_state.get(smiles_key, "")
+        _pfx2    = rec_key.replace("receptor_fh", "")
+        _lig_pdb2 = st.session_state.get(_pfx2 + "ligand_pdb_path", "")
+        _has_ref_rdkit2 = bool(_lig_pdb2 and os.path.exists(_lig_pdb2))
 
         st.caption(
-            "Original RDKit highlight-circle style. "
-            "Blue = H-bond, green = hydrophobic, pink = other."
+            "RDKit highlight-circle style — blue = H-bond/polar · "
+            "green = hydrophobic · pink = other. "
+            "Works locally with no server needed."
         )
 
         if not _rec2 or not os.path.exists(_rec2):
@@ -1098,34 +1102,42 @@ def _poseview_ui(
         elif not os.path.exists(pose_sdf_path):
             st.warning("Pose SDF not ready.")
         else:
+            with st.expander("🔍 SMILES used for 2D diagram", expanded=False):
+                st.code(_smiles2 or "[no SMILES]", language=None)
+                st.caption("Dimorphite-DL protonated SMILES (includes charges like [O-], [NH3+]).")
+
             _cl3, _cr3 = st.columns(2)
             with _cl3:
                 _cut2 = st.slider(
-                    "Cutoff (Å)", 2.5, 5.0, 3.5, 0.1, key=btn_key + "_rdk_cut"
+                    "Interaction cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
+                    key=btn_key + "_rdk_cut",
                 )
             with _cr3:
                 _max2 = st.slider(
-                    "Max residues", 4, 20, 10, 1, key=btn_key + "_rdk_max"
+                    "Max residues shown", 4, 20, 10, 1,
+                    key=btn_key + "_rdk_max",
+                    help="Reduce to clean up busy diagrams.",
                 )
 
-            if st.button("🔬 Generate RDKit", key=btn_key + "_rdk_gen", type="primary"):
-                with st.spinner("Generating RDKit diagram…"):
+            if st.button("🔬 Generate Both RDKit Diagrams", key=btn_key + "_rdk_gen", type="primary"):
+                # — Docked pose —
+                with st.spinner("⏳ Generating docked pose diagram…"):
                     try:
-                        from core import load_mols_from_sdf
-                        _mols = load_mols_from_sdf(pose_sdf_path)
-                        _mol  = _mols[0] if _mols else None
-                        if _mol is None:
-                            st.error("Cannot read pose SDF.")
+                        _mols2 = load_mols_from_sdf(pose_sdf_path)
+                        _mol2  = _mols2[0] if _mols2 else None
+                        if _mol2 is None:
+                            st.error("Could not read pose SDF.")
                         else:
-                            _energy_part2 = ""
-                            if binding_energy is not None:
-                                _energy_part2 = f"  ·  {binding_energy:.2f} kcal/mol"
-                            _rtitle2 = f"Pose {pose_idx+1}  ·  {lig_name}{_energy_part2}"
+                            _etitle2 = (
+                                f"Pose {pose_idx+1}  ·  {lig_name}"
+                                + (f"  ·  {binding_energy:.2f} kcal/mol"
+                                   if binding_energy is not None else "")
+                            )
                             _rdk_svg = draw_interactions_rdkit_classic(
-                                lig_mol=_mol,
+                                lig_mol=_mol2,
                                 receptor_pdb=_rec2,
                                 smiles=_smiles2,
-                                title=_rtitle2,
+                                title=_etitle2,
                                 cutoff=_cut2,
                                 size=(650, 620),
                                 max_residues=_max2,
@@ -1133,47 +1145,228 @@ def _poseview_ui(
                             st.session_state[img_svg_key + "_rdk"]  = _rdk_svg
                             st.session_state[pose_key_key + "_rdk"] = _pose_key
                     except Exception as e:
-                        st.error(f"RDKit error: {e}")
+                        st.error(f"❌ RDKit docked pose error: {e}")
+
+                # — Co-crystal reference —
+                if _has_ref_rdkit2:
+                    with st.spinner("⏳ Generating co-crystal reference diagram…"):
+                        try:
+                            from rdkit import Chem as _Chem2
+                            import subprocess as _sp2
+                            _ref_sdf_tmp = _lig_pdb2.replace(".pdb", "_ref.sdf")
+                            _sp2.run(
+                                f'obabel "{_lig_pdb2}" -O "{_ref_sdf_tmp}" 2>/dev/null',
+                                shell=True, capture_output=True,
+                            )
+                            _ref_mol2 = None
+                            if os.path.exists(_ref_sdf_tmp):
+                                _sup2 = _Chem2.SDMolSupplier(_ref_sdf_tmp, sanitize=True, removeHs=True)
+                                _ref_mol2 = next((m for m in _sup2 if m is not None), None)
+                            if _ref_mol2 is None:
+                                _ref_mol2 = _Chem2.MolFromPDBFile(_lig_pdb2, sanitize=False, removeHs=True)
+                                if _ref_mol2 is not None:
+                                    try: _Chem2.SanitizeMol(_ref_mol2)
+                                    except: pass
+                            if _ref_mol2 is not None:
+                                _ref_smi2 = ref_lig_smiles or ""
+                                if not _ref_smi2:
+                                    try: _ref_smi2 = _Chem2.MolToSmiles(_Chem2.RemoveHs(_ref_mol2))
+                                    except: _ref_smi2 = ""
+                                _ref_title2 = (
+                                    f"{ref_lig_name or cocrystal_ligand_id}  ·  Co-crystal"
+                                    + (f"  ·  {ref_lig_energy:.2f} kcal/mol"
+                                       if ref_lig_energy is not None else "")
+                                )
+                                _ref_rdk_svg = draw_interactions_rdkit_classic(
+                                    lig_mol=_ref_mol2,
+                                    receptor_pdb=_rec2,
+                                    smiles=_ref_smi2,
+                                    title=_ref_title2,
+                                    cutoff=_cut2,
+                                    size=(650, 620),
+                                    max_residues=_max2,
+                                )
+                                st.session_state[img_svg_key + "_rdk_ref"] = _ref_rdk_svg
+                            else:
+                                st.warning("⚠️ Could not read co-crystal ligand PDB.")
+                        except Exception as e:
+                            st.warning(f"⚠️ Co-crystal RDKit diagram error: {e}")
                 st.rerun()
 
-            _rdk_svg   = st.session_state.get(img_svg_key + "_rdk")
-            _rdk_stale = st.session_state.get(pose_key_key + "_rdk") != _pose_key
+            _rdk_svg     = st.session_state.get(img_svg_key + "_rdk")
+            _ref_rdk_svg = st.session_state.get(img_svg_key + "_rdk_ref")
+            _rdk_stale   = st.session_state.get(pose_key_key + "_rdk") != _pose_key
 
             if _rdk_stale and _rdk_svg:
-                st.caption("Pose changed — click Generate RDKit to refresh.")
+                st.caption("⚠️ Pose changed — click **Generate RDKit Diagrams** to update.")
 
-            if _rdk_svg and not _rdk_stale:
-                import base64
-                _rs   = _rdk_svg.decode() if isinstance(_rdk_svg, bytes) else _rdk_svg
-                _rs   = _rs.replace("<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1)
-                _pb2  = svg_to_png(_rdk_svg)
-                _pb64_2 = base64.b64encode(_pb2).decode() if _pb2 else ""
-                _sb64_2 = base64.b64encode(
-                    _rdk_svg if isinstance(_rdk_svg, bytes) else _rdk_svg.encode()
+            _btn_style = (
+                "flex:1;display:inline-block;text-align:center;text-decoration:none;"
+                "padding:8px 0;border-radius:6px;font-size:13px;font-weight:500;"
+                "color:#24292F;background:#F6F8FA;border:1px solid #D0D7DE;"
+                "cursor:pointer;"
+            )
+
+            def _show_rdkit_svg_tab(svg_data, dl_key_prefix, dl_filename):
+                import base64 as _b64
+                _sv  = svg_data.decode() if isinstance(svg_data, bytes) else svg_data
+                _sv  = _sv.replace("<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1)
+                _pb  = svg_to_png(svg_data)
+                _pb64 = _b64.b64encode(_pb).decode() if _pb else ""
+                _sb64 = _b64.b64encode(
+                    svg_data if isinstance(svg_data, bytes) else svg_data.encode()
                 ).decode()
-                _bs2 = (
-                    "display:inline-block;padding:7px 18px;border-radius:6px;"
-                    "font-size:13px;text-decoration:none;color:#24292F;"
-                    "background:#F6F8FA;border:1px solid #D0D7DE;margin:3px;"
-                )
-                _dl2 = ""
-                if _pb64_2:
-                    _dl2 += (
-                        f'<a href="data:image/png;base64,{_pb64_2}" '
-                        f'download="pose{pose_idx+1}_rdkit.png" style="{_bs2}">&#8595; PNG</a>'
-                    )
-                _dl2 += (
-                    f'<a href="data:image/svg+xml;base64,{_sb64_2}" '
-                    f'download="pose{pose_idx+1}_rdkit.svg" style="{_bs2}">&#8595; SVG</a>'
+                _png_fn = dl_filename.replace(".svg", ".png")
+                _png_lnk = (
+                    f'<a href="data:image/png;base64,{_pb64}" download="{_png_fn}"'
+                    f' style="{_btn_style}">&#8595; PNG</a>'
+                ) if _pb64 else ""
+                _svg_lnk = (
+                    f'<a href="data:image/svg+xml;base64,{_sb64}" download="{dl_filename}"'
+                    f' style="{_btn_style}">&#8595; SVG</a>'
                 )
                 components.html(
-                    f'<div style="background:#fff;border-radius:8px;'
-                    f'border:1px solid #D0D7DE;overflow:hidden;">'
-                    f'{_rs}'
-                    f'<div style="padding:8px 12px;border-top:1px solid #eee;">'
-                    f'{_dl2}</div></div>',
-                    height=660, scrolling=False,
+                    f"""<div style="background:#fff;border-radius:8px;
+                        border:1px solid #D0D7DE;overflow:hidden;font-family:'Helvetica Neue',Arial,sans-serif;">
+                      {_sv}
+                      <div style="display:flex;align-items:center;gap:20px;padding:10px 16px;
+                           border-top:1px solid #D0D7DE;font-size:13px;color:#333;">
+                        <div style="display:flex;align-items:center;gap:7px;">
+                          <div style="width:14px;height:14px;border-radius:50%;flex-shrink:0;
+                               background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;"></div>
+                          <span>H-bond / polar</span></div>
+                        <div style="display:flex;align-items:center;gap:7px;">
+                          <div style="width:14px;height:14px;border-radius:50%;flex-shrink:0;
+                               background:rgba(44,141,87,0.55);border:1px solid #2E8B57;"></div>
+                          <span>Hydrophobic</span></div>
+                        <div style="display:flex;align-items:center;gap:7px;">
+                          <div style="width:14px;height:14px;border-radius:50%;flex-shrink:0;
+                               background:rgba(204,95,138,0.55);border:1px solid #cc5f8a;"></div>
+                          <span>Other</span></div>
+                      </div>
+                      <div style="display:flex;gap:8px;padding:10px 12px;border-top:1px solid #D0D7DE;">
+                        {_png_lnk}{_svg_lnk}
+                      </div>
+                    </div>""",
+                    height=740, scrolling=False,
                 )
+
+            if _rdk_svg and not _rdk_stale:
+                _col_l2, _col_r2 = st.columns(2)
+                with _col_l2:
+                    st.markdown("##### 🧪 Docked Pose (RDKit)")
+                    _show_rdkit_svg_tab(
+                        _rdk_svg,
+                        dl_key_prefix=btn_key + "_rdk_dl",
+                        dl_filename=f"pose{pose_idx+1}_rdkit.svg",
+                    )
+                with _col_r2:
+                    st.markdown("##### 🔮 Co-Crystal Reference (RDKit)")
+                    if _ref_rdk_svg:
+                        _show_rdkit_svg_tab(
+                            _ref_rdk_svg,
+                            dl_key_prefix=btn_key + "_rdk_ref_dl",
+                            dl_filename="cocrystal_rdkit.svg",
+                        )
+                    elif _has_ref_rdkit2:
+                        st.info("Click **Generate RDKit Diagrams** to generate co-crystal diagram.")
+                    else:
+                        st.caption("⚠️ No co-crystal ligand — use Auto-detect in receptor preparation.")
+
+                st.markdown("---")
+                # AI Prompt (RDKit)
+                st.markdown("### 🤖 Understand Your Results with AI")
+                st.caption(
+                    "Screenshot this diagram, then paste the prompt below "
+                    "+ the screenshot into **Claude**, **GPT-4o**, or **Gemini**."
+                )
+                _estr_r = (
+                    f"{binding_energy:.2f} kcal/mol"
+                    if binding_energy is not None else "[binding energy]"
+                )
+                _lig_r   = lig_name or "[ligand]"
+                _pdb_r   = pdb_id.upper() if pdb_id else "[PDB ID]"
+                _ref_redocked_r = (ref_lig_energy is not None)
+                _ref_display_r  = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
+                _ref_estr_r     = (
+                    f"{ref_lig_energy:.2f} kcal/mol"
+                    if _ref_redocked_r else None
+                )
+                if _ref_rdk_svg:
+                    _rdk_lines = [
+                        "I have just run a molecular docking experiment and I need help",
+                        "understanding what my results mean. I am attaching two 2D",
+                        "interaction diagrams (RDKit style) from the Anyone Can Dock app.",
+                        "",
+                        f"Docking software: AutoDock Vina v1.2.7",
+                        f"Protein target (PDB): {_pdb_r}",
+                        f"My docked ligand: {_lig_r}",
+                        f"  Predicted binding energy: {_estr_r}",
+                        f"  (more negative = stronger predicted binding)",
+                        f"Reference: {_ref_display_r} co-crystallised in PDB {_pdb_r}"
+                        + (f"  |  binding energy from re-docking: {_ref_estr_r}"
+                           if _ref_redocked_r else "  (see 2D diagram — no re-docking performed)"),
+                        "",
+                        "How to read the diagrams:",
+                        "  Blue circle   = H-bond / polar contact",
+                        "  Green circle  = hydrophobic contact",
+                        "  Pink circle   = other interaction",
+                        "  Residue labels sit next to each colored circle",
+                        "",
+                        "Please help me understand:",
+                        "1. What are the most important interactions my ligand makes,",
+                        "   and why do they matter for binding?",
+                        "2. How does my docked ligand compare to the reference — are the",
+                        "   key contacts conserved or different?",
+                        "3. Based on the binding energy and interaction pattern, does my",
+                        "   ligand look like a promising binder, and what could be improved?",
+                        "",
+                        "Please explain in plain language that a non-expert can follow,",
+                        "but include the specific residue names from the diagram.",
+                        "",
+                        "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
+                        "can copy directly into a report or presentation slide. It should",
+                        "summarise the key interactions of my ligand versus the reference,",
+                        ("mention both binding energies,"
+                         if _ref_redocked_r else "mention the docked ligand's binding energy,"),
+                        "and state what this suggests about the binding mode.",
+                        "Label this section: 'Ready-to-use summary:'",
+                    ]
+                else:
+                    _rdk_lines = [
+                        "I have just run a molecular docking experiment and I need help",
+                        "understanding what my results mean. I am attaching a 2D",
+                        "interaction diagram (RDKit style) from the Anyone Can Dock app.",
+                        "",
+                        f"Docking software: AutoDock Vina v1.2.7",
+                        f"Protein target (PDB): {_pdb_r}",
+                        f"My docked ligand: {_lig_r}",
+                        f"  Predicted binding energy: {_estr_r}",
+                        f"  (more negative = stronger predicted binding)",
+                        "",
+                        "How to read the diagram:",
+                        "  Blue circle   = H-bond / polar contact",
+                        "  Green circle  = hydrophobic contact",
+                        "  Pink circle   = other interaction",
+                        "  Residue labels sit next to each colored circle",
+                        "",
+                        "Please help me understand:",
+                        "1. What interactions is my ligand making with the protein,",
+                        "   and which ones are most important for binding?",
+                        "2. What does the binding energy value tell me — is this a",
+                        "   strong or weak predicted binder?",
+                        "3. Are there any obvious ways the binding could be improved?",
+                        "",
+                        "Please explain in plain language that a non-expert can follow,",
+                        "but include the specific residue names from the diagram.",
+                        "",
+                        "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
+                        "can copy directly into a report or presentation slide. It should",
+                        "summarise the key protein-ligand interactions, mention the binding",
+                        "energy, and state what this suggests about the binding mode.",
+                        "Label this section: 'Ready-to-use summary:'",
+                    ]
+                st.code("\n".join(_rdk_lines), language=None)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 3 — POSEVIEW DOWNLOAD ONLY
