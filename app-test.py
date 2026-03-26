@@ -170,13 +170,27 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
     <button onclick="resetLayout()"
       style="font-size:12px;padding:4px 10px;border:1px solid #ccc;
              border-radius:4px;background:#f8f8f8;cursor:pointer;">
-      ↺ Reset layout
+      ↺ Reset
     </button>
     <button onclick="exportSVG()"
       style="font-size:12px;padding:4px 10px;border:1px solid #ccc;
              border-radius:4px;background:#f8f8f8;cursor:pointer;">
-      ⬇ Export SVG
+      ⬇ SVG
     </button>
+    <button onclick="exportPNG()"
+      style="font-size:12px;padding:4px 10px;border:1px solid #4a90d9;
+             border-radius:4px;background:#e8f4ff;color:#1a5fa8;cursor:pointer;font-weight:700;">
+      ⬇ PNG
+    </button>
+    <select id="iac-dpi"
+      style="font-size:12px;padding:4px 6px;border:1px solid #ccc;
+             border-radius:4px;background:#fff;cursor:pointer;"
+      title="PNG export resolution">
+      <option value="1">Screen (1×)</option>
+      <option value="2" selected>150 dpi (2×)</option>
+      <option value="3">300 dpi (3×)</option>
+      <option value="4">600 dpi (4×)</option>
+    </select>
   </div>
 
   <!-- SVG canvas -->
@@ -382,8 +396,42 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
     const blob = new Blob([clone.outerHTML], {{type:"image/svg+xml"}});
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "interaction_diagram_interactive.svg";
+    a.download = "interaction_diagram.svg";
     a.click();
+  }};
+
+  window.exportPNG = function() {{
+    const scale = parseInt(document.getElementById("iac-dpi").value) || 2;
+    const W = {W}, H = {H};
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("xmlns","http://www.w3.org/2000/svg");
+    clone.setAttribute("width", W);
+    clone.setAttribute("height", H);
+    clone.removeAttribute("style");
+    const svgStr = new XMLSerializer().serializeToString(clone);
+    const svgBlob = new Blob([svgStr], {{type:"image/svg+xml;charset=utf-8"}});
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = function() {{
+      const canvas = document.createElement("canvas");
+      canvas.width  = W * scale;
+      canvas.height = H * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, W, H);
+      URL.revokeObjectURL(url);
+      const a = document.createElement("a");
+      a.download = "interaction_diagram.png";
+      a.href = canvas.toDataURL("image/png");
+      a.click();
+    }};
+    img.onerror = function() {{
+      URL.revokeObjectURL(url);
+      alert("PNG export failed — use SVG export instead.");
+    }};
+    img.src = url;
   }};
 
   buildAll();
