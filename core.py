@@ -1766,149 +1766,484 @@ def _get_aromatic_ring_data(mol, conf):
 
 def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                               cutoff: float = 4.5) -> list:
+    """
+    Detect all protein-ligand interactions from 3D coordinates.
+
+    Interaction criteria
+    ────────────────────
+    H-bond
+      Distance  : D···A ≤ 3.5 Å  (donor–acceptor heavy atoms)
+      Angle     : D–H···A ≥ 120°  when H coordinates are present in the PDB;
+                  D···A–X  ≥ 90°  proxy when no H found (rarely needed for
+                  prepared receptors which always have Hs added)
+      Donor     : protein  — backbone NH; Ser/Thr/Tyr OH; Lys/Arg/His NH;
+                              Trp NH; Asn/Gln NH2; Cys SH
+                  ligand   — any N-H or O-H (detected via attached H atoms
+                              or inferred from RDKit implicit/explicit Hs)
+      Acceptor  : protein  — backbone C=O; Asp/Glu COO⁻; Ser/Thr/Tyr O;
+                              His N (unprotonated); Asn/Gln carbonyl O
+                  ligand   — N (sp2 or sp3 with lone pair), O, F, S
+
+    Halogen bond  (C–X···A, X = Cl/Br/I on ligand)
+      Distance  : X···A ≤ vdW(X) + vdW(A) + 0.5 Å  (generous sum, PLIP style)
+      Angle 1   : C–X···A  ≥ 140°  (σ-hole directionality)
+      Angle 2   : X···A–R  ≥ 90°   (acceptor lone-pair geometry)
+      Acceptors : O, N, S, F, aromatic C
+
+    Hydrophobic
+      Residues  : ALA VAL ILE LEU MET PHE TRP PRO TYR HIS
+      Distance  : ≤ cutoff Å  (between any hydrophobic atom pair)
+
+    Ionic / salt bridge
+      ASP/GLU O  ↔  ligand cation (+1)  : ≤ 4.0 Å
+      LYS/ARG N  ↔  ligand anion  (−1)  : ≤ 4.0 Å
+
+    π-π stacking    : ring centroid dist ≤ 5.5 Å  (aromatic–aromatic)
+    Cation-π        : LYS/ARG N ↔ ligand ring    ≤ 5.0 Å
+    Metal coordination : any metal ↔ ligand heavy atom ≤ 2.8 Å
+    H-bond to halogen  : N/O–H···X (X = halogen on ligand, geometry checked)
+    """
     import numpy as np
     from prody import parsePDB
+
     rec = parsePDB(receptor_pdb)
-    if rec is None: return []
-    rc=rec.getCoords(); rrn=rec.getResnames(); rch=rec.getChids()
-    rri=rec.getResnums(); ran=rec.getNames(); rel=rec.getElements()
-    conf=lig_mol_3d.GetConformer(); nl=lig_mol_3d.GetNumAtoms()
-    lxyz=np.array([[conf.GetAtomPosition(i).x,
-                    conf.GetAtomPosition(i).y,
-                    conf.GetAtomPosition(i).z] for i in range(nl)])
-    latom=[lig_mol_3d.GetAtomWithIdx(i) for i in range(nl)]
-    lel=[a.GetSymbol().upper() for a in latom]
-    larom=[a.GetIsAromatic() for a in latom]
-    lchg=[a.GetFormalCharge() for a in latom]
-    POLAR={"N","O","S","F"}; HYDL={"C","S","CL","BR","I","F"}
-    HYDR={"ALA","VAL","ILE","LEU","MET","PHE","TRP","PRO","GLY","TYR","HIS"}
-    results=[]
+    if rec is None:
+        return []
+
+    rc  = rec.getCoords()
+    rrn = rec.getResnames()
+    rch = rec.getChids()
+    rri = rec.getResnums()
+    ran = rec.getNames()
+    rel = rec.getElements()
+
+    conf = lig_mol_3d.GetConformer()
+    nl   = lig_mol_3d.GetNumAtoms()
+    lxyz = np.array([[conf.GetAtomPosition(i).x,
+                      conf.GetAtomPosition(i).y,
+                      conf.GetAtomPosition(i).z] for i in range(nl)])
+    latom = [lig_mol_3d.GetAtomWithIdx(i) for i in range(nl)]
+    lel   = [a.GetSymbol().upper() for a in latom]
+    lchg  = [a.GetFormalCharge() for a in latom]
+
+    # ── van der Waals radii (Å) ───────────────────────────────────────────────
+    _VDW = {"H":1.20,"C":1.70,"N":1.55,"O":1.52,"S":1.80,"P":1.80,
+            "F":1.47,"CL":1.75,"BR":1.85,"I":1.98,"SE":1.90}
+
+    # ── Residue / atom-name tables ────────────────────────────────────────────
+    HYDR = {"ALA","VAL","ILE","LEU","MET","PHE","TRP","PRO","GLY","TYR","HIS"}
+    HYDL = {"C","S","CL","BR","I","F"}
+
+    # Protein H-bond donor atom names (attached to polar H)
+    # backbone: N  |  side chains listed explicitly
+    PROT_DONOR_ATOMS = {
+        # backbone
+        "N",
+        # Ser Thr Tyr Cys
+        "OG","OG1","OH","SG",
+        # Lys
+        "NZ",
+        # Arg
+        "NH1","NH2","NE",
+        # His (both tautomers)
+        "ND1","NE2",
+        # Trp
+        "NE1",
+        # Asn Gln
+        "ND2","NE2",
+    }
+
+    # Protein H-bond acceptor atom names
+    PROT_ACCEPTOR_ATOMS = {
+        # backbone carbonyl
+        "O",
+        # Asp Glu
+        "OD1","OD2","OE1","OE2",
+        # Ser Thr Tyr
+        "OG","OG1","OH",
+        # Asn Gln carbonyl
+        "OD1","OE1",
+        # His (unprotonated N)
+        "ND1","NE2",
+        # Met S (weak acceptor but included)
+        "SD",
+    }
+
+    # Ligand HBA elements (lone pairs available)
+    LIG_ACCEPTOR_EL = {"N","O","F","S"}
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _angle_deg(a, b, c):
+        """Angle at vertex b (degrees), vectors b→a and b→c."""
+        va = a - b;  vc = c - b
+        na = np.linalg.norm(va);  nc = np.linalg.norm(vc)
+        if na < 1e-8 or nc < 1e-8:
+            return 0.0
+        cos_t = np.dot(va, vc) / (na * nc)
+        return _math.degrees(_math.acos(max(-1.0, min(1.0, cos_t))))
+
+    def _is_lig_donor(lig_idx):
+        """
+        Return True if ligand atom lig_idx can donate an H-bond.
+        Checks: explicit H neighbours in mol, or implicit H count > 0
+        for N/O/S atoms.
+        """
+        a = latom[lig_idx]
+        el = lel[lig_idx]
+        if el not in ("N","O","S","F"):
+            return False
+        # Explicit H attached
+        for nb in a.GetNeighbors():
+            if nb.GetAtomicNum() == 1:
+                return True
+        # Implicit H (from SMILES / sanitized mol)
+        if a.GetTotalNumHs() > 0:
+            return True
+        return False
+
+    def _is_lig_acceptor(lig_idx):
+        """Return True if ligand atom can accept an H-bond."""
+        return lel[lig_idx] in LIG_ACCEPTOR_EL
+
+    # Build per-receptor-atom element lookup (fast)
+    r_el = []
     for j in range(len(rc)):
-        rn=rrn[j].strip(); ch=rch[j].strip(); ri=int(rri[j])
-        el=(rel[j].strip().upper() if rel[j] and rel[j].strip() else ran[j][:1].upper())
-        rp=rc[j]; dists=np.linalg.norm(lxyz-rp,axis=1)
-        md=float(dists.min()); mi=int(dists.argmin())
-        if md>max(cutoff+1.0,5.6): continue
-        if el in POLAR:
+        e = rel[j].strip().upper() if rel[j] and rel[j].strip() else ran[j][:1].upper()
+        r_el.append(e)
+
+    # Index: receptor H atoms → their heavy-atom parent
+    # Used for D–H···A angle calculation
+    h_to_heavy = {}   # j (H atom index) → k (heavy atom index)
+    for j in range(len(rc)):
+        if r_el[j] != "H":
+            continue
+        # Find closest non-H within 1.15 Å (covalent bond)
+        best_d, best_k = 9999.0, None
+        for k in range(len(rc)):
+            if k == j or r_el[k] == "H":
+                continue
+            d = float(np.linalg.norm(rc[j] - rc[k]))
+            if d < 1.15 and d < best_d:
+                best_d, best_k = d, k
+        if best_k is not None:
+            h_to_heavy[j] = best_k
+
+    # Reverse: heavy atom → list of attached H indices
+    heavy_to_h = {}
+    for hj, hk in h_to_heavy.items():
+        heavy_to_h.setdefault(hk, []).append(hj)
+
+    results = []
+    # Track which residues already have an H-bond (one per residue — best wins)
+    # to avoid duplicating with the distance-only fallback
+    hbond_residues = set()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  H-BOND DETECTION  (proper geometry)
+    # ═══════════════════════════════════════════════════════════════════════════
+    HBOND_DA_MAX   = 3.5    # Å  donor···acceptor heavy atom distance
+    HBOND_ANG_MIN  = 120.0  # °  D–H···A angle minimum
+    HBOND_ANG_PROXY= 90.0   # °  proxy angle when no H available
+
+    for j in range(len(rc)):
+        rn  = rrn[j].strip()
+        ch  = rch[j].strip()
+        ri  = int(rri[j])
+        an  = ran[j].strip()
+        el  = r_el[j]
+        rp  = rc[j]
+
+        # Skip water, metals, and H atoms in this outer loop
+        if rn in ("HOH","WAT","DOD") or el in ("H",""):
+            continue
+
+        dists = np.linalg.norm(lxyz - rp, axis=1)
+
+        # ── Case A: Protein atom is DONOR → ligand atom is ACCEPTOR ──────────
+        if an in PROT_DONOR_ATOMS and el in ("N","O","S"):
+            hs = heavy_to_h.get(j, [])
             for i in range(nl):
-                if lel[i] not in POLAR: continue
-                d=float(dists[i])
-                if d<3.5:
-                    results.append(dict(resname=rn,chain=ch,resid=ri,
-                        itype="hbond",distance=round(d,1),lig_atom_idx=i,
-                        prot_el=el,is_donor=(el=="N"),ring_atom_indices=None))
-                    break
+                if not _is_lig_acceptor(i):
+                    continue
+                d_DA = float(dists[i])
+                if d_DA > HBOND_DA_MAX:
+                    continue
+                # Geometry check
+                if hs:
+                    # Use best H: pick H that gives largest D–H···A angle
+                    best_ang = 0.0
+                    for hj in hs:
+                        ang = _angle_deg(rp, rc[hj], lxyz[i])  # D–H···A
+                        if ang > best_ang:
+                            best_ang = ang
+                    if best_ang < HBOND_ANG_MIN:
+                        continue
+                else:
+                    # No H found: use proxy — angle at acceptor A:  D···A–X
+                    # X = any heavy neighbour of A in the ligand
+                    nbs = [nb.GetIdx() for nb in latom[i].GetNeighbors()
+                           if latom[i].GetAtomicNum() != 1]
+                    if nbs:
+                        ang = _angle_deg(rp, lxyz[i], lxyz[nbs[0]])
+                        if ang < HBOND_ANG_PROXY:
+                            continue
+                key = (ch, ri)
+                if key not in hbond_residues:
+                    hbond_residues.add(key)
+                    results.append(dict(
+                        resname=rn, chain=ch, resid=ri,
+                        itype="hbond", distance=round(d_DA, 1),
+                        lig_atom_idx=i,
+                        prot_el=el, is_donor=True,
+                        ring_atom_indices=None,
+                    ))
+                break   # one hbond per residue
+
+        # ── Case B: Protein atom is ACCEPTOR → ligand atom is DONOR ──────────
+        if an in PROT_ACCEPTOR_ATOMS and el in ("N","O","S"):
+            for i in range(nl):
+                if not _is_lig_donor(i):
+                    continue
+                d_DA = float(dists[i])
+                if d_DA > HBOND_DA_MAX:
+                    continue
+                # Find ligand H atoms attached to donor
+                lig_hs = [nb.GetIdx() for nb in latom[i].GetNeighbors()
+                          if nb.GetAtomicNum() == 1]
+                if lig_hs:
+                    # Explicit H in ligand mol — use D–H···A angle
+                    best_ang = 0.0
+                    for hi in lig_hs:
+                        if hi < nl:   # explicit H inside heavy-atom mol (rare)
+                            ang = _angle_deg(lxyz[i], lxyz[hi], rp)
+                        else:
+                            continue
+                        if ang > best_ang:
+                            best_ang = ang
+                    if best_ang > 0 and best_ang < HBOND_ANG_MIN:
+                        continue
+                    # If no valid H angle computed, use proxy
+                    if best_ang == 0:
+                        nbs = [nb.GetIdx() for nb in latom[i].GetNeighbors()
+                               if nb.GetAtomicNum() != 1 and nb.GetIdx() < nl]
+                        if nbs:
+                            ang = _angle_deg(rp, lxyz[i], lxyz[nbs[0]])
+                            if ang < HBOND_ANG_PROXY:
+                                continue
+                else:
+                    # Implicit H — use proxy angle
+                    nbs = [nb.GetIdx() for nb in latom[i].GetNeighbors()
+                           if nb.GetAtomicNum() != 1 and nb.GetIdx() < nl]
+                    if nbs:
+                        ang = _angle_deg(rp, lxyz[i], lxyz[nbs[0]])
+                        if ang < HBOND_ANG_PROXY:
+                            continue
+                key = (ch, ri)
+                if key not in hbond_residues:
+                    hbond_residues.add(key)
+                    results.append(dict(
+                        resname=rn, chain=ch, resid=ri,
+                        itype="hbond", distance=round(d_DA, 1),
+                        lig_atom_idx=i,
+                        prot_el=el, is_donor=False,
+                        ring_atom_indices=None,
+                    ))
+                break
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  HYDROPHOBIC, IONIC, METAL  (unchanged from original)
+    # ═══════════════════════════════════════════════════════════════════════════
+    for j in range(len(rc)):
+        rn = rrn[j].strip(); ch = rch[j].strip(); ri = int(rri[j])
+        el = r_el[j]; rp = rc[j]
+        dists = np.linalg.norm(lxyz - rp, axis=1)
+        md = float(dists.min()); mi = int(dists.argmin())
+        if md > max(cutoff + 1.0, 5.6):
+            continue
+
+        # Hydrophobic
         if el in {"C","S","CL","BR","I"} and rn in HYDR:
             for i in range(nl):
                 if lel[i] not in HYDL: continue
-                d=float(dists[i])
-                if d<cutoff:
-                    results.append(dict(resname=rn,chain=ch,resid=ri,
-                        itype="hydrophobic",distance=round(d,1),lig_atom_idx=i,
-                        prot_el=el,is_donor=False,ring_atom_indices=None))
+                d = float(dists[i])
+                if d < cutoff:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                        itype="hydrophobic", distance=round(d,1), lig_atom_idx=i,
+                        prot_el=el, is_donor=False, ring_atom_indices=None))
                     break
-        if rn in {"ASP","GLU"} and el=="O":
+
+        # Ionic
+        if rn in {"ASP","GLU"} and el == "O":
             for i in range(nl):
-                if lchg[i]>0 and float(dists[i])<4.0:
-                    results.append(dict(resname=rn,chain=ch,resid=ri,
-                        itype="ionic",distance=round(float(dists[i]),1),
-                        lig_atom_idx=i,prot_el=el,is_donor=False,ring_atom_indices=None)); break
-        if rn in {"LYS","ARG"} and el=="N":
+                if lchg[i] > 0 and float(dists[i]) < 4.0:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                        itype="ionic", distance=round(float(dists[i]),1),
+                        lig_atom_idx=i, prot_el=el, is_donor=False,
+                        ring_atom_indices=None)); break
+        if rn in {"LYS","ARG"} and el == "N":
             for i in range(nl):
-                if lchg[i]<0 and float(dists[i])<4.0:
-                    results.append(dict(resname=rn,chain=ch,resid=ri,
-                        itype="ionic",distance=round(float(dists[i]),1),
-                        lig_atom_idx=i,prot_el=el,is_donor=True,ring_atom_indices=None)); break
+                if lchg[i] < 0 and float(dists[i]) < 4.0:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                        itype="ionic", distance=round(float(dists[i]),1),
+                        lig_atom_idx=i, prot_el=el, is_donor=True,
+                        ring_atom_indices=None)); break
+
+        # Metal coordination
         if rn.strip().upper() in _METALS_SET or el in _METALS_SET:
-            if md<2.8:
-                results.append(dict(resname=rn,chain=ch,resid=ri,
-                    itype="metal",distance=round(md,1),lig_atom_idx=mi,
-                    prot_el=el,is_donor=False,ring_atom_indices=None))
-    # π-π: line must start from ring CENTROID → store ring atom indices
-    lr=_get_aromatic_ring_data(lig_mol_3d,conf)
+            if md < 2.8:
+                results.append(dict(resname=rn, chain=ch, resid=ri,
+                    itype="metal", distance=round(md,1), lig_atom_idx=mi,
+                    prot_el=el, is_donor=False, ring_atom_indices=None))
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  π-π AND CATION-π  (unchanged)
+    # ═══════════════════════════════════════════════════════════════════════════
+    lr = _get_aromatic_ring_data(lig_mol_3d, conf)
     if lr:
         for j in range(len(rc)):
             rn=rrn[j].strip(); ch=rch[j].strip(); ri=int(rri[j]); an=ran[j].strip()
             if rn not in _AROM_ATOMS or an not in _AROM_ATOM_NAMES: continue
             rp=rc[j]
-            for lc,_,ring_idxs in lr:
-                d=float(np.linalg.norm(lc-rp))
-                if d<5.5:
-                    # Use the first atom of the ring as lig_atom_idx for angle calculation;
-                    # ring_atom_indices carries the full ring for centroid computation in 2D
-                    results.append(dict(resname=rn,chain=ch,resid=ri,
-                        itype="pi_pi",distance=round(d,1),
+            for lc, _, ring_idxs in lr:
+                d = float(np.linalg.norm(lc - rp))
+                if d < 5.5:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                        itype="pi_pi", distance=round(d,1),
                         lig_atom_idx=ring_idxs[0],
-                        prot_el="C",is_donor=False,
+                        prot_el="C", is_donor=False,
                         ring_atom_indices=ring_idxs)); break
         for j in range(len(rc)):
             rn=rrn[j].strip(); ch=rch[j].strip(); ri=int(rri[j])
-            el2=(rel[j].strip().upper() if rel[j] and rel[j].strip() else ran[j][:1].upper())
-            if rn not in {"LYS","ARG"} or el2!="N": continue
-            rp=rc[j]
-            for lc,_,ring_idxs in lr:
-                d=float(np.linalg.norm(lc-rp))
-                if d<5.0:
-                    results.append(dict(resname=rn,chain=ch,resid=ri,
-                        itype="cation_pi",distance=round(d,1),
-                        lig_atom_idx=ring_idxs[0],prot_el="N",is_donor=True,
+            el2=r_el[j]
+            if rn not in {"LYS","ARG"} or el2 != "N": continue
+            rp = rc[j]
+            for lc, _, ring_idxs in lr:
+                d = float(np.linalg.norm(lc - rp))
+                if d < 5.0:
+                    results.append(dict(resname=rn, chain=ch, resid=ri,
+                        itype="cation_pi", distance=round(d,1),
+                        lig_atom_idx=ring_idxs[0], prot_el="N", is_donor=True,
                         ring_atom_indices=ring_idxs)); break
-    _V={"H":1.20,"C":1.70,"N":1.55,"O":1.52,"S":1.80,"P":1.80,
-        "F":1.47,"CL":1.75,"BR":1.85,"I":1.98}
-    _XD={17:"CL",35:"BR",53:"I"}; _XA={"O","N","S","P","F","CL","BR","I"}
-    for i in range(nl):
-        ano=latom[i].GetAtomicNum()
-        if ano not in _XD: continue
-        xel=_XD[ano]; xp=lxyz[i]; vx=_V.get(xel,1.80)
-        ri_=next((nb.GetIdx() for nb in latom[i].GetNeighbors() if nb.GetAtomicNum()==6),None)
-        if ri_ is None: continue
-        rp2=lxyz[ri_]
-        for j in range(len(rc)):
-            ael=(rel[j].strip().upper() if rel[j] and rel[j].strip() else ran[j][:1].upper())
-            isp=(rrn[j].strip() in _AROM_ATOMS and ran[j].strip() in _AROM_ATOM_NAMES and ael=="C")
-            if ael not in _XA and not isp: continue
-            ap=rc[j]; d=float(np.linalg.norm(xp-ap))
-            if d>vx+_V.get(ael,1.70): continue
-            vRX=rp2-xp; vXA=ap-xp
-            import numpy as _np2
-            ca=_np2.dot(vRX,vXA)/(_np2.linalg.norm(vRX)*_np2.linalg.norm(vXA)+1e-9)
-            if _math.degrees(_math.acos(max(-1.0,min(1.0,ca))))>=140:
-                results.append(dict(resname=rrn[j].strip(),chain=rch[j].strip(),
-                    resid=int(rri[j]),itype="halogen",distance=round(d,1),
-                    lig_atom_idx=i,prot_el=ael,is_donor=False,ring_atom_indices=None))
-    _HA={9:"F",17:"CL",35:"BR",53:"I"}; _HD={"O","N","S"}
-    for i in range(nl):
-        ano=latom[i].GetAtomicNum()
-        if ano not in _HA: continue
-        xel=_HA[ano]; xp=lxyz[i]; vx=_V.get(xel,1.80)
-        ri2=next((nb.GetIdx() for nb in latom[i].GetNeighbors()),None)
-        if ri2 is None: continue
-        rlp=lxyz[ri2]
-        for j in range(len(rc)):
-            hel=(rel[j].strip().upper() if rel[j] and rel[j].strip() else ran[j][:1].upper())
-            if hel!="H": continue
-            hp=rc[j]; dhx=float(np.linalg.norm(hp-xp))
-            if dhx>_V["H"]+vx: continue
-            dp=None
-            for k in range(len(rc)):
-                if k==j: continue
-                dk=(rel[k].strip().upper() if rel[k] and rel[k].strip() else ran[k][:1].upper())
-                if dk not in _HD: continue
-                if float(np.linalg.norm(rc[k]-hp))<1.15: dp=rc[k]; break
-            if dp is None: continue
-            vHD=dp-hp; vHX=xp-hp
-            import numpy as _np3
-            cd=_np3.dot(vHD,vHX)/(_np3.linalg.norm(vHD)*_np3.linalg.norm(vHX)+1e-9)
-            if _math.degrees(_math.acos(max(-1.0,min(1.0,cd))))<120: continue
-            vXR=rlp-xp; vXH=hp-xp
-            cr2=_np3.dot(vXR,vXH)/(_np3.linalg.norm(vXR)*_np3.linalg.norm(vXH)+1e-9)
-            arx=_math.degrees(_math.acos(max(-1.0,min(1.0,cr2))))
-            if not(70<=arx<=120): continue
-            results.append(dict(resname=rrn[j].strip(),chain=rch[j].strip(),
-                resid=int(rri[j]),itype="hbond_to_halogen",distance=round(dhx,1),
-                lig_atom_idx=i,prot_el="N",is_donor=True,ring_atom_indices=None))
-    return results
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  HALOGEN BOND  (C–X···A, X = Cl/Br/I on ligand)
+    #
+    #  Criteria (PLIP / Cambridge Crystallographic convention):
+    #    Distance  : X···A  ≤  vdW(X) + vdW(A) + 0.5 Å
+    #    Angle 1   : C–X···A  ≥ 140°   σ-hole directionality
+    #    Angle 2   : X···A–R  ≥  90°   acceptor lone-pair geometry
+    #  Acceptors   : O, N, S, F, aromatic C
+    # ═══════════════════════════════════════════════════════════════════════════
+    _XD = {17:"CL", 35:"BR", 53:"I"}
+    _XA = {"O","N","S","F"}
+
+    for i in range(nl):
+        ano = latom[i].GetAtomicNum()
+        if ano not in _XD:
+            continue
+        xel = _XD[ano]
+        xp  = lxyz[i]
+        vdw_x = _VDW.get(xel, 1.80)
+
+        # C neighbour on ligand (σ-hole origin)
+        c_nb = next((nb.GetIdx() for nb in latom[i].GetNeighbors()
+                     if nb.GetAtomicNum() == 6 and nb.GetIdx() < nl), None)
+        if c_nb is None:
+            continue
+        c_pos = lxyz[c_nb]
+
+        for j in range(len(rc)):
+            ael = r_el[j]
+            is_arom = (rrn[j].strip() in _AROM_ATOMS
+                       and ran[j].strip() in _AROM_ATOM_NAMES
+                       and ael == "C")
+            if ael not in _XA and not is_arom:
+                continue
+
+            ap = rc[j]
+            d  = float(np.linalg.norm(xp - ap))
+            if d > vdw_x + _VDW.get(ael, 1.70) + 0.5:   # generous vdW sum
+                continue
+
+            # Angle 1: C–X···A ≥ 140°
+            ang1 = _angle_deg(c_pos, xp, ap)
+            if ang1 < 140.0:
+                continue
+
+            # Angle 2: X···A–R ≥ 90°  (R = any heavy atom bonded to acceptor A)
+            # Find a non-H neighbour of the acceptor in the receptor
+            r_nbs = [k for k in range(len(rc))
+                     if k != j and r_el[k] != "H"
+                     and float(np.linalg.norm(rc[k] - ap)) < 1.85]
+            if r_nbs:
+                ang2 = _angle_deg(xp, ap, rc[r_nbs[0]])
+                if ang2 < 90.0:
+                    continue
+
+            results.append(dict(
+                resname=rrn[j].strip(), chain=rch[j].strip(), resid=int(rri[j]),
+                itype="halogen", distance=round(d, 1),
+                lig_atom_idx=i, prot_el=ael, is_donor=False,
+                ring_atom_indices=None,
+            ))
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  H-BOND TO HALOGEN  (N/O–H···X, X = halogen on ligand)
+    #  Protein H donor → halogen acceptor on ligand
+    #  Criteria: H···X ≤ vdW(H)+vdW(X); D–H···X ≥ 120°; C–X···H 70–120°
+    # ═══════════════════════════════════════════════════════════════════════════
+    _HA = {9:"F", 17:"CL", 35:"BR", 53:"I"}
+    _HD = {"O","N","S"}
+
+    for i in range(nl):
+        ano = latom[i].GetAtomicNum()
+        if ano not in _HA:
+            continue
+        xel = _HA[ano]
+        xp  = lxyz[i]
+        vdw_x = _VDW.get(xel, 1.80)
+
+        # C neighbour (for C–X angle)
+        c_nb2 = next((nb.GetIdx() for nb in latom[i].GetNeighbors()
+                      if nb.GetIdx() < nl), None)
+        if c_nb2 is None:
+            continue
+        c_pos2 = lxyz[c_nb2]
+
+        for j in range(len(rc)):
+            if r_el[j] != "H":
+                continue
+            hp  = rc[j]
+            dhx = float(np.linalg.norm(hp - xp))
+            if dhx > _VDW["H"] + vdw_x:
+                continue
+
+            # D (heavy atom attached to this H)
+            pk = h_to_heavy.get(j)
+            if pk is None:
+                continue
+            if r_el[pk] not in _HD:
+                continue
+            dp = rc[pk]
+
+            # Angle D–H···X ≥ 120°
+            ang_dhx = _angle_deg(dp, hp, xp)
+            if ang_dhx < 120.0:
+                continue
+
+            # Angle C–X···H  70–120° (lone-pair window)
+            ang_cxh = _angle_deg(c_pos2, xp, hp)
+            if not (70.0 <= ang_cxh <= 120.0):
+                continue
+
+            results.append(dict(
+                resname=rrn[j].strip(), chain=rch[j].strip(), resid=int(rri[j]),
+                itype="hbond_to_halogen", distance=round(dhx, 1),
+                lig_atom_idx=i, prot_el="N", is_donor=True,
+                ring_atom_indices=None,
+            ))
+
+    return results
 
 def _deduplicate_interactions(interactions: list) -> list:
     priority={t:i for i,t in enumerate(_ITYPE_PRIORITY)}
