@@ -833,6 +833,28 @@ def _poseview_ui(
                     "Max residues", 4, 20, 14, 1, key=btn_key + "_max"
                 )
 
+            # ── PLIP status badge ─────────────────────────────────────────────
+            try:
+                from core import _plip_available as _pa
+                _plip_on = _pa()
+            except Exception:
+                _plip_on = False
+
+            if _plip_on:
+                st.success(
+                    "🔬 **PLIP active** — interactions detected with full geometry "
+                    "checks (D-H···A angles, π-stack planarity, halogen geometry).",
+                    icon="✅",
+                )
+            else:
+                st.info(
+                    "ℹ️ Using built-in interaction detector. "
+                    "For publication-quality geometry-validated interactions "
+                    "(proper H-bond angles etc.) install PLIP: "
+                    "add `plip` to **requirements.txt** and `openbabel` to **packages.txt**.",
+                    icon="💡",
+                )
+
             if st.button("🧬 Generate", key=btn_key + "_gen", type="primary"):
                 with st.spinner("Generating docked pose diagram…"):
                     try:
@@ -857,9 +879,10 @@ def _poseview_ui(
                             max_residues=_maxres,
                         )
                         _html = _render_interactive_diagram(_data) if _data else None
-                        st.session_state[img_svg_key + "_new"]   = _svg
-                        st.session_state[img_svg_key + "_ihtml"] = _html
-                        st.session_state[pose_key_key + "_new"]  = _pose_key
+                        st.session_state[img_svg_key + "_new"]      = _svg
+                        st.session_state[img_svg_key + "_ihtml"]    = _html
+                        st.session_state[img_svg_key + "_detector"] = (_data or {}).get("detector", "builtin")
+                        st.session_state[pose_key_key + "_new"]     = _pose_key
                     except Exception as e:
                         st.error(f"Diagram error: {e}")
 
@@ -963,7 +986,14 @@ def _poseview_ui(
                 )
                 _cl2, _cr2 = st.columns(2)
                 with _cl2:
-                    st.markdown("##### Docked Pose")
+                    _det_badge = ""
+                    _diag_data = st.session_state.get(img_svg_key + "_ihtml")
+                    try:
+                        _det = st.session_state.get(img_svg_key + "_detector", "")
+                        _det_badge = " 🔬 PLIP" if _det == "PLIP" else " 🔩 Built-in"
+                    except Exception:
+                        pass
+                    st.markdown(f"##### Docked Pose{_det_badge}")
                     if _view_mode.startswith("🖱") and _new_ihtml:
                         components.html(_new_ihtml, height=860, scrolling=False)
                     else:
@@ -1109,7 +1139,7 @@ def _poseview_ui(
             _cl3, _cr3 = st.columns(2)
             with _cl3:
                 _cut2 = st.slider(
-                    "Interaction cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
+                    "Interaction cutoff (Å)", 2.5, 5.0, 4.5, 0.1,
                     key=btn_key + "_rdk_cut",
                 )
             with _cr3:
