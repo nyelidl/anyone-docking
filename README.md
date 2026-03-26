@@ -23,11 +23,69 @@ Batch docking with 4 docking engines: [![Open In Colab](https://colab.research.g
 | ✏️ | **3-way ligand input** — SMILES text, file upload (.pdb), or **draw in Ketcher** |
 | ♻️ | **Redocking validation** in both single & batch mode — dock the co-crystal ligand as a reference with RMSD vs crystal, score comparison, and reference line in plots |
 | 🧪 | **Bond-order correction** — fixes PDBQT aromaticity artifacts before visualization |
-| 🗺️ | **2D interaction diagrams** — docked pose via RDKit (local) or PoseView v1 (proteins.plus) + co-crystal reference via PoseView2, side-by-side (PNG + SVG download) |
+| 🗺️ | **Three 2D diagram engines** in separate tabs — see below for full details |
+| 🖱️ | **Interactive drag mode** — freely reposition residue labels in real time, export PNG (up to 600 dpi) or SVG |
 | 🔭 | **Binding pocket viewer** — interacting residues (orange sticks) around the docked ligand, with toggleable residue labels and adjustable distance cutoff |
-| 🤖 | **AI-ready prompt** — auto-filled context for GPT, Claude, Gemini, or DeepSeek; legend adapts when both diagrams are generated |
+| 🤖 | **AI-ready prompt** — auto-filled context for GPT, Claude, Gemini, or DeepSeek; adapts based on whether redocking was performed |
 | 📊 | **3D viewers** — animated multi-pose sweep, interactive pose selector, and dedicated binding pocket view |
 | 📁 | **One-click ZIP** — all poses, bond-order-corrected SDFs, 2D diagrams, and score plot |
+
+---
+
+## 🗺️ 2D Interaction Diagrams
+
+Three tabs — each with a different rendering engine:
+
+### 🧬 Anyone Can Dock 2D Diagram *(default)*
+
+A custom PoseView-style SVG diagram rendered entirely locally (no server required).
+
+| Feature | Detail |
+|---|---|
+| **8 interaction types** | H-bond (distance shown on line), hydrophobic, π-π stacking, cation-π, ionic, metal coordination, halogen bond, H-bond to halogen |
+| **Geometry-based detection** | All interactions detected from 3D coordinates — no server, works on Streamlit Cloud |
+| **ACS ChemDraw bond style** | Bond widths, double-bond spacing, and wedge geometry follow ACS publication standards |
+| **Smart layout** | Residue circles placed radially by natural interaction angle; simultaneous-delta push-apart prevents overlap |
+| **Interactive drag mode** | Click 🖱 Interactive to reposition any residue circle — lines and distance labels update in real time |
+| **Export** | ↓ SVG (vector) · ↓ PNG at Screen (1×) / 150 dpi (2×) / 300 dpi (3×) / 600 dpi (4×) |
+
+### 🔬 RDKit 2D Diagram
+
+Classic RDKit `MolDraw2DSVG` highlight-circle style.
+
+| Feature | Detail |
+|---|---|
+| **Interaction types** | H-bond / polar (blue) · Hydrophobic (green) · Other (pink) |
+| **Layout** | RDKit's own force-field layout — residue pseudo-atoms added as `BondType.ZERO` bonds, no manual placement needed |
+| **Side-by-side** | Docked pose (left) + co-crystal reference (right) |
+| **Export** | PNG + SVG download under each diagram |
+| **AI prompt** | Auto-filled prompt adapts to single diagram vs. comparison |
+
+### ⬇ PoseView
+
+Download-only tab — no API calls made from this app.
+
+| File | Description |
+|---|---|
+| `receptor.pdb` | Cleaned receptor (hydrogens added) |
+| `docked_pose.sdf` | Selected docked pose |
+| `cocrystal.sdf` | Co-crystal ligand (converted from PDB if needed) |
+
+Upload these files manually at [proteins.plus/poseview](https://proteins.plus/help/poseview) to generate a server-side PoseView diagram.
+
+---
+
+## 🤖 AI Prompt Section
+
+Located below the 2D diagram. The prompt auto-adapts to the session state:
+
+| Scenario | Prompt content |
+|---|---|
+| **Docked ligand only** | Plain-language explanation of interactions + ready-to-use summary paragraph |
+| **With co-crystal reference (no redocking)** | Comparison prompt · Reference: `ligand` co-crystallised in PDB `ID` (see 2D diagram) |
+| **With co-crystal reference (redocking performed)** | Comparison prompt · Reference binding energy from re-docking included |
+
+Copy the prompt + a screenshot of your diagram into Claude, GPT-4o, or Gemini to get a plain-English explanation of your results. The prompt ends with a "Ready-to-use summary:" section — a 3–4 sentence paragraph ready to paste into a report or slide.
 
 ---
 
