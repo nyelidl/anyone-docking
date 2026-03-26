@@ -657,33 +657,31 @@ def _poseview_ui(
                 else:
                     st.caption("⚠️ No co-crystal ligand — use Auto-detect in receptor preparation.")
 
-            # ── AI prompt (RDKit) ─────────────────────────────────────────────
+            # ── AI prompt — same logic as PoseView ───────────────────────────
             st.markdown("---")
-            st.markdown("### 🤖 AI Prompt")
-            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
-            _estr_r = (
+            _estr_r          = (
                 f"{binding_energy:.2f} kcal/mol"
                 if binding_energy is not None else "[binding energy]"
             )
-            _lig_r          = lig_name or "[ligand]"
-            _pdb_r          = pdb_id.upper() if pdb_id else "[PDB ID]"
-            _ref_redocked_r = (ref_lig_energy is not None)
-            _ref_display_r  = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
-            _ref_estr_r     = (
+            _lig_r           = lig_name or "[ligand]"
+            _pdb_r           = pdb_id.upper() if pdb_id else "[PDB ID]"
+            _ref_redocked_r  = (ref_lig_energy is not None)
+            _ref_display_r   = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
+            _ref_estr_r      = (
                 f"{ref_lig_energy:.2f} kcal/mol"
                 if _ref_redocked_r else None
             )
             if _ref_rdkit_svg:
-                _rdk_lines = [
+                _prompt_lines = [
                     "I have just run a molecular docking experiment and I need help",
                     "understanding what my results mean. I am attaching two 2D",
                     "interaction diagrams (RDKit style) from the Anyone Can Dock app.",
                     "",
-                    "Docking software: AutoDock Vina v1.2.7",
+                    f"Docking software: AutoDock Vina v1.2.7",
                     f"Protein target (PDB): {_pdb_r}",
                     f"My docked ligand: {_lig_r}",
                     f"  Predicted binding energy: {_estr_r}",
-                    "  (more negative = stronger predicted binding)",
+                    f"  (more negative = stronger predicted binding)",
                     f"Reference: {_ref_display_r} co-crystallised in PDB {_pdb_r}"
                     + (f"  |  binding energy from re-docking: {_ref_estr_r}"
                        if _ref_redocked_r else "  (see 2D diagram — no re-docking performed)"),
@@ -714,16 +712,16 @@ def _poseview_ui(
                     "Label this section: 'Ready-to-use summary:'",
                 ]
             else:
-                _rdk_lines = [
+                _prompt_lines = [
                     "I have just run a molecular docking experiment and I need help",
                     "understanding what my results mean. I am attaching a 2D",
                     "interaction diagram (RDKit style) from the Anyone Can Dock app.",
                     "",
-                    "Docking software: AutoDock Vina v1.2.7",
+                    f"Docking software: AutoDock Vina v1.2.7",
                     f"Protein target (PDB): {_pdb_r}",
                     f"My docked ligand: {_lig_r}",
                     f"  Predicted binding energy: {_estr_r}",
-                    "  (more negative = stronger predicted binding)",
+                    f"  (more negative = stronger predicted binding)",
                     "",
                     "How to read the diagram:",
                     "  Blue circle   = H-bond / polar contact",
@@ -747,7 +745,9 @@ def _poseview_ui(
                     "energy, and state what this suggests about the binding mode.",
                     "Label this section: 'Ready-to-use summary:'",
                 ]
-            st.code("\n".join(_rdk_lines), language=None)
+            st.markdown("### 🤖 AI Prompt")
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
+            st.code("\n".join(_prompt_lines), language=None)
 
         return   # ← skip PoseView UI entirely when RDKit is selected
 
@@ -941,17 +941,15 @@ def _poseview_ui(
                         "⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation."
                     )
 
-            # ── AI analysis prompt (PoseView) ─────────────────────────────────
+            # AI analysis prompt
             st.markdown("---")
-            st.markdown("### 🤖 AI Prompt")
-            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
-            _estr_pv        = (
+            _estr_pv         = (
                 f"{binding_energy:.2f} kcal/mol"
                 if binding_energy is not None else "[binding energy]"
             )
-            _lig_pv         = lig_name or "[ligand]"
-            _pdb_pv         = pdb_id.upper() if pdb_id else "[PDB ID]"
-            _both           = bool(_pose_svg and _ref_svg2)
+            _lig_pv          = lig_name or "[ligand]"
+            _pdb_pv          = pdb_id.upper() if pdb_id else "[PDB ID]"
+            _both            = bool(_pose_svg and _ref_svg2)
             _ref_redocked_pv = (ref_lig_energy is not None)
             _ref_display_pv  = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
             _ref_estr_pv     = (
@@ -959,25 +957,25 @@ def _poseview_ui(
                 if _ref_redocked_pv else None
             )
             if _both:
-                _pv_lines = [
+                _prompt_lines = [
                     "I have just run a molecular docking experiment and I need help",
                     "understanding what my results mean. I am attaching two 2D",
                     "interaction diagrams (PoseView style) from the Anyone Can Dock app.",
                     "",
-                    "Docking software: AutoDock Vina v1.2.7",
+                    f"Docking software: AutoDock Vina v1.2.7",
                     f"Protein target (PDB): {_pdb_pv}",
                     f"My docked ligand: {_lig_pv}",
                     f"  Predicted binding energy: {_estr_pv}",
-                    "  (more negative = stronger predicted binding)",
+                    f"  (more negative = stronger predicted binding)",
                     f"Reference: {_ref_display_pv} co-crystallised in PDB {_pdb_pv}"
                     + (f"  |  binding energy from re-docking: {_ref_estr_pv}"
                        if _ref_redocked_pv else "  (see 2D diagram — no re-docking performed)"),
                     "",
                     "How to read the diagrams:",
-                    "  Docked pose legend:",
+                    "  Docked pose:",
                     "    Black dashed line  = H-bond",
                     "    Dark green solid   = hydrophobic contact",
-                    "  Co-crystal legend:",
+                    "  Co-crystal reference:",
                     "    Blue dashed        = H-bond",
                     "    Pink dashed        = ionic interaction",
                     "    Yellow dashed      = metal coordination",
@@ -1005,16 +1003,16 @@ def _poseview_ui(
                     "Label this section: 'Ready-to-use summary:'",
                 ]
             else:
-                _pv_lines = [
+                _prompt_lines = [
                     "I have just run a molecular docking experiment and I need help",
                     "understanding what my results mean. I am attaching a 2D",
                     "interaction diagram (PoseView style) from the Anyone Can Dock app.",
                     "",
-                    "Docking software: AutoDock Vina v1.2.7",
+                    f"Docking software: AutoDock Vina v1.2.7",
                     f"Protein target (PDB): {_pdb_pv}",
                     f"My docked ligand: {_lig_pv}",
                     f"  Predicted binding energy: {_estr_pv}",
-                    "  (more negative = stronger predicted binding)",
+                    f"  (more negative = stronger predicted binding)",
                     "",
                     "How to read the diagram:",
                     "  Black dashed line  = H-bond",
@@ -1037,7 +1035,9 @@ def _poseview_ui(
                     "energy, and state what this suggests about the binding mode.",
                     "Label this section: 'Ready-to-use summary:'",
                 ]
-            st.code("\n".join(_pv_lines), language=None)
+            st.markdown("### 🤖 AI Prompt")
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
+            st.code("\n".join(_prompt_lines), language=None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
