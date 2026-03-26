@@ -2074,14 +2074,14 @@ def _render_ligand_svg(mol2d, svg_coords):
                          f' stroke="#1a1a1a" stroke-width="1.77" opacity="0.9"/>')
         elif bt==Chem.BondType.DOUBLE:
             dx,dy=x2s-x1s,y2s-y1s; L=_math.sqrt(dx*dx+dy*dy)+1e-9
-            px,py=-dy/L*3.8,dx/L*3.8
+            px,py=-dy/L*2.5,dx/L*2.5   # ACS 18% bond-length spacing
             for sg in (1,-1):
                 parts.append(f'<line x1="{x1s+px*sg:.2f}" y1="{y1s+py*sg:.2f}"'
                              f' x2="{x2s+px*sg:.2f}" y2="{y2s+py*sg:.2f}"'
                              f' stroke="#1a1a1a" stroke-width="2.44" opacity="0.9"/>')
         elif bt==Chem.BondType.TRIPLE:
             dx,dy=x2s-x1s,y2s-y1s; L=_math.sqrt(dx*dx+dy*dy)+1e-9
-            px,py=-dy/L*4.5,dx/L*4.5
+            px,py=-dy/L*3.8,dx/L*3.8
             for m in (-1,0,1):
                 parts.append(f'<line x1="{x1s+px*m:.2f}" y1="{y1s+py*m:.2f}"'
                              f' x2="{x2s+px*m:.2f}" y2="{y2s+py*m:.2f}"'
@@ -2090,7 +2090,7 @@ def _render_ligand_svg(mol2d, svg_coords):
             bd=bond.GetBondDir()
             if bd==Chem.BondDir.BEGINWEDGE:
                 dx,dy=x2s-x1s,y2s-y1s; L=_math.sqrt(dx*dx+dy*dy)+1e-9
-                px,py=-dy/L*5.0,dx/L*5.0
+                px,py=-dy/L*3.0,dx/L*3.0   # ACS bold width 2.0pt
                 parts.append(f'<polygon points="{x1s:.2f},{y1s:.2f}'
                              f' {x2s+px:.2f},{y2s+py:.2f} {x2s-px:.2f},{y2s-py:.2f}"'
                              f' fill="#1a1a1a" stroke="none"/>')
@@ -2101,7 +2101,7 @@ def _render_ligand_svg(mol2d, svg_coords):
                     t=step/7; mx2=x1s+dx*t; my2=y1s+dy*t; w=t*5.0
                     parts.append(f'<line x1="{mx2-px*w:.2f}" y1="{my2-py*w:.2f}"'
                                  f' x2="{mx2+px*w:.2f}" y2="{my2+py*w:.2f}"'
-                                 f' stroke="#1a1a1a" stroke-width="1.8"/>')
+                                 f' stroke="#1a1a1a" stroke-width="1.6"/>')
             else:
                 parts.append(f'<line x1="{x1s:.2f}" y1="{y1s:.2f}" x2="{x2s:.2f}" y2="{y2s:.2f}"'
                              f' stroke="#1a1a1a" stroke-width="1.77" opacity="0.9"/>')
@@ -2359,61 +2359,18 @@ def draw_interaction_diagram(
     Ionic/Metal/Halogen: dashed line + circle + label + distance.
     Lines never cross (angular-sort placement).
     """
-    from rdkit import Chem, RDLogger
-    from rdkit.Chem import rdDepictor
-    RDLogger.DisableLog("rdApp.*")
-    W,H=size
     try:
-        mol3d=None
-        for san in (True,False):
-            sup=Chem.SDMolSupplier(pose_sdf,sanitize=san,removeHs=False)
-            mol3d=next((m for m in sup if m is not None),None)
-            if mol3d is not None:
-                if not san:
-                    try: Chem.SanitizeMol(mol3d)
-                    except: pass
-                break
-        if mol3d is None or mol3d.GetNumConformers()==0:
-            raise ValueError("No valid 3D pose in SDF")
+        mol2d, sc, pl, W, H = _build_diagram_data(
+            receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size
+        )
     except Exception as e:
-        RDLogger.EnableLog("rdApp.error")
+        W, H = size
         return (f'<svg viewBox="0 0 {W} 80" xmlns="http://www.w3.org/2000/svg">'
                 f'<rect width="{W}" height="80" fill="white"/>'
                 f'<text x="{W//2}" y="44" text-anchor="middle"'
                 f' font-family="Arial,sans-serif" font-size="13" fill="#cc2222">'
                 f'Error: {e}</text></svg>').encode()
-    mol2d=None
-    if smiles and smiles.strip(): mol2d=Chem.MolFromSmiles(smiles.strip())
-    if mol2d is None:
-        mol2d=Chem.RemoveHs(mol3d,sanitize=False)
-        try: Chem.SanitizeMol(mol2d)
-        except: pass
-    mol2d=Chem.RemoveHs(mol2d)
-    rdDepictor.Compute2DCoords(mol2d)
-    m3=Chem.RemoveHs(mol3d,sanitize=False)
-    try: Chem.SanitizeMol(m3)
-    except: pass
-    m3to2d={}
-    try:
-        mt=m3.GetSubstructMatch(mol2d)
-        if len(mt)==mol2d.GetNumAtoms():
-            for i2,i3 in enumerate(mt): m3to2d[i3]=i2
-    except: pass
-    try: raw=_detect_all_interactions(mol3d,receptor_pdb,cutoff=cutoff)
-    except: raw=[]
-    for ix in raw:
-        ix["lig_atom_idx"]=m3to2d.get(ix.get("lig_atom_idx",0),0)
-        if ix.get("ring_atom_indices"):
-            ix["ring_atom_indices"]=[m3to2d.get(i,i) for i in ix["ring_atom_indices"]]
-    pm={t:i for i,t in enumerate(_ITYPE_PRIORITY)}
-    ded=_deduplicate_interactions(raw)
-    ded.sort(key=lambda x:(pm.get(x["itype"],99),x["distance"]))
-    ded=ded[:max_residues]
-    cx,cy=W//2,H//2
-    sc=_compute_svg_coords(mol2d,cx,cy,target_size=280)
-    pl=_place_residues_no_cross(ded,sc,cx,cy,R=210)
-    svg=_render_diagram_svg(mol2d,sc,pl,title,W,H)
-    RDLogger.EnableLog("rdApp.error")
+    svg = _render_diagram_svg(mol2d, sc, pl, title, W, H)
     return svg.encode()
 
 
@@ -2527,6 +2484,405 @@ def draw_interaction_diagram_data(
         "placements": pl_serial,
         "svg_coords": sc_serial,
     }
+
+
+def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues,
+                         size=(800, 759)):
+    """
+    Shared setup for both static SVG and interactive HTML renderers.
+    Returns (mol2d, svg_coords, placements, W, H) or raises on error.
+    """
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdDepictor
+    RDLogger.DisableLog("rdApp.*")
+    W, H = size
+    mol3d = None
+    for san in (True, False):
+        sup = Chem.SDMolSupplier(pose_sdf, sanitize=san, removeHs=False)
+        mol3d = next((m for m in sup if m is not None), None)
+        if mol3d is not None:
+            if not san:
+                try: Chem.SanitizeMol(mol3d)
+                except: pass
+            break
+    if mol3d is None or mol3d.GetNumConformers() == 0:
+        raise ValueError("No valid 3D pose in SDF")
+    mol2d = None
+    if smiles and smiles.strip():
+        mol2d = Chem.MolFromSmiles(smiles.strip())
+    if mol2d is None:
+        mol2d = Chem.RemoveHs(mol3d, sanitize=False)
+        try: Chem.SanitizeMol(mol2d)
+        except: pass
+    mol2d = Chem.RemoveHs(mol2d)
+    rdDepictor.Compute2DCoords(mol2d)
+    m3 = Chem.RemoveHs(mol3d, sanitize=False)
+    try: Chem.SanitizeMol(m3)
+    except: pass
+    m3to2d = {}
+    try:
+        mt = m3.GetSubstructMatch(mol2d)
+        if len(mt) == mol2d.GetNumAtoms():
+            for i2, i3 in enumerate(mt): m3to2d[i3] = i2
+    except: pass
+    try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
+    except: raw = []
+    for ix in raw:
+        ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
+        if ix.get("ring_atom_indices"):
+            ix["ring_atom_indices"] = [m3to2d.get(i, i) for i in ix["ring_atom_indices"]]
+    pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    ded = _deduplicate_interactions(raw)
+    ded.sort(key=lambda x: (pm.get(x["itype"], 99), x["distance"]))
+    ded = ded[:max_residues]
+    cx, cy = W // 2, H // 2
+    sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
+    pl = _place_residues_no_cross(ded, sc, cx, cy, R=210)
+    RDLogger.EnableLog("rdApp.error")
+    return mol2d, sc, pl, W, H
+
+
+def draw_interaction_diagram_interactive(
+    receptor_pdb: str,
+    pose_sdf: str,
+    smiles: str,
+    title: str = "",
+    cutoff: float = 4.5,
+    size: tuple = (800, 759),
+    max_residues: int = 14,
+) -> str:
+    """
+    Interactive version of draw_interaction_diagram.
+    Returns an HTML string (embed with components.html).
+    Residue circles are draggable — lines update in real-time.
+    Distance labels stay perpendicular to the line as you drag.
+    Includes Reset + Export SVG buttons.
+    """
+    import json
+
+    try:
+        mol2d, sc, pl, W, H = _build_diagram_data(
+            receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size
+        )
+    except Exception as e:
+        return f'<p style="color:red">Error: {e}</p>'
+
+    # Build ligand SVG fragment (static — never moves)
+    lig_svg = _render_ligand_svg(mol2d, sc)
+
+    # Build placements JSON for JavaScript
+    residues_js = []
+    for p in pl:
+        itype = p["itype"]
+        ai    = p.get("lig_atom_idx", 0)
+        lx, ly = sc.get(ai, (W // 2, H // 2))
+        # For pi-pi: start from ring centroid
+        if itype in ("pi_pi", "cation_pi") and p.get("ring_atom_indices"):
+            rx, ry = _ring_centroid_2d(p["ring_atom_indices"], sc)
+            if rx is not None: lx, ly = rx, ry
+        residues_js.append({
+            "id":      p["resname"] + str(p["resid"]) + p.get("chain",""),
+            "label":   f"{p['resname']} {p['resid']}{p.get('chain','')}",
+            "itype":   itype,
+            "dist":    str(p["distance"]) + "Å" if p.get("distance") else "",
+            "lx":      round(lx, 2),
+            "ly":      round(ly, 2),
+            "bx":      round(p["bx"], 2),
+            "by":      round(p["by"], 2),
+        })
+
+    # Build legend entries
+    legend_types = list(dict.fromkeys(p["itype"] for p in pl))
+    _LEG_LABEL = {
+        "hbond":"H-bond", "hbond_to_halogen":"H···Halogen",
+        "pi_pi":"π-π stacking","cation_pi":"Cation-π",
+        "hydrophobic":"Hydrophobic","ionic":"Ionic",
+        "metal":"Metal","halogen":"Halogen bond",
+    }
+
+    # Title pill dimensions
+    esc_title = (title.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;"))
+    tw = min(len(esc_title) * 14 + 48, W - 40)
+    pill_x = (W - tw) / 2
+
+    data_json = json.dumps(residues_js)
+
+    html = f"""
+<style>
+  #diag-wrap {{ position:relative; width:100%; background:white; border:1px solid #e0e0e0; border-radius:8px; overflow:hidden; }}
+  #diag-toolbar {{ display:flex; gap:8px; padding:8px 12px; border-bottom:1px solid #eee; align-items:center; flex-wrap:wrap; background:#fafafa; }}
+  #diag-toolbar button {{ font-size:12px; padding:5px 10px; border:1px solid #ccc; border-radius:5px; background:#fff; cursor:pointer; font-weight:600; }}
+  #diag-toolbar button:hover {{ background:#f0f0f0; }}
+  #diag-hint {{ font-size:11px; color:#888; margin-left:auto; }}
+  #diag-svg {{ width:100%; display:block; cursor:default; user-select:none; -webkit-user-select:none; }}
+  .r-circle {{ cursor:grab; }}
+  .r-circle:active {{ cursor:grabbing; }}
+</style>
+<div id="diag-wrap">
+  <div id="diag-toolbar">
+    <button onclick="resetLayout()">&#8635; Reset</button>
+    <button onclick="exportSVG()">&#8595; SVG</button>
+    <button onclick="exportPNG()">&#8595; PNG</button>
+    <select id="dpi-sel" title="PNG resolution" style="font-size:12px;padding:4px 6px;border:1px solid #ccc;border-radius:5px;background:#fff;cursor:pointer;">
+      <option value="1">Screen (1×)</option>
+      <option value="2" selected>Print 150dpi (2×)</option>
+      <option value="3">Print 300dpi (3×)</option>
+      <option value="4">High-res 600dpi (4×)</option>
+    </select>
+    <span id="diag-hint">Drag any residue label to reposition it</span>
+  </div>
+  <svg id="diag-svg" viewBox="0 0 {W} {H}">
+    <rect width="{W}" height="{H}" fill="white"/>
+    <rect x="{pill_x:.1f}" y="12" width="{tw:.0f}" height="44" rx="22" fill="#f2f2f2"/>
+    <text x="{W/2:.1f}" y="34" text-anchor="middle" dominant-baseline="central"
+          font-family="Arial,sans-serif" font-size="18" font-weight="700" fill="#1a1a1a">{esc_title}</text>
+    <g id="g-lines"></g>
+    <g id="g-ligand">{lig_svg}</g>
+    <g id="g-residues"></g>
+    <g id="g-legend"></g>
+  </svg>
+</div>
+<script>
+(function(){{
+const W={W}, H={H};
+const RESIDUES={data_json};
+const LEG_TYPES={json.dumps(legend_types)};
+const LEG_LABEL={json.dumps(_LEG_LABEL)};
+
+const TYPE_CFG = {{
+  hbond:           {{fill:"#80dd80",stroke:"#1a7a1a",line:"#1a7a1a",dash:"5 3",lw:1.6}},
+  hbond_to_halogen:{{fill:"#c8b0ff",stroke:"#6633aa",line:"#6633aa",dash:"4 2 1 2",lw:1.6}},
+  pi_pi:           {{fill:"#e200e8",stroke:"#e200e8",line:"#e200e8",dash:"5 3",lw:1.6}},
+  cation_pi:       {{fill:"#e200e8",stroke:"#e200e8",line:"#e200e8",dash:"5 3",lw:1.6}},
+  hydrophobic:     {{fill:"#2287ff",stroke:"#2287ff",line:null,     dash:"",  lw:0}},
+  ionic:           {{fill:"#ffb0d0",stroke:"#cc2277",line:"#cc2277",dash:"6 2 2 2",lw:1.8}},
+  metal:           {{fill:"#ffe080",stroke:"#cc8800",line:"#cc8800",dash:"3 2",lw:1.8}},
+  halogen:         {{fill:"#ffb0d0",stroke:"#cc2277",line:"#cc2277",dash:"5 2",lw:1.6}},
+}};
+
+const svg   = document.getElementById("diag-svg");
+const gLines= document.getElementById("g-lines");
+const gRes  = document.getElementById("g-residues");
+const gLeg  = document.getElementById("g-legend");
+
+let pos = {{}};
+let els = {{}};  // per residue: {{line, distRect, distTxt, circ, txt}}
+
+function ns(tag){{ return document.createElementNS("http://www.w3.org/2000/svg",tag); }}
+function attr(el,obj){{ for(const[k,v] of Object.entries(obj)) el.setAttribute(k,v); return el; }}
+
+function svgPt(cx,cy){{
+  const r=svg.getBoundingClientRect();
+  const vb=svg.viewBox.baseVal;
+  return {{x:(cx-r.left)*vb.width/r.width+vb.x, y:(cy-r.top)*vb.height/r.height+vb.y}};
+}}
+
+function initPos(){{
+  RESIDUES.forEach(r=>{{ pos[r.id]={{x:r.bx,y:r.by}}; }});
+}}
+
+function drawAll(){{
+  gLines.innerHTML=""; gRes.innerHTML=""; gLeg.innerHTML="";
+  els={{}};
+  RESIDUES.forEach(r=>drawResidue(r));
+  drawLegend();
+}}
+
+function distLabel(r, px, py){{
+  const cfg=TYPE_CFG[r.itype]||TYPE_CFG.hbond;
+  if(!r.dist||!cfg.line) return null;
+  const p=pos[r.id];
+  const t=0.40;
+  const mx=r.lx+(p.x-r.lx)*t, my=r.ly+(p.y-r.ly)*t;
+  const dx=p.x-r.lx, dy=p.y-r.ly;
+  const ln=Math.sqrt(dx*dx+dy*dy)+0.001;
+  const ox=-dy/ln*14, oy=dx/ln*14;
+  return {{x:mx+ox, y:my+oy}};
+}}
+
+function drawResidue(r){{
+  const cfg=TYPE_CFG[r.itype]||TYPE_CFG.hbond;
+  const p=pos[r.id];
+  const lclr={{hbond:"#1a7a1a",hbond_to_halogen:"#6633aa",pi_pi:"#9900aa",
+               cation_pi:"#9900aa",hydrophobic:"#1a5fa8",ionic:"#880055",
+               metal:"#885500",halogen:"#880044"}}[r.itype]||"#333";
+
+  const grp=ns("g"); grp.setAttribute("class","r-circle"); grp.setAttribute("data-id",r.id);
+
+  // Line
+  let lineEl=null, drectEl=null, dtxtEl=null;
+  if(cfg.line){{
+    lineEl=attr(ns("line"),{{x1:r.lx,y1:r.ly,x2:p.x,y2:p.y,
+      stroke:cfg.line,"stroke-width":cfg.lw,"stroke-dasharray":cfg.dash,opacity:0.85}});
+    gLines.appendChild(lineEl);
+
+    if(r.dist){{
+      const dl=distLabel(r);
+      const tw=r.dist.length*7+8;
+      drectEl=attr(ns("rect"),{{x:dl.x-tw/2,y:dl.y-8,width:tw,height:15,rx:4,
+        fill:"white",stroke:cfg.line,"stroke-width":0.5}});
+      dtxtEl=attr(ns("text"),{{x:dl.x,y:dl.y,"text-anchor":"middle",
+        "dominant-baseline":"central","font-family":"Arial,sans-serif",
+        "font-size":12,"font-weight":700,fill:cfg.line}});
+      dtxtEl.textContent=r.dist;
+      gLines.appendChild(drectEl);
+      gLines.appendChild(dtxtEl);
+    }}
+  }}
+
+  // Circle
+  const circ=attr(ns("circle"),{{cx:p.x,cy:p.y,r:24.55,fill:cfg.fill,opacity:0.2,
+    stroke:cfg.stroke,"stroke-width":1.2}});
+  grp.appendChild(circ);
+
+  // Label
+  const txt=attr(ns("text"),{{x:p.x,y:p.y,"text-anchor":"middle",
+    "dominant-baseline":"central","font-family":"Arial,sans-serif",
+    "font-size":11,"font-weight":700,fill:lclr}});
+  txt.textContent=r.label;
+  grp.appendChild(txt);
+
+  gRes.appendChild(grp);
+  els[r.id]={{lineEl,drectEl,dtxtEl,circ,txt}};
+  makeDraggable(grp,r);
+}}
+
+function updateResidue(r){{
+  const p=pos[r.id];
+  const e=els[r.id]; if(!e) return;
+  const cfg=TYPE_CFG[r.itype]||TYPE_CFG.hbond;
+  e.circ.setAttribute("cx",p.x); e.circ.setAttribute("cy",p.y);
+  e.txt.setAttribute("x",p.x);   e.txt.setAttribute("y",p.y);
+  if(e.lineEl){{ e.lineEl.setAttribute("x2",p.x); e.lineEl.setAttribute("y2",p.y); }}
+  if(e.drectEl&&e.dtxtEl&&r.dist){{
+    const dl=distLabel(r);
+    const tw=r.dist.length*7+8;
+    e.drectEl.setAttribute("x",dl.x-tw/2); e.drectEl.setAttribute("y",dl.y-8);
+    e.dtxtEl.setAttribute("x",dl.x);       e.dtxtEl.setAttribute("y",dl.y);
+  }}
+}}
+
+function makeDraggable(grp,r){{
+  let dragging=false, s0x,s0y,p0x,p0y;
+  grp.addEventListener("mousedown",e=>{{
+    dragging=true;
+    const pt=svgPt(e.clientX,e.clientY);
+    s0x=pt.x; s0y=pt.y; p0x=pos[r.id].x; p0y=pos[r.id].y;
+    e.preventDefault();
+  }});
+  grp.addEventListener("touchstart",e=>{{
+    dragging=true;
+    const pt=svgPt(e.touches[0].clientX,e.touches[0].clientY);
+    s0x=pt.x; s0y=pt.y; p0x=pos[r.id].x; p0y=pos[r.id].y;
+    e.preventDefault();
+  }},{{passive:false}});
+  window.addEventListener("mousemove",e=>{{
+    if(!dragging) return;
+    const pt=svgPt(e.clientX,e.clientY);
+    pos[r.id]={{x:p0x+pt.x-s0x, y:p0y+pt.y-s0y}};
+    updateResidue(r);
+  }});
+  window.addEventListener("touchmove",e=>{{
+    if(!dragging) return;
+    const pt=svgPt(e.touches[0].clientX,e.touches[0].clientY);
+    pos[r.id]={{x:p0x+pt.x-s0x, y:p0y+pt.y-s0y}};
+    updateResidue(r);
+    e.preventDefault();
+  }},{{passive:false}});
+  window.addEventListener("mouseup",()=>{{dragging=false;}});
+  window.addEventListener("touchend",()=>{{dragging=false;}});
+}}
+
+function drawLegend(){{
+  const ly0=H-48;
+  let x=0;
+  const entries=LEG_TYPES.map(t=>{{
+    const cfg=TYPE_CFG[t]||TYPE_CFG.hbond;
+    const lbl=LEG_LABEL[t]||t;
+    const hasLine=!!cfg.line;
+    const w=9.54*2+(hasLine?4+28:0)+6+lbl.length*8+16;
+    return {{t,cfg,lbl,hasLine,w}};
+  }});
+  const total=entries.reduce((s,e)=>s+e.w,0);
+  let cx2=(W-total)/2;
+  // box
+  attr(gLeg,{{}});
+  const box=attr(ns("rect"),{{x:cx2-8,y:ly0-6,width:total+16,height:42,
+    fill:"white",stroke:"#e0e0e0","stroke-width":0.8,rx:6}});
+  gLeg.appendChild(box);
+  entries.forEach(e=>{{
+    const circX=cx2+9.54;
+    const circ=attr(ns("circle"),{{cx:circX,cy:ly0+10,r:9.54,
+      fill:e.cfg.fill,opacity:0.2}});
+    gLeg.appendChild(circ);
+    let tx=circX+9.54+6;
+    if(e.hasLine){{
+      const ln=attr(ns("line"),{{x1:circX+9.54+4,y1:ly0+10,
+        x2:circX+9.54+4+28,y2:ly0+10,
+        stroke:e.cfg.line,"stroke-width":2,"stroke-dasharray":e.cfg.dash,opacity:0.85}});
+      gLeg.appendChild(ln);
+      tx=circX+9.54+4+28+6;
+    }}
+    const tt=attr(ns("text"),{{x:tx,y:ly0+10,"dominant-baseline":"central",
+      "font-family":"Arial,sans-serif","font-size":13,"font-weight":700,fill:"#555"}});
+    tt.textContent=e.lbl;
+    gLeg.appendChild(tt);
+    cx2+=e.w;
+  }});
+}}
+
+window.resetLayout=function(){{ initPos(); drawAll(); }};
+
+window.exportSVG=function(){{
+  const clone=svg.cloneNode(true);
+  clone.setAttribute("xmlns","http://www.w3.org/2000/svg");
+  const blob=new Blob([clone.outerHTML],{{type:"image/svg+xml"}});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download="interaction_diagram.svg"; a.click();
+}};
+
+window.exportPNG=function(){{
+  const scale=parseInt(document.getElementById("dpi-sel").value)||2;
+  // Serialize the current SVG (including all dragged positions)
+  const clone=svg.cloneNode(true);
+  clone.setAttribute("xmlns","http://www.w3.org/2000/svg");
+  // Force explicit pixel width/height so canvas scales correctly
+  clone.setAttribute("width", W);
+  clone.setAttribute("height", H);
+  clone.removeAttribute("style");
+  const svgStr=new XMLSerializer().serializeToString(clone);
+  const svgBlob=new Blob([svgStr],{{type:"image/svg+xml;charset=utf-8"}});
+  const url=URL.createObjectURL(svgBlob);
+  const img=new Image();
+  img.onload=function(){{
+    const canvas=document.createElement("canvas");
+    canvas.width=W*scale; canvas.height=H*scale;
+    const ctx=canvas.getContext("2d");
+    // White background (SVG background may be transparent in some renderers)
+    ctx.fillStyle="#ffffff";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.scale(scale,scale);
+    ctx.drawImage(img,0,0,W,H);
+    URL.revokeObjectURL(url);
+    const a=document.createElement("a");
+    a.download="interaction_diagram.png";
+    a.href=canvas.toDataURL("image/png");
+    a.click();
+  }};
+  img.onerror=function(){{
+    URL.revokeObjectURL(url);
+    alert("PNG export failed — try SVG export instead.");
+  }};
+  img.src=url;
+}};
+
+initPos(); drawAll();
+}})();
+</script>
+"""
+    return html
+
+
 
 
 def draw_interactions_rdkit_classic(
