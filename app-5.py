@@ -657,139 +657,51 @@ def _poseview_ui(
                 else:
                     st.caption("⚠️ No co-crystal ligand — use Auto-detect in receptor preparation.")
 
-            # ── AI prompt (text-only, interaction data extracted) ─────────────
+            # ── AI prompt — same logic as PoseView ───────────────────────────
             st.markdown("---")
-
-            # Residue type classifier
-            _HYDROPHOBIC = {"ALA","VAL","ILE","LEU","MET","PHE","TRP","PRO","GLY"}
-            _POLAR_HBOND = {"SER","THR","TYR","CYS","ASN","GLN","HIS"}
-            _CHARGED     = {"ASP","GLU","LYS","ARG"}
-
-            def _fmt_residues(rec_path, mol_3d, cutoff):
-                """Return (hbond_list, hydrophobic_list, other_list) as formatted strings."""
-                try:
-                    _irs = get_interacting_residues(rec_path, mol_3d, cutoff=cutoff)
-                except Exception:
-                    return "  (could not extract)", "", ""
-                hb, hp, ot = [], [], []
-                for r in _irs:
-                    _label = f"{r['resn']} {r['resi']}{r['chain']}"
-                    _rn = r['resn'].upper()
-                    if _rn in _POLAR_HBOND or _rn in _CHARGED:
-                        hb.append(_label)
-                    elif _rn in _HYDROPHOBIC:
-                        hp.append(_label)
-                    else:
-                        ot.append(_label)
-                _f = lambda lst: "  " + ", ".join(lst) if lst else "  (none detected)"
-                return _f(hb), _f(hp), _f(ot)
-
-            # Extract interactions for docked pose
-            _p_hb, _p_hp, _p_ot = "  (unavailable)", "", ""
-            try:
-                _pmols = load_mols_from_sdf(pose_sdf_path)
-                _pmol  = _pmols[0] if _pmols else None
-                if _pmol is not None:
-                    _p_hb, _p_hp, _p_ot = _fmt_residues(_rec, _pmol, _cutoff_rdkit)
-            except Exception:
-                pass
-
-            # Extract interactions for co-crystal reference
-            _r_hb, _r_hp, _r_ot = None, None, None
+            _energy_str = (
+                f"{binding_energy:.2f} kcal/mol"
+                if binding_energy is not None else "[binding energy]"
+            )
+            _lig_str = (
+                f"{lig_name} (SMILES: {_smiles})"
+                if lig_name else _smiles or "[ligand]"
+            )
             _has_ref_b = bool(_ref_rdkit_svg)
-            if _has_ref_b:
-                try:
-                    from rdkit import Chem as _C
-                    _rsdf = _lig_pdb_path.replace(".pdb", "_ref.sdf")
-                    _rmol = None
-                    if os.path.exists(_rsdf):
-                        _rsup = _C.SDMolSupplier(_rsdf, sanitize=True, removeHs=True)
-                        _rmol = next((m for m in _rsup if m is not None), None)
-                    if _rmol is None:
-                        _rmol = _C.MolFromPDBFile(_lig_pdb_path, sanitize=False, removeHs=True)
-                        if _rmol:
-                            try: _C.SanitizeMol(_rmol)
-                            except: pass
-                    if _rmol is not None:
-                        _r_hb, _r_hp, _r_ot = _fmt_residues(_rec, _rmol, _cutoff_rdkit)
-                except Exception:
-                    pass
+            _ref_clause = ""
+            if _has_ref_b and (ref_lig_name or ref_lig_smiles):
+                _rf  = (
+                    f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
+                    if ref_lig_name and ref_lig_smiles
+                    else ref_lig_name or ref_lig_smiles
+                )
+                _re_ = (
+                    f", binding energy {ref_lig_energy:.2f} kcal/mol"
+                    if ref_lig_energy is not None else ""
+                )
+                _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
 
-            _estr  = f"{binding_energy:.2f} kcal/mol" if binding_energy is not None else "[binding energy]"
-            _pdb_r = pdb_id.upper() if pdb_id else "[PDB ID]"
-            _lig_r = lig_name or "[ligand]"
-            _ref_display_r = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
-            _ref_estr_r    = f"{ref_lig_energy:.2f} kcal/mol" if ref_lig_energy is not None else None
-
-            _prompt_lines = [
-                "I have just run a molecular docking experiment and need help",
-                "interpreting the results. All interaction data below was computed",
-                "by the Anyone Can Dock app (AutoDock Vina v1.2.7).",
-                "",
-                f"Protein target (PDB): {_pdb_r}",
-                f"Docked ligand:        {_lig_r}",
-                f"  SMILES: {_smiles or '[unavailable]'}",
-                f"  Predicted binding energy: {_estr}",
-                "  (more negative = stronger predicted binding)",
-            ]
-            if _has_ref_b:
-                _prompt_lines += [
-                    f"Co-crystal reference: {_ref_display_r}",
-                    + (f"  Binding energy from re-docking: {_ref_estr_r}"
-                       if _ref_estr_r else "  (no re-docking performed)"),
-                ]
-            _prompt_lines += [
-                "",
-                "── Docked pose — interacting residues ──────────────────────────",
-                f"  H-bond / polar:  {_p_hb.strip()}",
-                f"  Hydrophobic:     {_p_hp.strip()}",
-                f"  Other:           {_p_ot.strip()}",
-                f"  (cutoff: {_cutoff_rdkit:.1f} Å)",
-            ]
-            if _has_ref_b and _r_hb is not None:
-                _prompt_lines += [
-                    "",
-                    "── Co-crystal reference — interacting residues ──────────────────",
-                    f"  H-bond / polar:  {_r_hb.strip()}",
-                    f"  Hydrophobic:     {_r_hp.strip()}",
-                    f"  Other:           {_r_ot.strip()}",
-                    f"  (same cutoff: {_cutoff_rdkit:.1f} Å)",
-                ]
-            _prompt_lines += [
-                "",
-                "Please help me understand:",
-                "1. What are the most important interactions my ligand makes,",
-                "   and why do they matter for binding?",
-            ]
-            if _has_ref_b and _r_hb is not None:
-                _prompt_lines += [
-                    "2. How does my docked ligand compare to the reference — are the",
-                    "   key contacts conserved or different?",
-                    "3. Based on the binding energy and interaction pattern, does my",
-                    "   ligand look like a promising binder, and what could be improved?",
-                ]
-            else:
-                _prompt_lines += [
-                    "2. What does the binding energy value tell me — is this a",
-                    "   strong or weak predicted binder?",
-                    "3. Are there any obvious ways the binding could be improved?",
-                ]
-            _prompt_lines += [
-                "",
-                "Please explain in plain language that a non-expert can follow,",
-                "but include the specific residue names listed above.",
-                "",
-                "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
-                "can copy directly into a report or presentation slide. It should",
-                "summarise the key protein-ligand interactions,",
-                ("mention both binding energies," if _ref_estr_r else "mention the binding energy,"),
-                "and state what this suggests about the binding mode.",
-                "Label this section: 'Ready-to-use summary:'",
-            ]
-
+            _prompt = (
+                f"Analyze the RDKit interaction diagram for PDB ID "
+                f"{pdb_id.upper() or '[PDB ID]'}, "
+                f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
+                f"binding energy {_energy_str}{_ref_clause}.\n\n"
+                "Legend: Blue circle = H-bond/polar · Green circle = hydrophobic"
+                " · Pink circle = other interaction\n\n"
+                "1. Identify key ligand-protein interactions.\n"
+                "2. List main interacting residues and their roles.\n"
+                + (
+                    "3. Compare docked pose with the co-crystal reference.\n"
+                    "4. Highlight similarities/differences in binding mode.\n"
+                    "5. Evaluate whether interactions support the predicted binding energy.\n\n"
+                    if _has_ref_b else
+                    "3. Evaluate whether interactions support the predicted binding energy.\n\n"
+                )
+                + "Provide a concise structural interpretation of the binding mode."
+            )
             st.markdown("### 🤖 AI Prompt")
-            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) — no image needed.")
-            st.code("\n".join(_prompt_lines), language=None)
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
+            st.code(_prompt, language=None)
 
         return   # ← skip PoseView UI entirely when RDKit is selected
 
@@ -983,143 +895,61 @@ def _poseview_ui(
                         "⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation."
                     )
 
-            # ── AI analysis prompt (text-only, interaction data extracted) ────
+            # AI analysis prompt
             st.markdown("---")
+            _energy_str = (
+                f"{binding_energy:.2f} kcal/mol"
+                if binding_energy is not None else "[binding energy]"
+            )
+            _lig_str = (
+                f"{lig_name} (SMILES: {lig_smiles})"
+                if lig_name and lig_smiles else lig_name or "[ligand]"
+            )
+            _has_ref_b = bool(ref_lig_name or ref_lig_smiles)
+            _both      = bool(_pose_svg and _ref_svg2)
 
-            _HYDROPHOBIC_PV = {"ALA","VAL","ILE","LEU","MET","PHE","TRP","PRO","GLY"}
-            _POLAR_HBOND_PV = {"SER","THR","TYR","CYS","ASN","GLN","HIS"}
-            _CHARGED_PV     = {"ASP","GLU","LYS","ARG"}
+            _ref_clause = ""
+            if _has_ref_b:
+                _rf  = (
+                    f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
+                    if ref_lig_name and ref_lig_smiles
+                    else ref_lig_name or ref_lig_smiles
+                )
+                _re_ = (
+                    f", binding energy {ref_lig_energy:.2f} kcal/mol"
+                    if ref_lig_energy is not None else ""
+                )
+                _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
 
-            def _fmt_residues_pv(rec_path, mol_3d, cutoff):
-                try:
-                    _irs = get_interacting_residues(rec_path, mol_3d, cutoff=cutoff)
-                except Exception:
-                    return "  (could not extract)", "", ""
-                hb, hp, ot = [], [], []
-                for r in _irs:
-                    _label = f"{r['resn']} {r['resi']}{r['chain']}"
-                    _rn = r['resn'].upper()
-                    if _rn in _POLAR_HBOND_PV or _rn in _CHARGED_PV:
-                        hb.append(_label)
-                    elif _rn in _HYDROPHOBIC_PV:
-                        hp.append(_label)
-                    else:
-                        ot.append(_label)
-                _f = lambda lst: "  " + ", ".join(lst) if lst else "  (none detected)"
-                return _f(hb), _f(hp), _f(ot)
-
-            _pv_cutoff = 3.5  # default; PoseView branch has no explicit cutoff slider
-
-            # Extract interactions for docked pose
-            _pp_hb, _pp_hp, _pp_ot = "  (unavailable)", "", ""
-            _pv_rec = st.session_state.get(rec_key, "")
-            try:
-                _ppmols = load_mols_from_sdf(pose_sdf_path)
-                _ppmol  = _ppmols[0] if _ppmols else None
-                if _ppmol is not None and _pv_rec and os.path.exists(_pv_rec):
-                    _pp_hb, _pp_hp, _pp_ot = _fmt_residues_pv(_pv_rec, _ppmol, _pv_cutoff)
-            except Exception:
-                pass
-
-            # Extract interactions for co-crystal reference
-            _rr_hb, _rr_hp, _rr_ot = None, None, None
-            _both   = bool(_pose_svg and _ref_svg2)
-            _has_ref_b_pv = bool(ref_lig_name or ref_lig_smiles)
-            _pfx_pv = rec_key.replace("receptor_fh", "")
-            _lig_pdb_pv = st.session_state.get(_pfx_pv + "ligand_pdb_path", "")
-            if _both and _lig_pdb_pv and os.path.exists(_lig_pdb_pv):
-                try:
-                    from rdkit import Chem as _CPV
-                    _rsdf_pv = _lig_pdb_pv.replace(".pdb", "_ref.sdf")
-                    _rmol_pv = None
-                    if os.path.exists(_rsdf_pv):
-                        _rs = _CPV.SDMolSupplier(_rsdf_pv, sanitize=True, removeHs=True)
-                        _rmol_pv = next((m for m in _rs if m is not None), None)
-                    if _rmol_pv is None:
-                        _rmol_pv = _CPV.MolFromPDBFile(_lig_pdb_pv, sanitize=False, removeHs=True)
-                        if _rmol_pv:
-                            try: _CPV.SanitizeMol(_rmol_pv)
-                            except: pass
-                    if _rmol_pv is not None and _pv_rec and os.path.exists(_pv_rec):
-                        _rr_hb, _rr_hp, _rr_ot = _fmt_residues_pv(_pv_rec, _rmol_pv, _pv_cutoff)
-                except Exception:
-                    pass
-
-            _estr_pv       = f"{binding_energy:.2f} kcal/mol" if binding_energy is not None else "[binding energy]"
-            _pdb_pv        = pdb_id.upper() if pdb_id else "[PDB ID]"
-            _lig_pv        = lig_name or "[ligand]"
-            _ref_display_pv = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
-            _ref_estr_pv    = f"{ref_lig_energy:.2f} kcal/mol" if ref_lig_energy is not None else None
-
-            _pv_lines = [
-                "I have just run a molecular docking experiment and need help",
-                "interpreting the results. All interaction data below was computed",
-                "by the Anyone Can Dock app (AutoDock Vina v1.2.7).",
-                "",
-                f"Protein target (PDB): {_pdb_pv}",
-                f"Docked ligand:        {_lig_pv}",
-                f"  SMILES: {lig_smiles or '[unavailable]'}",
-                f"  Predicted binding energy: {_estr_pv}",
-                "  (more negative = stronger predicted binding)",
-            ]
-            if _both:
-                _pv_lines += [
-                    f"Co-crystal reference: {_ref_display_pv}",
-                    + (f"  Binding energy from re-docking: {_ref_estr_pv}"
-                       if _ref_estr_pv else "  (no re-docking performed)"),
-                ]
-            _pv_lines += [
-                "",
-                "── Docked pose — interacting residues ──────────────────────────",
-                f"  H-bond / polar:  {_pp_hb.strip()}",
-                f"  Hydrophobic:     {_pp_hp.strip()}",
-                f"  Other:           {_pp_ot.strip()}",
-                f"  (cutoff: {_pv_cutoff:.1f} Å)",
-            ]
-            if _both and _rr_hb is not None:
-                _pv_lines += [
-                    "",
-                    "── Co-crystal reference — interacting residues ──────────────────",
-                    f"  H-bond / polar:  {_rr_hb.strip()}",
-                    f"  Hydrophobic:     {_rr_hp.strip()}",
-                    f"  Other:           {_rr_ot.strip()}",
-                    f"  (same cutoff: {_pv_cutoff:.1f} Å)",
-                ]
-            _pv_lines += [
-                "",
-                "Please help me understand:",
-                "1. What are the most important interactions my ligand makes,",
-                "   and why do they matter for binding?",
-            ]
-            if _both and _rr_hb is not None:
-                _pv_lines += [
-                    "2. How does my docked ligand compare to the reference — are the",
-                    "   key contacts conserved or different?",
-                    "3. Based on the binding energy and interaction pattern, does my",
-                    "   ligand look like a promising binder, and what could be improved?",
-                ]
-            else:
-                _pv_lines += [
-                    "2. What does the binding energy value tell me — is this a",
-                    "   strong or weak predicted binder?",
-                    "3. Are there any obvious ways the binding could be improved?",
-                ]
-            _pv_lines += [
-                "",
-                "Please explain in plain language that a non-expert can follow,",
-                "but include the specific residue names listed above.",
-                "",
-                "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
-                "can copy directly into a report or presentation slide. It should",
-                "summarise the key protein-ligand interactions,",
-                ("mention both binding energies," if _ref_estr_pv else "mention the binding energy,"),
-                "and state what this suggests about the binding mode.",
-                "Label this section: 'Ready-to-use summary:'",
-            ]
-
+            _prompt = (
+                f"Analyze the PoseView2 interaction diagram for PDB ID "
+                f"{pdb_id.upper() or '[PDB ID]'}, "
+                f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
+                f"binding energy {_energy_str}{_ref_clause}.\n\n"
+                + (
+                    "Legend (docked pose): Black dashed = H-bond"
+                    " · Dark green solid = hydrophobic\n"
+                    "Legend (co-crystal):  Blue dashed = H-bond"
+                    " · Pink dashed = ionic · Yellow dashed = metal\n"
+                    "  Green dot-dash = cation-pi · Cyan dot-dash = pi-pi"
+                    " · Dark green solid = hydrophobic\n\n"
+                    if _both else
+                    "Legend: Black dashed = H-bond · Dark green solid = hydrophobic\n\n"
+                )
+                + "1. Identify key ligand-protein interactions.\n"
+                + "2. List main interacting residues and their roles.\n"
+                + (
+                    "3. Compare docked pose with the reference ligand.\n"
+                    "4. Highlight similarities/differences in binding orientation.\n"
+                    "5. Evaluate whether interactions support the predicted binding energy.\n\n"
+                    if _has_ref_b else
+                    "3. Evaluate whether interactions support the predicted binding energy.\n\n"
+                )
+                + "Provide a concise structural interpretation of the binding mode."
+            )
             st.markdown("### 🤖 AI Prompt")
-            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) — no image needed.")
-            st.code("\n".join(_pv_lines), language=None)
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
+            st.code(_prompt, language=None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
