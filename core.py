@@ -2131,178 +2131,384 @@ def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
     return result
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  RADIAL-COLLAPSE LAYOUT  —  modular helper functions
+#  Called by _place_residues_pca (main entry point at the end of this block).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _rl_ligand_center(svg_coords):
+    """
+    Return (cx, cy): centroid of all 2D ligand atom SVG positions.
+    Used as the origin for every radial direction calculation.
+    """
+    pts = list(svg_coords.values())
+    if not pts:
+        return 400.0, 380.0
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    return cx, cy
+
+
+def _rl_anchor_angle(ix, svg_coords, cx, cy):
+    """
+    Return the anchor angle θ (radians) for one interaction.
+
+    The anchor is the SVG position of the ligand atom (or aromatic ring
+    centroid) that the interaction line is drawn from.  The angle is measured
+    from the ligand centroid (cx, cy) so that it defines the radial direction
+    along which the residue label will be placed.
+    """
+    ai = ix.get("lig_atom_idx", 0)
+    ax, ay = svg_coords.get(ai, (cx, cy))
+    ring_idxs = ix.get("ring_atom_indices")
+    if ring_idxs:
+        rx, ry = _ring_centroid_2d(ring_idxs, svg_coords)
+        if rx is not None:
+            ax, ay = rx, ry
+    return _math.atan2(ay - cy, ax - cx)
+
+
+def _rl_ray_boundary(cx, cy, theta, atom_xy, atom_r=20.0):
+    """
+    Cast a ray from the ligand centroid (cx, cy) in direction theta and
+    return the distance to the far edge of the ligand's union-of-circles
+    boundary model.
+
+    Ligand boundary model
+    ─────────────────────
+    Each ligand heavy atom is modelled as a circle of radius atom_r (px).
+    The ligand boundary at angle theta is the farthest exit point t_exit
+    of the ray through any of those circles.
+
+    For atom at (ax, ay):
+        v     = (ax-cx, ay-cy)
+        t_c   = v · d̂              (projection onto ray)
+        perp² = |v|² − t_c²       (squared perpendicular distance to ray)
+        if perp² < atom_r²:
+            t_exit = t_c + √(atom_r² − perp²)
+            boundary = max(boundary, t_exit)
+
+    Returns a fallback distance of 20 px if no atom is intersected
+    (can happen for rays pointing away from the ligand).
+    """
+    dx = _math.cos(theta)
+    dy = _math.sin(theta)
+    r2 = atom_r * atom_r
+    t_max = 0.0
+    for (ax, ay) in atom_xy:
+        vx = ax - cx
+        vy = ay - cy
+        t_proj = vx * dx + vy * dy
+        if t_proj < -atom_r:          # atom entirely behind origin
+            continue
+        perp2 = vx * vx + vy * vy - t_proj * t_proj
+        if perp2 >= r2:               # ray misses this atom
+            continue
+        t_exit = t_proj + _math.sqrt(max(r2 - perp2, 0.0))
+        if t_exit > t_max:
+            t_max = t_exit
+    return t_max if t_max > 1.0 else 20.0   # fallback = 20 px
+
+
+def _rl_place_radially(sorted_interactions, svg_coords, cx, cy,
+                        atom_xy, atom_r, gap, node_r, rng):
+    """
+    Compute the initial radial placement for each residue circle.
+
+    For each interaction (pre-sorted by anchor angle for non-crossing order):
+        1. Compute anchor angle θ from ligand centroid.
+        2. Ray-cast the ligand boundary at θ → distance d_boundary.
+        3. Place the circle centre at:
+               r_place = d_boundary + gap + node_r
+           along direction θ, plus a small deterministic jitter to prevent
+           perfectly collinear labels (tangential ±7 px, radial ±4 px).
+
+    The jitter is derived from each interaction's sorted rank so the layout
+    is fully reproducible (same result every call for the same molecule).
+
+    Returns
+    -------
+    positions : list of (bx, by) floats, one per interaction in input order.
+    """
+    JITTER_T = 7.0    # max tangential jitter (px)  — perpendicular to ray
+    JITTER_R = 4.0    # max radial jitter     (px)  — along ray
+
+    # Pre-draw all jitter values from the seeded rng for reproducibility
+    n = len(sorted_interactions)
+    jit_t = rng.uniform(-JITTER_T, JITTER_T, n)
+    jit_r = rng.uniform(-JITTER_R, JITTER_R, n)
+
+    positions = []
+    for k, ix in enumerate(sorted_interactions):
+        theta  = _rl_anchor_angle(ix, svg_coords, cx, cy)
+        bdist  = _rl_ray_boundary(cx, cy, theta, atom_xy, atom_r)
+        r_place = bdist + gap + node_r + jit_r[k]
+
+        cos_t = _math.cos(theta)
+        sin_t = _math.sin(theta)
+        # Tangential unit vector (rotate 90° CCW from radial)
+        tx, ty = -sin_t, cos_t
+
+        bx = cx + r_place * cos_t + jit_t[k] * tx
+        by = cy + r_place * sin_t + jit_t[k] * ty
+        positions.append((bx, by))
+
+    return positions
+
+
+def _rl_resolve_overlaps(positions, atom_xy, cx, cy,
+                          node_r=24.55, excl_r=46.0, max_iters=400):
+    """
+    Resolve residue-circle overlaps using simultaneous-delta push-apart,
+    with a secondary ligand-exclusion step.
+
+    Two forces are applied each iteration:
+    ─ Node–node repulsion (simultaneous delta)
+          For each pair (i,j) whose centres are closer than min_sep:
+              push both apart along the connecting vector.
+          Δ is accumulated for all pairs before being applied
+          (prevents sequential contamination / oscillation).
+
+    ─ Ligand-exclusion (sequential, applied after repulsion)
+          For each node closer than excl_r to any ligand atom centre:
+              push the node outward along the connecting vector.
+
+    The push-apart operates in full 2D Cartesian space so that labels can
+    drift slightly in the tangential direction, producing the natural
+    non-uniform scatter seen in publication diagrams.
+
+    Parameters
+    ----------
+    positions : list of (bx, by)
+    atom_xy   : list of (ax, ay) for ligand atoms (exclusion boundary)
+    cx, cy    : ligand centroid (fallback push direction if overlap is zero)
+    node_r    : residue circle radius (px)
+    excl_r    : min distance from node centre to any ligand atom centre
+    max_iters : iteration cap
+
+    Returns
+    -------
+    new list of (bx, by)
+    """
+    n = len(positions)
+    if n <= 1:
+        return list(positions)
+
+    min_sep = node_r * 2.0 + 8.0   # 2 radii + 8 px safety margin
+
+    bx = [p[0] for p in positions]
+    by = [p[1] for p in positions]
+
+    # Pre-pass: separate exactly-coincident (or near-coincident) nodes by a
+    # tiny golden-angle kick so the main loop has a direction to work with.
+    for i in range(n):
+        for j in range(i + 1, n):
+            ddx = bx[j] - bx[i]; ddy = by[j] - by[i]
+            if _math.sqrt(ddx * ddx + ddy * ddy) < 1.0:
+                ang = (i * 137.508 + j * 73.2) * _math.pi / 180.0
+                kick = min_sep * 0.5
+                bx[i] -= _math.cos(ang) * kick; by[i] -= _math.sin(ang) * kick
+                bx[j] += _math.cos(ang) * kick; by[j] += _math.sin(ang) * kick
+
+    for _it in range(max_iters):
+        # ── Node–node repulsion (simultaneous delta) ──────────────────────
+        dx_acc = [0.0] * n
+        dy_acc = [0.0] * n
+        any_overlap = False
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                ddx = bx[j] - bx[i]
+                ddy = by[j] - by[i]
+                d   = _math.sqrt(ddx * ddx + ddy * ddy) + 1e-8
+                if d < min_sep:
+                    frac = (min_sep - d) * 0.55 / d
+                    dx_acc[i] -= frac * ddx;  dy_acc[i] -= frac * ddy
+                    dx_acc[j] += frac * ddx;  dy_acc[j] += frac * ddy
+                    any_overlap = True
+
+        for i in range(n):
+            bx[i] += dx_acc[i]
+            by[i] += dy_acc[i]
+
+        # ── Ligand-exclusion (sequential push outward from each atom) ─────
+        for i in range(n):
+            for (ax, ay) in atom_xy:
+                ddx = bx[i] - ax
+                ddy = by[i] - ay
+                d   = _math.sqrt(ddx * ddx + ddy * ddy) + 1e-8
+                if d < excl_r:
+                    push = (excl_r - d) * 0.5 / d
+                    # If node is exactly on atom centre, push radially outward
+                    if d < 0.5:
+                        ddx = bx[i] - cx
+                        ddy = by[i] - cy
+                        d   = _math.sqrt(ddx * ddx + ddy * ddy) + 1e-8
+                        push = excl_r * 0.5 / d
+                    bx[i] += push * ddx
+                    by[i] += push * ddy
+
+        if not any_overlap:
+            break
+
+    return list(zip(bx, by))
+
+
+def _rl_reduce_crossings(ix_list, bx_by, svg_coords, cx, cy):
+    """
+    Minimise interaction-line crossings by iterative pair-swap.
+
+    For every pair (i, j) whose lines anchor_i→node_i and anchor_j→node_j
+    properly intersect, swap the two node positions.  A swap eliminates
+    the crossing between pair (i,j) and cannot introduce a new crossing
+    between the same pair.
+
+    Iterates until no crossing pair remains or n·2 passes are exhausted.
+
+    Returns
+    -------
+    bx_by : new list of (bx, by) with minimised crossing count.
+    """
+    n      = len(ix_list)
+    bx_by  = list(bx_by)
+
+    def _anchor(ix):
+        ai = ix.get("lig_atom_idx", 0)
+        ax, ay = svg_coords.get(ai, (cx, cy))
+        ri = ix.get("ring_atom_indices")
+        if ri:
+            rx, ry = _ring_centroid_2d(ri, svg_coords)
+            if rx is not None:
+                return (rx, ry)
+        return (ax, ay)
+
+    def _cross(a1, b1, a2, b2):
+        """True if segment a1→b1 properly intersects segment a2→b2."""
+        def _side(O, A, B):
+            return (B[0]-O[0])*(A[1]-O[1]) - (B[1]-O[1])*(A[0]-O[0])
+        d1 = _side(a2, b2, a1);  d2 = _side(a2, b2, b1)
+        d3 = _side(a1, b1, a2);  d4 = _side(a1, b1, b2)
+        return (d1 * d2 < 0) and (d3 * d4 < 0)
+
+    for _pass in range(n * 2):
+        improved = False
+        for i in range(n):
+            for j in range(i + 1, n):
+                if _cross(_anchor(ix_list[i]), bx_by[i],
+                          _anchor(ix_list[j]), bx_by[j]):
+                    bx_by[i], bx_by[j] = bx_by[j], bx_by[i]
+                    improved = True
+        if not improved:
+            break
+
+    return bx_by
+
+
 def _place_residues_pca(interactions, svg_coords, mol3d, cx, cy, R=210):
     """
-    PCA-initialised residue placement with annealed Langevin diffusion settling.
+    Radial-collapse layout: residue circles placed just outside the drawn
+    ligand boundary, in the direction of their interaction anchor.
 
-    The layout pipeline has three stages:
+    Five-step algorithm
+    ───────────────────
+    1. Ligand centroid + boundary model
+       Compute the geometric centroid of all 2D ligand atom positions.
+       Model the ligand boundary as the union of per-atom circles
+       (radius atom_r ≈ 20 px), enabling direction-specific surface
+       distance estimation via ray casting.
 
-    Stage 1 — PCA projection (physics-informed initialisation)
-    ──────────────────────────────────────────────────────────
-    • Collect the 3D positions of every residue contact atom (stored in
-      'res_xyz') together with all ligand heavy atoms.
-    • Run SVD on the centred point cloud → PC1, PC2 span the best-fit 2D
-      plane of the binding site.
-    • Project each residue contact point onto that plane → polar angle θᵢ.
-      These are the *anchor* angles that encode the real 3D topology.
+    2. Anchor angles + angular sort
+       For each interaction, compute the angle from the ligand centroid to
+       its anchor atom (or ring centroid for π-interactions).
+       Sort interactions by this angle → circular order invariant that
+       guarantees non-crossing lines when node positions preserve the order.
 
-    Stage 2 — Annealed Langevin diffusion (score-based settling)
-    ─────────────────────────────────────────────────────────────
-    Residue nodes are treated as particles on a circle of radius R.
-    Their angular positions evolve via the Langevin equation:
+    3. Initial radial placement
+       For each (sorted) residue:
+           r = ray_boundary(θ) + gap + node_r + small_jitter
+       Nodes are placed outward from the ligand surface along the anchor
+       direction, at varying distances that reflect the actual ligand shape.
 
-        θᵢ(t+1) = θᵢ(t) + α(t) · Fᵢ(θ)  +  √(2 α(t)) · ηᵢ
+    4. Overlap resolution
+       Simultaneous-delta push-apart (2D Cartesian) + ligand-exclusion
+       to ensure no two circles overlap and none overlaps the ligand.
 
-    where Fᵢ = −∇U (the "score"):
+    5. Crossing reduction
+       Swap-based pairwise crossing elimination on the interaction lines.
 
-        U  =  U_rep  +  U_anchor
+    Parameters
+    ----------
+    interactions  : list of interaction dicts (after deduplication)
+    svg_coords    : {atom_idx: (x_svg, y_svg)} for the 2D ligand
+    mol3d         : RDKit molecule with 3D conformer (kept for API compat;
+                    not used — placement is entirely from 2D geometry)
+    cx, cy        : canvas centre (fallback if svg_coords is empty)
+    R             : reference ring radius (used only by the fallback)
 
-        U_rep(θ)    = Σᵢ<ⱼ  ½ k_rep · max(0, d_min − dᵢⱼ)²
-                             ──── soft-core pairwise repulsion
-                             (dᵢⱼ = pixel distance between nodes i and j)
-
-        U_anchor(θ) = Σᵢ  k_anc · (1 − cos(θᵢ − θᵢ_PCA))
-                          ──── von Mises spring toward PCA angle
-
-    Temperature schedule (cosine annealing):
-        α(t) = α₀ · ½ (1 + cos(π t / T))
-
-    High temperature early → thermal noise lets nodes escape crowded
-    configurations without mechanical pushing.  As α → 0 the noise term
-    vanishes and nodes settle deterministically into stable positions
-    that are as close to the PCA angles as the repulsion allows.
-
-    Stage 3 — Sort + canonical output
-    ──────────────────────────────────
-    Sort by final angle (preserves non-crossing line property) and
-    convert to (bx, by) pixel coordinates.
-
-    Falls back to _place_residues_no_cross on any error.
+    Returns
+    -------
+    list of placement dicts, each with keys:
+        bx, by       — residue circle centre in SVG pixels
+        angle        — angle from ligand centroid to circle centre
+        slot_angle   — same (alias kept for renderer compatibility)
+        + all keys from the original interaction dict
     """
-    import numpy as np
-
     if not interactions:
         return []
 
-    if not any(ix.get("res_xyz") is not None for ix in interactions):
-        return _place_residues_no_cross(interactions, svg_coords, cx, cy, R)
-
-    # ── Stage 1: PCA projection ──────────────────────────────────────────────
     try:
-        conf    = mol3d.GetConformer()
-        n_lig   = mol3d.GetNumAtoms()
-        lig_xyz = np.array([[conf.GetAtomPosition(i).x,
-                              conf.GetAtomPosition(i).y,
-                              conf.GetAtomPosition(i).z]
-                             for i in range(n_lig)], dtype=float)
-        lig_cen = lig_xyz.mean(axis=0)
+        import numpy as _np_rc
 
-        res_pts = []
-        for ix in interactions:
-            rp = ix.get("res_xyz")
-            res_pts.append(np.array(rp, dtype=float) if rp is not None else lig_cen.copy())
+        NODE_R  = 24.55   # residue circle radius (must match SVG renderer)
+        GAP     = 45.0    # clearance: ligand boundary edge → circle edge
+        ATOM_R  = 20.0    # per-atom radius for union-of-circles boundary
 
-        all_pts = np.vstack([lig_xyz] + [r.reshape(1, 3) for r in res_pts])
-        _, _, Vt = np.linalg.svd(all_pts - lig_cen, full_matrices=False)
-        pc1, pc2 = Vt[0], Vt[1]
+        # ── Step 1: Ligand centroid + atom positions ───────────────────────
+        lx, ly  = _rl_ligand_center(svg_coords)
+        atom_xy = list(svg_coords.values())
 
-        items = []
-        for ix, rp in zip(interactions, res_pts):
-            v     = rp - lig_cen
-            angle = _math.atan2(float(np.dot(v, pc2)), float(np.dot(v, pc1)))
-            items.append({**ix, "angle": angle, "anchor_angle": angle})
+        # ── Step 2: Anchor angles + sort ──────────────────────────────────
+        anchor_a = [_rl_anchor_angle(ix, svg_coords, lx, ly)
+                    for ix in interactions]
+        order    = sorted(range(len(interactions)),
+                          key=lambda k: anchor_a[k])
+        sorted_ix = [interactions[k] for k in order]
+
+        # ── Step 3: Initial radial placement ──────────────────────────────
+        rng       = _np_rc.random.default_rng(42)
+        positions = _rl_place_radially(
+            sorted_ix, svg_coords, lx, ly,
+            atom_xy, ATOM_R, GAP, NODE_R, rng,
+        )
+
+        # ── Step 4: Overlap resolution ────────────────────────────────────
+        positions = _rl_resolve_overlaps(
+            positions, atom_xy, lx, ly,
+            node_r=NODE_R,
+            excl_r=NODE_R + ATOM_R,   # node edge must clear ligand atoms
+        )
+
+        # ── Step 5: Crossing reduction ────────────────────────────────────
+        positions = _rl_reduce_crossings(
+            sorted_ix, positions, svg_coords, lx, ly,
+        )
+
+        # ── Build output ──────────────────────────────────────────────────
+        result = []
+        for k, (bx, by) in enumerate(positions):
+            ang = _math.atan2(by - ly, bx - lx)
+            result.append({
+                **sorted_ix[k],
+                "angle":      ang,
+                "bx":         float(bx),
+                "by":         float(by),
+                "slot_angle": ang,
+            })
+        return result
 
     except Exception:
         return _place_residues_no_cross(interactions, svg_coords, cx, cy, R)
-
-    n = len(items)
-    if n == 1:
-        a = items[0]["angle"]
-        return [{**items[0],
-                 "bx": cx + R * _math.cos(a),
-                 "by": cy + R * _math.sin(a),
-                 "slot_angle": a}]
-
-    # ── Stage 2: Annealed Langevin diffusion ─────────────────────────────────
-    #
-    # Energy:
-    #   U_rep    = Σᵢ<ⱼ  ½ k_rep · max(0, d_min − dᵢⱼ)²
-    #   U_anchor = Σᵢ    k_anc  · (1 − cos(θᵢ − θᵢ_pca))
-    #
-    # Exact gradients (force = −∇U):
-    #
-    #   F_rep,i  from pair (i,j):
-    #     fac = k_rep · (d_min − d) · R / d          [> 0 when d < d_min]
-    #     F_i += fac · ( dx·sin θᵢ − dy·cos θᵢ )    [tangential projection]
-    #     F_j += fac · (−dx·sin θⱼ + dy·cos θⱼ )
-    #
-    #   F_anchor,i  =  −k_anc · sin(θᵢ − θᵢ_pca)
-    #
-    # Temperature schedule:
-    #   α(t) = α₀ · ½ (1 + cos(π t / T))   ← cosine annealing α₀ → 0
-
-    rng      = np.random.default_rng(42)   # fixed seed → reproducible layout
-    T_steps  = 500
-    alpha_0  = 0.12      # initial step size / temperature
-    k_rep    = 3.5       # repulsion strength (soft-core)
-    k_anc    = 0.55      # von Mises anchor spring strength
-    d_min    = 80.0      # minimum label-centre distance in pixels
-
-    theta     = np.array([x["angle"] for x in items], dtype=float)
-    theta_pca = theta.copy()
-
-    # Seed with a small forward-diffusion perturbation (σ = √(2 α₀))
-    # so the reverse process has something to denoise from the start
-    theta += rng.standard_normal(n) * _math.sqrt(2.0 * alpha_0)
-
-    for t in range(T_steps):
-        # Cosine annealing schedule: α decreases smoothly from α₀ to 0
-        alpha = 0.5 * alpha_0 * (1.0 + _math.cos(_math.pi * t / T_steps))
-        sigma = _math.sqrt(2.0 * alpha) if alpha > 1e-10 else 0.0
-
-        # Current pixel positions on the ring
-        px = cx + R * np.cos(theta)
-        py = cy + R * np.sin(theta)
-
-        force = np.zeros(n)
-
-        # ── Soft-core repulsion force (exact gradient of ½k(d_min−d)²) ─────
-        for i in range(n):
-            for j in range(i + 1, n):
-                dx  = px[j] - px[i]
-                dy  = py[j] - py[i]
-                d   = _math.sqrt(dx * dx + dy * dy) + 1e-8
-                if d < d_min:
-                    # F_rep projected onto tangent direction of each node's circle
-                    fac       = k_rep * (d_min - d) * R / d
-                    force[i] += fac * ( dx * _math.sin(theta[i]) - dy * _math.cos(theta[i]))
-                    force[j] += fac * (-dx * _math.sin(theta[j]) + dy * _math.cos(theta[j]))
-
-        # ── Von Mises anchor spring (pulls toward PCA angle) ─────────────────
-        force -= k_anc * np.sin(theta - theta_pca)
-
-        # ── Langevin step: θ += α·F + √(2α)·η ───────────────────────────────
-        noise  = rng.standard_normal(n) * sigma if sigma > 1e-10 else np.zeros(n)
-        theta += alpha * force + noise
-
-    # ── Stage 3: Sort by final angle, build output ───────────────────────────
-    order  = np.argsort(theta)
-    result = []
-    for k in order:
-        a = float(theta[k])
-        result.append({
-            **items[k],
-            "angle":      a,
-            "bx":         cx + R * _math.cos(a),
-            "by":         cy + R * _math.sin(a),
-            "slot_angle": a,
-        })
-    return result
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  LIGAND SVG
-# ──────────────────────────────────────────────────────────────────────────────
 
 def _render_ligand_svg(mol2d, svg_coords):
     from rdkit import Chem
