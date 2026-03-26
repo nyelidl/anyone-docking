@@ -227,15 +227,16 @@ anyone-docking/
 
 ## 📄 Citation
 
-If you use this tool in research, please cite the following software and resources used in this workflow:
+If you use this tool in research, please cite the relevant software and resources used in this workflow:
 
+***Main***
 > **AutoDock Vina 1.2.7**
 > Eberhardt et al., *Journal of Chemical Information and Modeling*, 2021
 > DOI: https://doi.org/10.1021/acs.jcim.1c00203
 
-> **ProteinsPlus / PoseView & PoseView2**
-> Schöning-Stierand et al., *Nucleic Acids Research*, 2022
-> DOI: https://doi.org/10.1093/nar/gkac258
+> **Hengphasatporn, K.; Bunchuay T.; Duan, L.; Shigeta, Y.**  
+> *Anyone Can Dock: An Online Molecular Docking Tool for Everyone.*  
+> **Journal of Chemical Information and Modeling**, 2026.  
 
 > **RDKit**
 > Landrum, G. (2023). RDKit: Open-source cheminformatics.
