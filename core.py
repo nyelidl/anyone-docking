@@ -1922,6 +1922,69 @@ def _deduplicate_interactions(interactions: list) -> list:
     return list(best.values())
 
 
+def _enrich_with_res_xyz(interactions, mol3d, receptor_pdb):
+    """
+    Add 'res_xyz' (3D position of the closest receptor atom) to each
+    interaction dict in-place.
+
+    Must be called BEFORE lig_atom_idx is remapped from 3D→2D indices,
+    because we need the original 3D ligand atom positions here.
+
+    For pi_pi / cation_pi interactions that reference a ring, we also
+    store 'lig_xyz' (3D centroid of the ligand ring) so the PCA
+    placement can use the true ring centre rather than a single atom.
+    """
+    import numpy as np
+    from prody import parsePDB
+    try:
+        rec = parsePDB(receptor_pdb)
+        if rec is None: return
+        rc  = rec.getCoords()
+        rch = rec.getChids()
+        rri = rec.getResnums()
+        conf  = mol3d.GetConformer()
+        n_lig = mol3d.GetNumAtoms()
+        lxyz  = np.array([[conf.GetAtomPosition(i).x,
+                            conf.GetAtomPosition(i).y,
+                            conf.GetAtomPosition(i).z] for i in range(n_lig)])
+    except Exception:
+        return
+
+    for ix in interactions:
+        ch  = ix.get("chain", "")
+        ri  = ix.get("resid", 0)
+        lai = ix.get("lig_atom_idx", 0)
+        lai = min(lai, n_lig - 1)
+
+        # --- Ligand-side 3D anchor -----------------------------------------
+        # For pi_pi/cation_pi: use the ring centroid if ring indices available
+        ring_idxs = ix.get("ring_atom_indices") or []
+        if ring_idxs:
+            valid = [i for i in ring_idxs if 0 <= i < n_lig]
+            if valid:
+                lig_anchor = lxyz[valid].mean(axis=0)
+            else:
+                lig_anchor = lxyz[lai]
+        else:
+            lig_anchor = lxyz[lai]
+        ix["lig_anchor_xyz"] = lig_anchor.tolist()
+
+        # --- Receptor-side 3D anchor ----------------------------------------
+        # Find all atoms belonging to this residue
+        res_idx = [j for j in range(len(rc))
+                   if rch[j].strip() == ch and int(rri[j]) == ri]
+        if not res_idx:
+            ix["res_xyz"] = lig_anchor.tolist()   # fallback: same as ligand
+            continue
+
+        # For aromatic interactions (pi_pi / cation_pi): prefer the ring-atom
+        # subset of this residue if available (gives a more centroid-like point)
+        res_coords = rc[res_idx]
+        dists = np.linalg.norm(res_coords - lig_anchor, axis=1)
+        closest_local = int(dists.argmin())
+        ix["res_xyz"] = rc[res_idx[closest_local]].tolist()
+
+
 def _compute_svg_coords(mol2d, cx, cy, target_size=280):
     from rdkit.Chem import rdDepictor
     if mol2d.GetNumConformers()==0: rdDepictor.Compute2DCoords(mol2d)
@@ -1940,6 +2003,34 @@ def _ring_centroid_2d(ring_atom_indices, svg_coords):
     ys=[svg_coords[i][1] for i in ring_atom_indices if i in svg_coords]
     if not xs: return None, None
     return sum(xs)/len(xs), sum(ys)/len(ys)
+
+
+def _ring_centroid_from_atom(mol2d, atom_idx_2d, svg_coords):
+    """
+    Find the aromatic ring in mol2d that contains atom_idx_2d, then
+    return its 2D SVG centroid.
+
+    This avoids the fragile 3D→2D ring_atom_indices remapping (which breaks
+    when mol3d has explicit Hs, shifting heavy-atom indices relative to m3).
+    Falls back to (None, None) if atom is not in any aromatic ring.
+    """
+    ring_info = mol2d.GetRingInfo()
+    best_ring = None
+    best_size = 999
+    for ring in ring_info.AtomRings():
+        if atom_idx_2d in ring:
+            # Prefer 6-membered rings; among ties pick first found
+            if mol2d.GetAtomWithIdx(ring[0]).GetIsAromatic():
+                if len(ring) < best_size:
+                    best_ring = ring
+                    best_size = len(ring)
+    if best_ring is None:
+        return None, None
+    xs = [svg_coords[i][0] for i in best_ring if i in svg_coords]
+    ys = [svg_coords[i][1] for i in best_ring if i in svg_coords]
+    if not xs:
+        return None, None
+    return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
 def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
@@ -2035,6 +2126,175 @@ def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
             **item,
             "bx": bx,
             "by": by,
+            "slot_angle": a,
+        })
+    return result
+
+
+def _place_residues_pca(interactions, svg_coords, mol3d, cx, cy, R=210):
+    """
+    PCA-initialised residue placement with annealed Langevin diffusion settling.
+
+    The layout pipeline has three stages:
+
+    Stage 1 — PCA projection (physics-informed initialisation)
+    ──────────────────────────────────────────────────────────
+    • Collect the 3D positions of every residue contact atom (stored in
+      'res_xyz') together with all ligand heavy atoms.
+    • Run SVD on the centred point cloud → PC1, PC2 span the best-fit 2D
+      plane of the binding site.
+    • Project each residue contact point onto that plane → polar angle θᵢ.
+      These are the *anchor* angles that encode the real 3D topology.
+
+    Stage 2 — Annealed Langevin diffusion (score-based settling)
+    ─────────────────────────────────────────────────────────────
+    Residue nodes are treated as particles on a circle of radius R.
+    Their angular positions evolve via the Langevin equation:
+
+        θᵢ(t+1) = θᵢ(t) + α(t) · Fᵢ(θ)  +  √(2 α(t)) · ηᵢ
+
+    where Fᵢ = −∇U (the "score"):
+
+        U  =  U_rep  +  U_anchor
+
+        U_rep(θ)    = Σᵢ<ⱼ  ½ k_rep · max(0, d_min − dᵢⱼ)²
+                             ──── soft-core pairwise repulsion
+                             (dᵢⱼ = pixel distance between nodes i and j)
+
+        U_anchor(θ) = Σᵢ  k_anc · (1 − cos(θᵢ − θᵢ_PCA))
+                          ──── von Mises spring toward PCA angle
+
+    Temperature schedule (cosine annealing):
+        α(t) = α₀ · ½ (1 + cos(π t / T))
+
+    High temperature early → thermal noise lets nodes escape crowded
+    configurations without mechanical pushing.  As α → 0 the noise term
+    vanishes and nodes settle deterministically into stable positions
+    that are as close to the PCA angles as the repulsion allows.
+
+    Stage 3 — Sort + canonical output
+    ──────────────────────────────────
+    Sort by final angle (preserves non-crossing line property) and
+    convert to (bx, by) pixel coordinates.
+
+    Falls back to _place_residues_no_cross on any error.
+    """
+    import numpy as np
+
+    if not interactions:
+        return []
+
+    if not any(ix.get("res_xyz") is not None for ix in interactions):
+        return _place_residues_no_cross(interactions, svg_coords, cx, cy, R)
+
+    # ── Stage 1: PCA projection ──────────────────────────────────────────────
+    try:
+        conf    = mol3d.GetConformer()
+        n_lig   = mol3d.GetNumAtoms()
+        lig_xyz = np.array([[conf.GetAtomPosition(i).x,
+                              conf.GetAtomPosition(i).y,
+                              conf.GetAtomPosition(i).z]
+                             for i in range(n_lig)], dtype=float)
+        lig_cen = lig_xyz.mean(axis=0)
+
+        res_pts = []
+        for ix in interactions:
+            rp = ix.get("res_xyz")
+            res_pts.append(np.array(rp, dtype=float) if rp is not None else lig_cen.copy())
+
+        all_pts = np.vstack([lig_xyz] + [r.reshape(1, 3) for r in res_pts])
+        _, _, Vt = np.linalg.svd(all_pts - lig_cen, full_matrices=False)
+        pc1, pc2 = Vt[0], Vt[1]
+
+        items = []
+        for ix, rp in zip(interactions, res_pts):
+            v     = rp - lig_cen
+            angle = _math.atan2(float(np.dot(v, pc2)), float(np.dot(v, pc1)))
+            items.append({**ix, "angle": angle, "anchor_angle": angle})
+
+    except Exception:
+        return _place_residues_no_cross(interactions, svg_coords, cx, cy, R)
+
+    n = len(items)
+    if n == 1:
+        a = items[0]["angle"]
+        return [{**items[0],
+                 "bx": cx + R * _math.cos(a),
+                 "by": cy + R * _math.sin(a),
+                 "slot_angle": a}]
+
+    # ── Stage 2: Annealed Langevin diffusion ─────────────────────────────────
+    #
+    # Energy:
+    #   U_rep    = Σᵢ<ⱼ  ½ k_rep · max(0, d_min − dᵢⱼ)²
+    #   U_anchor = Σᵢ    k_anc  · (1 − cos(θᵢ − θᵢ_pca))
+    #
+    # Exact gradients (force = −∇U):
+    #
+    #   F_rep,i  from pair (i,j):
+    #     fac = k_rep · (d_min − d) · R / d          [> 0 when d < d_min]
+    #     F_i += fac · ( dx·sin θᵢ − dy·cos θᵢ )    [tangential projection]
+    #     F_j += fac · (−dx·sin θⱼ + dy·cos θⱼ )
+    #
+    #   F_anchor,i  =  −k_anc · sin(θᵢ − θᵢ_pca)
+    #
+    # Temperature schedule:
+    #   α(t) = α₀ · ½ (1 + cos(π t / T))   ← cosine annealing α₀ → 0
+
+    rng      = np.random.default_rng(42)   # fixed seed → reproducible layout
+    T_steps  = 500
+    alpha_0  = 0.12      # initial step size / temperature
+    k_rep    = 3.5       # repulsion strength (soft-core)
+    k_anc    = 0.55      # von Mises anchor spring strength
+    d_min    = 80.0      # minimum label-centre distance in pixels
+
+    theta     = np.array([x["angle"] for x in items], dtype=float)
+    theta_pca = theta.copy()
+
+    # Seed with a small forward-diffusion perturbation (σ = √(2 α₀))
+    # so the reverse process has something to denoise from the start
+    theta += rng.standard_normal(n) * _math.sqrt(2.0 * alpha_0)
+
+    for t in range(T_steps):
+        # Cosine annealing schedule: α decreases smoothly from α₀ to 0
+        alpha = 0.5 * alpha_0 * (1.0 + _math.cos(_math.pi * t / T_steps))
+        sigma = _math.sqrt(2.0 * alpha) if alpha > 1e-10 else 0.0
+
+        # Current pixel positions on the ring
+        px = cx + R * np.cos(theta)
+        py = cy + R * np.sin(theta)
+
+        force = np.zeros(n)
+
+        # ── Soft-core repulsion force (exact gradient of ½k(d_min−d)²) ─────
+        for i in range(n):
+            for j in range(i + 1, n):
+                dx  = px[j] - px[i]
+                dy  = py[j] - py[i]
+                d   = _math.sqrt(dx * dx + dy * dy) + 1e-8
+                if d < d_min:
+                    # F_rep projected onto tangent direction of each node's circle
+                    fac       = k_rep * (d_min - d) * R / d
+                    force[i] += fac * ( dx * _math.sin(theta[i]) - dy * _math.cos(theta[i]))
+                    force[j] += fac * (-dx * _math.sin(theta[j]) + dy * _math.cos(theta[j]))
+
+        # ── Von Mises anchor spring (pulls toward PCA angle) ─────────────────
+        force -= k_anc * np.sin(theta - theta_pca)
+
+        # ── Langevin step: θ += α·F + √(2α)·η ───────────────────────────────
+        noise  = rng.standard_normal(n) * sigma if sigma > 1e-10 else np.zeros(n)
+        theta += alpha * force + noise
+
+    # ── Stage 3: Sort by final angle, build output ───────────────────────────
+    order  = np.argsort(theta)
+    result = []
+    for k in order:
+        a = float(theta[k])
+        result.append({
+            **items[k],
+            "angle":      a,
+            "bx":         cx + R * _math.cos(a),
+            "by":         cy + R * _math.sin(a),
             "slot_angle": a,
         })
     return result
@@ -2438,6 +2698,11 @@ def draw_interaction_diagram_data(
 
     try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
     except: raw = []
+
+    # Enrich with 3D residue positions BEFORE remapping indices to 2D
+    try: _enrich_with_res_xyz(raw, mol3d, receptor_pdb)
+    except: pass
+
     for ix in raw:
         ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
         if ix.get("ring_atom_indices"):
@@ -2450,7 +2715,8 @@ def draw_interaction_diagram_data(
 
     cx, cy = W // 2, H // 2
     sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
-    pl = _place_residues_no_cross(ded, sc, cx, cy, R=210)
+    # PCA-based: initialises from projected 3D positions, mild push-apart only
+    pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
 
     # Ligand SVG fragment (no wrapper svg tag)
     lig_svg = _render_ligand_svg(mol2d, sc)
@@ -2527,6 +2793,11 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues,
     except: pass
     try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
     except: raw = []
+
+    # Enrich with 3D residue positions BEFORE remapping indices to 2D
+    try: _enrich_with_res_xyz(raw, mol3d, receptor_pdb)
+    except: pass
+
     for ix in raw:
         ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
         if ix.get("ring_atom_indices"):
@@ -2537,7 +2808,8 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues,
     ded = ded[:max_residues]
     cx, cy = W // 2, H // 2
     sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
-    pl = _place_residues_no_cross(ded, sc, cx, cy, R=210)
+    # PCA-based: initialises from projected 3D positions, mild push-apart only
+    pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
     RDLogger.EnableLog("rdApp.error")
     return mol2d, sc, pl, W, H
 
