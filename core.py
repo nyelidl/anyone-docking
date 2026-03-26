@@ -1922,6 +1922,69 @@ def _deduplicate_interactions(interactions: list) -> list:
     return list(best.values())
 
 
+def _enrich_with_res_xyz(interactions, mol3d, receptor_pdb):
+    """
+    Add 'res_xyz' (3D position of the closest receptor atom) to each
+    interaction dict in-place.
+
+    Must be called BEFORE lig_atom_idx is remapped from 3D→2D indices,
+    because we need the original 3D ligand atom positions here.
+
+    For pi_pi / cation_pi interactions that reference a ring, we also
+    store 'lig_xyz' (3D centroid of the ligand ring) so the PCA
+    placement can use the true ring centre rather than a single atom.
+    """
+    import numpy as np
+    from prody import parsePDB
+    try:
+        rec = parsePDB(receptor_pdb)
+        if rec is None: return
+        rc  = rec.getCoords()
+        rch = rec.getChids()
+        rri = rec.getResnums()
+        conf  = mol3d.GetConformer()
+        n_lig = mol3d.GetNumAtoms()
+        lxyz  = np.array([[conf.GetAtomPosition(i).x,
+                            conf.GetAtomPosition(i).y,
+                            conf.GetAtomPosition(i).z] for i in range(n_lig)])
+    except Exception:
+        return
+
+    for ix in interactions:
+        ch  = ix.get("chain", "")
+        ri  = ix.get("resid", 0)
+        lai = ix.get("lig_atom_idx", 0)
+        lai = min(lai, n_lig - 1)
+
+        # --- Ligand-side 3D anchor -----------------------------------------
+        # For pi_pi/cation_pi: use the ring centroid if ring indices available
+        ring_idxs = ix.get("ring_atom_indices") or []
+        if ring_idxs:
+            valid = [i for i in ring_idxs if 0 <= i < n_lig]
+            if valid:
+                lig_anchor = lxyz[valid].mean(axis=0)
+            else:
+                lig_anchor = lxyz[lai]
+        else:
+            lig_anchor = lxyz[lai]
+        ix["lig_anchor_xyz"] = lig_anchor.tolist()
+
+        # --- Receptor-side 3D anchor ----------------------------------------
+        # Find all atoms belonging to this residue
+        res_idx = [j for j in range(len(rc))
+                   if rch[j].strip() == ch and int(rri[j]) == ri]
+        if not res_idx:
+            ix["res_xyz"] = lig_anchor.tolist()   # fallback: same as ligand
+            continue
+
+        # For aromatic interactions (pi_pi / cation_pi): prefer the ring-atom
+        # subset of this residue if available (gives a more centroid-like point)
+        res_coords = rc[res_idx]
+        dists = np.linalg.norm(res_coords - lig_anchor, axis=1)
+        closest_local = int(dists.argmin())
+        ix["res_xyz"] = rc[res_idx[closest_local]].tolist()
+
+
 def _compute_svg_coords(mol2d, cx, cy, target_size=280):
     from rdkit.Chem import rdDepictor
     if mol2d.GetNumConformers()==0: rdDepictor.Compute2DCoords(mol2d)
@@ -1940,6 +2003,34 @@ def _ring_centroid_2d(ring_atom_indices, svg_coords):
     ys=[svg_coords[i][1] for i in ring_atom_indices if i in svg_coords]
     if not xs: return None, None
     return sum(xs)/len(xs), sum(ys)/len(ys)
+
+
+def _ring_centroid_from_atom(mol2d, atom_idx_2d, svg_coords):
+    """
+    Find the aromatic ring in mol2d that contains atom_idx_2d, then
+    return its 2D SVG centroid.
+
+    This avoids the fragile 3D→2D ring_atom_indices remapping (which breaks
+    when mol3d has explicit Hs, shifting heavy-atom indices relative to m3).
+    Falls back to (None, None) if atom is not in any aromatic ring.
+    """
+    ring_info = mol2d.GetRingInfo()
+    best_ring = None
+    best_size = 999
+    for ring in ring_info.AtomRings():
+        if atom_idx_2d in ring:
+            # Prefer 6-membered rings; among ties pick first found
+            if mol2d.GetAtomWithIdx(ring[0]).GetIsAromatic():
+                if len(ring) < best_size:
+                    best_ring = ring
+                    best_size = len(ring)
+    if best_ring is None:
+        return None, None
+    xs = [svg_coords[i][0] for i in best_ring if i in svg_coords]
+    ys = [svg_coords[i][1] for i in best_ring if i in svg_coords]
+    if not xs:
+        return None, None
+    return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
 def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
@@ -2035,6 +2126,138 @@ def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
             **item,
             "bx": bx,
             "by": by,
+            "slot_angle": a,
+        })
+    return result
+
+
+def _place_residues_pca(interactions, svg_coords, mol3d, cx, cy, R=210):
+    """
+    PCA-based residue placement that preserves the 3D spatial relationships
+    of the binding site.
+
+    Algorithm
+    ---------
+    1. Collect the 3D coordinates of each residue's contact atom (stored in
+       'res_xyz' by _enrich_with_res_xyz) and all ligand heavy atoms.
+    2. Run SVD on the centred point cloud → principal axes PC1 / PC2 define
+       the best-fit 2D plane of the binding site.
+    3. Project each residue contact point onto that plane → (u, v) coordinates
+       relative to the ligand centroid.
+    4. Convert (u, v) → polar angle in the projected plane.  These angles are
+       used as the *initial* positions of the label nodes on the SVG ring.
+    5. Apply a mild push-apart pass (fewer iterations, softer force coefficient
+       than the pure-circular version) to separate overlapping labels while
+       disturbing the PCA-derived angles as little as possible.
+
+    Falls back to _place_residues_no_cross on any error (missing 3D data,
+    degenerate point cloud, etc.).
+    """
+    import numpy as np
+
+    if not interactions:
+        return []
+
+    # ── Sanity check: do we have 3D residue positions? ──────────────────────
+    if not any(ix.get("res_xyz") is not None for ix in interactions):
+        return _place_residues_no_cross(interactions, svg_coords, cx, cy, R)
+
+    try:
+        # ── 1. Build point cloud: ligand heavy atoms + residue contacts ──────
+        conf  = mol3d.GetConformer()
+        n_lig = mol3d.GetNumAtoms()
+        lig_xyz = np.array([[conf.GetAtomPosition(i).x,
+                              conf.GetAtomPosition(i).y,
+                              conf.GetAtomPosition(i).z]
+                             for i in range(n_lig)], dtype=float)
+        lig_centroid = lig_xyz.mean(axis=0)
+
+        res_pts = []
+        for ix in interactions:
+            rp = ix.get("res_xyz")
+            res_pts.append(
+                np.array(rp, dtype=float) if rp is not None else lig_centroid.copy()
+            )
+
+        all_pts = np.vstack([lig_xyz] + [r.reshape(1, 3) for r in res_pts])
+        centred  = all_pts - lig_centroid
+
+        # ── 2. SVD → principal axes of the binding-site plane ───────────────
+        # Vt rows are principal axes in descending variance order.
+        _, _, Vt = np.linalg.svd(centred, full_matrices=False)
+        pc1, pc2 = Vt[0], Vt[1]
+
+        # ── 3. Project residue contact points onto PC1/PC2 ──────────────────
+        items = []
+        for ix, rp in zip(interactions, res_pts):
+            v      = rp - lig_centroid
+            proj_u = float(np.dot(v, pc1))
+            proj_v = float(np.dot(v, pc2))
+            angle  = _math.atan2(proj_v, proj_u)
+            items.append({**ix, "angle": angle, "anchor_angle": angle})
+
+    except Exception:
+        return _place_residues_no_cross(interactions, svg_coords, cx, cy, R)
+
+    # ── 4. Sort by projected angle → guarantees no line crossings ───────────
+    items.sort(key=lambda x: x["angle"])
+    n = len(items)
+
+    if n == 1:
+        a = items[0]["angle"]
+        return [{**items[0],
+                 "bx": cx + R * _math.cos(a),
+                 "by": cy + R * _math.sin(a),
+                 "slot_angle": a}]
+
+    # Break exact ties with a tiny jitter
+    for i in range(n):
+        for j in range(i + 1, n):
+            if abs(items[j]["angle"] - items[i]["angle"]) < 0.001:
+                items[j]["angle"] += 0.05 * (j - i)
+
+    # ── 5. Mild push-apart ───────────────────────────────────────────────────
+    # Same simultaneous-delta scheme as _place_residues_no_cross, but:
+    #   • Only 120 iterations   (vs 500) — less distortion of PCA layout
+    #   • push factor 0.35      (vs 0.5) — gentler per-step nudge
+    # Together these correct real overlaps while preserving the projected angles
+    # as closely as possible.
+    min_dist_px = 78.0
+
+    for _ in range(120):
+        delta       = [0.0] * n
+        any_overlap = False
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                xi = cx + R * _math.cos(items[i]["angle"])
+                yi = cy + R * _math.sin(items[i]["angle"])
+                xj = cx + R * _math.cos(items[j]["angle"])
+                yj = cy + R * _math.sin(items[j]["angle"])
+                dx, dy = xj - xi, yj - yi
+                dist   = _math.sqrt(dx * dx + dy * dy)
+
+                if dist < min_dist_px:
+                    overlap_px = min_dist_px - dist
+                    push_angle = (overlap_px / max(R, 1.0)) * 0.35
+                    delta[i]  -= push_angle * 0.5
+                    delta[j]  += push_angle * 0.5
+                    any_overlap = True
+
+        for i in range(n):
+            items[i]["angle"] += delta[i]
+
+        if not any_overlap:
+            break
+
+    # ── 6. Build final placements ────────────────────────────────────────────
+    result = []
+    for item in items:
+        a = item["angle"]
+        result.append({
+            **item,
+            "bx": cx + R * _math.cos(a),
+            "by": cy + R * _math.sin(a),
             "slot_angle": a,
         })
     return result
