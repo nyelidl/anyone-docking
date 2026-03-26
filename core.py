@@ -2418,6 +2418,117 @@ def draw_interaction_diagram(
 
 
 
+def draw_interaction_diagram_data(
+    receptor_pdb: str,
+    pose_sdf: str,
+    smiles: str,
+    title: str = "",
+    cutoff: float = 4.5,
+    size: tuple = (800, 759),
+    max_residues: int = 14,
+) -> dict:
+    """
+    Same pipeline as draw_interaction_diagram but returns a dict instead of SVG bytes.
+    Used by the interactive drag-mode renderer in app.py.
+
+    Returns:
+      {
+        "W": int, "H": int, "title": str,
+        "ligand_svg": str,          # SVG fragment for the ligand (no <svg> wrapper)
+        "placements": [...],        # list of residue placement dicts
+        "svg_coords": {...},        # atom index -> [x, y]  (for line start points)
+      }
+    Returns None on error.
+    """
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdDepictor
+    RDLogger.DisableLog("rdApp.*")
+    W, H = size
+    try:
+        mol3d = None
+        for san in (True, False):
+            sup = Chem.SDMolSupplier(pose_sdf, sanitize=san, removeHs=False)
+            mol3d = next((m for m in sup if m is not None), None)
+            if mol3d is not None:
+                if not san:
+                    try: Chem.SanitizeMol(mol3d)
+                    except: pass
+                break
+        if mol3d is None or mol3d.GetNumConformers() == 0:
+            return None
+    except Exception:
+        return None
+
+    mol2d = None
+    if smiles and smiles.strip():
+        mol2d = Chem.MolFromSmiles(smiles.strip())
+    if mol2d is None:
+        mol2d = Chem.RemoveHs(mol3d, sanitize=False)
+        try: Chem.SanitizeMol(mol2d)
+        except: pass
+    mol2d = Chem.RemoveHs(mol2d)
+    rdDepictor.Compute2DCoords(mol2d)
+
+    m3 = Chem.RemoveHs(mol3d, sanitize=False)
+    try: Chem.SanitizeMol(m3)
+    except: pass
+    m3to2d = {}
+    try:
+        mt = m3.GetSubstructMatch(mol2d)
+        if len(mt) == mol2d.GetNumAtoms():
+            for i2, i3 in enumerate(mt): m3to2d[i3] = i2
+    except: pass
+
+    try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
+    except: raw = []
+    for ix in raw:
+        ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
+        if ix.get("ring_atom_indices"):
+            ix["ring_atom_indices"] = [m3to2d.get(i, i) for i in ix["ring_atom_indices"]]
+
+    pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    ded = _deduplicate_interactions(raw)
+    ded.sort(key=lambda x: (pm.get(x["itype"], 99), x["distance"]))
+    ded = ded[:max_residues]
+
+    cx, cy = W // 2, H // 2
+    sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
+    pl = _place_residues_no_cross(ded, sc, cx, cy, R=210)
+
+    # Ligand SVG fragment (no wrapper svg tag)
+    lig_svg = _render_ligand_svg(mol2d, sc)
+
+    # Serialise svg_coords as list-of-pairs (JSON-safe)
+    sc_serial = {str(k): [round(v[0], 2), round(v[1], 2)] for k, v in sc.items()}
+
+    # Serialise placements — keep only JSON-safe fields
+    pl_serial = []
+    for p in pl:
+        lx, ly = sc.get(p.get("lig_atom_idx", 0), (cx, cy))
+        if p.get("ring_atom_indices"):
+            rx, ry = _ring_centroid_2d(p["ring_atom_indices"], sc)
+            if rx is not None:
+                lx, ly = rx, ry
+        pl_serial.append({
+            "id":       f"r{len(pl_serial)}",
+            "label":    f"{p['resname']} {p['resid']}{p.get('chain','')}",
+            "itype":    p["itype"],
+            "distance": p.get("distance"),
+            "lx":       round(lx, 2),   # line start X (ligand atom)
+            "ly":       round(ly, 2),   # line start Y
+            "bx":       round(p["bx"], 2),  # initial circle X
+            "by":       round(p["by"], 2),  # initial circle Y
+        })
+
+    RDLogger.EnableLog("rdApp.error")
+    return {
+        "W": W, "H": H, "title": title,
+        "ligand_svg": lig_svg,
+        "placements": pl_serial,
+        "svg_coords": sc_serial,
+    }
+
+
 def draw_interactions_rdkit_classic(
     lig_mol,
     receptor_pdb: str,
