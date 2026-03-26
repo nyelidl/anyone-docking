@@ -997,9 +997,12 @@ def _poseview_ui(
                 _pdb_display = pdb_id.upper() or "[PDB ID]"
                 _has_ref_prompt = bool(_new_ref_svg)
                 _ref_display = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
+                # Was the co-crystal ligand re-docked (binding energy available)?
+                # ref_lig_energy is only set when redocking was performed
+                _ref_redocked = (ref_lig_energy is not None)
                 _ref_estr = (
                     f"{ref_lig_energy:.2f} kcal/mol"
-                    if ref_lig_energy is not None else "[ref energy]"
+                    if _ref_redocked else None
                 )
 
                 if _has_ref_prompt:
@@ -1013,8 +1016,7 @@ def _poseview_ui(
                         f"My docked ligand: {_lig_display}",
                         f"  Predicted binding energy: {_estr}",
                         f"  (more negative = stronger predicted binding)",
-                        f"Reference: {_ref_display} co-crystallised in PDB {_pdb_display}",
-                        f"  Binding energy from re-docking: {_ref_estr}",
+                        f"Reference: {_ref_display} co-crystallised in PDB {_pdb_display}" + (f"  |  binding energy from re-docking: {_ref_estr}" if _ref_redocked else "  (see 2D diagram — no re-docking performed)"),
                         "",
                         "How to read the diagrams:",
                         "  Green dashed line     = hydrogen bond (number on line = distance in Angstrom)",
@@ -1027,7 +1029,7 @@ def _poseview_ui(
                         "   and why do they matter for binding?",
                         "2. How does my docked ligand compare to the reference — are the",
                         "   key contacts conserved or different?",
-                        "3. Based on the binding energy and interaction pattern, does my",
+                        "3. Based on the binding energy" + (" and the interaction pattern," if _ref_redocked else " (docked ligand only) and the interaction pattern,") + " does my",
                         "   ligand look like a promising binder, and what could be improved?",
                         "",
                         "Please explain in plain language that a non-expert can follow,",
@@ -1036,8 +1038,9 @@ def _poseview_ui(
                         "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
                         "can copy directly into a report or presentation slide. It should",
                         "summarise the key interactions of my ligand versus the reference,",
-                        "mention the binding energies, and state what this suggests about",
-                        "the binding mode. Label this section: 'Ready-to-use summary:'",
+                        ("mention both binding energies," if _ref_redocked else "mention the docked ligand's binding energy,"),
+                        "and state what this suggests about the binding mode.",
+                        "Label this section: 'Ready-to-use summary:'",
                     ]
                 else:
                     _lines = [
