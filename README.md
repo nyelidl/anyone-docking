@@ -229,14 +229,13 @@ anyone-docking/
 
 If you use this tool in research, please cite the relevant software and resources used in this workflow:
 
-***Main***
 > **AutoDock Vina 1.2.7**
 > Eberhardt et al., *Journal of Chemical Information and Modeling*, 2021
 > DOI: https://doi.org/10.1021/acs.jcim.1c00203
 
-> **Hengphasatporn, K.; Bunchuay T.; Duan, L.; Shigeta, Y.**  
-> *Anyone Can Dock: An Online Molecular Docking Tool for Everyone.*  
-> **Journal of Chemical Information and Modeling**, 2026.  
+>**Anyone Can Dock**
+> Hengphasatporn, K.; Bunchuay T.; Duan, L.; Shigeta, Y., *Journal of Chemical Information and Modeling*, 2026 
+> https://github.com/nyelidl/anyone-docking/
 
 > **RDKit**
 > Landrum, G. (2023). RDKit: Open-source cheminformatics.
