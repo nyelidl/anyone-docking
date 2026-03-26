@@ -2661,6 +2661,11 @@ def draw_interaction_diagram_data(
 
     try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
     except: raw = []
+
+    # Enrich with 3D residue positions BEFORE remapping indices to 2D
+    try: _enrich_with_res_xyz(raw, mol3d, receptor_pdb)
+    except: pass
+
     for ix in raw:
         ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
         if ix.get("ring_atom_indices"):
@@ -2673,7 +2678,8 @@ def draw_interaction_diagram_data(
 
     cx, cy = W // 2, H // 2
     sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
-    pl = _place_residues_no_cross(ded, sc, cx, cy, R=210)
+    # PCA-based: initialises from projected 3D positions, mild push-apart only
+    pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
 
     # Ligand SVG fragment (no wrapper svg tag)
     lig_svg = _render_ligand_svg(mol2d, sc)
@@ -2750,6 +2756,11 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues,
     except: pass
     try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
     except: raw = []
+
+    # Enrich with 3D residue positions BEFORE remapping indices to 2D
+    try: _enrich_with_res_xyz(raw, mol3d, receptor_pdb)
+    except: pass
+
     for ix in raw:
         ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
         if ix.get("ring_atom_indices"):
@@ -2760,7 +2771,8 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues,
     ded = ded[:max_residues]
     cx, cy = W // 2, H // 2
     sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
-    pl = _place_residues_no_cross(ded, sc, cx, cy, R=210)
+    # PCA-based: initialises from projected 3D positions, mild push-apart only
+    pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
     RDLogger.EnableLog("rdApp.error")
     return mol2d, sc, pl, W, H
 
