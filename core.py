@@ -1764,7 +1764,7 @@ def _get_aromatic_ring_data(mol, conf):
     return results
 
 
-def _detect_all_interactions_builtin(lig_mol_3d, receptor_pdb: str,
+def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                               cutoff: float = 4.5) -> list:
     import numpy as np
     from prody import parsePDB
@@ -1908,284 +1908,6 @@ def _detect_all_interactions_builtin(lig_mol_3d, receptor_pdb: str,
                 resid=int(rri[j]),itype="hbond_to_halogen",distance=round(dhx,1),
                 lig_atom_idx=i,prot_el="N",is_donor=True,ring_atom_indices=None))
     return results
-
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  PLIP-BASED INTERACTION DETECTION
-#  Primary detector when PLIP + openbabel Python bindings are available.
-#  Falls back to _detect_all_interactions_builtin() automatically.
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _plip_available() -> bool:
-    """Return True if PLIP and its openbabel dependency can be imported."""
-    try:
-        import openbabel  # noqa: F401  (PLIP runtime dependency)
-        from plip.structure.preparation import PDBComplex  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
-def _detect_interactions_plip(lig_mol_3d, receptor_pdb: str,
-                                pose_sdf: str, cutoff: float = 4.5) -> list:
-    """
-    Use PLIP to detect protein-ligand interactions with full geometry checks:
-      H-bond   : dist(D···A) ≤ 4.1 Å  +  angle(D-H···A) ≥ 120°  +  explicit H
-      π-stack  : centroid dist + ring planarity angle + offset < 2 Å
-      Halogen  : both C-X···A and X···A-R angles checked
-      Hydrophobic: respects user cutoff slider
-
-    Atom-index mapping strategy
-    ───────────────────────────
-    PLIP stores interaction partners as orig_idx values (original PDB serial
-    numbers).  To get RDKit atom indices we use the `lig_mol_3d` conformer
-    coordinates: for each PLIP ligand partner we take its 3D position from
-    the merged complex PDB (via OBAtom / PLIP's own Atom wrapper) and find
-    the nearest heavy atom in `lig_mol_3d`.
-
-    The lookup is wrapped in try/except at every step so a single malformed
-    interaction never aborts the whole detection run.
-    """
-    import tempfile, os, subprocess
-    import numpy as np
-    from rdkit import Chem
-    from plip.structure.preparation import PDBComplex
-
-    # ── Build merged complex PDB ──────────────────────────────────────────────
-    with tempfile.TemporaryDirectory() as td:
-        lig_pdb      = os.path.join(td, "lig.pdb")
-        complex_pdb  = os.path.join(td, "complex.pdb")
-
-        subprocess.run(
-            f'obabel "{pose_sdf}" -O "{lig_pdb}" --partialcharge none 2>/dev/null',
-            shell=True, capture_output=True,
-        )
-        if not os.path.exists(lig_pdb) or os.path.getsize(lig_pdb) < 10:
-            raise RuntimeError("obabel SDF→PDB conversion failed")
-
-        with open(complex_pdb, "w") as fout:
-            with open(receptor_pdb) as f:
-                for line in f:
-                    if line.startswith(("ATOM","HETATM","TER","MODEL","ENDMDL")):
-                        fout.write(line)
-            with open(lig_pdb) as f:
-                for line in f:
-                    if line.startswith(("ATOM","HETATM")):
-                        fout.write(line[:17] + "LIG" + line[20:])
-            fout.write("END\n")
-
-        # ── Run PLIP ─────────────────────────────────────────────────────────
-        mol_complex = PDBComplex()
-        mol_complex.load_pdb(complex_pdb, as_string=False)
-
-        bs = None
-        for site_id, iset in mol_complex.interaction_sets.items():
-            if "LIG" in site_id.upper():
-                mol_complex.characterize_complex(iset)
-                bs = iset
-                break
-        if bs is None and mol_complex.interaction_sets:
-            first = next(iter(mol_complex.interaction_sets.values()))
-            mol_complex.characterize_complex(first)
-            bs = first
-        if bs is None:
-            raise RuntimeError("PLIP: no binding site found")
-
-        # ── Pre-build ligand atom position array for index mapping ────────────
-        # We pull coordinates directly from PLIP's internal OpenBabel molecule
-        # so we can map any orig_idx → nearest RDKit heavy atom.
-        conf  = lig_mol_3d.GetConformer()
-        n_lig = lig_mol_3d.GetNumAtoms()
-        lig_xyz = np.array([[conf.GetAtomPosition(i).x,
-                              conf.GetAtomPosition(i).y,
-                              conf.GetAtomPosition(i).z]
-                             for i in range(n_lig)], dtype=float)
-
-        # orig_idx → 3D position lookup from PLIP's OBMol
-        _obmol = getattr(bs, "mol", None) or getattr(mol_complex, "molecule", None)
-
-        def _obatom_xyz(orig_idx):
-            """Return (x,y,z) for OBAtom by its orig_idx, or None on failure."""
-            if _obmol is None:
-                return None
-            try:
-                # PLIP stores OBAtom objects indexed by their orig_idx
-                atom = _obmol.GetAtom(int(orig_idx))
-                if atom:
-                    return (atom.GetX(), atom.GetY(), atom.GetZ())
-            except Exception:
-                pass
-            return None
-
-        def _closest_lig_atom(xyz):
-            """RDKit atom idx nearest to xyz=(x,y,z), or 0 as fallback."""
-            if xyz is None:
-                return 0
-            pt = np.array(xyz, dtype=float)
-            return int(np.linalg.norm(lig_xyz - pt, axis=1).argmin())
-
-        def _lig_idx_from_plip(orig_idx):
-            """Map a PLIP ligand orig_idx → nearest RDKit heavy atom index."""
-            xyz = _obatom_xyz(orig_idx)
-            return _closest_lig_atom(xyz)
-
-        # ── Map PLIP interactions → our dict format ───────────────────────────
-        results = []
-
-        # H-bonds
-        for hb in getattr(bs, "hbonds", []):
-            try:
-                if hb.protisdon:
-                    # Ligand is acceptor
-                    lig_idx = _lig_idx_from_plip(
-                        getattr(hb, "a_orig_idx", None))
-                else:
-                    # Ligand is donor
-                    lig_idx = _lig_idx_from_plip(
-                        getattr(hb, "d_orig_idx", None))
-                results.append(dict(
-                    resname=hb.restype, chain=hb.reschain, resid=int(hb.resnr),
-                    itype="hbond",
-                    distance=round(float(hb.dist_d_a), 1),
-                    lig_atom_idx=lig_idx,
-                    prot_el="N" if hb.protisdon else "O",
-                    is_donor=not hb.protisdon,
-                    ring_atom_indices=None,
-                ))
-            except Exception:
-                pass
-
-        # Hydrophobic contacts
-        for hc in getattr(bs, "hydrophobic_contacts", []):
-            try:
-                d = float(hc.dist)
-                if d > cutoff:
-                    continue
-                lig_idx = _lig_idx_from_plip(
-                    getattr(hc, "ligatom_orig_idx", None))
-                results.append(dict(
-                    resname=hc.restype, chain=hc.reschain, resid=int(hc.resnr),
-                    itype="hydrophobic", distance=round(d, 1),
-                    lig_atom_idx=lig_idx,
-                    prot_el="C", is_donor=False, ring_atom_indices=None,
-                ))
-            except Exception:
-                pass
-
-        # π-π stacking
-        for ps in getattr(bs, "pi_stacks", []):
-            try:
-                # ligandring is a set of atom orig_idx values in the ligand ring
-                ring_orig = list(getattr(ps, "ligandring", None) or [])
-                ring_rdkit = [_lig_idx_from_plip(i) for i in ring_orig]
-                ring_rdkit = list(dict.fromkeys(ring_rdkit))  # deduplicate, preserve order
-                lig_idx = ring_rdkit[0] if ring_rdkit else 0
-                results.append(dict(
-                    resname=ps.restype, chain=ps.reschain, resid=int(ps.resnr),
-                    itype="pi_pi", distance=round(float(ps.dist), 1),
-                    lig_atom_idx=lig_idx,
-                    prot_el="C", is_donor=False,
-                    ring_atom_indices=ring_rdkit if len(ring_rdkit) >= 3 else None,
-                ))
-            except Exception:
-                pass
-
-        # Cation-π
-        for pc in getattr(bs, "pication_stacks", []):
-            try:
-                ring_orig  = list(getattr(pc, "ligandring", None) or [])
-                ring_rdkit = list(dict.fromkeys([_lig_idx_from_plip(i) for i in ring_orig]))
-                lig_idx    = ring_rdkit[0] if ring_rdkit else 0
-                results.append(dict(
-                    resname=pc.restype, chain=pc.reschain, resid=int(pc.resnr),
-                    itype="cation_pi", distance=round(float(pc.dist), 1),
-                    lig_atom_idx=lig_idx,
-                    prot_el="N", is_donor=True,
-                    ring_atom_indices=ring_rdkit if len(ring_rdkit) >= 3 else None,
-                ))
-            except Exception:
-                pass
-
-        # Ionic / salt bridges
-        for sb in getattr(bs, "saltbridges", []):
-            try:
-                results.append(dict(
-                    resname=sb.restype, chain=sb.reschain, resid=int(sb.resnr),
-                    itype="ionic", distance=round(float(sb.dist), 1),
-                    lig_atom_idx=0,
-                    prot_el="N" if sb.protispos else "O",
-                    is_donor=sb.protispos,
-                    ring_atom_indices=None,
-                ))
-            except Exception:
-                pass
-
-        # Metal complexes
-        for mc in getattr(bs, "metal_complexes", []):
-            try:
-                lig_idx = _lig_idx_from_plip(
-                    getattr(mc, "target_orig_idx", None))
-                results.append(dict(
-                    resname=mc.restype, chain=mc.reschain, resid=int(mc.resnr),
-                    itype="metal", distance=round(float(mc.dist), 1),
-                    lig_atom_idx=lig_idx,
-                    prot_el="M", is_donor=False, ring_atom_indices=None,
-                ))
-            except Exception:
-                pass
-
-        # Halogen bonds
-        for xb in getattr(bs, "halogen_bonds", []):
-            try:
-                lig_idx = _lig_idx_from_plip(
-                    getattr(xb, "don_orig_idx", None))
-                results.append(dict(
-                    resname=xb.restype, chain=xb.reschain, resid=int(xb.resnr),
-                    itype="halogen", distance=round(float(xb.dist), 1),
-                    lig_atom_idx=lig_idx,
-                    prot_el="O", is_donor=False, ring_atom_indices=None,
-                ))
-            except Exception:
-                pass
-
-        return results
-
-
-def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
-                              cutoff: float = 4.5,
-                              pose_sdf: str = "") -> list:
-    """
-    Dispatcher: try PLIP first, fall back to builtin detector.
-
-    PLIP is used when:
-      • `pose_sdf` is provided (needed to build the combined complex PDB)
-      • `plip` and `openbabel` Python packages are installed
-      • PLIP successfully analyses the complex without error
-
-    If any of these conditions fail the builtin detector runs silently.
-    The caller never needs to know which backend was used.
-
-    Parameters
-    ──────────
-    lig_mol_3d   : RDKit Mol with 3D conformer
-    receptor_pdb : path to prepared receptor PDB
-    cutoff       : interaction distance threshold in Å
-    pose_sdf     : path to docked pose SDF (enables PLIP; optional)
-    """
-    if pose_sdf and _plip_available():
-        try:
-            results = _detect_interactions_plip(
-                lig_mol_3d, receptor_pdb, pose_sdf, cutoff=cutoff
-            )
-            if results:          # PLIP found something — use it
-                return results
-            # Empty result from PLIP → fall through to builtin
-        except Exception:
-            pass                 # silent fallback on any PLIP error
-
-    return _detect_all_interactions_builtin(lig_mol_3d, receptor_pdb, cutoff)
 
 
 def _deduplicate_interactions(interactions: list) -> list:
@@ -3180,11 +2902,9 @@ def draw_interaction_diagram_data(
             for i2, i3 in enumerate(mt): m3to2d[i3] = i2
     except: pass
 
-    try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff, pose_sdf=pose_sdf)
+    try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
     except: raw = []
 
-    # Record which detector was used (PLIP or builtin)
-    _used_plip = bool(pose_sdf and _plip_available() and raw)
 
     # Enrich with 3D residue positions BEFORE remapping indices to 2D
     try: _enrich_with_res_xyz(raw, mol3d, receptor_pdb)
@@ -3236,7 +2956,6 @@ def draw_interaction_diagram_data(
         "ligand_svg": lig_svg,
         "placements": pl_serial,
         "svg_coords": sc_serial,
-        "detector": "PLIP" if _used_plip else "builtin",
     }
 
 
@@ -3279,11 +2998,9 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues,
         if len(mt) == mol2d.GetNumAtoms():
             for i2, i3 in enumerate(mt): m3to2d[i3] = i2
     except: pass
-    try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff, pose_sdf=pose_sdf)
+    try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
     except: raw = []
 
-    # Record which detector was used (PLIP or builtin)
-    _used_plip = bool(pose_sdf and _plip_available() and raw)
 
     # Enrich with 3D residue positions BEFORE remapping indices to 2D
     try: _enrich_with_res_xyz(raw, mol3d, receptor_pdb)
