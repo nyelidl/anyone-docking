@@ -659,11 +659,8 @@ def _poseview_ui(
 
             # ── AI prompt (RDKit) ─────────────────────────────────────────────
             st.markdown("---")
-            st.markdown("### 🤖 Understand Your Results with AI")
-            st.caption(
-                "Screenshot this diagram, then paste the prompt below "
-                "+ the screenshot into **Claude**, **GPT-4o**, or **Gemini**."
-            )
+            st.markdown("### 🤖 AI Prompt")
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
             _estr_r = (
                 f"{binding_energy:.2f} kcal/mol"
                 if binding_energy is not None else "[binding energy]"
@@ -946,11 +943,8 @@ def _poseview_ui(
 
             # ── AI analysis prompt (PoseView) ─────────────────────────────────
             st.markdown("---")
-            st.markdown("### 🤖 Understand Your Results with AI")
-            st.caption(
-                "Screenshot this diagram, then paste the prompt below "
-                "+ the screenshot into **Claude**, **GPT-4o**, or **Gemini**."
-            )
+            st.markdown("### 🤖 AI Prompt")
+            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
             _estr_pv        = (
                 f"{binding_energy:.2f} kcal/mol"
                 if binding_energy is not None else "[binding energy]"
