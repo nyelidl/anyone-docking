@@ -54,6 +54,7 @@ try:
         draw_interactions_rdkit,
         draw_interaction_diagram,
         draw_interactions_rdkit_classic,
+        draw_interaction_diagram_data,
     )
 except ImportError:
     draw_interactions_rdkit = None
@@ -73,6 +74,329 @@ st.set_page_config(
 # ══════════════════════════════════════════════════════════════════════════════
 #  THEME + COLOUR HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+
+"""
+_render_interactive_diagram(data, height)
+Generates a self-contained HTML string for the drag-mode 2D interaction diagram.
+`data` is the dict returned by draw_interaction_diagram_data().
+"""
+
+import json as _json
+
+def _render_interactive_diagram(data: dict, height: int = 800) -> str:
+    W       = data["W"]
+    H       = data["H"]
+    title   = data["title"]
+    lig_svg = data["ligand_svg"]
+    placements = data["placements"]
+
+    # Escape title for JS
+    title_esc = title.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+
+    # Title pill dimensions
+    tw = min(len(title) * 14 + 48, W - 40)
+    pill_x = (W - tw) / 2
+
+    TYPE_CFG = {
+        "hbond":            {"fill": "#80dd80", "stroke": "#1a7a1a", "lineclr": "#1a7a1a", "dash": "5 3",       "lw": "1.6"},
+        "hbond_to_halogen": {"fill": "#c4a0ff", "stroke": "#6633aa", "lineclr": "#6633aa", "dash": "4 2 1 2",   "lw": "1.6"},
+        "pi_pi":            {"fill": "#f0a0ff", "stroke": "#e200e8", "lineclr": "#e200e8", "dash": "5 3",       "lw": "1.6"},
+        "cation_pi":        {"fill": "#f0a0ff", "stroke": "#e200e8", "lineclr": "#e200e8", "dash": "5 3",       "lw": "1.6"},
+        "hydrophobic":      {"fill": "#a0c8ff", "stroke": "#2287ff", "lineclr": None,      "dash": "",          "lw": "0"},
+        "ionic":            {"fill": "#ffb0d0", "stroke": "#cc2277", "lineclr": "#cc2277", "dash": "6 2 2 2",   "lw": "1.8"},
+        "metal":            {"fill": "#ffe090", "stroke": "#cc8800", "lineclr": "#cc8800", "dash": "3 2",       "lw": "1.8"},
+        "halogen":          {"fill": "#ffb0d0", "stroke": "#cc2277", "lineclr": "#cc2277", "dash": "5 2",       "lw": "1.6"},
+    }
+
+    # Legend items (only active types)
+    active_types = list(dict.fromkeys(p["itype"] for p in placements))
+    LEG_LABEL = {
+        "hbond": "H-bond", "hbond_to_halogen": "H···Halogen",
+        "pi_pi": "π-π", "cation_pi": "Cation-π",
+        "hydrophobic": "Hydrophobic", "ionic": "Ionic",
+        "metal": "Metal", "halogen": "Halogen",
+    }
+    legend_items = []
+    for it in active_types:
+        cfg = TYPE_CFG.get(it, TYPE_CFG["hbond"])
+        legend_items.append({
+            "label":   LEG_LABEL.get(it, it),
+            "fill":    cfg["fill"],
+            "stroke":  cfg["stroke"],
+            "lineclr": cfg["lineclr"],
+            "dash":    cfg["dash"],
+        })
+
+    # Legend SVG (static, at bottom)
+    LEG_Y = H - 45
+    leg_entry_w = 115
+    leg_total = len(legend_items) * leg_entry_w
+    leg_x0 = (W - leg_total) / 2
+    leg_parts = [
+        f'<rect x="{leg_x0-8:.0f}" y="{LEG_Y-5}" width="{leg_total+16:.0f}" height="40"'
+        f' fill="white" stroke="#e0e0e0" stroke-width="0.8" rx="6"/>'
+    ]
+    for k, li in enumerate(legend_items):
+        ix = leg_x0 + k * leg_entry_w + 14
+        leg_parts.append(
+            f'<circle cx="{ix:.0f}" cy="{LEG_Y+12}" r="8"'
+            f' fill="{li["fill"]}" opacity="0.5" stroke="{li["stroke"]}" stroke-width="1"/>'
+        )
+        if li["lineclr"]:
+            leg_parts.append(
+                f'<line x1="{ix+10:.0f}" y1="{LEG_Y+12}" x2="{ix+26:.0f}" y2="{LEG_Y+12}"'
+                f' stroke="{li["lineclr"]}" stroke-width="1.8" stroke-dasharray="{li["dash"]}"/>'
+            )
+            leg_parts.append(
+                f'<text x="{ix+30:.0f}" y="{LEG_Y+12}" dominant-baseline="central"'
+                f' font-family="Arial,sans-serif" font-size="12" font-weight="700"'
+                f' fill="#555">{li["label"]}</text>'
+            )
+        else:
+            leg_parts.append(
+                f'<text x="{ix+12:.0f}" y="{LEG_Y+12}" dominant-baseline="central"'
+                f' font-family="Arial,sans-serif" font-size="12" font-weight="700"'
+                f' fill="#555">{li["label"]}</text>'
+            )
+    legend_svg = "\n".join(leg_parts)
+
+    placements_json = _json.dumps(placements)
+    type_cfg_json   = _json.dumps(TYPE_CFG)
+
+    html = f"""
+<div style="font-family:Arial,sans-serif;background:white;border-radius:8px;
+            border:1px solid #e0e0e0;overflow:hidden;">
+
+  <!-- Toolbar -->
+  <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;
+              border-bottom:1px solid #eee;flex-wrap:wrap;background:#fafafa;">
+    <span style="font-size:12px;color:#555;flex:1;">
+      🧬 <strong>Interactive mode</strong> — drag any residue label to reposition it
+    </span>
+    <button onclick="resetLayout()"
+      style="font-size:12px;padding:4px 10px;border:1px solid #ccc;
+             border-radius:4px;background:#f8f8f8;cursor:pointer;">
+      ↺ Reset layout
+    </button>
+    <button onclick="exportSVG()"
+      style="font-size:12px;padding:4px 10px;border:1px solid #ccc;
+             border-radius:4px;background:#f8f8f8;cursor:pointer;">
+      ⬇ Export SVG
+    </button>
+  </div>
+
+  <!-- SVG canvas -->
+  <svg id="iac-svg" viewBox="0 0 {W} {H}"
+       style="width:100%;display:block;cursor:default;user-select:none;">
+
+    <rect width="{W}" height="{H}" fill="white"/>
+
+    <!-- Title pill -->
+    <rect x="{pill_x:.1f}" y="12" width="{tw:.0f}" height="44"
+          rx="22" ry="22" fill="#f2f2f2" stroke="none"/>
+    <text x="{W/2:.1f}" y="34" text-anchor="middle" dominant-baseline="central"
+          font-family="Arial,sans-serif" font-size="20" font-weight="700"
+          fill="#1a1a1a">{title}</text>
+
+    <!-- Interaction lines (updated by JS) -->
+    <g id="iac-lines"></g>
+
+    <!-- Ligand structure (static) -->
+    <g id="iac-ligand">{lig_svg}</g>
+
+    <!-- Residue circles (draggable, added by JS) -->
+    <g id="iac-residues"></g>
+
+    <!-- Legend (static) -->
+    <g id="iac-legend">{legend_svg}</g>
+
+  </svg>
+</div>
+
+<script>
+(function() {{
+  const PLACEMENTS = {placements_json};
+  const TYPE_CFG   = {type_cfg_json};
+
+  const svg      = document.getElementById("iac-svg");
+  const linesG   = document.getElementById("iac-lines");
+  const residuesG= document.getElementById("iac-residues");
+
+  // Current positions (mutable)
+  const pos = {{}};
+  PLACEMENTS.forEach(p => {{ pos[p.id] = {{ x: p.bx, y: p.by }}; }});
+
+  // DOM element caches
+  const els = {{}};
+
+  function SVG(tag, attrs) {{
+    const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, v);
+    return el;
+  }}
+
+  function toSVGCoords(clientX, clientY) {{
+    const rect = svg.getBoundingClientRect();
+    const vb   = svg.viewBox.baseVal;
+    return {{
+      x: (clientX - rect.left) * (vb.width  / rect.width)  + vb.x,
+      y: (clientY - rect.top)  * (vb.height / rect.height) + vb.y,
+    }};
+  }}
+
+  function buildAll() {{
+    linesG.innerHTML = "";
+    residuesG.innerHTML = "";
+
+    PLACEMENTS.forEach(p => {{
+      const cfg = TYPE_CFG[p.itype] || TYPE_CFG["hbond"];
+      const cache = {{ line: null, distRect: null, distTxt: null,
+                       circ: null, txt: null }};
+      els[p.id] = cache;
+
+      // — LINE (non-hydrophobic only) —
+      if (cfg.lineclr) {{
+        const line = SVG("line", {{
+          x1: p.lx, y1: p.ly,
+          x2: pos[p.id].x, y2: pos[p.id].y,
+          stroke: cfg.lineclr,
+          "stroke-width": cfg.lw,
+          "stroke-dasharray": cfg.dash,
+          opacity: "0.85",
+        }});
+        linesG.appendChild(line);
+        cache.line = line;
+
+        // Distance label
+        if (p.distance != null) {{
+          const ds  = p.distance + "\u00c5";
+          const tw2 = ds.length * 7 + 8;
+          const dr  = SVG("rect", {{
+            width: tw2, height: 17, rx: 4,
+            fill: "white", stroke: cfg.lineclr, "stroke-width": "0.5",
+          }});
+          const dt = SVG("text", {{
+            "text-anchor": "middle", "dominant-baseline": "central",
+            "font-family": "Arial,sans-serif", "font-size": "14",
+            "font-weight": "700", fill: cfg.lineclr,
+          }});
+          dt.textContent = ds;
+          linesG.appendChild(dr);
+          linesG.appendChild(dt);
+          cache.distRect = dr; cache.distTxt = dt; cache.tw2 = tw2;
+        }}
+      }}
+
+      // — RESIDUE CIRCLE + LABEL —
+      const g = SVG("g", {{ style: "cursor:grab;" }});
+
+      const circ = SVG("circle", {{
+        cx: pos[p.id].x, cy: pos[p.id].y,
+        r: "24.55",
+        fill: cfg.fill, opacity: "0.5",
+        stroke: cfg.stroke, "stroke-width": "1.5",
+      }});
+      g.appendChild(circ);
+      cache.circ = circ;
+
+      const txt = SVG("text", {{
+        x: pos[p.id].x, y: pos[p.id].y,
+        "text-anchor": "middle", "dominant-baseline": "central",
+        "font-family": "Arial,sans-serif",
+        "font-size": "13", "font-weight": "700",
+        fill: cfg.stroke,
+      }});
+      txt.textContent = p.label;
+      g.appendChild(txt);
+      cache.txt = txt;
+
+      residuesG.appendChild(g);
+      makeDraggable(g, p.id);
+      updateElement(p.id);  // position distance label
+    }});
+  }}
+
+  function updateElement(id) {{
+    const p   = PLACEMENTS.find(d => d.id === id);
+    const cfg = TYPE_CFG[p.itype] || TYPE_CFG["hbond"];
+    const {{ x, y }} = pos[id];
+    const cache = els[id];
+
+    if (cache.line) {{
+      cache.line.setAttribute("x2", x);
+      cache.line.setAttribute("y2", y);
+    }}
+    if (cache.circ) {{ cache.circ.setAttribute("cx", x); cache.circ.setAttribute("cy", y); }}
+    if (cache.txt)  {{ cache.txt.setAttribute("x", x);   cache.txt.setAttribute("y", y);  }}
+
+    if (cache.distRect && cache.distTxt) {{
+      const t  = 0.4;
+      const mx = p.lx + (x - p.lx) * t;
+      const my = p.ly + (y - p.ly) * t;
+      const dx = x - p.lx, dy = y - p.ly;
+      const len = Math.sqrt(dx*dx + dy*dy) + 0.001;
+      const px  = -dy/len * 14, py = dx/len * 14;
+      const lx  = mx + px, ly = my + py;
+      const tw2 = cache.tw2;
+      cache.distRect.setAttribute("x",  lx - tw2/2);
+      cache.distRect.setAttribute("y",  ly - 8);
+      cache.distTxt.setAttribute("x",  lx);
+      cache.distTxt.setAttribute("y",  ly);
+    }}
+  }}
+
+  function makeDraggable(el, id) {{
+    let dragging = false, startMouse = null, startPos = null;
+
+    function onStart(clientX, clientY) {{
+      dragging   = true;
+      startMouse = toSVGCoords(clientX, clientY);
+      startPos   = {{ ...pos[id] }};
+      el.style.cursor = "grabbing";
+    }}
+    function onMove(clientX, clientY) {{
+      if (!dragging) return;
+      const cur  = toSVGCoords(clientX, clientY);
+      pos[id].x  = startPos.x + cur.x - startMouse.x;
+      pos[id].y  = startPos.y + cur.y - startMouse.y;
+      updateElement(id);
+    }}
+    function onEnd() {{
+      dragging = false;
+      el.style.cursor = "grab";
+    }}
+
+    el.addEventListener("mousedown",  e => {{ onStart(e.clientX, e.clientY); e.preventDefault(); }});
+    el.addEventListener("touchstart", e => {{ onStart(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }}, {{passive:false}});
+
+    window.addEventListener("mousemove",  e => onMove(e.clientX, e.clientY));
+    window.addEventListener("touchmove",  e => {{ if(dragging) {{ onMove(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }} }}, {{passive:false}});
+    window.addEventListener("mouseup",  onEnd);
+    window.addEventListener("touchend", onEnd);
+  }}
+
+  window.resetLayout = function() {{
+    PLACEMENTS.forEach(p => {{ pos[p.id] = {{ x: p.bx, y: p.by }}; }});
+    PLACEMENTS.forEach(p => updateElement(p.id));
+    // rebuild circles at reset positions
+    buildAll();
+  }};
+
+  window.exportSVG = function() {{
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("xmlns","http://www.w3.org/2000/svg");
+    const blob = new Blob([clone.outerHTML], {{type:"image/svg+xml"}});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "interaction_diagram_interactive.svg";
+    a.click();
+  }};
+
+  buildAll();
+}})();
+</script>
+"""
+    return html
 
 def _chart_colors():
     theme = st.get_option("theme.base") if hasattr(st, "get_option") else "light"
@@ -482,8 +806,18 @@ def _poseview_ui(
                             cutoff=_cutoff,
                             max_residues=_maxres,
                         )
-                        st.session_state[img_svg_key + "_new"]  = _svg
-                        st.session_state[pose_key_key + "_new"] = _pose_key
+                        _data = draw_interaction_diagram_data(
+                            receptor_pdb=_rec,
+                            pose_sdf=pose_sdf_path,
+                            smiles=_smiles,
+                            title=_title,
+                            cutoff=_cutoff,
+                            max_residues=_maxres,
+                        )
+                        _html = _render_interactive_diagram(_data) if _data else None
+                        st.session_state[img_svg_key + "_new"]   = _svg
+                        st.session_state[img_svg_key + "_ihtml"] = _html
+                        st.session_state[pose_key_key + "_new"]  = _pose_key
                     except Exception as e:
                         st.error(f"Diagram error: {e}")
 
@@ -520,7 +854,17 @@ def _poseview_ui(
                                 cutoff=_cutoff,
                                 max_residues=_maxres,
                             )
-                            st.session_state[ref_svg_key + "_new"] = _ref_svg
+                            _ref_data = draw_interaction_diagram_data(
+                                receptor_pdb=_rec,
+                                pose_sdf=_ref_sdf_src,
+                                smiles=_ref_smiles,
+                                title=_rtitle,
+                                cutoff=_cutoff,
+                                max_residues=_maxres,
+                            )
+                            _ref_html = _render_interactive_diagram(_ref_data) if _ref_data else None
+                            st.session_state[ref_svg_key + "_new"]   = _ref_svg
+                            st.session_state[ref_svg_key + "_ihtml"] = _ref_html
                         except Exception as e:
                             st.warning(f"Co-crystal diagram: {e}")
                 st.rerun()
@@ -567,15 +911,28 @@ def _poseview_ui(
                     height=800, scrolling=False,
                 )
 
+            _new_ihtml     = st.session_state.get(img_svg_key + "_ihtml")
+            _new_ref_ihtml = st.session_state.get(ref_svg_key + "_ihtml") if ref_svg_key else None
+
             if _new_svg and not _new_stale:
+                _view_mode = st.radio(
+                    "View mode", ["🖱 Interactive (drag)", "🖼 Static SVG"],
+                    horizontal=True, key=btn_key + "_viewmode",
+                )
                 _cl2, _cr2 = st.columns(2)
                 with _cl2:
                     st.markdown("##### Docked Pose")
-                    _show_svg_new(_new_svg, f"pose{pose_idx+1}_interaction")
+                    if _view_mode.startswith("🖱") and _new_ihtml:
+                        components.html(_new_ihtml, height=860, scrolling=False)
+                    else:
+                        _show_svg_new(_new_svg, f"pose{pose_idx+1}_interaction")
                 with _cr2:
                     st.markdown("##### Co-Crystal Reference")
                     if _new_ref_svg:
-                        _show_svg_new(_new_ref_svg, "cocrystal_interaction")
+                        if _view_mode.startswith("🖱") and _new_ref_ihtml:
+                            components.html(_new_ref_ihtml, height=860, scrolling=False)
+                        else:
+                            _show_svg_new(_new_ref_svg, "cocrystal_interaction")
                     elif _has_ref_local:
                         st.info("Click Generate to produce the co-crystal diagram.")
                     else:
