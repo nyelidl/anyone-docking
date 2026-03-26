@@ -2839,7 +2839,7 @@ with tab_batch:
                             "SES", {"opacity": 0.2, "color": "lightblue"},
                             {"model": 0}, {"model": bmi},
                         )
-                        vb.zoomTo()
+                        vb.zoomTo({"model": bmi})
                         vb.center({"model": bmi})
                         show3d(vb, height=420)
                     except Exception as e:
