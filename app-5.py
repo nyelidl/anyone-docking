@@ -657,51 +657,100 @@ def _poseview_ui(
                 else:
                     st.caption("⚠️ No co-crystal ligand — use Auto-detect in receptor preparation.")
 
-            # ── AI prompt — same logic as PoseView ───────────────────────────
+            # ── AI prompt (RDKit) ─────────────────────────────────────────────
             st.markdown("---")
-            _energy_str = (
+            st.markdown("### 🤖 Understand Your Results with AI")
+            st.caption(
+                "Screenshot this diagram, then paste the prompt below "
+                "+ the screenshot into **Claude**, **GPT-4o**, or **Gemini**."
+            )
+            _estr_r = (
                 f"{binding_energy:.2f} kcal/mol"
                 if binding_energy is not None else "[binding energy]"
             )
-            _lig_str = (
-                f"{lig_name} (SMILES: {_smiles})"
-                if lig_name else _smiles or "[ligand]"
+            _lig_r          = lig_name or "[ligand]"
+            _pdb_r          = pdb_id.upper() if pdb_id else "[PDB ID]"
+            _ref_redocked_r = (ref_lig_energy is not None)
+            _ref_display_r  = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
+            _ref_estr_r     = (
+                f"{ref_lig_energy:.2f} kcal/mol"
+                if _ref_redocked_r else None
             )
-            _has_ref_b = bool(_ref_rdkit_svg)
-            _ref_clause = ""
-            if _has_ref_b and (ref_lig_name or ref_lig_smiles):
-                _rf  = (
-                    f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
-                    if ref_lig_name and ref_lig_smiles
-                    else ref_lig_name or ref_lig_smiles
-                )
-                _re_ = (
-                    f", binding energy {ref_lig_energy:.2f} kcal/mol"
-                    if ref_lig_energy is not None else ""
-                )
-                _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
-
-            _prompt = (
-                f"Analyze the RDKit interaction diagram for PDB ID "
-                f"{pdb_id.upper() or '[PDB ID]'}, "
-                f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
-                f"binding energy {_energy_str}{_ref_clause}.\n\n"
-                "Legend: Blue circle = H-bond/polar · Green circle = hydrophobic"
-                " · Pink circle = other interaction\n\n"
-                "1. Identify key ligand-protein interactions.\n"
-                "2. List main interacting residues and their roles.\n"
-                + (
-                    "3. Compare docked pose with the co-crystal reference.\n"
-                    "4. Highlight similarities/differences in binding mode.\n"
-                    "5. Evaluate whether interactions support the predicted binding energy.\n\n"
-                    if _has_ref_b else
-                    "3. Evaluate whether interactions support the predicted binding energy.\n\n"
-                )
-                + "Provide a concise structural interpretation of the binding mode."
-            )
-            st.markdown("### 🤖 AI Prompt")
-            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
-            st.code(_prompt, language=None)
+            if _ref_rdkit_svg:
+                _rdk_lines = [
+                    "I have just run a molecular docking experiment and I need help",
+                    "understanding what my results mean. I am attaching two 2D",
+                    "interaction diagrams (RDKit style) from the Anyone Can Dock app.",
+                    "",
+                    "Docking software: AutoDock Vina v1.2.7",
+                    f"Protein target (PDB): {_pdb_r}",
+                    f"My docked ligand: {_lig_r}",
+                    f"  Predicted binding energy: {_estr_r}",
+                    "  (more negative = stronger predicted binding)",
+                    f"Reference: {_ref_display_r} co-crystallised in PDB {_pdb_r}"
+                    + (f"  |  binding energy from re-docking: {_ref_estr_r}"
+                       if _ref_redocked_r else "  (see 2D diagram — no re-docking performed)"),
+                    "",
+                    "How to read the diagrams:",
+                    "  Blue circle   = H-bond / polar contact",
+                    "  Green circle  = hydrophobic contact",
+                    "  Pink circle   = other interaction",
+                    "  Residue labels sit next to each colored circle",
+                    "",
+                    "Please help me understand:",
+                    "1. What are the most important interactions my ligand makes,",
+                    "   and why do they matter for binding?",
+                    "2. How does my docked ligand compare to the reference — are the",
+                    "   key contacts conserved or different?",
+                    "3. Based on the binding energy and interaction pattern, does my",
+                    "   ligand look like a promising binder, and what could be improved?",
+                    "",
+                    "Please explain in plain language that a non-expert can follow,",
+                    "but include the specific residue names from the diagram.",
+                    "",
+                    "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
+                    "can copy directly into a report or presentation slide. It should",
+                    "summarise the key interactions of my ligand versus the reference,",
+                    ("mention both binding energies,"
+                     if _ref_redocked_r else "mention the docked ligand's binding energy,"),
+                    "and state what this suggests about the binding mode.",
+                    "Label this section: 'Ready-to-use summary:'",
+                ]
+            else:
+                _rdk_lines = [
+                    "I have just run a molecular docking experiment and I need help",
+                    "understanding what my results mean. I am attaching a 2D",
+                    "interaction diagram (RDKit style) from the Anyone Can Dock app.",
+                    "",
+                    "Docking software: AutoDock Vina v1.2.7",
+                    f"Protein target (PDB): {_pdb_r}",
+                    f"My docked ligand: {_lig_r}",
+                    f"  Predicted binding energy: {_estr_r}",
+                    "  (more negative = stronger predicted binding)",
+                    "",
+                    "How to read the diagram:",
+                    "  Blue circle   = H-bond / polar contact",
+                    "  Green circle  = hydrophobic contact",
+                    "  Pink circle   = other interaction",
+                    "  Residue labels sit next to each colored circle",
+                    "",
+                    "Please help me understand:",
+                    "1. What interactions is my ligand making with the protein,",
+                    "   and which ones are most important for binding?",
+                    "2. What does the binding energy value tell me — is this a",
+                    "   strong or weak predicted binder?",
+                    "3. Are there any obvious ways the binding could be improved?",
+                    "",
+                    "Please explain in plain language that a non-expert can follow,",
+                    "but include the specific residue names from the diagram.",
+                    "",
+                    "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
+                    "can copy directly into a report or presentation slide. It should",
+                    "summarise the key protein-ligand interactions, mention the binding",
+                    "energy, and state what this suggests about the binding mode.",
+                    "Label this section: 'Ready-to-use summary:'",
+                ]
+            st.code("\n".join(_rdk_lines), language=None)
 
         return   # ← skip PoseView UI entirely when RDKit is selected
 
@@ -895,61 +944,106 @@ def _poseview_ui(
                         "⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation."
                     )
 
-            # AI analysis prompt
+            # ── AI analysis prompt (PoseView) ─────────────────────────────────
             st.markdown("---")
-            _energy_str = (
+            st.markdown("### 🤖 Understand Your Results with AI")
+            st.caption(
+                "Screenshot this diagram, then paste the prompt below "
+                "+ the screenshot into **Claude**, **GPT-4o**, or **Gemini**."
+            )
+            _estr_pv        = (
                 f"{binding_energy:.2f} kcal/mol"
                 if binding_energy is not None else "[binding energy]"
             )
-            _lig_str = (
-                f"{lig_name} (SMILES: {lig_smiles})"
-                if lig_name and lig_smiles else lig_name or "[ligand]"
+            _lig_pv         = lig_name or "[ligand]"
+            _pdb_pv         = pdb_id.upper() if pdb_id else "[PDB ID]"
+            _both           = bool(_pose_svg and _ref_svg2)
+            _ref_redocked_pv = (ref_lig_energy is not None)
+            _ref_display_pv  = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
+            _ref_estr_pv     = (
+                f"{ref_lig_energy:.2f} kcal/mol"
+                if _ref_redocked_pv else None
             )
-            _has_ref_b = bool(ref_lig_name or ref_lig_smiles)
-            _both      = bool(_pose_svg and _ref_svg2)
-
-            _ref_clause = ""
-            if _has_ref_b:
-                _rf  = (
-                    f"{ref_lig_name} (SMILES: {ref_lig_smiles})"
-                    if ref_lig_name and ref_lig_smiles
-                    else ref_lig_name or ref_lig_smiles
-                )
-                _re_ = (
-                    f", binding energy {ref_lig_energy:.2f} kcal/mol"
-                    if ref_lig_energy is not None else ""
-                )
-                _ref_clause = f", and compare with co-crystallized reference {_rf}{_re_}"
-
-            _prompt = (
-                f"Analyze the PoseView2 interaction diagram for PDB ID "
-                f"{pdb_id.upper() or '[PDB ID]'}, "
-                f"docked ligand {_lig_str}, AutoDock Vina v1.2.7, "
-                f"binding energy {_energy_str}{_ref_clause}.\n\n"
-                + (
-                    "Legend (docked pose): Black dashed = H-bond"
-                    " · Dark green solid = hydrophobic\n"
-                    "Legend (co-crystal):  Blue dashed = H-bond"
-                    " · Pink dashed = ionic · Yellow dashed = metal\n"
-                    "  Green dot-dash = cation-pi · Cyan dot-dash = pi-pi"
-                    " · Dark green solid = hydrophobic\n\n"
-                    if _both else
-                    "Legend: Black dashed = H-bond · Dark green solid = hydrophobic\n\n"
-                )
-                + "1. Identify key ligand-protein interactions.\n"
-                + "2. List main interacting residues and their roles.\n"
-                + (
-                    "3. Compare docked pose with the reference ligand.\n"
-                    "4. Highlight similarities/differences in binding orientation.\n"
-                    "5. Evaluate whether interactions support the predicted binding energy.\n\n"
-                    if _has_ref_b else
-                    "3. Evaluate whether interactions support the predicted binding energy.\n\n"
-                )
-                + "Provide a concise structural interpretation of the binding mode."
-            )
-            st.markdown("### 🤖 AI Prompt")
-            st.caption("Copy into any AI tool (GPT, Claude, Gemini, …) with the diagram above.")
-            st.code(_prompt, language=None)
+            if _both:
+                _pv_lines = [
+                    "I have just run a molecular docking experiment and I need help",
+                    "understanding what my results mean. I am attaching two 2D",
+                    "interaction diagrams (PoseView style) from the Anyone Can Dock app.",
+                    "",
+                    "Docking software: AutoDock Vina v1.2.7",
+                    f"Protein target (PDB): {_pdb_pv}",
+                    f"My docked ligand: {_lig_pv}",
+                    f"  Predicted binding energy: {_estr_pv}",
+                    "  (more negative = stronger predicted binding)",
+                    f"Reference: {_ref_display_pv} co-crystallised in PDB {_pdb_pv}"
+                    + (f"  |  binding energy from re-docking: {_ref_estr_pv}"
+                       if _ref_redocked_pv else "  (see 2D diagram — no re-docking performed)"),
+                    "",
+                    "How to read the diagrams:",
+                    "  Docked pose legend:",
+                    "    Black dashed line  = H-bond",
+                    "    Dark green solid   = hydrophobic contact",
+                    "  Co-crystal legend:",
+                    "    Blue dashed        = H-bond",
+                    "    Pink dashed        = ionic interaction",
+                    "    Yellow dashed      = metal coordination",
+                    "    Green dot-dash     = cation-pi",
+                    "    Cyan dot-dash      = pi-pi stacking",
+                    "    Dark green solid   = hydrophobic contact",
+                    "",
+                    "Please help me understand:",
+                    "1. What are the most important interactions my ligand makes,",
+                    "   and why do they matter for binding?",
+                    "2. How does my docked ligand compare to the reference — are the",
+                    "   key contacts conserved or different?",
+                    "3. Based on the binding energy and interaction pattern, does my",
+                    "   ligand look like a promising binder, and what could be improved?",
+                    "",
+                    "Please explain in plain language that a non-expert can follow,",
+                    "but include the specific residue names from the diagram.",
+                    "",
+                    "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
+                    "can copy directly into a report or presentation slide. It should",
+                    "summarise the key interactions of my ligand versus the reference,",
+                    ("mention both binding energies,"
+                     if _ref_redocked_pv else "mention the docked ligand's binding energy,"),
+                    "and state what this suggests about the binding mode.",
+                    "Label this section: 'Ready-to-use summary:'",
+                ]
+            else:
+                _pv_lines = [
+                    "I have just run a molecular docking experiment and I need help",
+                    "understanding what my results mean. I am attaching a 2D",
+                    "interaction diagram (PoseView style) from the Anyone Can Dock app.",
+                    "",
+                    "Docking software: AutoDock Vina v1.2.7",
+                    f"Protein target (PDB): {_pdb_pv}",
+                    f"My docked ligand: {_lig_pv}",
+                    f"  Predicted binding energy: {_estr_pv}",
+                    "  (more negative = stronger predicted binding)",
+                    "",
+                    "How to read the diagram:",
+                    "  Black dashed line  = H-bond",
+                    "  Dark green solid   = hydrophobic contact",
+                    "  Residue labels sit next to each interaction line",
+                    "",
+                    "Please help me understand:",
+                    "1. What interactions is my ligand making with the protein,",
+                    "   and which ones are most important for binding?",
+                    "2. What does the binding energy value tell me — is this a",
+                    "   strong or weak predicted binder?",
+                    "3. Are there any obvious ways the binding could be improved?",
+                    "",
+                    "Please explain in plain language that a non-expert can follow,",
+                    "but include the specific residue names from the diagram.",
+                    "",
+                    "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
+                    "can copy directly into a report or presentation slide. It should",
+                    "summarise the key protein-ligand interactions, mention the binding",
+                    "energy, and state what this suggests about the binding mode.",
+                    "Label this section: 'Ready-to-use summary:'",
+                ]
+            st.code("\n".join(_pv_lines), language=None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
