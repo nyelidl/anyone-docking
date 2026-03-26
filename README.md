@@ -43,10 +43,9 @@ A custom PoseView-style SVG diagram rendered entirely locally (no server require
 | Feature | Detail |
 |---|---|
 | **8 interaction types** | H-bond (distance shown on line), hydrophobic, π-π stacking, cation-π, ionic, metal coordination, halogen bond, H-bond to halogen |
-| **PLIP-powered detection** | When PLIP is installed, interactions are validated with full geometry checks — proper D-H···A angles for H-bonds, ring planarity for π-stacking, both angles for halogen bonds. Falls back to built-in distance-based detector automatically. |
-| **Default cutoff** | **4.5 Å** — matches PoseView/LigPlot+ convention; captures the full first shell of interacting residues |
-| **Radial-collapse layout** | Residue circles collapse inward from outside the ligand along each interaction's natural direction; positions are initialised from PCA projection of the real 3D binding site |
+| **Geometry-based detection** | All interactions detected from 3D coordinates — no server, works on Streamlit Cloud |
 | **ACS ChemDraw bond style** | Bond widths, double-bond spacing, and wedge geometry follow ACS publication standards |
+| **Smart layout** | Residue circles placed radially by natural interaction angle; simultaneous-delta push-apart prevents overlap |
 | **Interactive drag mode** | Click 🖱 Interactive to reposition any residue circle — lines and distance labels update in real time |
 | **Export** | ↓ SVG (vector) · ↓ PNG at Screen (1×) / 150 dpi (2×) / 300 dpi (3×) / 600 dpi (4×) |
 
@@ -57,8 +56,7 @@ Classic RDKit `MolDraw2DSVG` highlight-circle style.
 | Feature | Detail |
 |---|---|
 | **Interaction types** | H-bond / polar (blue) · Hydrophobic (green) · Other (pink) |
-| **Default cutoff** | **4.5 Å** |
-| **Layout** | RDKit's own force-field layout — residue pseudo-atoms added as `BondType.ZERO` bonds |
+| **Layout** | RDKit's own force-field layout — residue pseudo-atoms added as `BondType.ZERO` bonds, no manual placement needed |
 | **Side-by-side** | Docked pose (left) + co-crystal reference (right) |
 | **Export** | PNG + SVG download under each diagram |
 | **AI prompt** | Auto-filled prompt adapts to single diagram vs. comparison |
@@ -74,49 +72,6 @@ Download-only tab — no API calls made from this app.
 | `cocrystal.sdf` | Co-crystal ligand (converted from PDB if needed) |
 
 Upload these files manually at [proteins.plus/poseview](https://proteins.plus/help/poseview) to generate a server-side PoseView diagram.
-
----
-
-## 🔬 PLIP Integration (optional, recommended)
-
-When **PLIP** (Protein-Ligand Interaction Profiler) is installed, the 🧬 Anyone Can Dock diagram uses geometry-validated interaction detection instead of the built-in distance-only detector.
-
-| Interaction | Built-in detector | PLIP detector |
-|---|---|---|
-| **H-bond** | polar atoms < 3.5 Å | dist(D···A) ≤ 4.1 Å **+ D-H···A angle ≥ 120°** + explicit H required |
-| **Hydrophobic** | dist < cutoff | hydrophobic atom typing + dist < cutoff |
-| **π-π stacking** | centroid dist < 5.5 Å | centroid dist + **ring planarity angle** + **offset < 2.0 Å** |
-| **Halogen bond** | C-X angle ≥ 140° | + **X···A-R angle ≥ 90°** (both angles checked) |
-
-The app **auto-detects** whether PLIP is available and shows a status badge:
-- ✅ **PLIP active** — geometry-validated interactions
-- ℹ️ **Built-in detector** — with install instructions shown in the UI
-
-**To enable PLIP on Streamlit Cloud**, use these dependency files:
-
-`packages.txt`:
-```
-openbabel
-libopenbabel-dev
-libcairo2-dev
-libpango1.0-dev
-pkg-config
-python3-dev
-libgirepository1.0-dev
-```
-
-`requirements.txt` (add these three lines):
-```
-lxml>=4.9
-openbabel>=3.1.1
-plip>=3.0.0
-```
-
-**To enable PLIP locally** (Linux):
-```bash
-sudo apt install libopenbabel-dev
-pip install lxml openbabel plip
-```
 
 ---
 
@@ -200,8 +155,7 @@ Available in **both single and batch** docking modes:
 
 ### Linux (Ubuntu / Debian)
 ```bash
-sudo apt install python3.11 python3.11-venv openbabel libopenbabel-dev \
-  libcairo2-dev libpangocairo-1.0-0 pkg-config python3-dev && \
+sudo apt install python3.11 python3.11-venv openbabel libcairo2-dev libpangocairo-1.0-0 && \
 git clone https://github.com/nyelidl/anyone-docking-local.git && \
 cd anyone-docking-local && \
 python3.11 -m venv venv && \
@@ -282,10 +236,6 @@ If you use this tool in research, please cite the relevant software and resource
 > **Anyone Can Dock**
 > Hengphasatporn, K.; Bunchuay T.; Duan, L.; Shigeta, Y., *Journal of Chemical Information and Modeling*, 2026
 > https://github.com/nyelidl/anyone-docking/
-
-> **PLIP** *(optional, for geometry-validated interactions)*
-> Salentin et al., *Nucleic Acids Research*, 2015
-> DOI: https://doi.org/10.1093/nar/gkv315
 
 > **RDKit**
 > Landrum, G. (2023). RDKit: Open-source cheminformatics.
