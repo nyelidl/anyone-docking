@@ -4,78 +4,160 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Anyone can dock</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Inter:wght@400;500&display=swap" rel="stylesheet"/>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --red:    #ff4b4b;
+      --purple: #cc44cc;
+      --blue:   #4b8bff;
+    }
+
     body {
-      font-family: 'Segoe UI', sans-serif;
-      background: #ffffff;
+      font-family: 'Inter', sans-serif;
+      background: #fff;
       color: #333;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
+      min-height: 100vh;
       text-align: center;
-      padding: 1rem;
+      padding: 1.5rem;
+      overflow: hidden;
     }
+
+    /* Subtle background glow */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 50% at 20% 40%, rgba(255,75,75,.07), transparent),
+        radial-gradient(ellipse 50% 60% at 80% 60%, rgba(75,139,255,.07), transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .card {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      animation: fadeUp 0.6s cubic-bezier(.22,1,.36,1) both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
     .logo {
-      width: 90px;
-      height: 90px;
-      margin-bottom: 1.2rem;
+      width: 84px;
+      height: 84px;
+      margin-bottom: 1.4rem;
+      filter: drop-shadow(0 4px 16px rgba(255,75,75,.25));
     }
+
     h1 {
-      font-size: 1.8rem;
+      font-family: 'Syne', sans-serif;
+      font-size: clamp(1.4rem, 4vw, 2rem);
       font-weight: 800;
-      margin-bottom: 0.4rem;
-      background: linear-gradient(90deg, #ff4b4b, #cc44cc, #4b8bff);
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+      margin-bottom: 0.6rem;
+      background: linear-gradient(90deg, var(--red), var(--purple), var(--blue));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
-    p {
-      color: #777;
-      margin-bottom: 2rem;
-      font-size: 0.95rem;
+
+    .subtitle {
+      color: #888;
+      font-size: 0.92rem;
+      font-weight: 400;
+      margin-bottom: 2.2rem;
+      letter-spacing: 0.01em;
     }
+
+    /* Ring spinner */
     .spinner {
-      width: 48px;
-      height: 48px;
-      border: 5px solid #eee;
-      border-top-color: #ff4b4b;
+      width: 46px;
+      height: 46px;
       border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      margin-bottom: 1.5rem;
+      border: 4px solid #eee;
+      border-top-color: var(--red);
+      border-right-color: var(--purple);
+      animation: spin 0.9s linear infinite;
+      margin-bottom: 2rem;
     }
+
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
-    .hint {
-      font-size: 0.8rem;
-      color: #999;
-      margin-top: 1.5rem;
+
+    /* Progress dots */
+    .dots {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 1.6rem;
     }
-    /* Hidden iframe container for background waking */
+    .dots span {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #ddd;
+      animation: dotPulse 1.4s ease-in-out infinite;
+    }
+    .dots span:nth-child(2) { animation-delay: 0.2s; }
+    .dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes dotPulse {
+      0%, 80%, 100% { background: #ddd; transform: scale(1); }
+      40%           { background: var(--purple); transform: scale(1.4); }
+    }
+
+    .hint {
+      font-size: 0.78rem;
+      color: #bbb;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    /* Wake pool — invisible, used only for fetch pings */
     .wake-pool {
       position: absolute;
-      width: 0;
-      height: 0;
+      width: 0; height: 0;
       overflow: hidden;
       visibility: hidden;
+      pointer-events: none;
     }
   </style>
 </head>
 <body>
-  <img class="logo" src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" alt="Anyone can dock logo" />
-  <h1>Anyone can dock, everyone can do!</h1>
-  <p>Finding the best available server for you...</p>
-  <div class="spinner"></div>
-  <div class="hint">You will be redirected automatically.</div>
+  <div class="card">
+    <img
+      class="logo"
+      src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg"
+      alt="Anyone can dock logo"
+    />
+    <h1>Anyone can dock,<br>everyone can do!</h1>
+    <p class="subtitle">Finding the best available server for you…</p>
+    <div class="spinner"></div>
+    <div class="dots">
+      <span></span><span></span><span></span>
+    </div>
+    <p class="hint">You will be redirected automatically</p>
+  </div>
 
-  <!-- Hidden iframes that silently wake all apps in background -->
+  <!-- Wake pool: fetch-based pings (iframe won't work due to X-Frame-Options) -->
   <div class="wake-pool" id="wakePool"></div>
 
   <script>
     const apps = [
+      "https://anyone-docking-0.streamlit.app/",
       "https://anyone-docking-1.streamlit.app/",
       "https://anyone-docking-2.streamlit.app/",
       "https://anyone-docking-3.streamlit.app/",
@@ -85,9 +167,9 @@
       "https://anyone-docking-7.streamlit.app/",
       "https://anyone-docking-8.streamlit.app/",
       "https://anyone-docking-9.streamlit.app/",
-      "https://anyone-docking-0.streamlit.app/",
-      "https://anyone-docking-12.streamlit.app/",
-      "https://anyone-docking-12.streamlit.app/",
+      "https://anyone-docking-10.streamlit.app/",   
+      "https://anyone-docking-11.streamlit.app/",  
+      "https://anyone-docking-12.streamlit.app/", 
       "https://anyone-docking-13.streamlit.app/",
       "https://anyone-docking-14.streamlit.app/",
       "https://anyone-docking-15.streamlit.app/",
@@ -98,26 +180,17 @@
       "https://anyone-docking-20.streamlit.app/",
     ];
 
-    // ── 1. Wake ALL apps in background via hidden iframes ──
-    // Each visitor silently pings every instance, keeping them alive.
-    // Streamlit detects the page load and resets its inactivity timer.
-    const pool = document.getElementById("wakePool");
+    // ── 1. Wake ALL apps via fetch (iframes are blocked by Streamlit's X-Frame-Options) ──
     apps.forEach((url, i) => {
       setTimeout(() => {
-        const iframe = document.createElement("iframe");
-        iframe.src = url;
-        iframe.width = "0";
-        iframe.height = "0";
-        iframe.tabIndex = -1;
-        iframe.setAttribute("aria-hidden", "true");
-        pool.appendChild(iframe);
-      }, i * 500);  // stagger by 500ms to avoid burst
+        fetch(url, { mode: "no-cors" }).catch(() => {});
+      }, i * 300); // stagger 300ms — lighter burst than 500ms
     });
 
-    // ── 2. Redirect user to a random instance after 1.5s ──
-    const random = apps[Math.floor(Math.random() * apps.length)];
+    // ── 2. Redirect to a random instance after 1.5s ──
+    const target = apps[Math.floor(Math.random() * apps.length)];
     setTimeout(() => {
-      window.location.href = random;
+      window.location.href = target;
     }, 1500);
   </script>
 </body>
