@@ -2193,7 +2193,7 @@ with tab_basic:
                             "SES", {"opacity": 0.2, "color": "lightblue"},
                             {"model": 0}, {"model": _mrd},
                         )
-                        _vrd.zoomTo()
+                        _vrd.zoomTo({"model": _mrd})
                         _vrd.center({"model": _mrd})
                         show3d(_vrd, height=400)
                     except Exception as _e:
@@ -2839,7 +2839,7 @@ with tab_batch:
                             "SES", {"opacity": 0.2, "color": "lightblue"},
                             {"model": 0}, {"model": bmi},
                         )
-                        vb.zoomTo()
+                        vb.zoomTo({"model": bmi})
                         vb.center({"model": bmi})
                         show3d(vb, height=420)
                     except Exception as e:
