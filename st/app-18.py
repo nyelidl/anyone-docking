@@ -2388,6 +2388,9 @@ with tab_basic:
                 _show_labels = st.checkbox(
                     "Show residue labels", value=True, key="bp_show_labels"
                 )
+                _show_surface = st.checkbox(
+                    "Show protein surface", value=False, key="bp_show_surface"
+                )
 
             try:
                 vbp = py3Dmol.view(width="100%", height=440)
@@ -2398,6 +2401,15 @@ with tab_basic:
                     vbp.setStyle({"model": mbp}, {
                         "cartoon": {"color": "spectrum", "opacity": 0.45}
                     })
+                    if _show_surface:
+                        vbp.addSurface(
+                            py3Dmol.SAS,
+                            {
+                                "opacity": 0.55,
+                                "color": "white",
+                            },
+                            {"model": mbp},
+                        )
                     mbp += 1
                 vbp.addModel(Chem.MolToMolBlock(sel_mol), "mol")
                 _lig_m = mbp
@@ -2430,7 +2442,8 @@ with tab_basic:
                     st.markdown(
                         f"{_pill(f'Pose {pose_idx+1}')}"
                         f" {_pill(f'{_cutoff:.1f} A cutoff')}"
-                        f" {_pill(_res_label, _res_kind)}",
+                        f" {_pill(_res_label, _res_kind)}"
+                        + (f" {_pill('surface on', 'info')}" if _show_surface else ""),
                         unsafe_allow_html=True,
                     )
                 vbp.zoomTo({"model": _lig_m})
