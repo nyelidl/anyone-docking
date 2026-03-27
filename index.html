@@ -28,7 +28,6 @@
       overflow: hidden;
     }
 
-    /* Subtle background glow */
     body::before {
       content: '';
       position: fixed;
@@ -80,9 +79,10 @@
       font-weight: 400;
       margin-bottom: 2.2rem;
       letter-spacing: 0.01em;
+      min-height: 1.3em;
+      transition: color 0.3s;
     }
 
-    /* Ring spinner */
     .spinner {
       width: 46px;
       height: 46px;
@@ -98,65 +98,95 @@
       to { transform: rotate(360deg); }
     }
 
-    /* Progress dots */
-    .dots {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 1.6rem;
+    /* Progress bar */
+    .progress-wrap {
+      width: 220px;
+      height: 4px;
+      background: #eee;
+      border-radius: 2px;
+      margin-bottom: 1.8rem;
+      overflow: hidden;
     }
-    .dots span {
-      width: 7px;
-      height: 7px;
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--red), var(--purple), var(--blue));
+      border-radius: 2px;
+      transition: width 0.4s ease;
+    }
+
+    /* Server status grid */
+    .server-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      justify-content: center;
+      max-width: 280px;
+      margin-bottom: 1.8rem;
+    }
+    .server-dot {
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
       background: #ddd;
-      animation: dotPulse 1.4s ease-in-out infinite;
+      transition: background 0.3s, transform 0.2s;
     }
-    .dots span:nth-child(2) { animation-delay: 0.2s; }
-    .dots span:nth-child(3) { animation-delay: 0.4s; }
+    .server-dot.checking  { background: #f0c040; animation: pulse 1s ease-in-out infinite; }
+    .server-dot.online    { background: #4caf50; transform: scale(1.2); }
+    .server-dot.slow      { background: #ff9800; }
+    .server-dot.offline   { background: #f44336; }
+    .server-dot.selected  { background: var(--blue); transform: scale(1.5);
+                            box-shadow: 0 0 0 3px rgba(75,139,255,.25); }
 
-    @keyframes dotPulse {
-      0%, 80%, 100% { background: #ddd; transform: scale(1); }
-      40%           { background: var(--purple); transform: scale(1.4); }
+    @keyframes pulse {
+      0%,100% { opacity: 1; } 50% { opacity: 0.4; }
     }
 
     .hint {
       font-size: 0.78rem;
       color: #bbb;
       letter-spacing: 0.04em;
-      text-transform: uppercase;
     }
 
-    /* Wake pool — invisible, used only for fetch pings */
-    .wake-pool {
-      position: absolute;
-      width: 0; height: 0;
-      overflow: hidden;
-      visibility: hidden;
-      pointer-events: none;
+    /* Fallback button — shown only if auto-redirect fails */
+    .fallback-btn {
+      display: none;
+      margin-top: 1.4rem;
+      padding: 0.6rem 1.6rem;
+      background: linear-gradient(90deg, var(--red), var(--purple));
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      letter-spacing: 0.01em;
     }
+    .fallback-btn:hover { opacity: 0.9; }
   </style>
 </head>
 <body>
   <div class="card">
-    <img
-      class="logo"
+    <img class="logo"
       src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg"
-      alt="Anyone can dock logo"
-    />
+      alt="Anyone can dock logo"/>
     <h1>Anyone can dock,<br>everyone can do!</h1>
-    <p class="subtitle">Finding the best available server for you…</p>
+    <p class="subtitle" id="status">Checking server availability…</p>
     <div class="spinner"></div>
-    <div class="dots">
-      <span></span><span></span><span></span>
+    <div class="progress-wrap">
+      <div class="progress-bar" id="progressBar"></div>
     </div>
-    <p class="hint">You will be redirected automatically</p>
+    <div class="server-grid" id="serverGrid"></div>
+    <p class="hint" id="hint">Connecting to the fastest available server</p>
+    <button class="fallback-btn" id="fallbackBtn" onclick="redirectToFallback()">
+      Open app manually →
+    </button>
   </div>
 
-  <!-- Wake pool: fetch-based pings (iframe won't work due to X-Frame-Options) -->
-  <div class="wake-pool" id="wakePool"></div>
-
   <script>
-    const apps = [
+    // ── Configuration ─────────────────────────────────────────────────────────
+    const APPS = [
       "https://anyone-docking-0.streamlit.app/",
       "https://anyone-docking-1.streamlit.app/",
       "https://anyone-docking-2.streamlit.app/",
@@ -167,9 +197,9 @@
       "https://anyone-docking-7.streamlit.app/",
       "https://anyone-docking-8.streamlit.app/",
       "https://anyone-docking-9.streamlit.app/",
-      "https://anyone-docking-10.streamlit.app/",   
-      "https://anyone-docking-11.streamlit.app/",  
-      "https://anyone-docking-12.streamlit.app/", 
+      "https://anyone-docking-10.streamlit.app/",
+      "https://anyone-docking-11.streamlit.app/",
+      "https://anyone-docking-12.streamlit.app/",
       "https://anyone-docking-13.streamlit.app/",
       "https://anyone-docking-14.streamlit.app/",
       "https://anyone-docking-15.streamlit.app/",
@@ -180,18 +210,127 @@
       "https://anyone-docking-20.streamlit.app/",
     ];
 
-    // ── 1. Wake ALL apps via fetch (iframes are blocked by Streamlit's X-Frame-Options) ──
-    apps.forEach((url, i) => {
-      setTimeout(() => {
-        fetch(url, { mode: "no-cors" }).catch(() => {});
-      }, i * 300); // stagger 300ms — lighter burst than 500ms
+    // How long to wait for a response before marking an app "offline" (ms)
+    const TIMEOUT_MS   = 8000;
+    // Min delay before redirect (ms) — gives user time to see the UI
+    const MIN_DELAY_MS = 1200;
+    // Max wait before falling back to random (ms)
+    const FALLBACK_MS  = 10000;
+
+    // ── State ─────────────────────────────────────────────────────────────────
+    const n           = APPS.length;
+    const results     = new Array(n).fill(null); // null | {ok, ms}
+    let   redirected  = false;
+    let   bestIdx     = -1;
+    let   bestMs      = Infinity;
+    const startTime   = Date.now();
+
+    // ── Build server dot grid ─────────────────────────────────────────────────
+    const grid = document.getElementById("serverGrid");
+    const dots = APPS.map((_, i) => {
+      const d = document.createElement("div");
+      d.className = "server-dot";
+      d.title = `Server ${i + 1}`;
+      grid.appendChild(d);
+      return d;
     });
 
-    // ── 2. Redirect to a random instance after 1.5s ──
-    const target = apps[Math.floor(Math.random() * apps.length)];
+    // ── Probe all apps in parallel ────────────────────────────────────────────
+    // Strategy: race a fetch (no-cors) against an AbortController timeout.
+    // The fetch resolves as soon as the server starts sending headers —
+    // i.e. the server is awake and responding.  A sleeping Streamlit app
+    // on Cloud takes 10–20s to cold-start, so it will timeout here.
+    // An awake app typically responds in <1s.
+
+    function setStatus(msg)    { document.getElementById("status").textContent = msg; }
+    function setHint(msg)      { document.getElementById("hint").textContent = msg; }
+    function setProgress(pct)  { document.getElementById("progressBar").style.width = pct + "%"; }
+
+    function doRedirect(idx) {
+      if (redirected) return;
+      redirected = true;
+      const url = APPS[idx];
+      dots[idx].className = "server-dot selected";
+      setStatus(`Server ${idx + 1} is ready — redirecting…`);
+      setHint(`Fastest response: ${results[idx]?.ms ?? "?"}ms`);
+      setProgress(100);
+      setTimeout(() => { window.location.href = url; }, 300);
+    }
+
+    function redirectToFallback() {
+      if (redirected) return;
+      // Pick the fastest that responded, or random
+      if (bestIdx >= 0) {
+        doRedirect(bestIdx);
+      } else {
+        doRedirect(Math.floor(Math.random() * n));
+      }
+    }
+
+    function checkProgress() {
+      const done = results.filter(r => r !== null).length;
+      setProgress(Math.round((done / n) * 90));   // reserve last 10% for redirect
+    }
+
+    APPS.forEach((url, i) => {
+      dots[i].className = "server-dot checking";
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const t0 = Date.now();
+
+      fetch(url, { mode: "no-cors", signal: controller.signal })
+        .then(() => {
+          clearTimeout(timer);
+          const ms = Date.now() - t0;
+          results[i] = { ok: true, ms };
+
+          if (ms < 2000) {
+            dots[i].className = "server-dot online";
+          } else {
+            dots[i].className = "server-dot slow";
+          }
+
+          checkProgress();
+
+          // Track best responder
+          if (ms < bestMs) {
+            bestMs = ms;
+            bestIdx = i;
+          }
+
+          // Redirect as soon as the first fast response arrives AND min delay passed
+          const elapsed = Date.now() - startTime;
+          const wait    = Math.max(0, MIN_DELAY_MS - elapsed);
+          setTimeout(() => {
+            if (!redirected && bestIdx >= 0) {
+              setStatus(`Found ${results.filter(r => r?.ok).length} available server(s)`);
+              doRedirect(bestIdx);
+            }
+          }, wait);
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          results[i] = { ok: false, ms: null };
+          dots[i].className = "server-dot offline";
+          checkProgress();
+        });
+    });
+
+    // ── Hard fallback: if nothing responds in FALLBACK_MS, redirect randomly ──
     setTimeout(() => {
-      window.location.href = target;
-    }, 1500);
+      if (!redirected) {
+        const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+        if (online.length > 0) {
+          doRedirect(online[Math.floor(Math.random() * online.length)]);
+        } else {
+          // All timed out — send to random (might be cold-starting)
+          setStatus("All servers are starting up…");
+          document.getElementById("fallbackBtn").style.display = "inline-block";
+          doRedirect(Math.floor(Math.random() * n));
+        }
+      }
+    }, FALLBACK_MS);
   </script>
 </body>
 </html>
