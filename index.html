@@ -110,11 +110,10 @@
     }
 
     .server-grid {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
+      display: grid;
+      grid-template-columns: repeat(8, 10px);
+      gap: 8px;
       justify-content: center;
-      max-width: 320px;
       margin-bottom: 1.8rem;
     }
     .server-dot {
