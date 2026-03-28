@@ -94,7 +94,6 @@
       to { transform: rotate(360deg); }
     }
 
-    /* Progress bar */
     .progress-wrap {
       width: 220px;
       height: 4px;
@@ -111,13 +110,12 @@
       transition: width 0.4s ease;
     }
 
-    /* Server status grid */
     .server-grid {
       display: flex;
       flex-wrap: wrap;
       gap: 5px;
       justify-content: center;
-      max-width: 280px;
+      max-width: 320px;
       margin-bottom: 1.8rem;
     }
     .server-dot {
@@ -144,7 +142,6 @@
       letter-spacing: 0.04em;
     }
 
-    /* Fallback button — shown only if auto-redirect fails */
     .fallback-btn {
       display: none;
       margin-top: 1.4rem;
@@ -181,8 +178,8 @@
   </div>
 
   <script>
-    // ── Configuration ─────────────────────────────────────────────────────────
     const APPS = [
+      // ── Streamlit Cloud ───────────────────────────────────────────────────
       "https://anyone-docking-1.streamlit.app/",
       "https://anyone-docking-2.streamlit.app/",
       "https://anyone-docking-3.streamlit.app/",
@@ -203,24 +200,27 @@
       "https://anyone-docking-18.streamlit.app/",
       "https://anyone-docking-19.streamlit.app/",
       "https://anyone-docking-20.streamlit.app/",
+      // ── HuggingFace Spaces ────────────────────────────────────────────────
+      "https://kowith-anyone-docking.hf.space/",
+      "https://kowith-anyone-docking-2.hf.space/",
+      "https://kowith-anyone-docking-3.hf.space/",
+      "https://kowith-anyone-docking-4.hf.space/",
+      "https://kowith-anyone-docking-5.hf.space/",
+      "https://kowith-anyone-docking-6.hf.space/",
+      "https://kowith-anyone-docking-7.hf.space/",
     ];
 
-    // How long to wait for a response before marking an app "offline" (ms)
     const TIMEOUT_MS   = 8000;
-    // Min delay before redirect (ms) — gives user time to see the UI
     const MIN_DELAY_MS = 1200;
-    // Max wait before falling back to random (ms)
     const FALLBACK_MS  = 10000;
 
-    // ── State ─────────────────────────────────────────────────────────────────
-    const n           = APPS.length;
-    const results     = new Array(n).fill(null); // null | {ok, ms}
-    let   redirected  = false;
-    let   bestIdx     = -1;
-    let   bestMs      = Infinity;
-    const startTime   = Date.now();
+    const n         = APPS.length;
+    const results   = new Array(n).fill(null);
+    let   redirected = false;
+    let   bestIdx    = -1;
+    let   bestMs     = Infinity;
+    const startTime  = Date.now();
 
-    // ── Build server dot grid ─────────────────────────────────────────────────
     const grid = document.getElementById("serverGrid");
     const dots = APPS.map((_, i) => {
       const d = document.createElement("div");
@@ -230,41 +230,28 @@
       return d;
     });
 
-    // ── Probe all apps in parallel ────────────────────────────────────────────
-    // Strategy: race a fetch (no-cors) against an AbortController timeout.
-    // The fetch resolves as soon as the server starts sending headers —
-    // i.e. the server is awake and responding.  A sleeping Streamlit app
-    // on Cloud takes 10–20s to cold-start, so it will timeout here.
-    // An awake app typically responds in <1s.
-
-    function setStatus(msg)    { document.getElementById("status").textContent = msg; }
-    function setHint(msg)      { document.getElementById("hint").textContent = msg; }
-    function setProgress(pct)  { document.getElementById("progressBar").style.width = pct + "%"; }
+    function setStatus(msg)   { document.getElementById("status").textContent = msg; }
+    function setHint(msg)     { document.getElementById("hint").textContent = msg; }
+    function setProgress(pct) { document.getElementById("progressBar").style.width = pct + "%"; }
 
     function doRedirect(idx) {
       if (redirected) return;
       redirected = true;
-      const url = APPS[idx];
       dots[idx].className = "server-dot selected";
       setStatus(`Server ${idx + 1} is ready — redirecting…`);
       setHint(`Fastest response: ${results[idx]?.ms ?? "?"}ms`);
       setProgress(100);
-      setTimeout(() => { window.location.href = url; }, 300);
+      setTimeout(() => { window.location.href = APPS[idx]; }, 300);
     }
 
     function redirectToFallback() {
       if (redirected) return;
-      // Pick the fastest that responded, or random
-      if (bestIdx >= 0) {
-        doRedirect(bestIdx);
-      } else {
-        doRedirect(Math.floor(Math.random() * n));
-      }
+      doRedirect(bestIdx >= 0 ? bestIdx : Math.floor(Math.random() * n));
     }
 
     function checkProgress() {
       const done = results.filter(r => r !== null).length;
-      setProgress(Math.round((done / n) * 90));   // reserve last 10% for redirect
+      setProgress(Math.round((done / n) * 90));
     }
 
     APPS.forEach((url, i) => {
@@ -279,24 +266,12 @@
           clearTimeout(timer);
           const ms = Date.now() - t0;
           results[i] = { ok: true, ms };
-
-          if (ms < 2000) {
-            dots[i].className = "server-dot online";
-          } else {
-            dots[i].className = "server-dot slow";
-          }
-
+          dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
           checkProgress();
 
-          // Track best responder
-          if (ms < bestMs) {
-            bestMs = ms;
-            bestIdx = i;
-          }
+          if (ms < bestMs) { bestMs = ms; bestIdx = i; }
 
-          // Redirect as soon as the first fast response arrives AND min delay passed
-          const elapsed = Date.now() - startTime;
-          const wait    = Math.max(0, MIN_DELAY_MS - elapsed);
+          const wait = Math.max(0, MIN_DELAY_MS - (Date.now() - startTime));
           setTimeout(() => {
             if (!redirected && bestIdx >= 0) {
               setStatus(`Found ${results.filter(r => r?.ok).length} available server(s)`);
@@ -312,14 +287,12 @@
         });
     });
 
-    // ── Hard fallback: if nothing responds in FALLBACK_MS, redirect randomly ──
     setTimeout(() => {
       if (!redirected) {
         const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
         if (online.length > 0) {
           doRedirect(online[Math.floor(Math.random() * online.length)]);
         } else {
-          // All timed out — send to random (might be cold-starting)
           setStatus("All servers are starting up…");
           document.getElementById("fallbackBtn").style.display = "inline-block";
           doRedirect(Math.floor(Math.random() * n));
