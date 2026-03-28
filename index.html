@@ -223,9 +223,9 @@
       "https://kowith-3-anyone-docking-7.hf.space/",
     ];
 
-    const TIMEOUT_MS   = 8000;
+    const TIMEOUT_MS   = 25000;  // allow Streamlit ~15-20s cold start to wake up
     const MIN_DELAY_MS = 1200;
-    const FALLBACK_MS  = 10000;
+    const FALLBACK_MS  = 28000;  // hard fallback after 28s
 
     const n          = APPS.length;
     const results    = new Array(n).fill(null);
@@ -243,6 +243,17 @@
       return d;
     });
 
+    // ── Round-robin counter (persisted in localStorage) ───────────────────
+    // Each visitor gets the next server in line, cycling through all online ones.
+    // This distributes load equally instead of always picking the fastest.
+    function getNextServer(onlineIndices) {
+      const key = "acd_rr_counter";
+      let counter = parseInt(localStorage.getItem(key) || "0");
+      const idx = onlineIndices[counter % onlineIndices.length];
+      localStorage.setItem(key, (counter + 1).toString());
+      return idx;
+    }
+
     function setStatus(msg)   { document.getElementById("status").textContent = msg; }
     function setHint(msg)     { document.getElementById("hint").textContent = msg; }
     function setProgress(pct) { document.getElementById("progressBar").style.width = pct + "%"; }
@@ -253,15 +264,16 @@
       const url = APPS[idx];
       dots[idx].className = "server-dot selected";
       setStatus(`Server ${idx + 1} is ready — redirecting…`);
-      setHint(`Fastest response: ${results[idx]?.ms ?? "?"}ms`);
+      setHint(`Server ${idx + 1} of ${n}`);
       setProgress(100);
       setTimeout(() => { window.location.href = url; }, 300);
     }
 
     function redirectToFallback() {
       if (redirected) return;
-      if (bestIdx >= 0) {
-        doRedirect(bestIdx);
+      const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+      if (online.length > 0) {
+        doRedirect(getNextServer(online));
       } else {
         doRedirect(Math.floor(Math.random() * n));
       }
@@ -270,6 +282,20 @@
     function checkProgress() {
       const done = results.filter(r => r !== null).length;
       setProgress(Math.round((done / n) * 90));
+    }
+
+    // Wait for ALL servers to respond (or timeout), then pick via round-robin
+    function tryRedirectRoundRobin() {
+      if (redirected) return;
+      const done    = results.filter(r => r !== null).length;
+      const online  = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+      const elapsed = Date.now() - startTime;
+
+      // Redirect once all responded, or min delay passed and we have ≥1 online
+      if ((done === n || elapsed >= MIN_DELAY_MS) && online.length > 0) {
+        setStatus(`${online.length} server(s) available — distributing load…`);
+        doRedirect(getNextServer(online));
+      }
     }
 
     APPS.forEach((url, i) => {
