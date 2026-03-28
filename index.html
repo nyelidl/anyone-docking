@@ -5,29 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Anyone can dock</title>
   <style>
-    *, *::before, *::after {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
     :root {
       --red:    #ff4b4b;
       --purple: #cc44cc;
       --blue:   #4b8bff;
-      --green:  #4caf50;
-      --orange: #ff9800;
-      --yellow: #f0c040;
-      --light:  #eee;
-      --text:   #333;
-      --muted:  #888;
-      --hint:   #bbb;
     }
 
     body {
       font-family: 'Inter', sans-serif;
       background: #fff;
-      color: var(--text);
+      color: #333;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -56,8 +45,6 @@
       flex-direction: column;
       align-items: center;
       animation: fadeUp 0.6s cubic-bezier(.22,1,.36,1) both;
-      max-width: 560px;
-      width: 100%;
     }
 
     @keyframes fadeUp {
@@ -84,10 +71,10 @@
     }
 
     .subtitle {
-      color: var(--muted);
+      color: #888;
       font-size: 0.92rem;
       font-weight: 400;
-      margin-bottom: 2rem;
+      margin-bottom: 2.2rem;
       letter-spacing: 0.01em;
       min-height: 1.3em;
     }
@@ -96,143 +83,101 @@
       width: 46px;
       height: 46px;
       border-radius: 50%;
-      border: 4px solid var(--light);
+      border: 4px solid #eee;
       border-top-color: var(--red);
       border-right-color: var(--purple);
       animation: spin 0.9s linear infinite;
-      margin-bottom: 1.6rem;
+      margin-bottom: 2rem;
     }
 
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     .progress-wrap {
-      width: 240px;
+      width: 220px;
       height: 4px;
-      background: var(--light);
+      background: #eee;
       border-radius: 2px;
-      margin-bottom: 1.6rem;
+      margin-bottom: 1.8rem;
       overflow: hidden;
     }
-
     .progress-bar {
       height: 100%;
       width: 0%;
       background: linear-gradient(90deg, var(--red), var(--purple), var(--blue));
       border-radius: 2px;
-      transition: width 0.25s ease;
+      transition: width 0.4s ease;
     }
 
+    /* 8 dots per row using CSS grid */
     .server-grid {
       display: grid;
       grid-template-columns: repeat(8, 10px);
       gap: 8px;
       justify-content: center;
-      margin-bottom: 1.2rem;
+      margin-bottom: 1.8rem;
     }
-
     .server-dot {
       width: 10px;
       height: 10px;
       border-radius: 50%;
       background: #ddd;
-      transition: background 0.25s, transform 0.2s, box-shadow 0.2s;
+      transition: background 0.3s, transform 0.2s;
     }
-
-    .server-dot.checking {
-      background: var(--yellow);
-      animation: pulse 1s ease-in-out infinite;
-    }
-
-    .server-dot.online {
-      background: var(--green);
-      transform: scale(1.15);
-    }
-
-    .server-dot.slow {
-      background: var(--orange);
-    }
-
-    .server-dot.offline {
-      background: #f44336;
-    }
-
-    .server-dot.selected {
-      background: var(--blue);
-      transform: scale(1.5);
-      box-shadow: 0 0 0 3px rgba(75,139,255,.25);
-    }
+    .server-dot.checking  { background: #f0c040; animation: pulse 1s ease-in-out infinite; }
+    .server-dot.online    { background: #4caf50; transform: scale(1.2); }
+    .server-dot.slow      { background: #ff9800; }
+    .server-dot.offline   { background: #f44336; }
+    .server-dot.selected  { background: var(--blue); transform: scale(1.5);
+                            box-shadow: 0 0 0 3px rgba(75,139,255,.25); }
 
     @keyframes pulse {
-      0%,100% { opacity: 1; }
-      50% { opacity: 0.4; }
+      0%,100% { opacity: 1; } 50% { opacity: 0.4; }
     }
 
     .hint {
       font-size: 0.78rem;
-      color: var(--hint);
+      color: #bbb;
       letter-spacing: 0.04em;
-      margin-bottom: 1rem;
-      min-height: 1em;
     }
 
     .fallback-btn {
       display: none;
-      margin-top: 0.8rem;
-      padding: 0.65rem 1.5rem;
+      margin-top: 1.4rem;
+      padding: 0.6rem 1.6rem;
       background: linear-gradient(90deg, var(--red), var(--purple));
       color: #fff;
       border: none;
       border-radius: 999px;
-      font-size: 0.92rem;
+      font-size: 0.9rem;
       font-weight: 500;
       cursor: pointer;
       font-family: 'Inter', sans-serif;
       letter-spacing: 0.01em;
     }
-
-    .fallback-btn:hover {
-      opacity: 0.92;
-    }
-
-    .small-note {
-      margin-top: 0.9rem;
-      font-size: 0.72rem;
-      color: #b0b0b0;
-    }
+    .fallback-btn:hover { opacity: 0.9; }
   </style>
 </head>
 <body>
   <div class="card">
-    <img
-      class="logo"
+    <img class="logo"
       src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg"
-      alt="Anyone can dock logo"
-    />
+      alt="Anyone can dock logo"/>
     <h1>Anyone can dock,<br>everyone can do!</h1>
-    <p class="subtitle" id="status">Finding the fastest available server…</p>
-
+    <p class="subtitle" id="status">Checking server availability…</p>
     <div class="spinner"></div>
-
     <div class="progress-wrap">
       <div class="progress-bar" id="progressBar"></div>
     </div>
-
     <div class="server-grid" id="serverGrid"></div>
-
-    <p class="hint" id="hint">Trying recent and priority servers first</p>
-
-    <button class="fallback-btn" id="fallbackBtn" onclick="manualOpen()">
+    <p class="hint" id="hint">Connecting to the fastest available server</p>
+    <button class="fallback-btn" id="fallbackBtn" onclick="redirectToFallback()">
       Open app manually →
     </button>
-
-    <div class="small-note" id="smallNote"></div>
   </div>
 
   <script>
     const APPS = [
-      // Streamlit Cloud
+      // ── Streamlit Cloud ───────────────────────────────────────────────────
       "https://anyone-docking-1.streamlit.app/",
       "https://anyone-docking-2.streamlit.app/",
       "https://anyone-docking-3.streamlit.app/",
@@ -253,52 +198,44 @@
       "https://anyone-docking-18.streamlit.app/",
       "https://anyone-docking-19.streamlit.app/",
       "https://anyone-docking-20.streamlit.app/",
-
-      // Hugging Face — kowith
+      // ── HuggingFace — kowith ─────────────────────────────────────────────
       "https://kowith-anyone-docking.hf.space/",
       "https://kowith-anyone-docking-2.hf.space/",
       "https://kowith-anyone-docking-3.hf.space/",
       "https://kowith-anyone-docking-4.hf.space/",
       "https://kowith-anyone-docking-5.hf.space/",
       "https://kowith-anyone-docking-6.hf.space/",
-
-      // Hugging Face — kowith-2
+      "https://kowith-anyone-docking-7.hf.space/",
+      // ── HuggingFace — kowith-2 ───────────────────────────────────────────
       "https://kowith-2-anyone-docking.hf.space/",
+      "https://kowith-2-anyone-docking-2.hf.space/",
       "https://kowith-2-anyone-docking-3.hf.space/",
+      "https://kowith-2-anyone-docking-4.hf.space/",
+      "https://kowith-2-anyone-docking-5.hf.space/",
+      "https://kowith-2-anyone-docking-6.hf.space/",
       "https://kowith-2-anyone-docking-7.hf.space/",
-
-      // Hugging Face — kowith-3
-      "https://kowit-3-anyone-docking.hf.space/",
-      "https://kowit-3-anyone-docking-2.hf.space/",
-      "https://kowit-3-anyone-docking-3.hf.space/",
-      "https://kowit-3-anyone-docking-5.hf.space/",
+      // ── HuggingFace — kowith-3 ───────────────────────────────────────────
+      "https://kowith-3-anyone-docking.hf.space/",
+      "https://kowith-3-anyone-docking-2.hf.space/",
+      "https://kowith-3-anyone-docking-3.hf.space/",
+      "https://kowith-3-anyone-docking-4.hf.space/",
+      "https://kowith-3-anyone-docking-5.hf.space/",
+      "https://kowith-3-anyone-docking-6.hf.space/",
+      "https://kowith-3-anyone-docking-7.hf.space/",
     ];
 
-    // Tuned for speed
-    const TIMEOUT_MS = 2500;          // per request
-    const LAST_GOOD_TIMEOUT_MS = 1800;
-    const BATCH_SIZE = 4;             // only test 4 at a time
-    const MAX_BATCHES_BEFORE_FALLBACK = 3; // 12 servers max before fallback
-    const REDIRECT_DELAY_MS = 150;
-    const ABSOLUTE_FALLBACK_MS = 9000;
+    const TIMEOUT_MS   = 25000;  // 25s — allows Streamlit cold start ~15-20s
+    const MIN_DELAY_MS = 1200;
+    const FALLBACK_MS  = 28000;
 
-    const STORAGE_LAST_GOOD = "acd_last_good";
-    const STORAGE_RR = "acd_rr_counter";
+    const n          = APPS.length;
+    const results    = new Array(n).fill(null);
+    let   redirected = false;
+    const startTime  = Date.now();
 
-    let redirected = false;
-    let checkedCount = 0;
-    let completedBatches = 0;
-    let manualCandidates = [];
-    const startTime = Date.now();
-
-    const statusEl = document.getElementById("status");
-    const hintEl = document.getElementById("hint");
-    const progressEl = document.getElementById("progressBar");
-    const fallbackBtn = document.getElementById("fallbackBtn");
-    const smallNoteEl = document.getElementById("smallNote");
+    // ── Build dot grid ────────────────────────────────────────────────────────
     const grid = document.getElementById("serverGrid");
-
-    const dots = APPS.map((url, i) => {
+    const dots = APPS.map((_, i) => {
       const d = document.createElement("div");
       d.className = "server-dot";
       d.title = `Server ${i + 1}`;
@@ -306,250 +243,96 @@
       return d;
     });
 
-    function setStatus(msg) {
-      statusEl.textContent = msg;
-    }
+    function setStatus(msg)   { document.getElementById("status").textContent = msg; }
+    function setHint(msg)     { document.getElementById("hint").textContent = msg; }
+    function setProgress(pct) { document.getElementById("progressBar").style.width = pct + "%"; }
 
-    function setHint(msg) {
-      hintEl.textContent = msg;
-    }
-
-    function setProgress(pct) {
-      progressEl.style.width = Math.max(0, Math.min(100, pct)) + "%";
-    }
-
-    function markDot(index, cls) {
-      if (!dots[index]) return;
-      dots[index].className = "server-dot " + cls;
-    }
-
-    function delay(ms) {
-      return new Promise(resolve => setTimeout(resolve, ms));
-    }
-
-    function shuffle(array) {
-      const a = [...array];
-      for (let i = a.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [a[i], a[j]] = [a[j], a[i]];
-      }
-      return a;
-    }
-
-    function getRoundRobinIndex(poolLength) {
-      let counter = parseInt(localStorage.getItem(STORAGE_RR) || "0", 10);
-      if (!Number.isFinite(counter)) counter = 0;
-      const idx = counter % poolLength;
-      localStorage.setItem(STORAGE_RR, String(counter + 1));
+    // ── Round-robin across ALL online servers equally (no platform preference) ─
+    function getNextServer(onlineIndices) {
+      const key = "acd_rr_counter";
+      let c = parseInt(localStorage.getItem(key) || "0");
+      if (!isFinite(c)) c = 0;
+      const idx = onlineIndices[c % onlineIndices.length];
+      localStorage.setItem(key, String(c + 1));
       return idx;
     }
 
-    function rememberGood(url) {
-      localStorage.setItem(STORAGE_LAST_GOOD, url);
-    }
-
-    function getLastGood() {
-      return localStorage.getItem(STORAGE_LAST_GOOD);
-    }
-
-    function isHF(url) {
-      return url.includes(".hf.space");
-    }
-
-    function prioritizeServers() {
-      const lastGood = getLastGood();
-
-      const indexed = APPS.map((url, index) => ({ url, index }));
-
-      const streamlit = indexed.filter(x => !isHF(x.url));
-      const huggingface = indexed.filter(x => isHF(x.url));
-
-      const orderedStreamlit = shuffle(streamlit);
-      const orderedHF = shuffle(huggingface);
-
-      let ordered = [...orderedStreamlit, ...orderedHF];
-
-      if (lastGood) {
-        const found = indexed.find(x => x.url === lastGood);
-        if (found) {
-          ordered = [found, ...ordered.filter(x => x.url !== lastGood)];
-        }
-      }
-
-      return ordered;
-    }
-
-    function fetchWithTimeout(url, timeoutMs) {
-      return new Promise((resolve, reject) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => {
-          controller.abort();
-          reject(new Error("timeout"));
-        }, timeoutMs);
-
-        const t0 = performance.now();
-
-        fetch(url, {
-          mode: "no-cors",
-          cache: "no-store",
-          signal: controller.signal
-        })
-          .then(() => {
-            clearTimeout(timer);
-            const ms = Math.round(performance.now() - t0);
-            resolve({ url, ms });
-          })
-          .catch((err) => {
-            clearTimeout(timer);
-            reject(err);
-          });
-      });
-    }
-
-    async function tryLastGoodFirst() {
-      const lastGood = getLastGood();
-      if (!lastGood) return false;
-
-      const idx = APPS.indexOf(lastGood);
-      if (idx >= 0) {
-        markDot(idx, "checking");
-        setStatus("Trying your last successful server…");
-        setHint("Fast path");
-      }
-
-      try {
-        const result = await fetchWithTimeout(lastGood, LAST_GOOD_TIMEOUT_MS);
-        if (idx >= 0) markDot(idx, "online");
-        manualCandidates.push(lastGood);
-        doRedirect(lastGood, idx, result.ms, "Reconnecting to last successful server…");
-        return true;
-      } catch {
-        if (idx >= 0) markDot(idx, "offline");
-        return false;
-      }
-    }
-
-    function doRedirect(url, idx, ms = null, message = "Connecting…") {
+    function doRedirect(idx) {
       if (redirected) return;
       redirected = true;
-
-      if (typeof idx === "number" && idx >= 0) {
-        markDot(idx, "selected");
-      }
-
-      rememberGood(url);
+      dots[idx].className = "server-dot selected";
+      setStatus(`Server ${idx + 1} is ready — redirecting…`);
+      setHint(`Server ${idx + 1} of ${n}`);
       setProgress(100);
-      setStatus(message);
-      setHint(ms != null ? `Ready in ~${ms} ms` : "Redirecting now");
-      smallNoteEl.textContent = url;
-
-      setTimeout(() => {
-        window.location.href = url;
-      }, REDIRECT_DELAY_MS);
+      setTimeout(() => { window.location.href = APPS[idx]; }, 300);
     }
 
-    function manualOpen() {
+    function redirectToFallback() {
       if (redirected) return;
-
-      const candidates = manualCandidates.length > 0 ? manualCandidates : APPS;
-      const idx = getRoundRobinIndex(candidates.length);
-      const url = candidates[idx];
-      const appIndex = APPS.indexOf(url);
-
-      doRedirect(url, appIndex, null, "Opening available server…");
+      const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+      if (online.length > 0) {
+        doRedirect(getNextServer(online));
+      } else {
+        doRedirect(Math.floor(Math.random() * n));
+      }
     }
 
-    async function testBatch(batch) {
-      batch.forEach(({ index }) => markDot(index, "checking"));
-
-      const wrapped = batch.map(({ url, index }) =>
-        fetchWithTimeout(url, TIMEOUT_MS)
-          .then(result => ({ ok: true, index, url, ms: result.ms }))
-          .catch(() => ({ ok: false, index, url, ms: null }))
-      );
-
-      const results = await Promise.all(wrapped);
-
-      for (const r of results) {
-        checkedCount += 1;
-        if (r.ok) {
-          markDot(r.index, r.ms < 1400 ? "online" : "slow");
-          manualCandidates.push(r.url);
-        } else {
-          markDot(r.index, "offline");
-        }
-      }
-
-      completedBatches += 1;
-
-      const pct = 15 + Math.round((checkedCount / APPS.length) * 70);
-      setProgress(pct);
-
-      const winners = results.filter(r => r.ok).sort((a, b) => a.ms - b.ms);
-
-      if (winners.length > 0) {
-        const best = winners[0];
-        doRedirect(best.url, best.index, best.ms, "Fastest available server found…");
-        return true;
-      }
-
-      return false;
+    function checkProgress() {
+      const done = results.filter(r => r !== null).length;
+      setProgress(Math.round((done / n) * 90));
     }
 
-    async function connectFast() {
-      setProgress(6);
-
-      const usedLastGood = await tryLastGoodFirst();
-      if (usedLastGood || redirected) return;
-
-      const ordered = prioritizeServers();
-
-      setStatus("Checking priority servers…");
-      setHint("Small batches for faster launch");
-
-      for (let i = 0; i < ordered.length; i += BATCH_SIZE) {
-        if (redirected) return;
-
-        const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
-        setStatus(`Checking servers… batch ${batchNumber}`);
-        const batch = ordered.slice(i, i + BATCH_SIZE);
-
-        const found = await testBatch(batch);
-        if (found || redirected) return;
-
-        if (completedBatches >= MAX_BATCHES_BEFORE_FALLBACK) {
-          break;
-        }
-
-        await delay(80);
+    // Redirect once all responded OR min delay passed and ≥1 online
+    function tryRedirect() {
+      if (redirected) return;
+      const done   = results.filter(r => r !== null).length;
+      const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+      const elapsed = Date.now() - startTime;
+      if ((done === n || elapsed >= MIN_DELAY_MS) && online.length > 0) {
+        setStatus(`${online.length} server(s) available`);
+        doRedirect(getNextServer(online));
       }
-
-      if (manualCandidates.length > 0) {
-        const url = manualCandidates[getRoundRobinIndex(manualCandidates.length)];
-        const idx = APPS.indexOf(url);
-        doRedirect(url, idx, null, "Opening a responsive server…");
-        return;
-      }
-
-      fallbackBtn.style.display = "inline-block";
-      setStatus("Servers may be cold-starting…");
-      setHint("Opening a fallback server");
-      const fallbackIndex = getRoundRobinIndex(APPS.length);
-      const fallbackUrl = APPS[fallbackIndex];
-      const appIndex = APPS.indexOf(fallbackUrl);
-      doRedirect(fallbackUrl, appIndex, null, "Opening fallback server…");
     }
 
+    // ── Ping all servers in parallel ──────────────────────────────────────────
+    APPS.forEach((url, i) => {
+      dots[i].className = "server-dot checking";
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const t0 = Date.now();
+
+      fetch(url, { mode: "no-cors", signal: controller.signal })
+        .then(() => {
+          clearTimeout(timer);
+          const ms = Date.now() - t0;
+          results[i] = { ok: true, ms };
+          dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
+          checkProgress();
+          tryRedirect();
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          results[i] = { ok: false, ms: null };
+          dots[i].className = "server-dot offline";
+          checkProgress();
+          tryRedirect();
+        });
+    });
+
+    // ── Hard fallback ─────────────────────────────────────────────────────────
     setTimeout(() => {
       if (!redirected) {
-        fallbackBtn.style.display = "inline-block";
-        setStatus("Taking longer than expected…");
-        setHint("Opening fallback now");
-        manualOpen();
+        const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+        if (online.length > 0) {
+          doRedirect(getNextServer(online));
+        } else {
+          setStatus("All servers are starting up…");
+          document.getElementById("fallbackBtn").style.display = "inline-block";
+          doRedirect(Math.floor(Math.random() * n));
+        }
       }
-    }, ABSOLUTE_FALLBACK_MS);
-
-    connectFast();
+    }, FALLBACK_MS);
   </script>
 </body>
 </html>
