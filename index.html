@@ -77,7 +77,6 @@
       margin-bottom: 2.2rem;
       letter-spacing: 0.01em;
       min-height: 1.3em;
-      transition: color 0.3s;
     }
 
     .spinner {
@@ -109,6 +108,7 @@
       transition: width 0.4s ease;
     }
 
+    /* 8 columns × 5 rows grid */
     .server-grid {
       display: grid;
       grid-template-columns: repeat(8, 10px);
@@ -116,6 +116,7 @@
       justify-content: center;
       margin-bottom: 1.8rem;
     }
+
     .server-dot {
       width: 10px;
       height: 10px;
@@ -123,12 +124,12 @@
       background: #ddd;
       transition: background 0.3s, transform 0.2s;
     }
-    .server-dot.checking  { background: #f0c040; animation: pulse 1s ease-in-out infinite; }
-    .server-dot.online    { background: #4caf50; transform: scale(1.2); }
-    .server-dot.slow      { background: #ff9800; }
-    .server-dot.offline   { background: #f44336; }
-    .server-dot.selected  { background: var(--blue); transform: scale(1.5);
-                            box-shadow: 0 0 0 3px rgba(75,139,255,.25); }
+    .server-dot.checking { background: #f0c040; animation: pulse 1s ease-in-out infinite; }
+    .server-dot.online   { background: #4caf50; transform: scale(1.2); }
+    .server-dot.slow     { background: #ff9800; }
+    .server-dot.offline  { background: #f44336; }
+    .server-dot.selected { background: var(--blue); transform: scale(1.5);
+                           box-shadow: 0 0 0 3px rgba(75,139,255,.25); }
 
     @keyframes pulse {
       0%,100% { opacity: 1; } 50% { opacity: 0.4; }
@@ -178,6 +179,7 @@
   <script>
     const APPS = [
       // ── Streamlit Cloud ───────────────────────────────────────────────────
+      "https://anyone-docking-1.streamlit.app/",
       "https://anyone-docking-2.streamlit.app/",
       "https://anyone-docking-3.streamlit.app/",
       "https://anyone-docking-4.streamlit.app/",
@@ -220,18 +222,15 @@
       "https://kowith-3-anyone-docking-4.hf.space/",
       "https://kowith-3-anyone-docking-5.hf.space/",
       "https://kowith-3-anyone-docking-6.hf.space/",
-      "https://kowith-3-anyone-docking-7.hf.space/",
     ];
 
-    const TIMEOUT_MS   = 25000;  // allow Streamlit ~15-20s cold start to wake up
+    const TIMEOUT_MS   = 25000;
     const MIN_DELAY_MS = 1200;
-    const FALLBACK_MS  = 28000;  // hard fallback after 28s
+    const FALLBACK_MS  = 28000;
 
     const n          = APPS.length;
     const results    = new Array(n).fill(null);
     let   redirected = false;
-    let   bestIdx    = -1;
-    let   bestMs     = Infinity;
     const startTime  = Date.now();
 
     const grid = document.getElementById("serverGrid");
@@ -243,30 +242,36 @@
       return d;
     });
 
-    // ── Round-robin counter (persisted in localStorage) ───────────────────
-    // Each visitor gets the next server in line, cycling through all online ones.
-    // This distributes load equally instead of always picking the fastest.
-    function getNextServer(onlineIndices) {
-      const key = "acd_rr_counter";
-      let counter = parseInt(localStorage.getItem(key) || "0");
-      const idx = onlineIndices[counter % onlineIndices.length];
-      localStorage.setItem(key, (counter + 1).toString());
-      return idx;
-    }
-
     function setStatus(msg)   { document.getElementById("status").textContent = msg; }
     function setHint(msg)     { document.getElementById("hint").textContent = msg; }
     function setProgress(pct) { document.getElementById("progressBar").style.width = pct + "%"; }
 
+    // Round-robin: prioritise Streamlit first, fall back to HuggingFace
+    // only when no Streamlit servers are online.
+    function getNextServer(onlineIndices) {
+      const key = "acd_rr_counter";
+      let counter = parseInt(localStorage.getItem(key) || "0");
+
+      // Split online servers into two pools
+      const stOnline = onlineIndices.filter(i => !APPS[i].includes(".hf.space"));
+      const hfOnline = onlineIndices.filter(i =>  APPS[i].includes(".hf.space"));
+
+      // Use Streamlit pool if any are online, else use HuggingFace
+      const pool = stOnline.length > 0 ? stOnline : hfOnline;
+
+      const idx = pool[counter % pool.length];
+      localStorage.setItem(key, (counter + 1).toString());
+      return idx;
+    }
+
     function doRedirect(idx) {
       if (redirected) return;
       redirected = true;
-      const url = APPS[idx];
       dots[idx].className = "server-dot selected";
       setStatus(`Server ${idx + 1} is ready — redirecting…`);
       setHint(`Server ${idx + 1} of ${n}`);
       setProgress(100);
-      setTimeout(() => { window.location.href = url; }, 300);
+      setTimeout(() => { window.location.href = APPS[idx]; }, 300);
     }
 
     function redirectToFallback() {
@@ -284,23 +289,19 @@
       setProgress(Math.round((done / n) * 90));
     }
 
-    // Wait for ALL servers to respond (or timeout), then pick via round-robin
     function tryRedirectRoundRobin() {
       if (redirected) return;
-      const done    = results.filter(r => r !== null).length;
-      const online  = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+      const done   = results.filter(r => r !== null).length;
+      const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
       const elapsed = Date.now() - startTime;
-
-      // Redirect once all responded, or min delay passed and we have ≥1 online
       if ((done === n || elapsed >= MIN_DELAY_MS) && online.length > 0) {
-        setStatus(`${online.length} server(s) available — distributing load…`);
+        setStatus(`${online.length} server(s) available — connecting…`);
         doRedirect(getNextServer(online));
       }
     }
 
     APPS.forEach((url, i) => {
       dots[i].className = "server-dot checking";
-
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
       const t0 = Date.now();
@@ -310,34 +311,16 @@
           clearTimeout(timer);
           const ms = Date.now() - t0;
           results[i] = { ok: true, ms };
-
-          if (ms < 2000) {
-            dots[i].className = "server-dot online";
-          } else {
-            dots[i].className = "server-dot slow";
-          }
-
+          dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
           checkProgress();
-
-          if (ms < bestMs) {
-            bestMs = ms;
-            bestIdx = i;
-          }
-
-          const elapsed = Date.now() - startTime;
-          const wait    = Math.max(0, MIN_DELAY_MS - elapsed);
-          setTimeout(() => {
-            if (!redirected && bestIdx >= 0) {
-              setStatus(`Found ${results.filter(r => r?.ok).length} available server(s)`);
-              doRedirect(bestIdx);
-            }
-          }, wait);
+          tryRedirectRoundRobin();
         })
         .catch(() => {
           clearTimeout(timer);
           results[i] = { ok: false, ms: null };
           dots[i].className = "server-dot offline";
           checkProgress();
+          tryRedirectRoundRobin();
         });
     });
 
@@ -345,7 +328,7 @@
       if (!redirected) {
         const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
         if (online.length > 0) {
-          doRedirect(online[Math.floor(Math.random() * online.length)]);
+          doRedirect(getNextServer(online));
         } else {
           setStatus("All servers are starting up…");
           document.getElementById("fallbackBtn").style.display = "inline-block";
