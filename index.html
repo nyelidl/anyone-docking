@@ -58,6 +58,7 @@
       margin-bottom: 1.4rem;
       filter: drop-shadow(0 4px 16px rgba(255,75,75,.25));
     }
+
     h1 {
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       font-size: 1.8rem;
@@ -72,7 +73,6 @@
     .subtitle {
       color: #888;
       font-size: 0.92rem;
-      font-weight: 400;
       margin-bottom: 2.2rem;
       letter-spacing: 0.01em;
       min-height: 1.3em;
@@ -90,9 +90,7 @@
       margin-bottom: 2rem;
     }
 
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     .progress-wrap {
       width: 220px;
@@ -110,13 +108,14 @@
       transition: width 0.4s ease;
     }
 
+    /* Server grid */
     .server-grid {
       display: flex;
       flex-wrap: wrap;
       gap: 5px;
       justify-content: center;
-      max-width: 320px;
-      margin-bottom: 1.8rem;
+      max-width: 340px;
+      margin-bottom: 0.6rem;
     }
     .server-dot {
       width: 10px;
@@ -124,17 +123,38 @@
       border-radius: 50%;
       background: #ddd;
       transition: background 0.3s, transform 0.2s;
+      cursor: default;
     }
-    .server-dot.checking  { background: #f0c040; animation: pulse 1s ease-in-out infinite; }
-    .server-dot.online    { background: #4caf50; transform: scale(1.2); }
-    .server-dot.slow      { background: #ff9800; }
-    .server-dot.offline   { background: #f44336; }
-    .server-dot.selected  { background: var(--blue); transform: scale(1.5);
-                            box-shadow: 0 0 0 3px rgba(75,139,255,.25); }
+    .server-dot.checking { background: #f0c040; animation: pulse 1s ease-in-out infinite; }
+    .server-dot.online   { background: #4caf50; transform: scale(1.2); }
+    .server-dot.slow     { background: #ff9800; }
+    .server-dot.offline  { background: #f44336; }
+    .server-dot.selected { background: var(--blue); transform: scale(1.5);
+                           box-shadow: 0 0 0 3px rgba(75,139,255,.25); }
 
     @keyframes pulse {
       0%,100% { opacity: 1; } 50% { opacity: 0.4; }
     }
+
+    /* Legend */
+    .legend {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+      font-size: 0.72rem;
+      color: #aaa;
+      margin-bottom: 1.6rem;
+    }
+    .legend span { display: flex; align-items: center; gap: 4px; }
+    .legend i {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+    }
+    .leg-st  { background: #4b8bff; }
+    .leg-hf  { background: #4caf50; }
+    .leg-off { background: #f44336; }
 
     .hint {
       font-size: 0.78rem;
@@ -153,7 +173,6 @@
       font-size: 0.9rem;
       font-weight: 500;
       cursor: pointer;
-      font-family: 'Inter', sans-serif;
       letter-spacing: 0.01em;
     }
     .fallback-btn:hover { opacity: 0.9; }
@@ -171,6 +190,11 @@
       <div class="progress-bar" id="progressBar"></div>
     </div>
     <div class="server-grid" id="serverGrid"></div>
+    <div class="legend">
+      <span><i class="leg-st"></i> Streamlit</span>
+      <span><i class="leg-hf"></i> HuggingFace</span>
+      <span><i class="leg-off"></i> Offline</span>
+    </div>
     <p class="hint" id="hint">Connecting to the fastest available server</p>
     <button class="fallback-btn" id="fallbackBtn" onclick="redirectToFallback()">
       Open app manually →
@@ -178,8 +202,11 @@
   </div>
 
   <script>
-    const APPS = [
-      // ── Streamlit Cloud ───────────────────────────────────────────────────
+    // ── Server list ──────────────────────────────────────────────────────────
+    // Streamlit apps are shuffled randomly so load spreads evenly.
+    // HuggingFace apps are always awake — used as reliable backup.
+
+    const STREAMLIT = [
       "https://anyone-docking-1.streamlit.app/",
       "https://anyone-docking-2.streamlit.app/",
       "https://anyone-docking-3.streamlit.app/",
@@ -200,7 +227,10 @@
       "https://anyone-docking-18.streamlit.app/",
       "https://anyone-docking-19.streamlit.app/",
       "https://anyone-docking-20.streamlit.app/",
-      // ── HuggingFace — kowith account ─────────────────────────────────────
+    ];
+
+    const HUGGING = [
+      // kowith account
       "https://kowith-anyone-docking.hf.space/",
       "https://kowith-anyone-docking-2.hf.space/",
       "https://kowith-anyone-docking-3.hf.space/",
@@ -208,7 +238,7 @@
       "https://kowith-anyone-docking-5.hf.space/",
       "https://kowith-anyone-docking-6.hf.space/",
       "https://kowith-anyone-docking-7.hf.space/",
-      // ── HuggingFace — kowith-2 account ───────────────────────────────────
+      // kowith-2 account
       "https://kowith-2-anyone-docking.hf.space/",
       "https://kowith-2-anyone-docking-2.hf.space/",
       "https://kowith-2-anyone-docking-3.hf.space/",
@@ -216,7 +246,7 @@
       "https://kowith-2-anyone-docking-5.hf.space/",
       "https://kowith-2-anyone-docking-6.hf.space/",
       "https://kowith-2-anyone-docking-7.hf.space/",
-      // ── HuggingFace — kowith-3 account ───────────────────────────────────
+      // kowith-3 account
       "https://kowith-3-anyone-docking.hf.space/",
       "https://kowith-3-anyone-docking-2.hf.space/",
       "https://kowith-3-anyone-docking-3.hf.space/",
@@ -226,10 +256,25 @@
       "https://kowith-3-anyone-docking-7.hf.space/",
     ];
 
-    const TIMEOUT_MS   = 8000;
-    const MIN_DELAY_MS = 1200;
-    const FALLBACK_MS  = 10000;
+    // Shuffle Streamlit randomly so load spreads across all 20 apps
+    // (not always sending everyone to app-1 first)
+    const shuffled = STREAMLIT.slice().sort(() => Math.random() - 0.5);
 
+    // Final order: shuffled Streamlit first, then HuggingFace as backup
+    const APPS = [...shuffled, ...HUGGING];
+
+    // Which indices are Streamlit vs HuggingFace (for dot colouring)
+    const IS_HF = APPS.map(u => u.includes(".hf.space"));
+
+    // ── Timing ───────────────────────────────────────────────────────────────
+    // Streamlit awake: ~300-800ms   sleeping: 10-20s (→ timeout → offline)
+    // HuggingFace:     ~200-600ms   always awake
+    // 3s timeout: sleeping Streamlit marked offline, awake ones compete fairly
+    const TIMEOUT_MS   = 3000;   // ← shorter timeout filters sleeping ST apps
+    const MIN_DELAY_MS = 1200;   // min time on page before redirect
+    const FALLBACK_MS  = 10000;  // hard fallback if nothing responds
+
+    // ── State ─────────────────────────────────────────────────────────────────
     const n         = APPS.length;
     const results   = new Array(n).fill(null);
     let   redirected = false;
@@ -237,15 +282,17 @@
     let   bestMs     = Infinity;
     const startTime  = Date.now();
 
+    // ── Build dot grid ────────────────────────────────────────────────────────
     const grid = document.getElementById("serverGrid");
-    const dots = APPS.map((_, i) => {
+    const dots = APPS.map((url, i) => {
       const d = document.createElement("div");
       d.className = "server-dot";
-      d.title = `Server ${i + 1}`;
+      d.title = `Server ${i + 1} (${IS_HF[i] ? "HuggingFace" : "Streamlit"})`;
       grid.appendChild(d);
       return d;
     });
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
     function setStatus(msg)   { document.getElementById("status").textContent = msg; }
     function setHint(msg)     { document.getElementById("hint").textContent = msg; }
     function setProgress(pct) { document.getElementById("progressBar").style.width = pct + "%"; }
@@ -254,8 +301,9 @@
       if (redirected) return;
       redirected = true;
       dots[idx].className = "server-dot selected";
-      setStatus(`Server ${idx + 1} is ready — redirecting…`);
-      setHint(`Fastest response: ${results[idx]?.ms ?? "?"}ms`);
+      const type = IS_HF[idx] ? "HuggingFace" : "Streamlit";
+      setStatus(`${type} server ready — redirecting…`);
+      setHint(`Response time: ${results[idx]?.ms ?? "?"}ms`);
       setProgress(100);
       setTimeout(() => { window.location.href = APPS[idx]; }, 300);
     }
@@ -270,6 +318,7 @@
       setProgress(Math.round((done / n) * 90));
     }
 
+    // ── Ping all servers in parallel ──────────────────────────────────────────
     APPS.forEach((url, i) => {
       dots[i].className = "server-dot checking";
 
@@ -282,15 +331,22 @@
           clearTimeout(timer);
           const ms = Date.now() - t0;
           results[i] = { ok: true, ms };
+
+          // Colour: green = fast, orange = slow
           dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
           checkProgress();
 
+          // Track fastest overall
           if (ms < bestMs) { bestMs = ms; bestIdx = i; }
 
+          // Redirect as soon as first fast response + min delay elapsed
           const wait = Math.max(0, MIN_DELAY_MS - (Date.now() - startTime));
           setTimeout(() => {
             if (!redirected && bestIdx >= 0) {
-              setStatus(`Found ${results.filter(r => r?.ok).length} available server(s)`);
+              const online = results.filter(r => r?.ok).length;
+              const hfOnline = results.filter((r,j) => r?.ok && IS_HF[j]).length;
+              const stOnline = online - hfOnline;
+              setStatus(`${online} server(s) online — ${stOnline} Streamlit · ${hfOnline} HuggingFace`);
               doRedirect(bestIdx);
             }
           }, wait);
@@ -303,6 +359,7 @@
         });
     });
 
+    // ── Hard fallback ─────────────────────────────────────────────────────────
     setTimeout(() => {
       if (!redirected) {
         const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
@@ -315,6 +372,14 @@
         }
       }
     }, FALLBACK_MS);
+
+    // ── Keep Streamlit awake (background pings every 10 min) ──────────────────
+    // Prevents Streamlit apps from sleeping so they compete fairly next visit
+    setInterval(() => {
+      STREAMLIT.forEach(url => {
+        fetch(url, { mode: "no-cors" }).catch(() => {});
+      });
+    }, 10 * 60 * 1000);  // every 10 minutes
   </script>
 </body>
 </html>
