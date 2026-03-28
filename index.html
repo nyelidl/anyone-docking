@@ -258,7 +258,7 @@
       redirected = true;
       dots[idx].className = "server-dot selected";
       setStatus(`Server ${idx + 1} is ready — redirecting…`);
-      setHint(`Server ${idx + 1} of ${n}<br>Powered by Streamlit and Hugging Face`);
+      setHint(`Server ${idx + 1} of ${n}`);
       setProgress(100);
       setTimeout(() => { window.location.href = APPS[idx]; }, 300);
     }
