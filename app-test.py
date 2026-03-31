@@ -2448,6 +2448,144 @@ with tab_basic:
                     )
                 vbp.zoomTo({"model": _lig_m})
                 show3d(vbp, height=440)
+
+                # ── 📸 Capture binding pocket ─────────────────────────────────
+                import re as _re_bp, base64 as _b64bp
+                _bp_fn  = (
+                    "Pose" + str(pose_idx+1) + "_"
+                    + st.session_state.get("ligand_name", "Ligand")
+                    + "_binding_pocket"
+                )
+                _bp_3d_html = ""
+                try:
+                    _vbp2 = py3Dmol.view(width=900, height=480)
+                    _vbp2.setBackgroundColor("white")
+                    _mbp2 = 0
+                    if st.session_state.receptor_fh and os.path.exists(
+                            st.session_state.receptor_fh):
+                        _vbp2.addModel(
+                            open(st.session_state.receptor_fh).read(), "pdb")
+                        _vbp2.setStyle({"model": _mbp2}, {
+                            "cartoon": {"color": "spectrum", "opacity": 0.45}
+                        })
+                        if _show_surface:
+                            _vbp2.addSurface(
+                                py3Dmol.SAS,
+                                {"opacity": 0.55, "color": "white"},
+                                {"model": _mbp2},
+                            )
+                        _mbp2 += 1
+                    _vbp2.addModel(Chem.MolToMolBlock(sel_mol), "mol")
+                    _lm_bp2 = _mbp2
+                    _vbp2.setStyle({"model": _lm_bp2}, {
+                        "stick": {"colorscheme": "cyanCarbon", "radius": 0.30}
+                    })
+                    if st.session_state.receptor_fh and os.path.exists(
+                            st.session_state.receptor_fh):
+                        for _rb2 in get_interacting_residues(
+                                st.session_state.receptor_fh, sel_mol,
+                                cutoff=_cutoff):
+                            _vbp2.setStyle(
+                                {"model": 0, "chain": _rb2["chain"],
+                                 "resi": _rb2["resi"]},
+                                {"stick": {"colorscheme": "orangeCarbon",
+                                           "radius": 0.20}})
+                            if _show_labels:
+                                _vbp2.addLabel(
+                                    _rb2["resn"] + str(_rb2["resi"]),
+                                    {"fontSize": 11, "fontColor": "yellow",
+                                     "backgroundColor": "black",
+                                     "backgroundOpacity": 0.65,
+                                     "inFront": True, "showBackground": True},
+                                    {"model": 0, "chain": _rb2["chain"],
+                                     "resi": _rb2["resi"]})
+                    _vbp2.zoomTo({"model": _lm_bp2})
+                    _raw_bp = _vbp2._make_html()
+                    _bp_3d_html = _re_bp.sub(
+                        r'(width|height)\s*[:=]\s*["\']?\d+px?["\']?',
+                        lambda m: m.group(1) + ":100%", _raw_bp)
+                except Exception as _ebp:
+                    _bp_3d_html = ("<p style='padding:20px;color:#aaa'>"
+                                   "3D error: " + str(_ebp) + "</p>")
+
+                _bp_title = (
+                    "Pose " + str(pose_idx+1) + "  \u00b7  "
+                    + st.session_state.get("ligand_name", "Ligand")
+                    + "  \u00b7  Binding Pocket"
+                )
+                _JS_BP_PNG = (
+                    "function capPNG(){var s=document.getElementById('st');"
+                    "s.textContent='Rendering\u2026 please wait 2.5s';"
+                    "setTimeout(function(){html2canvas(document.getElementById('cr'),{"
+                    "backgroundColor:'#ffffff',scale:3,useCORS:true,"
+                    "logging:false,allowTaint:true"
+                    "}).then(function(c){var a=document.createElement('a');"
+                    "a.download=FN+'.png';a.href=c.toDataURL('image/png');"
+                    "a.click();s.textContent='\u2705 PNG downloaded!';"
+                    "}).catch(function(e){s.textContent='\u274c '+e.message;});},2500);}"
+                )
+                _JS_BP_SVG = (
+                    "function capSVG(){var s=document.getElementById('st');"
+                    "s.textContent='Building SVG\u2026 please wait 2.5s';"
+                    "setTimeout(function(){html2canvas(document.getElementById('cr'),{"
+                    "backgroundColor:'#ffffff',scale:3,useCORS:true,"
+                    "logging:false,allowTaint:true"
+                    "}).then(function(c){var w=c.width,h=c.height;"
+                    "var img=c.toDataURL('image/png');"
+                    "var svgNS='http://www.w3.org/2000/svg';"
+                    "var root=document.createElementNS(svgNS,'svg');"
+                    "root.setAttribute('xmlns',svgNS);"
+                    "root.setAttribute('width',w);root.setAttribute('height',h);"
+                    "var im=document.createElementNS(svgNS,'image');"
+                    "im.setAttribute('href',img);"
+                    "im.setAttribute('width',w);im.setAttribute('height',h);"
+                    "root.appendChild(im);"
+                    "var blob=new Blob([new XMLSerializer().serializeToString(root)],"
+                    "{type:'image/svg+xml'});"
+                    "var a=document.createElement('a');"
+                    "a.download=FN+'.svg';a.href=URL.createObjectURL(blob);"
+                    "a.click();s.textContent='\u2705 SVG downloaded!';"
+                    "}).catch(function(e){s.textContent='\u274c '+e.message;});},2500);}"
+                )
+                _bp_capture_html = (
+                    "<!DOCTYPE html><html><head>"
+                    "<script src='https://cdnjs.cloudflare.com/ajax/libs/"
+                    "html2canvas/1.4.1/html2canvas.min.js'></script>"
+                    "<style>"
+                    "*{margin:0;padding:0;box-sizing:border-box;"
+                    "font-family:'Helvetica Neue',Arial,sans-serif;}"
+                    "body{background:#fff;padding:8px;}"
+                    ".title{text-align:center;font-size:13px;font-weight:700;"
+                    "color:#111;margin-bottom:6px;}"
+                    ".viewer{border:1px solid #e0e0e0;border-radius:8px;"
+                    "overflow:hidden;background:#fff;height:480px;}"
+                    ".viewer>div,.viewer iframe"
+                    "{width:100%!important;height:100%!important;}"
+                    ".row{display:flex;gap:8px;margin-top:8px;}"
+                    ".btn{flex:1;padding:9px 0;border:none;border-radius:7px;"
+                    "font-size:13px;font-weight:600;cursor:pointer;color:#fff;}"
+                    ".bp{background:linear-gradient(90deg,#ff4b4b,#cc44cc);}"
+                    ".bs{background:linear-gradient(90deg,#4b8bff,#cc44cc);}"
+                    "#st{text-align:center;font-size:11px;color:#888;"
+                    "margin-top:5px;min-height:16px;}"
+                    "</style></head><body>"
+                    "<div id='cr'>"
+                    "<div class='title'>" + _bp_title + "</div>"
+                    "<div class='viewer'>" + _bp_3d_html + "</div>"
+                    "</div>"
+                    "<div class='row'>"
+                    "<button class='btn bp' onclick='capPNG()'>"
+                    "\U0001f4f8 Capture &amp; Download PNG</button>"
+                    "<button class='btn bs' onclick='capSVG()'>"
+                    "\U0001f3a8 Capture &amp; Download SVG</button>"
+                    "</div>"
+                    "<div id='st'></div>"
+                    "<script>var FN='" + _bp_fn + "';"
+                    + _JS_BP_PNG + _JS_BP_SVG +
+                    "</script></body></html>"
+                )
+                components.html(_bp_capture_html, height=620, scrolling=False)
+
             except Exception as _e:
                 st.info(f"Binding pocket viewer error: {_e}")
 
