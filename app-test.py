@@ -2615,170 +2615,74 @@ with tab_basic:
                             "or **🔬 RDKit 2D Diagram** tab above."
                         )
 
-                # ── 💾 Capture both panels as single figure ───────────────────
+                # ── 💾 Save diagram + 🤖 AI caption ─────────────────────────
                 st.markdown("---")
-                st.markdown("#### 💾 Save as Single Figure")
-                st.caption(
-                    "Renders **(a)** binding pocket + **(b)** 2D diagram "
-                    "side by side. Click **📸 Capture & Download** to save as PNG."
+
+                import io as _io_cap2, base64 as _b64cap2
+
+                # Get whichever diagram is available
+                _sv_acd = st.session_state.get("pv_image_svg_new")
+                _sv_rdk = st.session_state.get("pv_image_svg_rdk")
+                _sv_use = _sv_acd or _sv_rdk
+                _sv_src = "acd" if _sv_acd else ("rdk" if _sv_rdk else "")
+                _sv_bytes = (
+                    _sv_use if isinstance(_sv_use, bytes)
+                    else _sv_use.encode() if _sv_use else None
+                )
+                _fn_stem = (
+                    f"pose{pose_idx+1}_"
+                    f"{st.session_state.get('ligand_name','lig')}"
                 )
 
-                import io as _io_cap, base64 as _b64cap
-
-                # (b) 2D diagram → base64 PNG via cairosvg
-                _d_b64 = ""; _d_src = ""
-                _acd_svg_cap = st.session_state.get("pv_image_svg_new")
-                _rdk_svg_cap = st.session_state.get("pv_image_svg_rdk")
-                _diag_cap    = _acd_svg_cap or _rdk_svg_cap
-                _d_src       = "Anyone Can Dock" if _acd_svg_cap else (
-                    "RDKit" if _rdk_svg_cap else "")
-                if _diag_cap:
-                    try:
-                        import cairosvg as _csvcap
-                        _svg_cap = (_diag_cap if isinstance(_diag_cap, bytes)
-                                    else _diag_cap.encode())
-                        _d_b64 = _b64cap.b64encode(
-                            _csvcap.svg2png(bytestring=_svg_cap, dpi=150)
-                        ).decode()
-                    except Exception:
-                        pass
-
-                # (a) Binding pocket → py3Dmol HTML
-                _a_3d_html = ""
-                try:
-                    import re as _re_cap2
-                    _rec_cap = st.session_state.get("receptor_fh", "")
-                    from rdkit import Chem as _Chem_cap
-                    _vc2 = py3Dmol.view(width=480, height=360)
-                    _vc2.setBackgroundColor("white")
-                    _mc2 = 0
-                    if _rec_cap and os.path.exists(_rec_cap):
-                        _vc2.addModel(open(_rec_cap).read(), "pdb")
-                        _vc2.setStyle({"model": _mc2}, {
-                            "cartoon": {"color": "spectrum", "opacity": 0.25}
-                        })
-                        _mc2 += 1
-                    _vc2.addModel(_Chem_cap.MolToMolBlock(sel_mol), "mol")
-                    _lm2 = _mc2
-                    _vc2.setStyle({"model": _lm2}, {
-                        "stick": {"colorscheme": "cyanCarbon", "radius": 0.25}
-                    })
-                    if _rec_cap and os.path.exists(_rec_cap):
-                        for _rb2 in get_interacting_residues(
-                                _rec_cap, sel_mol, cutoff=4.5):
-                            _vc2.setStyle(
-                                {"model": 0, "chain": _rb2["chain"],
-                                 "resi": _rb2["resi"]},
-                                {"stick": {"colorscheme": "orangeCarbon",
-                                           "radius": 0.16}},
+                # ── Row: SVG + PNG download buttons ──────────────────────────
+                st.markdown("#### 💾 Save 2D Diagram")
+                _sc1, _sc2 = st.columns(2)
+                with _sc1:
+                    if _sv_bytes:
+                        st.download_button(
+                            "⬇ Download SVG",
+                            _sv_bytes,
+                            file_name=f"{_fn_stem}_diagram.svg",
+                            mime="image/svg+xml",
+                            key="db_dl_svg2",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.button(
+                            "⬇ SVG (no diagram yet)",
+                            disabled=True, key="db_dl_svg2_dis",
+                            use_container_width=True,
+                        )
+                with _sc2:
+                    _png_ready = False
+                    if _sv_bytes:
+                        try:
+                            import cairosvg as _csv2
+                            _png_b = _csv2.svg2png(bytestring=_sv_bytes, dpi=200)
+                            st.download_button(
+                                "⬇ Download PNG",
+                                _png_b,
+                                file_name=f"{_fn_stem}_diagram.png",
+                                mime="image/png",
+                                key="db_dl_png2",
+                                use_container_width=True,
                             )
-                            _vc2.addLabel(
-                                f"{_rb2['resn']}{_rb2['resi']}",
-                                {"fontSize": 8, "fontColor": "yellow",
-                                 "backgroundColor": "black",
-                                 "backgroundOpacity": 0.6, "inFront": True,
-                                 "showBackground": True},
-                                {"model": 0, "chain": _rb2["chain"],
-                                 "resi": _rb2["resi"]},
-                            )
-                    _vc2.zoomTo({"model": _lm2})
-                    _raw2 = _vc2._make_html()
-                    _a_3d_html = _re_cap2.sub(
-                        r'width\s*[:=]\s*["\']?\d+px?["\']?', "width:100%", _raw2
-                    )
-                    _a_3d_html = _re_cap2.sub(
-                        r'height\s*[:=]\s*["\']?\d+px?["\']?', "height:100%", _a_3d_html
-                    )
-                except Exception as _e3c:
-                    _a_3d_html = (
-                        f"<p style='color:#888;padding:20px;font-size:13px'>"
-                        f"3D viewer unavailable: {_e3c}</p>"
-                    )
+                            _png_ready = True
+                        except Exception as _epng:
+                            st.info(f"PNG export needs cairosvg: {_epng}")
+                    if not _png_ready and not _sv_bytes:
+                        st.button(
+                            "⬇ PNG (no diagram yet)",
+                            disabled=True, key="db_dl_png2_dis",
+                            use_container_width=True,
+                        )
 
-                _title_cap = (
-                    f"Pose {pose_idx+1} · "
-                    f"{st.session_state.get('ligand_name', 'Ligand')} · "
-                    f"Anyone Can Dock"
-                )
-
-                _capture_html = f"""
-<html><head>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<style>
-  *{{margin:0;padding:0;box-sizing:border-box;font-family:'Helvetica Neue',Arial,sans-serif;}}
-  body{{background:#fff;padding:12px;}}
-  .fig-title{{text-align:center;font-size:15px;font-weight:700;color:#1a1a1a;
-    margin-bottom:10px;}}
-  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;
-    align-items:start;}}
-  .panel-3d{{border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;
-    background:#fff;position:relative;height:380px;}}
-  .panel-3d>div,.panel-3d iframe{{width:100%!important;height:100%!important;}}
-  .panel-img{{border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;
-    background:#fff;position:relative;}}
-  .panel-label{{position:absolute;top:6px;left:8px;font-size:13px;
-    font-weight:700;color:#1a1a1a;background:rgba(255,255,255,0.85);
-    padding:1px 5px;border-radius:3px;z-index:10;}}
-  .panel-img img{{width:100%;height:auto;display:block;}}
-  .no-diag{{display:flex;align-items:center;justify-content:center;
-    min-height:200px;color:#aaa;font-size:13px;text-align:center;padding:20px;}}
-  .btn-row{{display:flex;gap:10px;margin-top:12px;justify-content:center;}}
-  .btn{{padding:10px 28px;border:none;border-radius:8px;font-size:14px;
-    font-weight:600;cursor:pointer;
-    background:linear-gradient(90deg,#ff4b4b,#cc44cc);
-    color:#fff;transition:opacity 0.2s;}}
-  .btn:hover{{opacity:0.88;}}
-  #status{{text-align:center;font-size:12px;color:#888;margin-top:6px;}}
-</style>
-</head><body>
-<div id="capture-root">
-  <div class="fig-title">{_title_cap}</div>
-  <div class="grid">
-    <div class="panel-3d">
-      <span class="panel-label">(a)</span>
-      {_a_3d_html}
-    </div>
-    <div class="panel-img">
-      <span class="panel-label">(b)</span>
-      {"<img src='data:image/png;base64," + _d_b64 + "' />"
-       if _d_b64 else
-       "<div class='no-diag'>Generate a 2D diagram first<br>(🧬 or 🔬 tab above)</div>"}
-    </div>
-  </div>
-</div>
-<div class="btn-row">
-  <button class="btn" onclick="captureAll()">📸 Capture &amp; Download PNG</button>
-</div>
-<div id="status"></div>
-<script>
-function captureAll(){{
-  document.getElementById("status").textContent =
-    "Rendering 3D viewer… please wait a moment.";
-  setTimeout(function(){{
-    html2canvas(document.getElementById("capture-root"),{{
-      backgroundColor:"#ffffff", scale:2, useCORS:true,
-      logging:false, allowTaint:true,
-    }}).then(function(canvas){{
-      var a=document.createElement("a");
-      a.download="{_title_cap.replace(" · ","_").replace(" ","_")}_dashboard.png";
-      a.href=canvas.toDataURL("image/png");
-      a.click();
-      document.getElementById("status").textContent="✅ Downloaded!";
-    }}).catch(function(e){{
-      document.getElementById("status").textContent="❌ "+e.message;
-    }});
-  }}, 1500);
-}}
-</script>
-</body></html>"""
-                components.html(_capture_html, height=500, scrolling=False)
-
-                # ── 🤖 AI Caption + Summary Generator ────────────────────────
+                # ── 🤖 AI Figure Caption & Summary ───────────────────────────
                 st.markdown("---")
                 st.markdown("#### 🤖 AI Figure Caption & Summary")
                 st.caption(
-                    "Generates a publication-ready figure caption and results "
-                    "paragraph using your docking data. Powered by Claude."
+                    "Auto-generates a publication-ready figure caption and "
+                    "results paragraph from your docking data. Powered by Claude."
                 )
 
                 if st.button(
@@ -2786,169 +2690,157 @@ function captureAll(){{
                     key="db_ai_caption_btn",
                     use_container_width=True,
                 ):
-                    # ── Gather all context from session state ─────────────────
-                    _ai_lig   = st.session_state.get("ligand_name", "the ligand")
-                    _ai_pdb   = st.session_state.get("pdb_token", "")
-                    _ai_cid   = st.session_state.get("cocrystal_ligand_id", "")
+                    _ai_lig       = st.session_state.get("ligand_name", "the ligand")
+                    _ai_pdb       = st.session_state.get("pdb_token", "")
+                    _ai_cid       = st.session_state.get("cocrystal_ligand_id", "")
                     _ai_ref_score = (
                         st.session_state.get("confirmed_ref_score")
                         or st.session_state.get("redock_score")
                     )
-                    _ai_ref_name = (
+                    _ai_ref_name  = (
                         st.session_state.get("confirmed_ref_name")
                         or _ai_cid or "co-crystal reference"
                     )
-                    _ai_ref_pose = st.session_state.get("confirmed_ref_pose", "")
-
-                    # Score table info
-                    _ai_scores   = []
-                    _ai_best_score = None
-                    _ai_n_poses  = 0
+                    _ai_ref_pose  = st.session_state.get("confirmed_ref_pose", "")
+                    _ai_scores    = []
+                    _ai_best      = None
+                    _ai_n_poses   = 0
                     if df is not None:
-                        _ai_scores   = df["Affinity (kcal/mol)"].tolist()
-                        _ai_best_score = min(_ai_scores)
-                        _ai_n_poses  = len(_ai_scores)
+                        _ai_scores  = df["Affinity (kcal/mol)"].tolist()
+                        _ai_best    = min(_ai_scores)
+                        _ai_n_poses = len(_ai_scores)
 
-                    # Interacting residues
                     _ai_residues = []
                     try:
                         _rec_ai = st.session_state.get("receptor_fh", "")
                         if _rec_ai and os.path.exists(_rec_ai):
-                            _ir_ai = get_interacting_residues(
-                                _rec_ai, sel_mol, cutoff=4.5
-                            )
                             _ai_residues = [
-                                f"{r['resn']}{r['resi']}" for r in _ir_ai
+                                f"{r['resn']}{r['resi']}"
+                                for r in get_interacting_residues(
+                                    _rec_ai, sel_mol, cutoff=4.5
+                                )
                             ]
                     except Exception:
                         pass
 
-                    # Detailed interactions from _detect_all_interactions
-                    _ai_interactions = []
+                    _ai_ints = []
                     try:
-                        from core import _detect_all_interactions
+                        from core import _detect_all_interactions as _dai
                         _rec_ai2 = st.session_state.get("receptor_fh", "")
                         if _rec_ai2 and os.path.exists(_rec_ai2):
-                            _ints = _detect_all_interactions(sel_mol, _rec_ai2)
-                            for _it in _ints:
-                                _ai_interactions.append(
-                                    f"{_it['itype'].replace('_',' ')} with "
-                                    f"{_it['resname']}{_it['resid']} "
+                            for _it in _dai(sel_mol, _rec_ai2):
+                                _ai_ints.append(
+                                    f"{_it['itype'].replace('_',' ')} "
+                                    f"with {_it['resname']}{_it['resid']} "
                                     f"({_it['distance']:.1f} Å)"
                                 )
                     except Exception:
                         pass
 
-                    # Diagram source
                     _ai_diag_src = (
-                        "Anyone Can Dock 2D diagram"
-                        if st.session_state.get("pv_image_svg_new")
-                        else ("RDKit 2D diagram"
-                              if st.session_state.get("pv_image_svg_rdk")
-                              else "not generated")
+                        "Anyone Can Dock 2D diagram" if _sv_acd
+                        else "RDKit 2D diagram" if _sv_rdk
+                        else "not generated"
                     )
 
-                    # ── Build structured prompt ───────────────────────────────
-                    _ai_prompt = f"""You are a computational chemistry expert helping write scientific publications.
+                    _ai_prompt = f"""You are a computational chemistry expert writing for a scientific journal.
 
-Given the following molecular docking results, write TWO things:
+Given the molecular docking results below, write TWO things:
 
-1. **FIGURE CAPTION** — A concise, publication-ready caption for a 4-panel figure (a-d). Explain what each subfigure shows:
-   - (a) Vina binding affinity scores across all docking poses
-   - (b) 3D overlay of the top-ranked docked pose vs the co-crystal reference ligand
-   - (c) Binding pocket view showing key interacting residues
-   - (d) 2D interaction diagram ({_ai_diag_src})
+1. FIGURE CAPTION — publication-ready caption for a 2-panel figure:
+   - (a) Binding pocket showing key interacting residues (3D view, orange sticks = residues, cyan = docked ligand)
+   - (b) 2D interaction diagram ({_ai_diag_src}), showing interaction types, residues, and binding energy
 
-2. **RESULTS PARAGRAPH** — A 3-5 sentence paragraph suitable for the Results section of a paper. Include: binding scores, comparison to reference, key residues, interaction types, and your interpretation of whether this is a good or poor binder.
+2. RESULTS PARAGRAPH — 3-5 sentences for the Results section covering:
+   - Best binding affinity and comparison to co-crystal reference (if available)
+   - Key residues and interaction types (H-bonds, hydrophobic, π-π, etc.)
+   - Interpretation: is this a good or poor binder and why?
 
----
 DOCKING DATA:
 - Ligand: {_ai_lig}
-- Protein/PDB: {_ai_pdb if _ai_pdb else "uploaded receptor"}
-- Number of poses: {_ai_n_poses}
-- Binding affinity scores (kcal/mol): {", ".join(f"{s:.2f}" for s in _ai_scores) if _ai_scores else "not available"}
-- Best pose score: {f"{_ai_best_score:.2f} kcal/mol" if _ai_best_score is not None else "not available"}
-- Co-crystal reference: {_ai_ref_name}{f" (pose {_ai_ref_pose})" if _ai_ref_pose else ""}: {f"{_ai_ref_score:.2f} kcal/mol" if _ai_ref_score is not None else "not available"}
-- Residues within 4.5 Å: {", ".join(_ai_residues) if _ai_residues else "not available"}
-- Detected interactions: {"; ".join(_ai_interactions[:10]) if _ai_interactions else "not available"}
+- Protein / PDB: {_ai_pdb if _ai_pdb else "uploaded receptor"}
 - Docking software: AutoDock Vina 1.2.7
+- Number of poses generated: {_ai_n_poses}
+- All pose scores (kcal/mol): {", ".join(f"{{s:.2f}}" for s in _ai_scores) if _ai_scores else "N/A"}
+- Best pose score: {f"{{_ai_best:.2f}} kcal/mol" if _ai_best is not None else "N/A"}
+- Co-crystal reference ({_ai_ref_name}{f", pose {{_ai_ref_pose}}" if _ai_ref_pose else ""}): {f"{{_ai_ref_score:.2f}} kcal/mol" if _ai_ref_score is not None else "not available"}
+- Residues within 4.5 Å: {", ".join(_ai_residues) if _ai_residues else "N/A"}
+- Detected interactions: {"; ".join(_ai_ints[:12]) if _ai_ints else "N/A"}
 - 2D diagram source: {_ai_diag_src}
 
-Format your response with clear headers:
+Reply using EXACTLY this format:
+
 **Figure Caption:**
-[caption here]
+Figure X. [caption text]
 
 **Results Paragraph:**
-[paragraph here]
+[paragraph text]
 
-Use formal scientific English. Be specific with numbers. Do not invent data not provided above."""
+Rules: formal scientific English, be specific with numbers, do not invent data not listed above."""
 
-                    # ── Call Claude API ───────────────────────────────────────
-                    try:
-                        import requests as _req_ai
-                        _ai_resp = _req_ai.post(
-                            "https://api.anthropic.com/v1/messages",
-                            headers={
-                                "Content-Type":      "application/json",
-                                "anthropic-version": "2023-06-01",
-                            },
-                            json={
-                                "model":      "claude-sonnet-4-20250514",
-                                "max_tokens": 1000,
-                                "messages": [
-                                    {"role": "user", "content": _ai_prompt}
-                                ],
-                            },
-                            timeout=30,
-                        )
-                        _ai_resp.raise_for_status()
-                        _ai_json = _ai_resp.json()
-                        _ai_text = _ai_json["content"][0]["text"]
-                        st.session_state["db_ai_caption"] = _ai_text
-                    except Exception as _eai:
-                        st.error(f"AI generation failed: {_eai}")
+                    with st.spinner("Generating with Claude…"):
+                        try:
+                            import requests as _req_ai
+                            _ai_r = _req_ai.post(
+                                "https://api.anthropic.com/v1/messages",
+                                headers={
+                                    "Content-Type": "application/json",
+                                    "anthropic-version": "2023-06-01",
+                                },
+                                json={
+                                    "model": "claude-sonnet-4-20250514",
+                                    "max_tokens": 1000,
+                                    "messages": [
+                                        {"role": "user", "content": _ai_prompt}
+                                    ],
+                                },
+                                timeout=30,
+                            )
+                            _ai_r.raise_for_status()
+                            st.session_state["db_ai_caption"] = (
+                                _ai_r.json()["content"][0]["text"]
+                            )
+                        except Exception as _eai:
+                            st.error(f"AI generation failed: {_eai}")
 
-                # ── Display result + copy button ──────────────────────────────
                 _ai_result = st.session_state.get("db_ai_caption", "")
                 if _ai_result:
                     st.markdown(_ai_result)
                     st.markdown("---")
-                    # Copy-to-clipboard via components.html
-                    import base64 as _b64ai
-                    _escaped = _ai_result.replace("\\", "\\\\").replace(
-                        "`", "\\`"
-                    ).replace("$", "\\$")
+                    _escaped = (
+                        _ai_result
+                        .replace("\\", "\\\\")
+                        .replace("`", "\\`")
+                        .replace("$", "\\$")
+                    )
                     components.html(f"""
 <html><body style="margin:0;padding:0;">
-<button onclick="copyText()" style="
-    padding:10px 24px; background:linear-gradient(90deg,#ff4b4b,#cc44cc);
-    color:#fff; border:none; border-radius:8px; font-size:14px;
-    font-weight:600; cursor:pointer; width:100%; font-family:sans-serif;">
+<button onclick="copyText()" style="padding:10px 24px;
+  background:linear-gradient(90deg,#ff4b4b,#cc44cc);color:#fff;
+  border:none;border-radius:8px;font-size:14px;font-weight:600;
+  cursor:pointer;width:100%;font-family:sans-serif;">
   📋 Copy Caption &amp; Summary to Clipboard
 </button>
 <div id="msg" style="text-align:center;font-size:12px;color:#4caf50;
-    margin-top:6px;font-family:sans-serif;height:18px;"></div>
+  margin-top:6px;font-family:sans-serif;height:18px;"></div>
 <script>
-function copyText() {{
-  const text = `{_escaped}`;
-  navigator.clipboard.writeText(text).then(function() {{
-    document.getElementById("msg").textContent = "✅ Copied to clipboard!";
-    setTimeout(()=>document.getElementById("msg").textContent="", 2500);
-  }}).catch(function() {{
-    // Fallback
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-    document.getElementById("msg").textContent = "✅ Copied!";
-    setTimeout(()=>document.getElementById("msg").textContent="", 2500);
-  }});
+function copyText(){{
+  const text=`{_escaped}`;
+  navigator.clipboard.writeText(text)
+    .then(()=>{{
+      document.getElementById("msg").textContent="✅ Copied!";
+      setTimeout(()=>document.getElementById("msg").textContent="",2500);
+    }}).catch(()=>{{
+      const ta=document.createElement("textarea");
+      ta.value=text; document.body.appendChild(ta);
+      ta.select(); document.execCommand("copy");
+      document.body.removeChild(ta);
+      document.getElementById("msg").textContent="✅ Copied!";
+      setTimeout(()=>document.getElementById("msg").textContent="",2500);
+    }});
 }}
 </script>
 </body></html>""", height=70)
-
     st.markdown('</div>', unsafe_allow_html=True)
 
 
