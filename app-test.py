@@ -2709,17 +2709,19 @@ with tab_basic:
   body{{background:#fff;padding:12px;}}
   .fig-title{{text-align:center;font-size:15px;font-weight:700;color:#1a1a1a;
     margin-bottom:10px;}}
-  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;}}
-  .panel{{border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;
-    background:#fff;position:relative;height:360px;}}
+  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;
+    align-items:start;}}
+  .panel-3d{{border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;
+    background:#fff;position:relative;height:380px;}}
+  .panel-3d>div,.panel-3d iframe{{width:100%!important;height:100%!important;}}
+  .panel-img{{border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;
+    background:#fff;position:relative;}}
   .panel-label{{position:absolute;top:6px;left:8px;font-size:13px;
     font-weight:700;color:#1a1a1a;background:rgba(255,255,255,0.85);
     padding:1px 5px;border-radius:3px;z-index:10;}}
-  .panel img{{width:100%;height:100%;object-fit:contain;display:block;}}
-  .panel-3d{{}}
-  .panel-3d>div,.panel-3d iframe{{width:100%!important;height:100%!important;}}
+  .panel-img img{{width:100%;height:auto;display:block;}}
   .no-diag{{display:flex;align-items:center;justify-content:center;
-    height:100%;color:#aaa;font-size:13px;text-align:center;padding:20px;}}
+    min-height:200px;color:#aaa;font-size:13px;text-align:center;padding:20px;}}
   .btn-row{{display:flex;gap:10px;margin-top:12px;justify-content:center;}}
   .btn{{padding:10px 28px;border:none;border-radius:8px;font-size:14px;
     font-weight:600;cursor:pointer;
@@ -2732,11 +2734,11 @@ with tab_basic:
 <div id="capture-root">
   <div class="fig-title">{_title_cap}</div>
   <div class="grid">
-    <div class="panel panel-3d">
+    <div class="panel-3d">
       <span class="panel-label">(a)</span>
       {_a_3d_html}
     </div>
-    <div class="panel">
+    <div class="panel-img">
       <span class="panel-label">(b)</span>
       {"<img src='data:image/png;base64," + _d_b64 + "' />"
        if _d_b64 else
@@ -2770,6 +2772,182 @@ function captureAll(){{
 </script>
 </body></html>"""
                 components.html(_capture_html, height=500, scrolling=False)
+
+                # ── 🤖 AI Caption + Summary Generator ────────────────────────
+                st.markdown("---")
+                st.markdown("#### 🤖 AI Figure Caption & Summary")
+                st.caption(
+                    "Generates a publication-ready figure caption and results "
+                    "paragraph using your docking data. Powered by Claude."
+                )
+
+                if st.button(
+                    "✨ Generate Caption & Summary",
+                    key="db_ai_caption_btn",
+                    use_container_width=True,
+                ):
+                    # ── Gather all context from session state ─────────────────
+                    _ai_lig   = st.session_state.get("ligand_name", "the ligand")
+                    _ai_pdb   = st.session_state.get("pdb_token", "")
+                    _ai_cid   = st.session_state.get("cocrystal_ligand_id", "")
+                    _ai_ref_score = (
+                        st.session_state.get("confirmed_ref_score")
+                        or st.session_state.get("redock_score")
+                    )
+                    _ai_ref_name = (
+                        st.session_state.get("confirmed_ref_name")
+                        or _ai_cid or "co-crystal reference"
+                    )
+                    _ai_ref_pose = st.session_state.get("confirmed_ref_pose", "")
+
+                    # Score table info
+                    _ai_scores   = []
+                    _ai_best_score = None
+                    _ai_n_poses  = 0
+                    if df is not None:
+                        _ai_scores   = df["Affinity (kcal/mol)"].tolist()
+                        _ai_best_score = min(_ai_scores)
+                        _ai_n_poses  = len(_ai_scores)
+
+                    # Interacting residues
+                    _ai_residues = []
+                    try:
+                        _rec_ai = st.session_state.get("receptor_fh", "")
+                        if _rec_ai and os.path.exists(_rec_ai):
+                            _ir_ai = get_interacting_residues(
+                                _rec_ai, sel_mol, cutoff=4.5
+                            )
+                            _ai_residues = [
+                                f"{r['resn']}{r['resi']}" for r in _ir_ai
+                            ]
+                    except Exception:
+                        pass
+
+                    # Detailed interactions from _detect_all_interactions
+                    _ai_interactions = []
+                    try:
+                        from core import _detect_all_interactions
+                        _rec_ai2 = st.session_state.get("receptor_fh", "")
+                        if _rec_ai2 and os.path.exists(_rec_ai2):
+                            _ints = _detect_all_interactions(sel_mol, _rec_ai2)
+                            for _it in _ints:
+                                _ai_interactions.append(
+                                    f"{_it['itype'].replace('_',' ')} with "
+                                    f"{_it['resname']}{_it['resid']} "
+                                    f"({_it['distance']:.1f} Å)"
+                                )
+                    except Exception:
+                        pass
+
+                    # Diagram source
+                    _ai_diag_src = (
+                        "Anyone Can Dock 2D diagram"
+                        if st.session_state.get("pv_image_svg_new")
+                        else ("RDKit 2D diagram"
+                              if st.session_state.get("pv_image_svg_rdk")
+                              else "not generated")
+                    )
+
+                    # ── Build structured prompt ───────────────────────────────
+                    _ai_prompt = f"""You are a computational chemistry expert helping write scientific publications.
+
+Given the following molecular docking results, write TWO things:
+
+1. **FIGURE CAPTION** — A concise, publication-ready caption for a 4-panel figure (a-d). Explain what each subfigure shows:
+   - (a) Vina binding affinity scores across all docking poses
+   - (b) 3D overlay of the top-ranked docked pose vs the co-crystal reference ligand
+   - (c) Binding pocket view showing key interacting residues
+   - (d) 2D interaction diagram ({_ai_diag_src})
+
+2. **RESULTS PARAGRAPH** — A 3-5 sentence paragraph suitable for the Results section of a paper. Include: binding scores, comparison to reference, key residues, interaction types, and your interpretation of whether this is a good or poor binder.
+
+---
+DOCKING DATA:
+- Ligand: {_ai_lig}
+- Protein/PDB: {_ai_pdb if _ai_pdb else "uploaded receptor"}
+- Number of poses: {_ai_n_poses}
+- Binding affinity scores (kcal/mol): {", ".join(f"{s:.2f}" for s in _ai_scores) if _ai_scores else "not available"}
+- Best pose score: {f"{_ai_best_score:.2f} kcal/mol" if _ai_best_score is not None else "not available"}
+- Co-crystal reference: {_ai_ref_name}{f" (pose {_ai_ref_pose})" if _ai_ref_pose else ""}: {f"{_ai_ref_score:.2f} kcal/mol" if _ai_ref_score is not None else "not available"}
+- Residues within 4.5 Å: {", ".join(_ai_residues) if _ai_residues else "not available"}
+- Detected interactions: {"; ".join(_ai_interactions[:10]) if _ai_interactions else "not available"}
+- Docking software: AutoDock Vina 1.2.7
+- 2D diagram source: {_ai_diag_src}
+
+Format your response with clear headers:
+**Figure Caption:**
+[caption here]
+
+**Results Paragraph:**
+[paragraph here]
+
+Use formal scientific English. Be specific with numbers. Do not invent data not provided above."""
+
+                    # ── Call Claude API ───────────────────────────────────────
+                    try:
+                        import requests as _req_ai
+                        _ai_resp = _req_ai.post(
+                            "https://api.anthropic.com/v1/messages",
+                            headers={
+                                "Content-Type":      "application/json",
+                                "anthropic-version": "2023-06-01",
+                            },
+                            json={
+                                "model":      "claude-sonnet-4-20250514",
+                                "max_tokens": 1000,
+                                "messages": [
+                                    {"role": "user", "content": _ai_prompt}
+                                ],
+                            },
+                            timeout=30,
+                        )
+                        _ai_resp.raise_for_status()
+                        _ai_json = _ai_resp.json()
+                        _ai_text = _ai_json["content"][0]["text"]
+                        st.session_state["db_ai_caption"] = _ai_text
+                    except Exception as _eai:
+                        st.error(f"AI generation failed: {_eai}")
+
+                # ── Display result + copy button ──────────────────────────────
+                _ai_result = st.session_state.get("db_ai_caption", "")
+                if _ai_result:
+                    st.markdown(_ai_result)
+                    st.markdown("---")
+                    # Copy-to-clipboard via components.html
+                    import base64 as _b64ai
+                    _escaped = _ai_result.replace("\\", "\\\\").replace(
+                        "`", "\\`"
+                    ).replace("$", "\\$")
+                    components.html(f"""
+<html><body style="margin:0;padding:0;">
+<button onclick="copyText()" style="
+    padding:10px 24px; background:linear-gradient(90deg,#ff4b4b,#cc44cc);
+    color:#fff; border:none; border-radius:8px; font-size:14px;
+    font-weight:600; cursor:pointer; width:100%; font-family:sans-serif;">
+  📋 Copy Caption &amp; Summary to Clipboard
+</button>
+<div id="msg" style="text-align:center;font-size:12px;color:#4caf50;
+    margin-top:6px;font-family:sans-serif;height:18px;"></div>
+<script>
+function copyText() {{
+  const text = `{_escaped}`;
+  navigator.clipboard.writeText(text).then(function() {{
+    document.getElementById("msg").textContent = "✅ Copied to clipboard!";
+    setTimeout(()=>document.getElementById("msg").textContent="", 2500);
+  }}).catch(function() {{
+    // Fallback
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    document.getElementById("msg").textContent = "✅ Copied!";
+    setTimeout(()=>document.getElementById("msg").textContent="", 2500);
+  }});
+}}
+</script>
+</body></html>""", height=70)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
