@@ -2615,232 +2615,315 @@ with tab_basic:
                             "or **🔬 RDKit 2D Diagram** tab above."
                         )
 
-                # ── 💾 Save diagram + 🤖 AI caption ─────────────────────────
+                # ── 💾 Capture figure + 🤖 AI prompt ────────────────────
                 st.markdown("---")
 
-                import io as _io_cap2, base64 as _b64cap2
+                import io as _io_cap2, base64 as _b64cap2, re as _re_cap3
 
-                # Get whichever diagram is available
-                _sv_acd = st.session_state.get("pv_image_svg_new")
-                _sv_rdk = st.session_state.get("pv_image_svg_rdk")
-                _sv_use = _sv_acd or _sv_rdk
-                _sv_src = "acd" if _sv_acd else ("rdk" if _sv_rdk else "")
-                _sv_bytes = (
-                    _sv_use if isinstance(_sv_use, bytes)
-                    else _sv_use.encode() if _sv_use else None
-                )
+                _sv_acd  = st.session_state.get("pv_image_svg_new")
+                _sv_rdk  = st.session_state.get("pv_image_svg_rdk")
+                _sv_use  = _sv_acd or _sv_rdk
+                _sv_src  = "Anyone Can Dock" if _sv_acd else ("RDKit" if _sv_rdk else "")
+                _sv_b    = (_sv_use if isinstance(_sv_use, bytes)
+                            else _sv_use.encode() if _sv_use else None)
                 _fn_stem = (
-                    f"pose{pose_idx+1}_"
-                    f"{st.session_state.get('ligand_name','lig')}"
+                    "Pose" + str(pose_idx+1) + "_"
+                    + st.session_state.get("ligand_name", "Ligand")
+                    + "_Anyone_Can_Dock"
                 )
 
-                # ── Row: SVG + PNG download buttons ──────────────────────────
-                st.markdown("#### 💾 Save 2D Diagram")
-                _sc1, _sc2 = st.columns(2)
-                with _sc1:
-                    if _sv_bytes:
-                        st.download_button(
-                            "⬇ Download SVG",
-                            _sv_bytes,
-                            file_name=f"{_fn_stem}_diagram.svg",
-                            mime="image/svg+xml",
-                            key="db_dl_svg2",
-                            use_container_width=True,
-                        )
-                    else:
-                        st.button(
-                            "⬇ SVG (no diagram yet)",
-                            disabled=True, key="db_dl_svg2_dis",
-                            use_container_width=True,
-                        )
-                with _sc2:
-                    _png_ready = False
-                    if _sv_bytes:
-                        try:
-                            import cairosvg as _csv2
-                            _png_b = _csv2.svg2png(bytestring=_sv_bytes, dpi=200)
-                            st.download_button(
-                                "⬇ Download PNG",
-                                _png_b,
-                                file_name=f"{_fn_stem}_diagram.png",
-                                mime="image/png",
-                                key="db_dl_png2",
-                                use_container_width=True,
-                            )
-                            _png_ready = True
-                        except Exception as _epng:
-                            st.info(f"PNG export needs cairosvg: {_epng}")
-                    if not _png_ready and not _sv_bytes:
-                        st.button(
-                            "⬇ PNG (no diagram yet)",
-                            disabled=True, key="db_dl_png2_dis",
-                            use_container_width=True,
-                        )
+                # 3D pocket HTML
+                _c3d = ""
+                try:
+                    from rdkit import Chem as _Ch3
+                    _r3 = st.session_state.get("receptor_fh", "")
+                    _v3 = py3Dmol.view(width=480, height=380)
+                    _v3.setBackgroundColor("white")
+                    _m3 = 0
+                    if _r3 and os.path.exists(_r3):
+                        _v3.addModel(open(_r3).read(), "pdb")
+                        _v3.setStyle({"model": _m3},
+                                     {"cartoon": {"color": "spectrum", "opacity": 0.25}})
+                        _m3 += 1
+                    _v3.addModel(_Ch3.MolToMolBlock(sel_mol), "mol")
+                    _l3 = _m3
+                    _v3.setStyle({"model": _l3},
+                                 {"stick": {"colorscheme": "cyanCarbon", "radius": 0.25}})
+                    if _r3 and os.path.exists(_r3):
+                        for _rb in get_interacting_residues(_r3, sel_mol, cutoff=4.5):
+                            _v3.setStyle(
+                                {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
+                                {"stick": {"colorscheme": "orangeCarbon", "radius": 0.16}})
+                            _v3.addLabel(
+                                _rb["resn"] + str(_rb["resi"]),
+                                {"fontSize": 8, "fontColor": "yellow",
+                                 "backgroundColor": "black", "backgroundOpacity": 0.6,
+                                 "inFront": True, "showBackground": True},
+                                {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]})
+                    _v3.zoomTo({"model": _l3})
+                    _raw3 = _v3._make_html()
+                    _c3d  = _re_cap3.sub(
+                        r'(width|height)\s*[:=]\s*["\']?\d+px?["\']?',
+                        lambda m: m.group(1) + ":100%", _raw3)
+                except Exception as _e3:
+                    _c3d = "<p style='padding:20px;color:#aaa'>3D: " + str(_e3) + "</p>"
 
-                # ── 🤖 AI Figure Caption & Summary ───────────────────────────
+                # 2D diagram → base64 PNG
+                _d64 = ""
+                if _sv_b:
+                    try:
+                        import cairosvg as _csv3
+                        _d64 = _b64cap2.b64encode(
+                            _csv3.svg2png(bytestring=_sv_b, dpi=150)).decode()
+                    except Exception:
+                        pass
+
+                # inline SVG fallback
+                _dinl = ""
+                if _sv_b and not _d64:
+                    _dinl = _sv_b.decode("utf-8", errors="replace").replace(
+                        "<svg ", '<svg style="width:100%;height:auto;" ', 1)
+
+                _ctitle = _fn_stem.replace("_", " \u00b7 ")
+                _blbl   = "(b) 2D Diagram" + (" \u00b7 " + _sv_src if _sv_src else "")
+                _panb   = (
+                    "<img src='data:image/png;base64," + _d64 + "' />"
+                    if _d64 else
+                    "<div class='dsvg'>" + _dinl + "</div>"
+                    if _dinl else
+                    "<div class='nodiag'>No 2D diagram yet.<br>Generate above first.</div>"
+                )
+
+                _JS_PNG = (
+                    "function capPNG(){"
+                    "var s=document.getElementById('st');"
+                    "s.textContent='Rendering\u2026 wait 1.5s';"
+                    "setTimeout(function(){"
+                    "html2canvas(document.getElementById('cr'),{"
+                    "backgroundColor:'#ffffff',scale:2,"
+                    "useCORS:true,logging:false,allowTaint:true"
+                    "}).then(function(c){"
+                    "var a=document.createElement('a');"
+                    "a.download=FN+'.png';"
+                    "a.href=c.toDataURL('image/png');"
+                    "a.click();"
+                    "s.textContent='\u2705 PNG downloaded!';"
+                    "}).catch(function(e){"
+                    "s.textContent='\u274c '+e.message;});"
+                    "},1500);}"
+                )
+                _JS_SVG = (
+                    "function capSVG(){"
+                    "var s=document.getElementById('st');"
+                    "s.textContent='Building SVG\u2026 wait 1.5s';"
+                    "setTimeout(function(){"
+                    "html2canvas(document.getElementById('cr'),{"
+                    "backgroundColor:'#ffffff',scale:2,"
+                    "useCORS:true,logging:false,allowTaint:true"
+                    "}).then(function(c){"
+                    "var w=c.width,h=c.height;"
+                    "var img=c.toDataURL('image/png');"
+                    "var svgNS='http://www.w3.org/2000/svg';"
+                    "var root=document.createElementNS(svgNS,'svg');"
+                    "root.setAttribute('xmlns',svgNS);"
+                    "root.setAttribute('width',w);"
+                    "root.setAttribute('height',h);"
+                    "var im=document.createElementNS(svgNS,'image');"
+                    "im.setAttribute('href',img);"
+                    "im.setAttribute('width',w);"
+                    "im.setAttribute('height',h);"
+                    "root.appendChild(im);"
+                    "var blob=new Blob([new XMLSerializer().serializeToString(root)],"
+                    "{type:'image/svg+xml'});"
+                    "var a=document.createElement('a');"
+                    "a.download=FN+'.svg';"
+                    "a.href=URL.createObjectURL(blob);"
+                    "a.click();"
+                    "s.textContent='\u2705 SVG downloaded!';"
+                    "}).catch(function(e){"
+                    "s.textContent='\u274c '+e.message;});"
+                    "},1500);}"
+                )
+
+                _capture_html = (
+                    "<!DOCTYPE html><html><head>"
+                    "<script src='https://cdnjs.cloudflare.com/ajax/libs/"
+                    "html2canvas/1.4.1/html2canvas.min.js'></script>"
+                    "<style>"
+                    "*{margin:0;padding:0;box-sizing:border-box;"
+                    "font-family:'Helvetica Neue',Arial,sans-serif;}"
+                    "body{background:#fff;padding:10px;}"
+                    ".title{text-align:center;font-size:14px;font-weight:700;"
+                    "color:#111;margin-bottom:8px;}"
+                    ".grid{display:grid;grid-template-columns:1fr 1fr;"
+                    "gap:8px;align-items:start;}"
+                    ".p3d{border:1px solid #e0e0e0;border-radius:8px;"
+                    "overflow:hidden;background:#fff;position:relative;height:380px;}"
+                    ".p3d>div,.p3d iframe{width:100%!important;height:100%!important;}"
+                    ".pim{border:1px solid #e0e0e0;border-radius:8px;"
+                    "overflow:hidden;background:#fff;position:relative;}"
+                    ".pim img,.dsvg{width:100%;height:auto;display:block;}"
+                    ".lbl{position:absolute;top:5px;left:7px;font-size:12px;"
+                    "font-weight:700;color:#111;background:rgba(255,255,255,.88);"
+                    "padding:1px 4px;border-radius:3px;z-index:10;}"
+                    ".nodiag{display:flex;align-items:center;"
+                    "justify-content:center;min-height:160px;color:#aaa;"
+                    "font-size:12px;text-align:center;padding:16px;}"
+                    ".row{display:flex;gap:8px;margin-top:10px;}"
+                    ".btn{flex:1;padding:9px 0;border:none;border-radius:7px;"
+                    "font-size:13px;font-weight:600;cursor:pointer;color:#fff;}"
+                    ".bp{background:linear-gradient(90deg,#ff4b4b,#cc44cc);}"
+                    ".bs{background:linear-gradient(90deg,#4b8bff,#cc44cc);}"
+                    "#st{text-align:center;font-size:11px;color:#888;"
+                    "margin-top:5px;min-height:16px;}"
+                    "</style></head><body>"
+                    "<div id='cr'>"
+                    "  <div class='title'>" + _ctitle + "</div>"
+                    "  <div class='grid'>"
+                    "    <div class='p3d'>"
+                    "      <span class='lbl'>(a) Binding Pocket</span>"
+                    + _c3d +
+                    "    </div>"
+                    "    <div class='pim'>"
+                    "      <span class='lbl'>" + _blbl + "</span>"
+                    + _panb +
+                    "    </div>"
+                    "  </div>"
+                    "</div>"
+                    "<div class='row'>"
+                    "  <button class='btn bp' onclick='capPNG()'>"
+                    "    \U0001f4f8 Capture &amp; Download PNG"
+                    "  </button>"
+                    "  <button class='btn bs' onclick='capSVG()'>"
+                    "    \U0001f3a8 Capture &amp; Download SVG"
+                    "  </button>"
+                    "</div>"
+                    "<div id='st'></div>"
+                    "<script>"
+                    "var FN='" + _fn_stem + "_dashboard';"
+                    + _JS_PNG + _JS_SVG +
+                    "</script></body></html>"
+                )
+                components.html(_capture_html, height=560, scrolling=False)
+
+                # ── 🤖 AI Prompt ──────────────────────────────────────────────
                 st.markdown("---")
-                st.markdown("#### 🤖 AI Figure Caption & Summary")
+                st.markdown("#### \U0001f916 AI Prompt \u2014 Copy & Paste into Claude / ChatGPT")
                 st.caption(
-                    "Auto-generates a publication-ready figure caption and "
-                    "results paragraph from your docking data. Powered by Claude."
+                    "Paste this prompt with your downloaded figure into any AI "
+                    "to get a publication-ready figure caption and results paragraph."
                 )
 
-                if st.button(
-                    "✨ Generate Caption & Summary",
-                    key="db_ai_caption_btn",
-                    use_container_width=True,
-                ):
-                    _ai_lig       = st.session_state.get("ligand_name", "the ligand")
-                    _ai_pdb       = st.session_state.get("pdb_token", "")
-                    _ai_cid       = st.session_state.get("cocrystal_ligand_id", "")
-                    _ai_ref_score = (
-                        st.session_state.get("confirmed_ref_score")
-                        or st.session_state.get("redock_score")
-                    )
-                    _ai_ref_name  = (
-                        st.session_state.get("confirmed_ref_name")
-                        or _ai_cid or "co-crystal reference"
-                    )
-                    _ai_ref_pose  = st.session_state.get("confirmed_ref_pose", "")
-                    _ai_scores    = []
-                    _ai_best      = None
-                    _ai_n_poses   = 0
-                    if df is not None:
-                        _ai_scores  = df["Affinity (kcal/mol)"].tolist()
-                        _ai_best    = min(_ai_scores)
-                        _ai_n_poses = len(_ai_scores)
+                _plig  = st.session_state.get("ligand_name", "the ligand")
+                _ppdb  = st.session_state.get("pdb_token", "uploaded receptor")
+                _pcid  = st.session_state.get("cocrystal_ligand_id", "")
+                _prs   = (st.session_state.get("confirmed_ref_score")
+                          or st.session_state.get("redock_score"))
+                _prn   = (st.session_state.get("confirmed_ref_name")
+                          or _pcid or "co-crystal reference")
+                _prp   = st.session_state.get("confirmed_ref_pose", "")
+                _psc, _pbest, _pnp = [], None, 0
+                if df is not None:
+                    _psc   = df["Affinity (kcal/mol)"].tolist()
+                    _pbest = min(_psc)
+                    _pnp   = len(_psc)
 
-                    _ai_residues = []
-                    try:
-                        _rec_ai = st.session_state.get("receptor_fh", "")
-                        if _rec_ai and os.path.exists(_rec_ai):
-                            _ai_residues = [
-                                f"{r['resn']}{r['resi']}"
-                                for r in get_interacting_residues(
-                                    _rec_ai, sel_mol, cutoff=4.5
-                                )
-                            ]
-                    except Exception:
-                        pass
+                _pres = []
+                try:
+                    _rpr = st.session_state.get("receptor_fh", "")
+                    if _rpr and os.path.exists(_rpr):
+                        _pres = [r["resn"] + str(r["resi"])
+                                 for r in get_interacting_residues(
+                                     _rpr, sel_mol, cutoff=4.5)]
+                except Exception:
+                    pass
 
-                    _ai_ints = []
-                    try:
-                        from core import _detect_all_interactions as _dai
-                        _rec_ai2 = st.session_state.get("receptor_fh", "")
-                        if _rec_ai2 and os.path.exists(_rec_ai2):
-                            for _it in _dai(sel_mol, _rec_ai2):
-                                _ai_ints.append(
-                                    f"{_it['itype'].replace('_',' ')} "
-                                    f"with {_it['resname']}{_it['resid']} "
-                                    f"({_it['distance']:.1f} Å)"
-                                )
-                    except Exception:
-                        pass
-
-                    _ai_diag_src = (
-                        "Anyone Can Dock 2D diagram" if _sv_acd
-                        else "RDKit 2D diagram" if _sv_rdk
-                        else "not generated"
-                    )
-
-                    _ai_prompt = f"""You are a computational chemistry expert writing for a scientific journal.
-
-Given the molecular docking results below, write TWO things:
-
-1. FIGURE CAPTION — publication-ready caption for a 2-panel figure:
-   - (a) Binding pocket showing key interacting residues (3D view, orange sticks = residues, cyan = docked ligand)
-   - (b) 2D interaction diagram ({_ai_diag_src}), showing interaction types, residues, and binding energy
-
-2. RESULTS PARAGRAPH — 3-5 sentences for the Results section covering:
-   - Best binding affinity and comparison to co-crystal reference (if available)
-   - Key residues and interaction types (H-bonds, hydrophobic, π-π, etc.)
-   - Interpretation: is this a good or poor binder and why?
-
-DOCKING DATA:
-- Ligand: {_ai_lig}
-- Protein / PDB: {_ai_pdb if _ai_pdb else "uploaded receptor"}
-- Docking software: AutoDock Vina 1.2.7
-- Number of poses generated: {_ai_n_poses}
-- All pose scores (kcal/mol): {", ".join(f"{{s:.2f}}" for s in _ai_scores) if _ai_scores else "N/A"}
-- Best pose score: {f"{{_ai_best:.2f}} kcal/mol" if _ai_best is not None else "N/A"}
-- Co-crystal reference ({_ai_ref_name}{f", pose {{_ai_ref_pose}}" if _ai_ref_pose else ""}): {f"{{_ai_ref_score:.2f}} kcal/mol" if _ai_ref_score is not None else "not available"}
-- Residues within 4.5 Å: {", ".join(_ai_residues) if _ai_residues else "N/A"}
-- Detected interactions: {"; ".join(_ai_ints[:12]) if _ai_ints else "N/A"}
-- 2D diagram source: {_ai_diag_src}
-
-Reply using EXACTLY this format:
-
-**Figure Caption:**
-Figure X. [caption text]
-
-**Results Paragraph:**
-[paragraph text]
-
-Rules: formal scientific English, be specific with numbers, do not invent data not listed above."""
-
-                    with st.spinner("Generating with Claude…"):
-                        try:
-                            import requests as _req_ai
-                            _ai_r = _req_ai.post(
-                                "https://api.anthropic.com/v1/messages",
-                                headers={
-                                    "Content-Type": "application/json",
-                                    "anthropic-version": "2023-06-01",
-                                },
-                                json={
-                                    "model": "claude-sonnet-4-20250514",
-                                    "max_tokens": 1000,
-                                    "messages": [
-                                        {"role": "user", "content": _ai_prompt}
-                                    ],
-                                },
-                                timeout=30,
+                _pints = []
+                try:
+                    from core import _detect_all_interactions as _dai2
+                    _rpr2 = st.session_state.get("receptor_fh", "")
+                    if _rpr2 and os.path.exists(_rpr2):
+                        for _it in _dai2(sel_mol, _rpr2):
+                            _pints.append(
+                                _it["itype"].replace("_", " ")
+                                + " with " + _it["resname"] + str(_it["resid"])
+                                + " (" + str(round(_it["distance"], 1)) + " \u00c5)"
                             )
-                            _ai_r.raise_for_status()
-                            st.session_state["db_ai_caption"] = (
-                                _ai_r.json()["content"][0]["text"]
-                            )
-                        except Exception as _eai:
-                            st.error(f"AI generation failed: {_eai}")
+                except Exception:
+                    pass
 
-                _ai_result = st.session_state.get("db_ai_caption", "")
-                if _ai_result:
-                    st.markdown(_ai_result)
-                    st.markdown("---")
-                    _escaped = (
-                        _ai_result
-                        .replace("\\", "\\\\")
-                        .replace("`", "\\`")
-                        .replace("$", "\\$")
-                    )
-                    components.html(f"""
-<html><body style="margin:0;padding:0;">
-<button onclick="copyText()" style="padding:10px 24px;
-  background:linear-gradient(90deg,#ff4b4b,#cc44cc);color:#fff;
-  border:none;border-radius:8px;font-size:14px;font-weight:600;
-  cursor:pointer;width:100%;font-family:sans-serif;">
-  📋 Copy Caption &amp; Summary to Clipboard
-</button>
-<div id="msg" style="text-align:center;font-size:12px;color:#4caf50;
-  margin-top:6px;font-family:sans-serif;height:18px;"></div>
-<script>
-function copyText(){{
-  const text=`{_escaped}`;
-  navigator.clipboard.writeText(text)
-    .then(()=>{{
-      document.getElementById("msg").textContent="✅ Copied!";
-      setTimeout(()=>document.getElementById("msg").textContent="",2500);
-    }}).catch(()=>{{
-      const ta=document.createElement("textarea");
-      ta.value=text; document.body.appendChild(ta);
-      ta.select(); document.execCommand("copy");
-      document.body.removeChild(ta);
-      document.getElementById("msg").textContent="✅ Copied!";
-      setTimeout(()=>document.getElementById("msg").textContent="",2500);
-    }});
-}}
-</script>
-</body></html>""", height=70)
+                _pdiag  = ("Anyone Can Dock 2D diagram" if _sv_acd
+                           else "RDKit 2D diagram" if _sv_rdk else "not generated")
+                _scstr  = ", ".join(str(round(s, 2)) for s in _psc) if _psc else "N/A"
+                _bstr   = str(round(_pbest, 2)) + " kcal/mol" if _pbest is not None else "N/A"
+                _refstr = (
+                    _prn
+                    + (" (pose " + str(_prp) + ")" if _prp else "")
+                    + (" = " + str(round(_prs, 2)) + " kcal/mol"
+                       if _prs is not None else ": not available")
+                )
+
+                _ptxt = (
+                    "I have a 2-panel molecular docking figure (attached):\n"
+                    "(a) Binding pocket 3D view: orange sticks = interacting residues,"
+                    " cyan sticks = docked ligand, protein shown as cartoon.\n"
+                    "(b) 2D interaction diagram (" + _pdiag + "):"
+                    " shows residues, interaction types, and binding energy label.\n\n"
+                    "Docking data:\n"
+                    "- Ligand: " + _plig + "\n"
+                    "- Protein / PDB ID: " + _ppdb + "\n"
+                    "- Docking software: AutoDock Vina 1.2.7\n"
+                    "- Number of poses: " + str(_pnp) + "\n"
+                    "- All pose scores (kcal/mol): " + _scstr + "\n"
+                    "- Best pose score: " + _bstr + "\n"
+                    "- Co-crystal reference: " + _refstr + "\n"
+                    "- Residues within 4.5 \u00c5: "
+                    + (", ".join(_pres) if _pres else "N/A") + "\n"
+                    "- Detected interactions: "
+                    + ("; ".join(_pints[:12]) if _pints else "N/A") + "\n\n"
+                    "Please write:\n"
+                    "1. A publication-ready FIGURE CAPTION for this 2-panel figure.\n"
+                    "2. A RESULTS PARAGRAPH (3-5 sentences) covering: binding affinity,"
+                    " comparison to reference, key residues, interaction types, and"
+                    " whether this is a good or poor binder.\n\n"
+                    "Use formal scientific English. Be specific with numbers."
+                    " Do not invent data not listed above."
+                )
+
+                st.code(_ptxt, language="markdown")
+
+                _esc = (
+                    _ptxt
+                    .replace("\\", "\\\\")
+                    .replace("`",  "\\`")
+                    .replace("$",  "\\$")
+                    .replace("\n", "\\n")
+                )
+                _copy_html = (
+                    "<html><body style='margin:0;padding:0;'>"
+                    "<button onclick='cp()' style='padding:9px 20px;width:100%;"
+                    "background:linear-gradient(90deg,#ff4b4b,#cc44cc);color:#fff;"
+                    "border:none;border-radius:7px;font-size:13px;font-weight:600;"
+                    "cursor:pointer;font-family:sans-serif;'>"
+                    "\U0001f4cb Copy Prompt to Clipboard"
+                    "</button>"
+                    "<div id='m' style='text-align:center;font-size:11px;"
+                    "color:#4caf50;margin-top:5px;height:15px;"
+                    "font-family:sans-serif;'></div>"
+                    "<script>"
+                    "function cp(){const t=`" + _esc + "`;"
+                    "navigator.clipboard.writeText(t)"
+                    ".then(()=>{document.getElementById('m').textContent='\u2705 Copied!';"
+                    "setTimeout(()=>document.getElementById('m').textContent='',2500);})"
+                    ".catch(()=>{const a=document.createElement('textarea');a.value=t;"
+                    "document.body.appendChild(a);a.select();document.execCommand('copy');"
+                    "document.body.removeChild(a);"
+                    "document.getElementById('m').textContent='\u2705 Copied!';"
+                    "setTimeout(()=>document.getElementById('m').textContent='',2500);});}"
+                    "</script></body></html>"
+                )
+                components.html(_copy_html, height=60)
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 
