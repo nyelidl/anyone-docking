@@ -2697,7 +2697,7 @@ with tab_basic:
                     + _JS_PNG + _JS_SVG +
                     "</script></body></html>"
                 )
-                components.html(_capture_html, height=560, scrolling=False)
+                components.html(_capture_html, height=680, scrolling=True)
 
                 # ── 🤖 AI Prompt ──────────────────────────────────────────────
                 st.markdown("---")
