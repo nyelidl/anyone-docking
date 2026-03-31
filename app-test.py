@@ -2447,7 +2447,7 @@ with tab_basic:
                         unsafe_allow_html=True,
                     )
                 vbp.zoomTo({"model": _lig_m})
-                show3d(vbp, height=440)
+                # viewer rendered in capture component below
 
                 # ── 📸 Capture binding pocket ─────────────────────────────────
                 import re as _re_bp, base64 as _b64bp
