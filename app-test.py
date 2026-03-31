@@ -2193,7 +2193,7 @@ with tab_basic:
                             "SES", {"opacity": 0.2, "color": "lightblue"},
                             {"model": 0}, {"model": _mrd},
                         )
-                        _vrd.zoomTo({"model": _mrd})
+                        _vrd.zoomTo()
                         _vrd.center({"model": _mrd})
                         show3d(_vrd, height=400)
                     except Exception as _e:
@@ -2500,6 +2500,237 @@ with tab_basic:
                     if st.session_state.get("redock_result") else None
                 ),
             )
+
+
+            # ── 📊 Summary Dashboard ──────────────────────────────────────────
+            with st.expander("📊 Summary Dashboard", expanded=False):
+                st.caption(
+                    "**(a)** Score by pose · **(b)** 3D overlay vs co-crystal · "
+                    "**(c)** Binding pocket · **(d)** 2D interaction diagram"
+                )
+                import io as _io_d
+                _dcc = _chart_colors()
+
+                # ── Row 1: (a) score chart  |  (b) 3D overlay ─────────────────
+                _da1, _db1 = st.columns(2)
+
+                # (a) Affinity by Pose — bar chart
+                with _da1:
+                    st.markdown("**(a)** Vina Score by Pose")
+                    if df is not None:
+                        _dfig, _dax = plt.subplots(figsize=(5, 3.2))
+                        _dfig.patch.set_facecolor(_dcc["bg"])
+                        _dax.set_facecolor(_dcc["bg_sub"])
+                        _dcols = [
+                            "#3fb950" if v == df["Affinity (kcal/mol)"].min()
+                            else "#58a6ff"
+                            for v in df["Affinity (kcal/mol)"]
+                        ]
+                        _dax.scatter(
+                            list(range(len(df))),
+                            df["Affinity (kcal/mol)"].values,
+                            color=_dcols, s=80, zorder=3,
+                            edgecolors=_dcc["border"], linewidths=0.5,
+                        )
+                        _dax.plot(
+                            list(range(len(df))),
+                            df["Affinity (kcal/mol)"].values,
+                            color=_dcc["border"], linewidth=0.8, zorder=2,
+                        )
+                        _dax.invert_yaxis()
+                        _dax.set_xticks(list(range(len(df))))
+                        _dax.set_xticklabels(df["Pose"].astype(str), fontsize=7)
+                        _dref = (
+                            st.session_state.get("confirmed_ref_score")
+                            or st.session_state.get("redock_score")
+                        )
+                        if _dref is not None:
+                            _ref_nm = (
+                                st.session_state.get("confirmed_ref_name")
+                                or st.session_state.get("cocrystal_ligand_id", "Ref")
+                            )
+                            _dax.axhline(
+                                _dref, color="#f85149", linewidth=1.6, linestyle="--",
+                                label=f"Confirmed ref (pose "
+                                      f"{st.session_state.get('confirmed_ref_pose','?')}): "
+                                      f"{_dref:.2f} kcal/mol"
+                                if st.session_state.get("confirmed_ref_score") else
+                                f"{_ref_nm}: {_dref:.2f} kcal/mol",
+                            )
+                            _dax.legend(
+                                facecolor=_dcc["legend_bg"], edgecolor=_dcc["border"],
+                                labelcolor=_dcc["text"], fontsize=7,
+                            )
+                        _dax.set_xlabel("Pose", color=_dcc["muted"], fontsize=8)
+                        _dax.set_ylabel("Vina score (kcal/mol)", color=_dcc["muted"], fontsize=8)
+                        _dax.tick_params(colors=_dcc["muted"], labelsize=7)
+                        for _sp in _dax.spines.values():
+                            _sp.set_edgecolor(_dcc["border"])
+                        _dfig.tight_layout()
+                        st.pyplot(_dfig, use_container_width=True)
+                        _d_buf = _io_d.BytesIO()
+                        _dfig.savefig(
+                            _d_buf, format="png", dpi=200,
+                            bbox_inches="tight", facecolor=_dfig.get_facecolor(),
+                        )
+                        _d_buf.seek(0)
+                        st.download_button(
+                            "⬇ Score chart (PNG)", _d_buf.getvalue(),
+                            file_name=f"pose{pose_idx+1}_score_chart.png",
+                            mime="image/png", key="db_dl_score_png",
+                            use_container_width=True,
+                        )
+                        plt.close(_dfig)
+
+                # (b) 3D overlay: docked pose + co-crystal reference
+                with _db1:
+                    st.markdown("**(b)** 3D Overlay — Docked vs Co-crystal")
+                    try:
+                        _rec_fh_d = st.session_state.get("receptor_fh", "")
+                        _lig_pdb_d = st.session_state.get("ligand_pdb_path", "")
+                        _vov = py3Dmol.view(width="100%", height=310)
+                        _vov.setBackgroundColor(_viewer_bg())
+                        _mi = 0
+                        if _rec_fh_d and os.path.exists(_rec_fh_d):
+                            _vov.addModel(open(_rec_fh_d).read(), "pdb")
+                            _vov.setStyle({"model": _mi}, {
+                                "cartoon": {"color": "spectrum", "opacity": 0.5}
+                            })
+                            _mi += 1
+                        from rdkit import Chem as _Chem_d
+                        _vov.addModel(_Chem_d.MolToMolBlock(sel_mol), "mol")
+                        _vov.setStyle({"model": _mi}, {
+                            "stick": {"colorscheme": "cyanCarbon", "radius": 0.25}
+                        })
+                        _mi += 1
+                        if _lig_pdb_d and os.path.exists(_lig_pdb_d):
+                            _vov.addModel(open(_lig_pdb_d).read(), "pdb")
+                            _vov.setStyle({"model": _mi}, {
+                                "stick": {"colorscheme": "magentaCarbon", "radius": 0.25}
+                            })
+                        _vov.zoomTo({"model": 1})
+                        show3d(_vov, height=310)
+                        st.caption(
+                            "🩵 Docked pose · 🪷 Co-crystal reference"
+                            if _lig_pdb_d and os.path.exists(_lig_pdb_d)
+                            else "🩵 Docked pose (no co-crystal loaded)"
+                        )
+                    except Exception as _e3d:
+                        st.info(f"3D overlay unavailable: {_e3d}")
+
+                # ── Row 2: (c) binding pocket  |  (d) 2D diagram ──────────────
+                _dc2, _dd2 = st.columns(2)
+
+                # (c) Binding pocket view
+                with _dc2:
+                    st.markdown("**(c)** Binding Pocket")
+                    try:
+                        _rec_fh_c = st.session_state.get("receptor_fh", "")
+                        _vpk = py3Dmol.view(width="100%", height=340)
+                        _vpk.setBackgroundColor(_viewer_bg())
+                        _mpk = 0
+                        if _rec_fh_c and os.path.exists(_rec_fh_c):
+                            _vpk.addModel(open(_rec_fh_c).read(), "pdb")
+                            _vpk.setStyle({"model": _mpk}, {
+                                "cartoon": {"color": "spectrum", "opacity": 0.3}
+                            })
+                            _mpk += 1
+                        from rdkit import Chem as _Chem_c
+                        _vpk.addModel(_Chem_c.MolToMolBlock(sel_mol), "mol")
+                        _lig_m_c = _mpk
+                        _vpk.setStyle({"model": _lig_m_c}, {
+                            "stick": {"colorscheme": "cyanCarbon", "radius": 0.28}
+                        })
+                        if _rec_fh_c and os.path.exists(_rec_fh_c):
+                            _ir_c = get_interacting_residues(
+                                _rec_fh_c, sel_mol, cutoff=4.5
+                            )
+                            for _rb_c in _ir_c:
+                                _vpk.setStyle(
+                                    {"model": 0, "chain": _rb_c["chain"],
+                                     "resi": _rb_c["resi"]},
+                                    {"stick": {"colorscheme": "orangeCarbon",
+                                               "radius": 0.18}},
+                                )
+                                _vpk.addLabel(
+                                    f"{_rb_c['resn']}{_rb_c['resi']}",
+                                    {"fontSize": 9, "fontColor": "yellow",
+                                     "backgroundColor": "black",
+                                     "backgroundOpacity": 0.6, "inFront": True,
+                                     "showBackground": True},
+                                    {"model": 0, "chain": _rb_c["chain"],
+                                     "resi": _rb_c["resi"]},
+                                )
+                        _vpk.zoomTo({"model": _lig_m_c})
+                        show3d(_vpk, height=340)
+                    except Exception as _epk:
+                        st.info(f"Pocket viewer unavailable: {_epk}")
+
+                # (d) 2D interaction diagram — priority: ACD → RDKit → placeholder
+                with _dd2:
+                    st.markdown("**(d)** 2D Interaction Diagram")
+
+                    # Check which diagram was generated
+                    _d_acd_svg  = st.session_state.get("pv_image_svg" + "_new")
+                    _d_rdk_svg  = st.session_state.get("pv_image_svg" + "_rdk")
+                    _d_rdk_stale = (
+                        st.session_state.get("pv_pose_key" + "_rdk") !=
+                        f"{st.session_state.get('receptor_fh','')}_"
+                        f"{st.session_state.get('output_sdf','')}_"
+                        f"{pose_idx}"
+                    )
+
+                    if _d_acd_svg:
+                        # Anyone Can Dock diagram (preferred)
+                        _d_s = (_d_acd_svg.decode()
+                                if isinstance(_d_acd_svg, bytes) else _d_acd_svg)
+                        _d_s = _d_s.replace(
+                            "<svg ",
+                            '<svg style="width:100%;height:auto;display:block;" ', 1
+                        )
+                        components.html(
+                            '<div style="background:#fff;border-radius:6px;'
+                            'border:1px solid #eee;">' + _d_s + "</div>",
+                            height=340, scrolling=False,
+                        )
+                        st.caption("🧬 Anyone Can Dock diagram")
+                        st.download_button(
+                            "⬇ 2D Diagram (SVG)",
+                            _d_acd_svg if isinstance(_d_acd_svg, bytes)
+                            else _d_acd_svg.encode(),
+                            file_name=f"pose{pose_idx+1}_interaction.svg",
+                            mime="image/svg+xml", key="db_dl_diag_svg",
+                            use_container_width=True,
+                        )
+                    elif _d_rdk_svg and not _d_rdk_stale:
+                        # RDKit diagram fallback
+                        _d_s = (_d_rdk_svg.decode()
+                                if isinstance(_d_rdk_svg, bytes) else _d_rdk_svg)
+                        _d_s = _d_s.replace(
+                            "<svg ",
+                            '<svg style="width:100%;height:auto;display:block;" ', 1
+                        )
+                        components.html(
+                            '<div style="background:#fff;border-radius:6px;'
+                            'border:1px solid #eee;">' + _d_s + "</div>",
+                            height=340, scrolling=False,
+                        )
+                        st.caption("🔬 RDKit diagram (fallback)")
+                        st.download_button(
+                            "⬇ 2D Diagram (SVG)",
+                            _d_rdk_svg if isinstance(_d_rdk_svg, bytes)
+                            else _d_rdk_svg.encode(),
+                            file_name=f"pose{pose_idx+1}_rdkit.svg",
+                            mime="image/svg+xml", key="db_dl_diag_svg",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.info(
+                            "No 2D diagram yet.\n\n"
+                            "Generate one in the **🧬 Anyone Can Dock 2D Diagram** "
+                            "or **🔬 RDKit 2D Diagram** tab above, "
+                            "then re-open this dashboard."
+                        )
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2852,7 +3083,7 @@ with tab_batch:
                             "SES", {"opacity": 0.2, "color": "lightblue"},
                             {"model": 0}, {"model": bmi},
                         )
-                        vb.zoomTo({"model": bmi})
+                        vb.zoomTo()
                         vb.center({"model": bmi})
                         show3d(vb, height=420)
                     except Exception as e:
@@ -3006,6 +3237,111 @@ with tab_batch:
         else:
             st.markdown("**Score Table**")
             st.dataframe(df_res, hide_index=True, width='stretch')
+
+
+        # ── 📊 Summary Dashboard (Batch) ─────────────────────────────────────
+        with st.expander("📊 Summary Dashboard", expanded=False):
+            st.caption(
+                "Score distribution across all ligands + 2D interaction diagram "
+                "for the selected ligand. Export charts as PNG / SVG."
+            )
+
+            _bd_c1, _bd_c2 = st.columns(2)
+
+            # ── Left: violin / box score distribution ─────────────────────────
+            with _bd_c1:
+                st.markdown("##### Score Distribution")
+                if not plot_df.empty:
+                    _bcc   = _chart_colors()
+                    _scores = plot_df["Top Score (kcal/mol)"].values
+                    _bfig, _bax = plt.subplots(figsize=(4, 3.5))
+                    _bfig.patch.set_facecolor(_bcc["bg"])
+                    _bax.set_facecolor(_bcc["bg_sub"])
+
+                    if len(_scores) >= 4:
+                        _vp = _bax.violinplot(
+                            [_scores], positions=[0], showmedians=True,
+                            showextrema=True,
+                        )
+                        for _pc in _vp["bodies"]:
+                            _pc.set_facecolor("#58a6ff")
+                            _pc.set_alpha(0.45)
+                        for _part in ("cmedians","cmins","cmaxes","cbars"):
+                            if _part in _vp:
+                                _vp[_part].set_color(_bcc["muted"])
+                                _vp[_part].set_linewidth(1.2)
+                    import numpy as _np_bd
+                    _jitter = _np_bd.random.default_rng(42).uniform(-0.08, 0.08, len(_scores))
+                    _bax.scatter(
+                        _jitter, _scores,
+                        color=["#3fb950" if s == _scores.min() else "#58a6ff" for s in _scores],
+                        s=40, zorder=3, edgecolors=_bcc["border"], linewidths=0.4,
+                    )
+                    if active_ref is not None:
+                        _bax.axhline(
+                            active_ref, color="#f85149", linewidth=1.6,
+                            linestyle="--", label=f"Ref: {active_ref:.2f}",
+                        )
+                        _bax.legend(
+                            facecolor=_bcc["legend_bg"], edgecolor=_bcc["border"],
+                            labelcolor=_bcc["text"], fontsize=7,
+                        )
+                    _bax.invert_yaxis()
+                    _bax.set_ylabel("Vina score (kcal/mol)", color=_bcc["muted"], fontsize=8)
+                    _bax.set_xticks([])
+                    _bax.tick_params(colors=_bcc["muted"], labelsize=7)
+                    for _sp in _bax.spines.values():
+                        _sp.set_edgecolor(_bcc["border"])
+                    _bfig.tight_layout()
+                    st.pyplot(_bfig, use_container_width=True)
+
+                    import io as _iob
+                    _bb_buf = _iob.BytesIO()
+                    _bfig.savefig(
+                        _bb_buf, format="png", dpi=200,
+                        bbox_inches="tight", facecolor=_bfig.get_facecolor(),
+                    )
+                    _bb_buf.seek(0)
+                    st.download_button(
+                        "⬇ Distribution chart (PNG)", _bb_buf.getvalue(),
+                        file_name="batch_score_distribution.png",
+                        mime="image/png",
+                        key="bdb_dl_dist_png",
+                        use_container_width=True,
+                    )
+                    plt.close(_bfig)
+                else:
+                    st.info("No scores available.")
+
+            # ── Right: 2D diagram for selected ligand ─────────────────────────
+            with _bd_c2:
+                st.markdown("##### 2D Interaction Diagram")
+                st.caption("Select a ligand in the Pose Browser above, then generate its diagram.")
+                _bdb_svg = st.session_state.get("b_pv_image_svg_new")
+                if _bdb_svg:
+                    import base64 as _b64b
+                    _bdb_s = _bdb_svg.decode() if isinstance(_bdb_svg, bytes) else _bdb_svg
+                    _bdb_s = _bdb_s.replace(
+                        "<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1
+                    )
+                    st.components.v1.html(
+                        '<div style="background:#fff;border-radius:8px;border:1px solid #eee;">' +
+                        _bdb_s + "</div>",
+                        height=420, scrolling=False,
+                    )
+                    st.download_button(
+                        "⬇ 2D Diagram (SVG)",
+                        _bdb_svg if isinstance(_bdb_svg, bytes) else _bdb_svg.encode(),
+                        file_name="batch_interaction_diagram.svg",
+                        mime="image/svg+xml",
+                        key="bdb_dl_diag_svg",
+                        use_container_width=True,
+                    )
+                else:
+                    st.info(
+                        "Generate the 2D diagram for this ligand first "
+                        "(🧬 Anyone Can Dock 2D Diagram tab → Generate)."
+                    )
 
         st.markdown("---")
         st.markdown("**⬇ Download All Results**")
