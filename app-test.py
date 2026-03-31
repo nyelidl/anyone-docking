@@ -2530,7 +2530,7 @@ with tab_basic:
                 try:
                     from rdkit import Chem as _Ch3
                     _r3 = st.session_state.get("receptor_fh", "")
-                    _v3 = py3Dmol.view(width=480, height=380)
+                    _v3 = py3Dmol.view(width=600, height=420)
                     _v3.setBackgroundColor("white")
                     _m3 = 0
                     if _r3 and os.path.exists(_r3):
@@ -2567,7 +2567,7 @@ with tab_basic:
                     try:
                         import cairosvg as _csv3
                         _d64 = _b64cap2.b64encode(
-                            _csv3.svg2png(bytestring=_sv_b, dpi=150)).decode()
+                            _csv3.svg2png(bytestring=_sv_b, dpi=300)).decode()
                     except Exception:
                         pass
 
@@ -2590,10 +2590,10 @@ with tab_basic:
                 _JS_PNG = (
                     "function capPNG(){"
                     "var s=document.getElementById('st');"
-                    "s.textContent='Rendering\u2026 wait 1.5s';"
+                    "s.textContent='Rendering\u2026 please wait 2.5s';"
                     "setTimeout(function(){"
                     "html2canvas(document.getElementById('cr'),{"
-                    "backgroundColor:'#ffffff',scale:2,"
+                    "backgroundColor:'#ffffff',scale:3,"
                     "useCORS:true,logging:false,allowTaint:true"
                     "}).then(function(c){"
                     "var a=document.createElement('a');"
@@ -2608,10 +2608,10 @@ with tab_basic:
                 _JS_SVG = (
                     "function capSVG(){"
                     "var s=document.getElementById('st');"
-                    "s.textContent='Building SVG\u2026 wait 1.5s';"
+                    "s.textContent='Building SVG\u2026 please wait 2.5s';"
                     "setTimeout(function(){"
                     "html2canvas(document.getElementById('cr'),{"
-                    "backgroundColor:'#ffffff',scale:2,"
+                    "backgroundColor:'#ffffff',scale:3,"
                     "useCORS:true,logging:false,allowTaint:true"
                     "}).then(function(c){"
                     "var w=c.width,h=c.height;"
@@ -2651,7 +2651,7 @@ with tab_basic:
                     ".grid{display:grid;grid-template-columns:1fr 1fr;"
                     "gap:8px;align-items:start;}"
                     ".p3d{border:1px solid #e0e0e0;border-radius:8px;"
-                    "overflow:hidden;background:#fff;position:relative;height:380px;}"
+                    "overflow:hidden;background:#fff;position:relative;height:420px;}"
                     ".p3d>div,.p3d iframe{width:100%!important;height:100%!important;}"
                     ".pim{border:1px solid #e0e0e0;border-radius:8px;"
                     "overflow:hidden;background:#fff;position:relative;}"
@@ -2697,7 +2697,7 @@ with tab_basic:
                     + _JS_PNG + _JS_SVG +
                     "</script></body></html>"
                 )
-                components.html(_capture_html, height=680, scrolling=True)
+                components.html(_capture_html, height=720, scrolling=True)
 
                 # ── 🤖 AI Prompt ──────────────────────────────────────────────
                 st.markdown("---")
