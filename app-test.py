@@ -2529,6 +2529,8 @@ with tab_basic:
                     "</script></body></html>"
                 )
                 components.html(_bp_capture_html, height=620, scrolling=False)
+                # Cache for Summary Dashboard
+                st.session_state["_bp_3d_html_cache"] = _bp_3d_html
 
             except Exception as _e:
                 st.info(f"Binding pocket viewer error: {_e}")
@@ -2587,140 +2589,92 @@ with tab_basic:
             # ── 📊 Summary Dashboard ──────────────────────────────────────────
             with st.expander("📊 Summary Dashboard", expanded=False):
                 st.caption(
-                    "Click **📸 PNG** or **🎨 SVG** to capture both panels. "
-                    "Then copy the AI prompt to generate a figure caption."
+                    "**(a)** Binding Pocket · **(b)** 2D Diagram  —  "
+                    "📸 PNG / 🎨 SVG  ·  🤖 AI prompt below"
                 )
 
-                # ── 💾 Capture figure + 🤖 AI prompt ────────────────────
+                import base64 as _b64db
 
-                import io as _io_cap2, base64 as _b64cap2, re as _re_cap3
+                # ── Pull panel (a): 3D HTML cached from Binding Pocket View ───
+                _da_html = st.session_state.get("_bp_3d_html_cache", "")
+                if not _da_html:
+                    _da_html = "<div style='display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:12px;padding:20px;text-align:center;'>Open <b>🔬 Binding Pocket View</b> first to load panel (a).</div>"
 
-                _sv_acd  = st.session_state.get("pv_image_svg_new")
-                _sv_rdk  = st.session_state.get("pv_image_svg_rdk")
-                _sv_use  = _sv_acd or _sv_rdk
-                _sv_src  = "Anyone Can Dock" if _sv_acd else ("RDKit" if _sv_rdk else "")
-                _sv_b    = (_sv_use if isinstance(_sv_use, bytes)
-                            else _sv_use.encode() if _sv_use else None)
-                _fn_stem = (
-                    "Pose" + str(pose_idx+1) + "_"
-                    + st.session_state.get("ligand_name", "Ligand")
-                    + "_Anyone_Can_Dock"
-                )
-
-                # 3D pocket HTML
-                _c3d = ""
-                try:
-                    from rdkit import Chem as _Ch3
-                    _r3 = st.session_state.get("receptor_fh", "")
-                    _v3 = py3Dmol.view(width=600, height=420)
-                    _v3.setBackgroundColor("white")
-                    _m3 = 0
-                    if _r3 and os.path.exists(_r3):
-                        _v3.addModel(open(_r3).read(), "pdb")
-                        _v3.setStyle({"model": _m3},
-                                     {"cartoon": {"color": "spectrum", "opacity": 0.25}})
-                        _m3 += 1
-                    _v3.addModel(_Ch3.MolToMolBlock(sel_mol), "mol")
-                    _l3 = _m3
-                    _v3.setStyle({"model": _l3},
-                                 {"stick": {"colorscheme": "cyanCarbon", "radius": 0.25}})
-                    if _r3 and os.path.exists(_r3):
-                        for _rb in get_interacting_residues(_r3, sel_mol, cutoff=4.5):
-                            _v3.setStyle(
-                                {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
-                                {"stick": {"colorscheme": "orangeCarbon", "radius": 0.16}})
-                            _v3.addLabel(
-                                _rb["resn"] + str(_rb["resi"]),
-                                {"fontSize": 8, "fontColor": "yellow",
-                                 "backgroundColor": "black", "backgroundOpacity": 0.6,
-                                 "inFront": True, "showBackground": True},
-                                {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]})
-                    _v3.zoomTo({"model": _l3})
-                    _raw3 = _v3._make_html()
-                    _c3d  = _re_cap3.sub(
-                        r'(width|height)\s*[:=]\s*["\']?\d+px?["\']?',
-                        lambda m: m.group(1) + ":100%", _raw3)
-                except Exception as _e3:
-                    _c3d = "<p style='padding:20px;color:#aaa'>3D: " + str(_e3) + "</p>"
-
-                # 2D diagram → base64 PNG
-                _d64 = ""
-                if _sv_b:
+                # ── Pull panel (b): 2D diagram SVG → base64 PNG ───────────────
+                _db_acd  = st.session_state.get("pv_image_svg_new")
+                _db_rdk  = st.session_state.get("pv_image_svg_rdk")
+                _db_svg  = _db_acd or _db_rdk
+                _db_src  = "Anyone Can Dock" if _db_acd else ("RDKit" if _db_rdk else "")
+                _db_b    = (_db_svg if isinstance(_db_svg, bytes)
+                            else _db_svg.encode() if _db_svg else None)
+                _db64    = ""
+                _db_inline = ""
+                if _db_b:
                     try:
-                        import cairosvg as _csv3
-                        _d64 = _b64cap2.b64encode(
-                            _csv3.svg2png(bytestring=_sv_b, dpi=300)).decode()
+                        import cairosvg as _csvdb
+                        _db64 = _b64db.b64encode(
+                            _csvdb.svg2png(bytestring=_db_b, dpi=300)).decode()
                     except Exception:
                         pass
-
-                # inline SVG fallback
-                _dinl = ""
-                if _sv_b and not _d64:
-                    _dinl = _sv_b.decode("utf-8", errors="replace").replace(
+                if _db_b and not _db64:
+                    _db_inline = _db_b.decode("utf-8", errors="replace").replace(
                         "<svg ", '<svg style="width:100%;height:auto;" ', 1)
 
-                _ctitle = _fn_stem.replace("_", " \u00b7 ")
-                _blbl   = "(b) 2D Diagram" + (" \u00b7 " + _sv_src if _sv_src else "")
-                _panb   = (
-                    "<img src='data:image/png;base64," + _d64 + "' />"
-                    if _d64 else
-                    "<div class='dsvg'>" + _dinl + "</div>"
-                    if _dinl else
-                    "<div class='nodiag'>No 2D diagram yet.<br>Generate above first.</div>"
+                _fn_db   = (
+                    "Pose" + str(pose_idx+1) + "_"
+                    + st.session_state.get("ligand_name", "Ligand")
+                    + "_Anyone_Can_Dock_dashboard"
+                )
+                _title_db = (
+                    "Pose " + str(pose_idx+1) + "  \u00b7  "
+                    + st.session_state.get("ligand_name", "Ligand")
+                    + "  \u00b7  Anyone Can Dock"
+                )
+                _b_lbl   = "(b) 2D Diagram" + (" \u00b7 " + _db_src if _db_src else "")
+                _panel_b = (
+                    "<img src='data:image/png;base64," + _db64 + "' />"
+                    if _db64 else
+                    "<div class='dsvg'>" + _db_inline + "</div>"
+                    if _db_inline else
+                    "<div class='nodiag'>No 2D diagram yet.<br>Generate one above first.</div>"
                 )
 
-                _JS_PNG = (
-                    "function capPNG(){"
-                    "var s=document.getElementById('st');"
+                _JS_DB_PNG = (
+                    "function capPNG(){var s=document.getElementById('st');"
                     "s.textContent='Rendering\u2026 please wait 2.5s';"
-                    "setTimeout(function(){"
-                    "html2canvas(document.getElementById('cr'),{"
-                    "backgroundColor:'#ffffff',scale:3,"
-                    "useCORS:true,logging:false,allowTaint:true"
-                    "}).then(function(c){"
-                    "var a=document.createElement('a');"
-                    "a.download=FN+'.png';"
-                    "a.href=c.toDataURL('image/png');"
-                    "a.click();"
-                    "s.textContent='\u2705 PNG downloaded!';"
-                    "}).catch(function(e){"
-                    "s.textContent='\u274c '+e.message;});"
-                    "},1500);}"
+                    "setTimeout(function(){html2canvas(document.getElementById('cr'),{"
+                    "backgroundColor:'#ffffff',scale:3,useCORS:true,"
+                    "logging:false,allowTaint:true"
+                    "}).then(function(c){var a=document.createElement('a');"
+                    "a.download=FN+'.png';a.href=c.toDataURL('image/png');"
+                    "a.click();s.textContent='\u2705 PNG downloaded!';"
+                    "}).catch(function(e){s.textContent='\u274c '+e.message;});},2500);}"
                 )
-                _JS_SVG = (
-                    "function capSVG(){"
-                    "var s=document.getElementById('st');"
+                _JS_DB_SVG = (
+                    "function capSVG(){var s=document.getElementById('st');"
                     "s.textContent='Building SVG\u2026 please wait 2.5s';"
-                    "setTimeout(function(){"
-                    "html2canvas(document.getElementById('cr'),{"
-                    "backgroundColor:'#ffffff',scale:3,"
-                    "useCORS:true,logging:false,allowTaint:true"
-                    "}).then(function(c){"
-                    "var w=c.width,h=c.height;"
+                    "setTimeout(function(){html2canvas(document.getElementById('cr'),{"
+                    "backgroundColor:'#ffffff',scale:3,useCORS:true,"
+                    "logging:false,allowTaint:true"
+                    "}).then(function(c){var w=c.width,h=c.height;"
                     "var img=c.toDataURL('image/png');"
                     "var svgNS='http://www.w3.org/2000/svg';"
                     "var root=document.createElementNS(svgNS,'svg');"
                     "root.setAttribute('xmlns',svgNS);"
-                    "root.setAttribute('width',w);"
-                    "root.setAttribute('height',h);"
+                    "root.setAttribute('width',w);root.setAttribute('height',h);"
                     "var im=document.createElementNS(svgNS,'image');"
                     "im.setAttribute('href',img);"
-                    "im.setAttribute('width',w);"
-                    "im.setAttribute('height',h);"
+                    "im.setAttribute('width',w);im.setAttribute('height',h);"
                     "root.appendChild(im);"
                     "var blob=new Blob([new XMLSerializer().serializeToString(root)],"
                     "{type:'image/svg+xml'});"
                     "var a=document.createElement('a');"
-                    "a.download=FN+'.svg';"
-                    "a.href=URL.createObjectURL(blob);"
-                    "a.click();"
-                    "s.textContent='\u2705 SVG downloaded!';"
-                    "}).catch(function(e){"
-                    "s.textContent='\u274c '+e.message;});"
-                    "},1500);}"
+                    "a.download=FN+'.svg';a.href=URL.createObjectURL(blob);"
+                    "a.click();s.textContent='\u2705 SVG downloaded!';"
+                    "}).catch(function(e){s.textContent='\u274c '+e.message;});},2500);}"
                 )
 
-                _capture_html = (
+                _db_html = (
                     "<!DOCTYPE html><html><head>"
                     "<script src='https://cdnjs.cloudflare.com/ajax/libs/"
                     "html2canvas/1.4.1/html2canvas.min.js'></script>"
@@ -2731,20 +2685,19 @@ with tab_basic:
                     ".title{text-align:center;font-size:14px;font-weight:700;"
                     "color:#111;margin-bottom:8px;}"
                     ".grid{display:grid;grid-template-columns:1fr 1fr;"
-                    "gap:8px;align-items:stretch;}"
+                    "gap:8px;align-items:start;}"
                     ".p3d{border:1px solid #e0e0e0;border-radius:8px;"
                     "overflow:hidden;background:#fff;position:relative;height:420px;}"
                     ".p3d>div,.p3d iframe{width:100%!important;height:100%!important;}"
                     ".pim{border:1px solid #e0e0e0;border-radius:8px;"
-                    "overflow:hidden;background:#fff;position:relative;"
-                    "height:420px;display:flex;align-items:center;justify-content:center;}"
-                    ".pim img,.dsvg{width:100%;height:100%;object-fit:contain;display:block;}"
+                    "overflow:hidden;background:#fff;position:relative;}"
+                    ".pim img,.dsvg{width:100%;height:auto;display:block;}"
                     ".lbl{position:absolute;top:5px;left:7px;font-size:12px;"
                     "font-weight:700;color:#111;background:rgba(255,255,255,.88);"
                     "padding:1px 4px;border-radius:3px;z-index:10;}"
-                    ".nodiag{display:flex;align-items:center;"
-                    "justify-content:center;min-height:160px;color:#aaa;"
-                    "font-size:12px;text-align:center;padding:16px;}"
+                    ".nodiag{display:flex;align-items:center;justify-content:center;"
+                    "min-height:160px;color:#aaa;font-size:12px;"
+                    "text-align:center;padding:16px;}"
                     ".row{display:flex;gap:8px;margin-top:10px;}"
                     ".btn{flex:1;padding:9px 0;border:none;border-radius:7px;"
                     "font-size:13px;font-weight:600;cursor:pointer;color:#fff;}"
@@ -2754,33 +2707,24 @@ with tab_basic:
                     "margin-top:5px;min-height:16px;}"
                     "</style></head><body>"
                     "<div id='cr'>"
-                    "  <div class='title'>" + _ctitle + "</div>"
-                    "  <div class='grid'>"
-                    "    <div class='p3d'>"
-                    "      <span class='lbl'>(a) Binding Pocket</span>"
-                    + _c3d +
-                    "    </div>"
-                    "    <div class='pim'>"
-                    "      <span class='lbl'>" + _blbl + "</span>"
-                    + _panb +
-                    "    </div>"
-                    "  </div>"
-                    "</div>"
+                    "<div class='title'>" + _title_db + "</div>"
+                    "<div class='grid'>"
+                    "<div class='p3d'><span class='lbl'>(a) Binding Pocket</span>"
+                    + _da_html + "</div>"
+                    "<div class='pim'><span class='lbl'>" + _b_lbl + "</span>"
+                    + _panel_b + "</div>"
+                    "</div></div>"
                     "<div class='row'>"
-                    "  <button class='btn bp' onclick='capPNG()'>"
-                    "    \U0001f4f8 Capture &amp; Download PNG"
-                    "  </button>"
-                    "  <button class='btn bs' onclick='capSVG()'>"
-                    "    \U0001f3a8 Capture &amp; Download SVG"
-                    "  </button>"
-                    "</div>"
-                    "<div id='st'></div>"
-                    "<script>"
-                    "var FN='" + _fn_stem + "_dashboard';"
-                    + _JS_PNG + _JS_SVG +
+                    "<button class='btn bp' onclick='capPNG()'>"
+                    "\U0001f4f8 Capture &amp; Download PNG</button>"
+                    "<button class='btn bs' onclick='capSVG()'>"
+                    "\U0001f3a8 Capture &amp; Download SVG</button>"
+                    "</div><div id='st'></div>"
+                    "<script>var FN='" + _fn_db + "';"
+                    + _JS_DB_PNG + _JS_DB_SVG +
                     "</script></body></html>"
                 )
-                components.html(_capture_html, height=720, scrolling=True)
+                components.html(_db_html, height=700, scrolling=True)
 
                 # ── 🤖 AI Prompt ──────────────────────────────────────────────
                 st.markdown("---")
@@ -2828,8 +2772,8 @@ with tab_basic:
                 except Exception:
                     pass
 
-                _pdiag  = ("Anyone Can Dock 2D diagram" if _sv_acd
-                           else "RDKit 2D diagram" if _sv_rdk else "not generated")
+                _pdiag  = ("Anyone Can Dock 2D diagram" if _db_acd
+                           else "RDKit 2D diagram" if _db_rdk else "not generated")
                 _scstr  = ", ".join(str(round(s, 2)) for s in _psc) if _psc else "N/A"
                 _bstr   = str(round(_pbest, 2)) + " kcal/mol" if _pbest is not None else "N/A"
                 _refstr = (
@@ -2875,7 +2819,7 @@ with tab_basic:
                     .replace("$",  "\\$")
                     .replace("\n", "\\n")
                 )
-                _copy_html = (
+                components.html(
                     "<html><body style='margin:0;padding:0;'>"
                     "<button onclick='cp()' style='padding:9px 20px;width:100%;"
                     "background:linear-gradient(90deg,#ff4b4b,#cc44cc);color:#fff;"
@@ -2896,9 +2840,9 @@ with tab_basic:
                     "document.body.removeChild(a);"
                     "document.getElementById('m').textContent='\u2705 Copied!';"
                     "setTimeout(()=>document.getElementById('m').textContent='',2500);});}"
-                    "</script></body></html>"
+                    "</script></body></html>",
+                    height=60,
                 )
-                components.html(_copy_html, height=60)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
