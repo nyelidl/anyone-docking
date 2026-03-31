@@ -2646,17 +2646,29 @@ with tab_basic:
                 if _db_acd:
                     _acd_raw = (_db_acd.decode() if isinstance(_db_acd, bytes) else _db_acd)
                     if "<html" in _acd_raw or "<!DOCTYPE" in _acd_raw:
-                        # Embed ACD interactive HTML in an iframe-like div
+                        # Full interactive HTML — embed in iframe
                         _acd_b64 = __import__('base64').b64encode(
                             _acd_raw.encode()).decode()
                         _panel_b_live = (
                             "<iframe src='data:text/html;base64," + _acd_b64 + "' "
-                            "style='width:100%;height:460px;border:none;'></iframe>"
+                            "style='width:100%;height:560px;border:none;'></iframe>"
                         )
                     else:
-                        _acd_svg_live = _acd_raw.replace(
-                            "<svg ", '<svg style="width:100%;height:auto;" ', 1)
-                        _panel_b_live = "<div class='dsvg'>" + _acd_svg_live + "</div>"
+                        # SVG — preserve viewBox, let it scale naturally to full width
+                        import re as _re_acd
+                        _acd_svg_live = _acd_raw
+                        # Remove any fixed width/height attrs, keep viewBox so it scales
+                        _acd_svg_live = _re_acd.sub(
+                            r'<svg([^>]*?)width=["\'][^"\']*["\']',
+                            r'<svg\1', _acd_svg_live)
+                        _acd_svg_live = _re_acd.sub(
+                            r'<svg([^>]*?)height=["\'][^"\']*["\']',
+                            r'<svg\1', _acd_svg_live)
+                        # Add responsive style
+                        _acd_svg_live = _acd_svg_live.replace(
+                            "<svg ",
+                            '<svg style="width:100%;height:auto;display:block;" ', 1)
+                        _panel_b_live = "<div style='width:100%;'>" + _acd_svg_live + "</div>"
 
                 _JS_DB_PNG = (
                     "function capPNG(){var s=document.getElementById('st');"
@@ -2709,11 +2721,11 @@ with tab_basic:
                     "overflow:hidden;background:#fff;}"
                     ".panel-lbl{font-size:14px;font-weight:700;color:#333;"
                     "padding:6px 10px 4px 10px;background:#fff;display:block;}"
-                    ".p3d{height:460px;}"
+                    ".p3d{height:560px;}"
                     ".p3d>div,.p3d iframe{width:100%!important;height:100%!important;}"
                     ".pim{display:flex;align-items:center;justify-content:center;"
                     "height:460px;}"
-                    ".pim img,.dsvg{max-width:100%;max-height:460px;"
+                    ".pim img,.dsvg{max-width:100%;max-height:560px;"
                     "width:auto;height:auto;display:block;object-fit:contain;}"
                     ".nodiag{display:flex;align-items:center;justify-content:center;"
                     "min-height:160px;color:#aaa;font-size:12px;"
@@ -2748,7 +2760,7 @@ with tab_basic:
                     + _JS_DB_PNG + _JS_DB_SVG +
                     "</script></body></html>"
                 )
-                components.html(_db_html, height=730, scrolling=True)
+                components.html(_db_html, height=830, scrolling=True)
 
                 # ── 🤖 AI Prompt ──────────────────────────────────────────────
                 st.markdown("---")
