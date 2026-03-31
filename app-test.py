@@ -2505,128 +2505,17 @@ with tab_basic:
             # ── 📊 Summary Dashboard ──────────────────────────────────────────
             with st.expander("📊 Summary Dashboard", expanded=False):
                 st.caption(
-                    "**(a)** Score by pose · **(b)** 3D overlay vs co-crystal · "
-                    "**(c)** Binding pocket · **(d)** 2D interaction diagram"
+                    "**(a)** Binding pocket · **(b)** 2D interaction diagram"
                 )
-                import io as _io_d
-                _dcc = _chart_colors()
 
-                # ── Row 1: (a) score chart  |  (b) 3D overlay ─────────────────
-                _da1, _db1 = st.columns(2)
+                _da_col, _db_col = st.columns(2)
 
-                # (a) Affinity by Pose — bar chart
-                with _da1:
-                    st.markdown("**(a)** Vina Score by Pose")
-                    if df is not None:
-                        _dfig, _dax = plt.subplots(figsize=(5, 3.2))
-                        _dfig.patch.set_facecolor(_dcc["bg"])
-                        _dax.set_facecolor(_dcc["bg_sub"])
-                        _dcols = [
-                            "#3fb950" if v == df["Affinity (kcal/mol)"].min()
-                            else "#58a6ff"
-                            for v in df["Affinity (kcal/mol)"]
-                        ]
-                        _dax.scatter(
-                            list(range(len(df))),
-                            df["Affinity (kcal/mol)"].values,
-                            color=_dcols, s=80, zorder=3,
-                            edgecolors=_dcc["border"], linewidths=0.5,
-                        )
-                        _dax.plot(
-                            list(range(len(df))),
-                            df["Affinity (kcal/mol)"].values,
-                            color=_dcc["border"], linewidth=0.8, zorder=2,
-                        )
-                        _dax.invert_yaxis()
-                        _dax.set_xticks(list(range(len(df))))
-                        _dax.set_xticklabels(df["Pose"].astype(str), fontsize=7)
-                        _dref = (
-                            st.session_state.get("confirmed_ref_score")
-                            or st.session_state.get("redock_score")
-                        )
-                        if _dref is not None:
-                            _ref_nm = (
-                                st.session_state.get("confirmed_ref_name")
-                                or st.session_state.get("cocrystal_ligand_id", "Ref")
-                            )
-                            _dax.axhline(
-                                _dref, color="#f85149", linewidth=1.6, linestyle="--",
-                                label=f"Confirmed ref (pose "
-                                      f"{st.session_state.get('confirmed_ref_pose','?')}): "
-                                      f"{_dref:.2f} kcal/mol"
-                                if st.session_state.get("confirmed_ref_score") else
-                                f"{_ref_nm}: {_dref:.2f} kcal/mol",
-                            )
-                            _dax.legend(
-                                facecolor=_dcc["legend_bg"], edgecolor=_dcc["border"],
-                                labelcolor=_dcc["text"], fontsize=7,
-                            )
-                        _dax.set_xlabel("Pose", color=_dcc["muted"], fontsize=8)
-                        _dax.set_ylabel("Vina score (kcal/mol)", color=_dcc["muted"], fontsize=8)
-                        _dax.tick_params(colors=_dcc["muted"], labelsize=7)
-                        for _sp in _dax.spines.values():
-                            _sp.set_edgecolor(_dcc["border"])
-                        _dfig.tight_layout()
-                        st.pyplot(_dfig, use_container_width=True)
-                        _d_buf = _io_d.BytesIO()
-                        _dfig.savefig(
-                            _d_buf, format="png", dpi=200,
-                            bbox_inches="tight", facecolor=_dfig.get_facecolor(),
-                        )
-                        _d_buf.seek(0)
-                        st.download_button(
-                            "⬇ Score chart (PNG)", _d_buf.getvalue(),
-                            file_name=f"pose{pose_idx+1}_score_chart.png",
-                            mime="image/png", key="db_dl_score_png",
-                            use_container_width=True,
-                        )
-                        plt.close(_dfig)
-
-                # (b) 3D overlay: docked pose + co-crystal reference
-                with _db1:
-                    st.markdown("**(b)** 3D Overlay — Docked vs Co-crystal")
-                    try:
-                        _rec_fh_d = st.session_state.get("receptor_fh", "")
-                        _lig_pdb_d = st.session_state.get("ligand_pdb_path", "")
-                        _vov = py3Dmol.view(width="100%", height=310)
-                        _vov.setBackgroundColor(_viewer_bg())
-                        _mi = 0
-                        if _rec_fh_d and os.path.exists(_rec_fh_d):
-                            _vov.addModel(open(_rec_fh_d).read(), "pdb")
-                            _vov.setStyle({"model": _mi}, {
-                                "cartoon": {"color": "spectrum", "opacity": 0.5}
-                            })
-                            _mi += 1
-                        from rdkit import Chem as _Chem_d
-                        _vov.addModel(_Chem_d.MolToMolBlock(sel_mol), "mol")
-                        _vov.setStyle({"model": _mi}, {
-                            "stick": {"colorscheme": "cyanCarbon", "radius": 0.25}
-                        })
-                        _mi += 1
-                        if _lig_pdb_d and os.path.exists(_lig_pdb_d):
-                            _vov.addModel(open(_lig_pdb_d).read(), "pdb")
-                            _vov.setStyle({"model": _mi}, {
-                                "stick": {"colorscheme": "magentaCarbon", "radius": 0.25}
-                            })
-                        _vov.zoomTo({"model": 1})
-                        show3d(_vov, height=310)
-                        st.caption(
-                            "🩵 Docked pose · 🪷 Co-crystal reference"
-                            if _lig_pdb_d and os.path.exists(_lig_pdb_d)
-                            else "🩵 Docked pose (no co-crystal loaded)"
-                        )
-                    except Exception as _e3d:
-                        st.info(f"3D overlay unavailable: {_e3d}")
-
-                # ── Row 2: (c) binding pocket  |  (d) 2D diagram ──────────────
-                _dc2, _dd2 = st.columns(2)
-
-                # (c) Binding pocket view
-                with _dc2:
-                    st.markdown("**(c)** Binding Pocket")
+                # (a) Binding pocket view
+                with _da_col:
+                    st.markdown("**(a)** Binding Pocket")
                     try:
                         _rec_fh_c = st.session_state.get("receptor_fh", "")
-                        _vpk = py3Dmol.view(width="100%", height=340)
+                        _vpk = py3Dmol.view(width="100%", height=380)
                         _vpk.setBackgroundColor(_viewer_bg())
                         _mpk = 0
                         if _rec_fh_c and os.path.exists(_rec_fh_c):
@@ -2662,26 +2551,22 @@ with tab_basic:
                                      "resi": _rb_c["resi"]},
                                 )
                         _vpk.zoomTo({"model": _lig_m_c})
-                        show3d(_vpk, height=340)
+                        show3d(_vpk, height=380)
                     except Exception as _epk:
                         st.info(f"Pocket viewer unavailable: {_epk}")
 
-                # (d) 2D interaction diagram — priority: ACD → RDKit → placeholder
-                with _dd2:
-                    st.markdown("**(d)** 2D Interaction Diagram")
-
-                    # Check which diagram was generated
-                    _d_acd_svg  = st.session_state.get("pv_image_svg" + "_new")
-                    _d_rdk_svg  = st.session_state.get("pv_image_svg" + "_rdk")
+                # (b) 2D interaction diagram — priority: ACD → RDKit → placeholder
+                with _db_col:
+                    st.markdown("**(b)** 2D Interaction Diagram")
+                    _d_acd_svg = st.session_state.get("pv_image_svg" + "_new")
+                    _d_rdk_svg = st.session_state.get("pv_image_svg" + "_rdk")
                     _d_rdk_stale = (
                         st.session_state.get("pv_pose_key" + "_rdk") !=
                         f"{st.session_state.get('receptor_fh','')}_"
                         f"{st.session_state.get('output_sdf','')}_"
                         f"{pose_idx}"
                     )
-
                     if _d_acd_svg:
-                        # Anyone Can Dock diagram (preferred)
                         _d_s = (_d_acd_svg.decode()
                                 if isinstance(_d_acd_svg, bytes) else _d_acd_svg)
                         _d_s = _d_s.replace(
@@ -2689,9 +2574,9 @@ with tab_basic:
                             '<svg style="width:100%;height:auto;display:block;" ', 1
                         )
                         components.html(
-                            '<div style="background:#fff;border-radius:6px;'
+                            '<div style="background:#fff;border-radius:6px;' +
                             'border:1px solid #eee;">' + _d_s + "</div>",
-                            height=340, scrolling=False,
+                            height=380, scrolling=False,
                         )
                         st.caption("🧬 Anyone Can Dock diagram")
                         st.download_button(
@@ -2703,7 +2588,6 @@ with tab_basic:
                             use_container_width=True,
                         )
                     elif _d_rdk_svg and not _d_rdk_stale:
-                        # RDKit diagram fallback
                         _d_s = (_d_rdk_svg.decode()
                                 if isinstance(_d_rdk_svg, bytes) else _d_rdk_svg)
                         _d_s = _d_s.replace(
@@ -2711,9 +2595,9 @@ with tab_basic:
                             '<svg style="width:100%;height:auto;display:block;" ', 1
                         )
                         components.html(
-                            '<div style="background:#fff;border-radius:6px;'
+                            '<div style="background:#fff;border-radius:6px;' +
                             'border:1px solid #eee;">' + _d_s + "</div>",
-                            height=340, scrolling=False,
+                            height=380, scrolling=False,
                         )
                         st.caption("🔬 RDKit diagram (fallback)")
                         st.download_button(
@@ -2728,9 +2612,164 @@ with tab_basic:
                         st.info(
                             "No 2D diagram yet.\n\n"
                             "Generate one in the **🧬 Anyone Can Dock 2D Diagram** "
-                            "or **🔬 RDKit 2D Diagram** tab above, "
-                            "then re-open this dashboard."
+                            "or **🔬 RDKit 2D Diagram** tab above."
                         )
+
+                # ── 💾 Capture both panels as single figure ───────────────────
+                st.markdown("---")
+                st.markdown("#### 💾 Save as Single Figure")
+                st.caption(
+                    "Renders **(a)** binding pocket + **(b)** 2D diagram "
+                    "side by side. Click **📸 Capture & Download** to save as PNG."
+                )
+
+                import io as _io_cap, base64 as _b64cap
+
+                # (b) 2D diagram → base64 PNG via cairosvg
+                _d_b64 = ""; _d_src = ""
+                _acd_svg_cap = st.session_state.get("pv_image_svg_new")
+                _rdk_svg_cap = st.session_state.get("pv_image_svg_rdk")
+                _diag_cap    = _acd_svg_cap or _rdk_svg_cap
+                _d_src       = "Anyone Can Dock" if _acd_svg_cap else (
+                    "RDKit" if _rdk_svg_cap else "")
+                if _diag_cap:
+                    try:
+                        import cairosvg as _csvcap
+                        _svg_cap = (_diag_cap if isinstance(_diag_cap, bytes)
+                                    else _diag_cap.encode())
+                        _d_b64 = _b64cap.b64encode(
+                            _csvcap.svg2png(bytestring=_svg_cap, dpi=150)
+                        ).decode()
+                    except Exception:
+                        pass
+
+                # (a) Binding pocket → py3Dmol HTML
+                _a_3d_html = ""
+                try:
+                    import re as _re_cap2
+                    _rec_cap = st.session_state.get("receptor_fh", "")
+                    from rdkit import Chem as _Chem_cap
+                    _vc2 = py3Dmol.view(width=480, height=360)
+                    _vc2.setBackgroundColor("white")
+                    _mc2 = 0
+                    if _rec_cap and os.path.exists(_rec_cap):
+                        _vc2.addModel(open(_rec_cap).read(), "pdb")
+                        _vc2.setStyle({"model": _mc2}, {
+                            "cartoon": {"color": "spectrum", "opacity": 0.25}
+                        })
+                        _mc2 += 1
+                    _vc2.addModel(_Chem_cap.MolToMolBlock(sel_mol), "mol")
+                    _lm2 = _mc2
+                    _vc2.setStyle({"model": _lm2}, {
+                        "stick": {"colorscheme": "cyanCarbon", "radius": 0.25}
+                    })
+                    if _rec_cap and os.path.exists(_rec_cap):
+                        for _rb2 in get_interacting_residues(
+                                _rec_cap, sel_mol, cutoff=4.5):
+                            _vc2.setStyle(
+                                {"model": 0, "chain": _rb2["chain"],
+                                 "resi": _rb2["resi"]},
+                                {"stick": {"colorscheme": "orangeCarbon",
+                                           "radius": 0.16}},
+                            )
+                            _vc2.addLabel(
+                                f"{_rb2['resn']}{_rb2['resi']}",
+                                {"fontSize": 8, "fontColor": "yellow",
+                                 "backgroundColor": "black",
+                                 "backgroundOpacity": 0.6, "inFront": True,
+                                 "showBackground": True},
+                                {"model": 0, "chain": _rb2["chain"],
+                                 "resi": _rb2["resi"]},
+                            )
+                    _vc2.zoomTo({"model": _lm2})
+                    _raw2 = _vc2._make_html()
+                    _a_3d_html = _re_cap2.sub(
+                        r'width\s*[:=]\s*["\']?\d+px?["\']?', "width:100%", _raw2
+                    )
+                    _a_3d_html = _re_cap2.sub(
+                        r'height\s*[:=]\s*["\']?\d+px?["\']?', "height:100%", _a_3d_html
+                    )
+                except Exception as _e3c:
+                    _a_3d_html = (
+                        f"<p style='color:#888;padding:20px;font-size:13px'>"
+                        f"3D viewer unavailable: {_e3c}</p>"
+                    )
+
+                _title_cap = (
+                    f"Pose {pose_idx+1} · "
+                    f"{st.session_state.get('ligand_name', 'Ligand')} · "
+                    f"Anyone Can Dock"
+                )
+
+                _capture_html = f"""
+<html><head>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+  *{{margin:0;padding:0;box-sizing:border-box;font-family:'Helvetica Neue',Arial,sans-serif;}}
+  body{{background:#fff;padding:12px;}}
+  .fig-title{{text-align:center;font-size:15px;font-weight:700;color:#1a1a1a;
+    margin-bottom:10px;}}
+  .grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;}}
+  .panel{{border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;
+    background:#fff;position:relative;height:360px;}}
+  .panel-label{{position:absolute;top:6px;left:8px;font-size:13px;
+    font-weight:700;color:#1a1a1a;background:rgba(255,255,255,0.85);
+    padding:1px 5px;border-radius:3px;z-index:10;}}
+  .panel img{{width:100%;height:100%;object-fit:contain;display:block;}}
+  .panel-3d{{}}
+  .panel-3d>div,.panel-3d iframe{{width:100%!important;height:100%!important;}}
+  .no-diag{{display:flex;align-items:center;justify-content:center;
+    height:100%;color:#aaa;font-size:13px;text-align:center;padding:20px;}}
+  .btn-row{{display:flex;gap:10px;margin-top:12px;justify-content:center;}}
+  .btn{{padding:10px 28px;border:none;border-radius:8px;font-size:14px;
+    font-weight:600;cursor:pointer;
+    background:linear-gradient(90deg,#ff4b4b,#cc44cc);
+    color:#fff;transition:opacity 0.2s;}}
+  .btn:hover{{opacity:0.88;}}
+  #status{{text-align:center;font-size:12px;color:#888;margin-top:6px;}}
+</style>
+</head><body>
+<div id="capture-root">
+  <div class="fig-title">{_title_cap}</div>
+  <div class="grid">
+    <div class="panel panel-3d">
+      <span class="panel-label">(a)</span>
+      {_a_3d_html}
+    </div>
+    <div class="panel">
+      <span class="panel-label">(b)</span>
+      {"<img src='data:image/png;base64," + _d_b64 + "' />"
+       if _d_b64 else
+       "<div class='no-diag'>Generate a 2D diagram first<br>(🧬 or 🔬 tab above)</div>"}
+    </div>
+  </div>
+</div>
+<div class="btn-row">
+  <button class="btn" onclick="captureAll()">📸 Capture &amp; Download PNG</button>
+</div>
+<div id="status"></div>
+<script>
+function captureAll(){{
+  document.getElementById("status").textContent =
+    "Rendering 3D viewer… please wait a moment.";
+  setTimeout(function(){{
+    html2canvas(document.getElementById("capture-root"),{{
+      backgroundColor:"#ffffff", scale:2, useCORS:true,
+      logging:false, allowTaint:true,
+    }}).then(function(canvas){{
+      var a=document.createElement("a");
+      a.download="{_title_cap.replace(" · ","_").replace(" ","_")}_dashboard.png";
+      a.href=canvas.toDataURL("image/png");
+      a.click();
+      document.getElementById("status").textContent="✅ Downloaded!";
+    }}).catch(function(e){{
+      document.getElementById("status").textContent="❌ "+e.message;
+    }});
+  }}, 1500);
+}}
+</script>
+</body></html>"""
+                components.html(_capture_html, height=500, scrolling=False)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
