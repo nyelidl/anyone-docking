@@ -2630,7 +2630,9 @@ with tab_basic:
                     + st.session_state.get("ligand_name", "Ligand")
                     + "  \u00b7  Anyone Can Dock"
                 )
-                _b_lbl   = "(b) 2D Diagram" + (" \u00b7 " + _db_src if _db_src else "")
+                _b_lbl = "(b) 2D Diagram" + (" \u00b7 " + _db_src if _db_src else "")
+
+                # panel_b for CAPTURE (PNG-based, html2canvas can read it)
                 _panel_b = (
                     "<img src='data:image/png;base64," + _db64 + "' />"
                     if _db64 else
@@ -2638,6 +2640,23 @@ with tab_basic:
                     if _db_inline else
                     "<div class='nodiag'>No 2D diagram yet.<br>Generate one above first.</div>"
                 )
+
+                # panel_b_live: ACD = full interactive HTML, else same as capture
+                _panel_b_live = _panel_b
+                if _db_acd:
+                    _acd_raw = (_db_acd.decode() if isinstance(_db_acd, bytes) else _db_acd)
+                    if "<html" in _acd_raw or "<!DOCTYPE" in _acd_raw:
+                        # Embed ACD interactive HTML in an iframe-like div
+                        _acd_b64 = __import__('base64').b64encode(
+                            _acd_raw.encode()).decode()
+                        _panel_b_live = (
+                            "<iframe src='data:text/html;base64," + _acd_b64 + "' "
+                            "style='width:100%;height:460px;border:none;'></iframe>"
+                        )
+                    else:
+                        _acd_svg_live = _acd_raw.replace(
+                            "<svg ", '<svg style="width:100%;height:auto;" ', 1)
+                        _panel_b_live = "<div class='dsvg'>" + _acd_svg_live + "</div>"
 
                 _JS_DB_PNG = (
                     "function capPNG(){var s=document.getElementById('st');"
@@ -2699,8 +2718,8 @@ with tab_basic:
                     ".nodiag{display:flex;align-items:center;justify-content:center;"
                     "min-height:160px;color:#aaa;font-size:12px;"
                     "text-align:center;padding:16px;}"
-                    ".row{display:flex;gap:8px;margin-top:10px;}"
-                    ".btn{flex:1;padding:11px 0;border:none;border-radius:7px;"
+                    ".btns{display:flex;flex-direction:column;gap:6px;margin-top:10px;}"
+                    ".btn{width:100%;padding:11px 0;border:none;border-radius:7px;"
                     "font-size:14px;font-weight:600;cursor:pointer;color:#fff;}"
                     ".bp{background:linear-gradient(90deg,#ff4b4b,#cc44cc);}"
                     ".bs{background:linear-gradient(90deg,#4b8bff,#cc44cc);}"
@@ -2716,10 +2735,10 @@ with tab_basic:
                     "</div>"
                     "<div class='panel'>"
                     "<span class='panel-lbl'>" + _b_lbl + "</span>"
-                    "<div class='pim'>" + _panel_b + "</div>"
+                    "<div class='pim'>" + _panel_b_live + "</div>"
                     "</div>"
                     "</div></div>"
-                    "<div class='row'>"
+                    "<div class='btns'>"
                     "<button class='btn bp' onclick='capPNG()'>"
                     "\U0001f4f8 Capture &amp; Download PNG</button>"
                     "<button class='btn bs' onclick='capSVG()'>"
@@ -2729,7 +2748,7 @@ with tab_basic:
                     + _JS_DB_PNG + _JS_DB_SVG +
                     "</script></body></html>"
                 )
-                components.html(_db_html, height=700, scrolling=True)
+                components.html(_db_html, height=730, scrolling=True)
 
                 # ── 🤖 AI Prompt ──────────────────────────────────────────────
                 st.markdown("---")
