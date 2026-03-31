@@ -2393,62 +2393,6 @@ with tab_basic:
                 )
 
             try:
-                vbp = py3Dmol.view(width="100%", height=440)
-                vbp.setBackgroundColor(_viewer_bg())
-                mbp = 0
-                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    vbp.addModel(open(st.session_state.receptor_fh).read(), "pdb")
-                    vbp.setStyle({"model": mbp}, {
-                        "cartoon": {"color": "spectrum", "opacity": 0.45}
-                    })
-                    if _show_surface:
-                        vbp.addSurface(
-                            py3Dmol.SAS,
-                            {
-                                "opacity": 0.55,
-                                "color": "white",
-                            },
-                            {"model": mbp},
-                        )
-                    mbp += 1
-                vbp.addModel(Chem.MolToMolBlock(sel_mol), "mol")
-                _lig_m = mbp
-                vbp.setStyle({"model": _lig_m}, {
-                    "stick": {"colorscheme": "cyanCarbon", "radius": 0.30}
-                })
-                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    _ir = get_interacting_residues(
-                        st.session_state.receptor_fh, sel_mol, cutoff=_cutoff
-                    )
-                    for _rb in _ir:
-                        vbp.setStyle(
-                            {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
-                            {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}},
-                        )
-                        if _show_labels:
-                            vbp.addLabel(
-                                f"{_rb['resn']}{_rb['resi']}",
-                                {
-                                    "fontSize": 11, "fontColor": "yellow",
-                                    "backgroundColor": "black",
-                                    "backgroundOpacity": 0.65,
-                                    "inFront": True, "showBackground": True,
-                                },
-                                {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
-                            )
-                    _n         = len(_ir)
-                    _res_label = f"{_n} residue" + ("s" if _n != 1 else "")
-                    _res_kind  = "success" if _n else "warn"
-                    st.markdown(
-                        f"{_pill(f'Pose {pose_idx+1}')}"
-                        f" {_pill(f'{_cutoff:.1f} A cutoff')}"
-                        f" {_pill(_res_label, _res_kind)}"
-                        + (f" {_pill('surface on', 'info')}" if _show_surface else ""),
-                        unsafe_allow_html=True,
-                    )
-                vbp.zoomTo({"model": _lig_m})
-                # viewer rendered in capture component below
-
                 # ── 📸 Capture binding pocket ─────────────────────────────────
                 import re as _re_bp, base64 as _b64bp
                 _bp_fn  = (
