@@ -63,31 +63,6 @@ _PV_RETRY_DELAY = 10
 # PoseView: polling attempts per try (2 s each → 120 s max)
 _PV_POLL_ATTEMPTS = 60
 
-# ── Receptor PDB parse cache ──────────────────────────────────────────────────
-# Keyed by (abs_path, mtime). Holds at most one entry to limit RAM.
-# Cloud Run benefit: avoids re-parsing the same receptor PDB on every call to
-# _detect_all_interactions / get_interacting_residues / _enrich_with_res_xyz.
-# parsePDB on a 5000-atom protein costs ~0.5–2 s + significant I/O.
-_parsepdb_cache: dict = {}
-
-
-def _cached_parsepdb(receptor_pdb: str):
-    """
-    Parse a receptor PDB with mtime-based caching.
-    Keeps only one entry — the most recently loaded receptor.
-    Thread-safe for Streamlit's threading model (GIL + single-process).
-    """
-    from prody import parsePDB as _parsePDB
-    try:
-        mtime = os.path.getmtime(receptor_pdb)
-    except OSError:
-        mtime = 0.0
-    key = (os.path.abspath(receptor_pdb), mtime)
-    if key not in _parsepdb_cache:
-        _parsepdb_cache.clear()      # evict old receptor, keep memory bounded
-        _parsepdb_cache[key] = _parsePDB(receptor_pdb)
-    return _parsepdb_cache[key]
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  UTILITIES
@@ -248,53 +223,166 @@ def check_obabel():
 
 def get_vina_binary(path: str = ""):
     """
-    Download AutoDock Vina 1.2.7 for the current platform if not present.
-    Supports Linux (x86_64), macOS (x86_64, arm64), and Windows (x86_64).
-    Returns (binary_path, status_message).
+    Locate or download AutoDock Vina 1.2.7.
+    Returns (binary_path, status_message).  binary_path is None on failure.
+
+    Resolution order — optimised for Google Cloud Run:
+    ─────────────────────────────────────────────────
+    1. shutil.which("vina")
+       Picks up Vina installed into the container image via Dockerfile
+       (e.g. COPY vina /usr/local/bin/vina) or apt/conda.
+       This is the recommended Cloud Run pattern: bake the binary into the
+       image so cold starts never need a network download.
+
+    2. Common fixed install locations
+       /usr/local/bin/vina, /usr/bin/vina, /opt/vina/vina
+       Fallback in case PATH is stripped in the Cloud Run environment.
+
+    3. Caller-supplied path (the `path` argument)
+       Lets callers pin a specific binary for testing or CI.
+
+    4. Already-downloaded binary in tempdir from a previous call this session
+       Cloud Run container instances are long-lived within a revision; if the
+       file was downloaded earlier in this instance's lifetime it is reused
+       without touching the network.
+
+    5. Runtime download from GitHub releases (fallback only)
+       Used when none of the above succeed — normal for local dev without a
+       system Vina install.  On Cloud Run this is the slow path and should
+       be avoided by pre-installing Vina in the container image.
+
+    Smoke-test
+    ──────────
+    Every candidate path is validated with `vina --version` (5 s timeout).
+    This catches truncated downloads and wrong-architecture binaries before
+    they fail silently during a real docking run.
     """
     import platform
+    import shutil
+    import stat
 
     system  = platform.system().lower()
     machine = platform.machine().lower()
 
-    _BASE = (
-        "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/"
-    )
-
+    # ── Platform filename (needed only if we fall through to the download) ────
     if system == "linux":
         _FNAME = "vina_1.2.7_linux_x86_64"
     elif system == "darwin":
-        if machine in ("arm64", "aarch64"):
-            _FNAME = "vina_1.2.7_mac_arm64"
-        else:
-            _FNAME = "vina_1.2.7_mac_x86_64"
+        _FNAME = (
+            "vina_1.2.7_mac_arm64"
+            if machine in ("arm64", "aarch64")
+            else "vina_1.2.7_mac_x86_64"
+        )
     elif system == "windows":
         _FNAME = "vina_1.2.7_windows_x86_64.exe"
     else:
         return None, f"Unsupported platform: {system}/{machine}"
 
-    _URL = _BASE + _FNAME
+    _DOWNLOAD_URL = (
+        "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/"
+        + _FNAME
+    )
 
-    if not path:
-        path = os.path.join(tempfile.gettempdir(), _FNAME)
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
-    if not os.path.exists(path) or os.path.getsize(path) < 100_000:
-        try:
-            import urllib.request
-            urllib.request.urlretrieve(_URL, path)
-        except Exception as e1:
+    def _set_executable(p: str) -> None:
+        """Ensure the binary has execute permission (no-op on Windows)."""
+        if system != "windows":
             try:
-                import requests
-                r = requests.get(_URL, stream=True, timeout=120)
-                r.raise_for_status()
-                with open(path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):
-                        f.write(chunk)
-            except Exception as e2:
-                return None, f"Download failed: {e1} / {e2}"
-    if system != "windows":
-        os.chmod(path, 0o755)
-    return path, f"ok ({system}/{machine})"
+                current = os.stat(p).st_mode
+                os.chmod(p, current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            except OSError:
+                pass
+
+    def _is_usable(p: str) -> bool:
+        """
+        Return True when p exists, is large enough to be a real binary, and
+        responds to `vina --version`.
+
+        Size floor (100 KB) quickly rejects empty files, HTML error pages
+        saved by urllib, and truncated downloads without spawning a process.
+        The --version call catches wrong-architecture binaries and permission
+        problems before they surface during an actual docking job.
+        """
+        if not p or not os.path.isfile(p):
+            return False
+        if os.path.getsize(p) < 100_000:
+            return False
+        _set_executable(p)
+        try:
+            rc, _ = run_cmd(f'"{p}" --version')
+            return rc == 0
+        except Exception:
+            return False
+
+    # ── Step 1: PATH lookup ───────────────────────────────────────────────────
+    # Preferred Cloud Run path: install Vina in the Dockerfile so it lands in
+    # PATH and there is zero network dependency at runtime.
+    #
+    #   Example Dockerfile snippet:
+    #     COPY vina_1.2.7_linux_x86_64 /usr/local/bin/vina
+    #     RUN chmod +x /usr/local/bin/vina
+    #
+    _which = shutil.which("vina")
+    if _which and _is_usable(_which):
+        return _which, f"ok — system install ({_which})"
+
+    # ── Step 2: common fixed install locations ────────────────────────────────
+    for _fp in (
+        "/usr/local/bin/vina",
+        "/usr/bin/vina",
+        "/opt/vina/vina",
+        "/opt/autodock/vina",
+    ):
+        if _is_usable(_fp):
+            return _fp, f"ok — fixed path ({_fp})"
+
+    # ── Step 3: caller-supplied path ──────────────────────────────────────────
+    if path and _is_usable(path):
+        return path, f"ok — caller path ({path})"
+
+    # ── Step 4: previously-downloaded binary in tempdir ───────────────────────
+    # Cloud Run container instances can be reused across requests within the
+    # same revision.  If a prior request already downloaded the binary, reuse
+    # it without hitting the network again.
+    _tmp_path = path if path else os.path.join(tempfile.gettempdir(), _FNAME)
+    if _is_usable(_tmp_path):
+        return _tmp_path, f"ok — cached download ({_tmp_path})"
+
+    # ── Step 5: runtime download (fallback — avoid on Cloud Run) ─────────────
+    # Reach this point only when Vina was not pre-installed in the image.
+    # On Cloud Run, minimise how often this runs by building the binary into
+    # the container.  For local dev / Streamlit Community Cloud this is the
+    # normal first-run path.
+    try:
+        import urllib.request
+        urllib.request.urlretrieve(_DOWNLOAD_URL, _tmp_path)
+    except Exception as _e1:
+        try:
+            import requests as _req
+            _r = _req.get(_DOWNLOAD_URL, stream=True, timeout=120)
+            _r.raise_for_status()
+            with open(_tmp_path, "wb") as _fh:
+                for _chunk in _r.iter_content(chunk_size=1024 * 1024):
+                    _fh.write(_chunk)
+        except Exception as _e2:
+            return None, f"Download failed: {_e1} / {_e2}"
+
+    _set_executable(_tmp_path)
+
+    # Validate the freshly-downloaded file before returning it.
+    if not _is_usable(_tmp_path):
+        # Remove the bad file so the next startup attempt re-downloads cleanly.
+        try:
+            os.remove(_tmp_path)
+        except OSError:
+            pass
+        return None, (
+            "Downloaded Vina binary failed smoke-test "
+            f"({_tmp_path}) — removed for retry"
+        )
+
+    return _tmp_path, f"ok — downloaded ({system}/{machine})"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1057,10 +1145,10 @@ def get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5) ->
     """
     Return protein residues within cutoff Å of any ligand heavy atom.
     Each entry: {"chain": str, "resi": int, "resn": str}
-    Uses _cached_parsepdb — avoids re-parsing on every Binding Pocket View slider move.
     """
     try:
         import numpy as np
+        from prody import parsePDB
 
         conf    = lig_mol.GetConformer()
         lig_xyz = np.array([
@@ -1070,7 +1158,7 @@ def get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5) ->
             for i in range(lig_mol.GetNumAtoms())
         ])
 
-        rec      = _cached_parsepdb(receptor_pdb)
+        rec      = parsePDB(receptor_pdb)
         r_xyz    = rec.getCoords()
         chains   = rec.getChids()
         resids   = rec.getResnums()
@@ -1249,17 +1337,6 @@ def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
     source = next((p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 100), receptor_pdb)
 
     out = os.path.join(rec_dir, "receptor_pv_clean.pdb")
-
-    # ── Fast path: return cached clean PDB if already newer than source ───────
-    # Cloud Run benefit: avoids re-reading + re-writing the receptor PDB on
-    # every PoseView submission within the same session.
-    if os.path.exists(out) and os.path.getsize(out) > 100:
-        try:
-            if os.path.getmtime(out) >= os.path.getmtime(source):
-                return out
-        except OSError:
-            pass
-
     try:
         kept   = []
         serial = 0
@@ -1814,10 +1891,9 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
     calculations — no Python-level O(n_rec²) loops.
     """
     import numpy as np
-    # parsePDB replaced by _cached_parsepdb — avoids re-parsing receptor
-    # PDB on every 2D diagram generate click. Cache is keyed by path+mtime.
+    from prody import parsePDB
 
-    rec = _cached_parsepdb(receptor_pdb)
+    rec = parsePDB(receptor_pdb)
     if rec is None:
         return []
 
@@ -2191,8 +2267,9 @@ def _enrich_with_res_xyz(interactions, mol3d, receptor_pdb):
     placement can use the true ring centre rather than a single atom.
     """
     import numpy as np
+    from prody import parsePDB
     try:
-        rec = _cached_parsepdb(receptor_pdb)
+        rec = parsePDB(receptor_pdb)
         if rec is None: return
         rc  = rec.getCoords()
         rch = rec.getChids()
@@ -3212,83 +3289,6 @@ def draw_interaction_diagram_data(
         "placements": pl_serial,
         "svg_coords": sc_serial,
     }
-
-
-def draw_interaction_diagram_and_data(
-    receptor_pdb: str,
-    pose_sdf: str,
-    smiles: str = "",
-    title: str = "",
-    cutoff: float = 4.5,
-    size: tuple = (800, 759),
-    max_residues: int = 14,
-) -> tuple:
-    """
-    Run _build_diagram_data exactly once, then produce both:
-      - SVG bytes  (same output as draw_interaction_diagram)
-      - data dict  (same output as draw_interaction_diagram_data)
-
-    Replaces calling draw_interaction_diagram() + draw_interaction_diagram_data()
-    separately, which doubled parsePDB + _detect_all_interactions work per
-    diagram generate click.
-
-    Cloud Run benefit: halves the most expensive non-Vina CPU work per click:
-    one parsePDB call, one _detect_all_interactions pass, one 2D layout pass.
-
-    Returns: (svg_bytes | None, data_dict | None)
-    """
-    from rdkit import Chem, RDLogger
-    RDLogger.DisableLog("rdApp.*")
-    try:
-        mol2d, sc, pl, W, H = _build_diagram_data(
-            receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size
-        )
-    except Exception:
-        RDLogger.EnableLog("rdApp.error")
-        return None, None
-
-    # ── 1. SVG bytes (static) ──────────────────────────────────────────────────
-    try:
-        svg_bytes = _render_diagram_svg(mol2d, sc, pl, title, W, H).encode()
-    except Exception:
-        svg_bytes = None
-
-    # ── 2. Interactive data dict ───────────────────────────────────────────────
-    try:
-        cx, cy  = W // 2, H // 2
-        lig_svg = _render_ligand_svg(mol2d, sc)
-
-        sc_serial = {str(k): [round(v[0], 2), round(v[1], 2)] for k, v in sc.items()}
-
-        pl_serial = []
-        for p in pl:
-            lx, ly = sc.get(p.get("lig_atom_idx", 0), (cx, cy))
-            if p.get("ring_atom_indices"):
-                rx, ry = _ring_centroid_2d(p["ring_atom_indices"], sc)
-                if rx is not None:
-                    lx, ly = rx, ry
-            pl_serial.append({
-                "id":       f"r{len(pl_serial)}",
-                "label":    f"{p['resname']} {p['resid']}{p.get('chain', '')}",
-                "itype":    p["itype"],
-                "distance": p.get("distance"),
-                "lx":       round(lx, 2),
-                "ly":       round(ly, 2),
-                "bx":       round(p["bx"], 2),
-                "by":       round(p["by"], 2),
-            })
-
-        data_dict = {
-            "W": W, "H": H, "title": title,
-            "ligand_svg": lig_svg,
-            "placements": pl_serial,
-            "svg_coords": sc_serial,
-        }
-    except Exception:
-        data_dict = None
-
-    RDLogger.EnableLog("rdApp.error")
-    return svg_bytes, data_dict
 
 
 def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues,
