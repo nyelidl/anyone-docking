@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Anyone can dock</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --red:    #ff4b4b;
+      --purple: #cc44cc;
+      --blue:   #4b8bff;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #fff;
+      color: #333;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      text-align: center;
+      padding: 1rem;
+      overflow: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 50% at 20% 40%, rgba(255,75,75,.07), transparent),
+        radial-gradient(ellipse 50% 60% at 80% 60%, rgba(75,139,255,.07), transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .card {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      animation: fadeUp 0.6s cubic-bezier(.22,1,.36,1) both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .logo {
+      width: 84px;
+      height: 84px;
+      margin-bottom: 1.4rem;
+      filter: drop-shadow(0 4px 16px rgba(255,75,75,.25));
+    }
+
+    h1 {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-size: 1.8rem;
+      font-weight: 800;
+      margin-bottom: 0.4rem;
+      background: linear-gradient(90deg, #ff4b4b, #cc44cc, #4b8bff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .subtitle {
+      color: #888;
+      font-size: 0.92rem;
+      font-weight: 400;
+      margin-bottom: 2.2rem;
+      letter-spacing: 0.01em;
+      min-height: 1.3em;
+    }
+
+    .spinner {
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      border: 4px solid #eee;
+      border-top-color: var(--red);
+      border-right-color: var(--purple);
+      animation: spin 0.9s linear infinite;
+      margin-bottom: 2rem;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .progress-wrap {
+      width: 220px;
+      height: 4px;
+      background: #eee;
+      border-radius: 2px;
+      margin-bottom: 1.8rem;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--red), var(--purple), var(--blue));
+      border-radius: 2px;
+      transition: width 0.4s ease;
+    }
+
+    /* 8 columns × 5 rows grid */
+    .server-grid {
+      display: grid;
+      grid-template-columns: repeat(8, 10px);
+      gap: 8px;
+      justify-content: center;
+      margin-bottom: 1.8rem;
+    }
+
+    .server-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ddd;
+      transition: background 0.3s, transform 0.2s;
+    }
+    .server-dot.checking { background: #f0c040; animation: pulse 1s ease-in-out infinite; }
+    .server-dot.online   { background: #4caf50; transform: scale(1.2); }
+    .server-dot.slow     { background: #ff9800; }
+    .server-dot.offline  { background: #f44336; }
+    .server-dot.selected { background: var(--blue); transform: scale(1.5);
+                           box-shadow: 0 0 0 3px rgba(75,139,255,.25); }
+
+    @keyframes pulse {
+      0%,100% { opacity: 1; } 50% { opacity: 0.4; }
+    }
+
+    .hint {
+      font-size: 0.78rem;
+      color: #bbb;
+      letter-spacing: 0.04em;
+    }
+
+    .fallback-btn {
+      display: none;
+      margin-top: 1.4rem;
+      padding: 0.6rem 1.6rem;
+      background: linear-gradient(90deg, var(--red), var(--purple));
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      letter-spacing: 0.01em;
+    }
+    .fallback-btn:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <img class="logo"
+      src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg"
+      alt="Anyone can dock logo"/>
+    <h1>Anyone can dock,<br>everyone can do!</h1>
+    <p class="subtitle" id="status">Checking server availability…</p>
+    <div class="spinner"></div>
+    <div class="progress-wrap">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <div class="server-grid" id="serverGrid"></div>
+    <p class="hint" id="hint">Connecting to the fastest available server</p>
+    <button class="fallback-btn" id="fallbackBtn" onclick="redirectToFallback()">
+      Open app manually →
+    </button>
+  </div>
+
+  <script>
+    const APPS = [
+      // ── Streamlit Cloud ───────────────────────────────────────────────────
+      "https://anyone-docking-1.streamlit.app/",
+      "https://anyone-docking-2.streamlit.app/",
+      "https://anyone-docking-3.streamlit.app/",
+      "https://anyone-docking-4.streamlit.app/",
+      "https://anyone-docking-5.streamlit.app/",
+      "https://anyone-docking-6.streamlit.app/",
+      "https://anyone-docking-7.streamlit.app/",
+      "https://anyone-docking-8.streamlit.app/",
+      "https://anyone-docking-9.streamlit.app/",
+      "https://anyone-docking-10.streamlit.app/",
+      "https://anyone-docking-11.streamlit.app/",
+      "https://anyone-docking-12.streamlit.app/",
+      "https://anyone-docking-13.streamlit.app/",
+      "https://anyone-docking-14.streamlit.app/",
+      "https://anyone-docking-15.streamlit.app/",
+      "https://anyone-docking-16.streamlit.app/",
+      "https://anyone-docking-17.streamlit.app/",
+      "https://anyone-docking-18.streamlit.app/",
+      "https://anyone-docking-19.streamlit.app/",
+      "https://anyone-docking-20.streamlit.app/",
+      // ── HuggingFace — kowith ─────────────────────────────────────────────
+      "https://kowith-anyone-docking.hf.space/",
+      "https://kowith-anyone-docking-2.hf.space/",
+      "https://kowith-anyone-docking-4.hf.space/",
+      "https://kowith-anyone-docking-5.hf.space/",
+      "https://kowith-anyone-docking-6.hf.space/",
+      "https://kowith-anyone-docking-7.hf.space/",
+      // ── HuggingFace — kowith-2 ───────────────────────────────────────────
+      "https://kowith-2-anyone-docking.hf.space/",
+      "https://kowith-2-anyone-docking-2.hf.space/",
+      "https://kowith-2-anyone-docking-3.hf.space/",
+      "https://kowith-2-anyone-docking-4.hf.space/",
+      "https://kowith-2-anyone-docking-5.hf.space/",
+      "https://kowith-2-anyone-docking-6.hf.space/",
+      "https://kowith-2-anyone-docking-7.hf.space/",
+      // ── HuggingFace — kowith-3 ───────────────────────────────────────────
+      "https://kowith-3-anyone-docking.hf.space/",
+      "https://kowith-3-anyone-docking-2.hf.space/",
+      "https://kowith-3-anyone-docking-3.hf.space/",
+      "https://kowith-3-anyone-docking-4.hf.space/",
+      "https://kowith-3-anyone-docking-5.hf.space/",
+      "https://kowith-3-anyone-docking-6.hf.space/",
+      "https://kowith-3-anyone-docking-7.hf.space/",
+    ];
+
+    const TIMEOUT_MS   = 25000;
+    const MIN_DELAY_MS = 1200;
+    const FALLBACK_MS  = 28000;
+
+    const n          = APPS.length;
+    const results    = new Array(n).fill(null);
+    let   redirected = false;
+    const startTime  = Date.now();
+
+    const grid = document.getElementById("serverGrid");
+    const dots = APPS.map((_, i) => {
+      const d = document.createElement("div");
+      d.className = "server-dot";
+      d.title = `Server ${i + 1}`;
+      grid.appendChild(d);
+      return d;
+    });
+
+    function setStatus(msg)   { document.getElementById("status").textContent = msg; }
+    function setHint(msg)     { document.getElementById("hint").textContent = msg; }
+    function setProgress(pct) { document.getElementById("progressBar").style.width = pct + "%"; }
+
+    // Round-robin: prioritise Streamlit first, fall back to HuggingFace
+    // only when no Streamlit servers are online.
+    function getNextServer(onlineIndices) {
+      const key = "acd_rr_counter";
+      let counter = parseInt(localStorage.getItem(key) || "0");
+
+      // Split online servers into two pools
+      const stOnline = onlineIndices.filter(i => !APPS[i].includes(".hf.space"));
+      const hfOnline = onlineIndices.filter(i =>  APPS[i].includes(".hf.space"));
+
+      // Use Streamlit pool if any are online, else use HuggingFace
+      const pool = stOnline.length > 0 ? stOnline : hfOnline;
+
+      const idx = pool[counter % pool.length];
+      localStorage.setItem(key, (counter + 1).toString());
+      return idx;
+    }
+
+    function doRedirect(idx) {
+      if (redirected) return;
+      redirected = true;
+      dots[idx].className = "server-dot selected";
+      setStatus(`Server ${idx + 1} is ready — redirecting…`);
+      setHint(`Server ${idx + 1} of ${n}`);
+      setProgress(100);
+      setTimeout(() => { window.location.href = APPS[idx]; }, 300);
+    }
+
+    function redirectToFallback() {
+      if (redirected) return;
+      const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+      if (online.length > 0) {
+        doRedirect(getNextServer(online));
+      } else {
+        doRedirect(Math.floor(Math.random() * n));
+      }
+    }
+
+    function checkProgress() {
+      const done = results.filter(r => r !== null).length;
+      setProgress(Math.round((done / n) * 90));
+    }
+
+    function tryRedirectRoundRobin() {
+      if (redirected) return;
+      const done   = results.filter(r => r !== null).length;
+      const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+      const elapsed = Date.now() - startTime;
+      if ((done === n || elapsed >= MIN_DELAY_MS) && online.length > 0) {
+        setStatus(`${online.length} server(s) available — connecting…`);
+        doRedirect(getNextServer(online));
+      }
+    }
+
+    APPS.forEach((url, i) => {
+      dots[i].className = "server-dot checking";
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const t0 = Date.now();
+
+      fetch(url, { mode: "no-cors", signal: controller.signal })
+        .then(() => {
+          clearTimeout(timer);
+          const ms = Date.now() - t0;
+          results[i] = { ok: true, ms };
+          dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
+          checkProgress();
+          tryRedirectRoundRobin();
+        })
+        .catch(() => {
+          clearTimeout(timer);
+          results[i] = { ok: false, ms: null };
+          dots[i].className = "server-dot offline";
+          checkProgress();
+          tryRedirectRoundRobin();
+        });
+    });
+
+    setTimeout(() => {
+      if (!redirected) {
+        const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
+        if (online.length > 0) {
+          doRedirect(getNextServer(online));
+        } else {
+          setStatus("All servers are starting up…");
+          document.getElementById("fallbackBtn").style.display = "inline-block";
+          doRedirect(Math.floor(Math.random() * n));
+        }
+      }
+    }, FALLBACK_MS);
+  </script>
+</body>
+</html>
