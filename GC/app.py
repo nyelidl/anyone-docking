@@ -34,7 +34,6 @@ from core import (
     stamp_png,
     is_cif_file,
     convert_cif_to_pdb,
-    draw_interaction_diagram_and_data,
 )
 
 # Graceful fallbacks for functions added in newer core.py versions
