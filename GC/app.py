@@ -61,6 +61,39 @@ except ImportError:
     draw_interaction_diagram = None
     draw_interactions_rdkit_classic = None
 
+# draw_interaction_diagram_and_data was added in the optimised core.py.
+# If the deployed core.py is an older version that doesn't have it yet,
+# fall back to two separate calls so the app still works correctly.
+try:
+    from core import draw_interaction_diagram_and_data
+except ImportError:
+    def draw_interaction_diagram_and_data(
+        receptor_pdb, pose_sdf, smiles="", title="",
+        cutoff=4.5, max_residues=14, size=(800, 759),
+    ):
+        """
+        Fallback for older core.py builds that don't export this combined
+        function.  Calls draw_interaction_diagram and draw_interaction_diagram_data
+        separately — same results, slightly slower (two parsePDB passes).
+        """
+        try:
+            svg = draw_interaction_diagram(
+                receptor_pdb=receptor_pdb, pose_sdf=pose_sdf,
+                smiles=smiles, title=title,
+                cutoff=cutoff, max_residues=max_residues, size=size,
+            )
+        except Exception:
+            svg = None
+        try:
+            data = draw_interaction_diagram_data(
+                receptor_pdb=receptor_pdb, pose_sdf=pose_sdf,
+                smiles=smiles, title=title,
+                cutoff=cutoff, max_residues=max_residues, size=size,
+            )
+        except Exception:
+            data = None
+        return svg, data
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
