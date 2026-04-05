@@ -34,6 +34,7 @@ from core import (
     stamp_png,
     is_cif_file,
     convert_cif_to_pdb,
+    draw_interaction_diagram_and_data,
 )
 
 # Graceful fallbacks for functions added in newer core.py versions
@@ -508,6 +509,42 @@ def _write_pose_if_stale(mol, path: str, src_sdf: str) -> None:
     except OSError:
         pass
     write_single_pose(mol, path)
+
+
+def _file_bytes(path: str) -> bytes:
+    """
+    Read a file to bytes for use with st.download_button.
+
+    Why this matters on Cloud Run
+    ──────────────────────────────
+    st.download_button works in two steps:
+      1. Render  — Streamlit hashes the data and stores it in
+                   MemoryMediaFileStorage (an in-process dict).
+      2. Download — the browser GETs /media/<hash>; Streamlit serves
+                    it from that in-memory dict.
+
+    Cloud Run runs multiple container instances. If step 1 happens on
+    instance A but the download GET is routed to instance B, instance B
+    has an empty MemoryMediaFileStorage and raises:
+      MediaFileStorageError: Bad filename '...'.sd'
+
+    Passing bytes (not a file handle) means the data is captured at
+    render time and lives in the session state / Streamlit's memory for
+    that instance, making the download self-contained.
+
+    A secondary benefit: if the ephemeral Cloud Run filesystem cleans up
+    a temp file between render and click, a file handle raises an error
+    while bytes were already safely read.
+
+    Note: session affinity (run.googleapis.com/session-affinity: "true")
+    is the primary fix for multi-instance routing; this function is the
+    defensive code-level companion.
+    """
+    try:
+        with open(path, "rb") as _f:
+            return _f.read()
+    except (OSError, IOError):
+        return b""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1419,7 +1456,7 @@ def _poseview_ui(
             st.markdown("**Receptor**")
             if _rec_path and os.path.exists(_rec_path):
                 st.download_button(
-                    "⬇ receptor.pdb", open(_rec_path, "rb"),
+                    "⬇ receptor.pdb", _file_bytes(_rec_path),
                     file_name="receptor.pdb", mime="chemical/x-pdb",
                     key=btn_key + "_pv_rec", width="stretch",
                 )
@@ -1429,7 +1466,7 @@ def _poseview_ui(
             st.markdown("**Docked pose**")
             if os.path.exists(pose_sdf_path):
                 st.download_button(
-                    "⬇ docked_pose.sdf", open(pose_sdf_path, "rb"),
+                    "⬇ docked_pose.sdf", _file_bytes(pose_sdf_path),
                     file_name=f"pose_{pose_idx+1}_docked.sdf",
                     mime="chemical/x-mdl-sdfile",
                     key=btn_key + "_pv_sdf", width="stretch",
@@ -1449,7 +1486,7 @@ def _poseview_ui(
                 _dl_p  = _cc_sdf if os.path.exists(_cc_sdf) else _lig_pdb3
                 _dl_fn = "cocrystal.sdf" if _dl_p.endswith(".sdf") else "cocrystal.pdb"
                 st.download_button(
-                    f"⬇ {_dl_fn}", open(_dl_p, "rb"),
+                    f"⬇ {_dl_fn}", _file_bytes(_dl_p),
                     file_name=_dl_fn,
                     mime=(
                         "chemical/x-mdl-sdfile"
@@ -2290,7 +2327,7 @@ with tab_basic:
                                          _redock_result.get("out_sdf", _sp_rd))
                     st.download_button(
                         f"⬇ Ref pose {_rd_pose_i+1} (.sdf)",
-                        open(_sp_rd, "rb"),
+                        _file_bytes(_sp_rd),
                         file_name=f"redock_{_rd_safe}_pose{_rd_pose_i+1}.sdf",
                         key="dl_rd_pose",
                         width='stretch',
@@ -2298,7 +2335,7 @@ with tab_basic:
                     if _redock_result.get("out_pdbqt") and os.path.exists(_redock_result["out_pdbqt"]):
                         st.download_button(
                             "⬇ All ref poses (.pdbqt)",
-                            open(_redock_result["out_pdbqt"], "rb"),
+                            _file_bytes(_redock_result["out_pdbqt"]),
                             file_name=f"redock_{_rd_safe}_out.pdbqt",
                             key="dl_rd_pdbqt",
                             width='stretch',
@@ -2401,14 +2438,14 @@ with tab_basic:
                                      st.session_state.get("output_sdf", sp_raw))
                 st.download_button(
                     f"⬇ Pose {pose_idx+1} (.sdf)",
-                    open(sp_raw, "rb"),
+                    _file_bytes(sp_raw),
                     file_name=f"pose_{pose_idx+1}.sdf",
                     key=f"dl_p_{pose_idx}",
                     width='stretch',
                 )
                 st.download_button(
                     "⬇ All poses (.pdbqt)",
-                    open(st.session_state.output_pdbqt, "rb"),
+                    _file_bytes(st.session_state.output_pdbqt),
                     file_name=f"{st.session_state.dock_base}_out.pdbqt",
                     key="dl_pdbqt",
                     width='stretch',
@@ -2425,7 +2462,7 @@ with tab_basic:
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
                     st.download_button(
                         "⬇ Receptor (.pdb)",
-                        open(st.session_state.receptor_fh, "rb"),
+                        _file_bytes(st.session_state.receptor_fh),
                         file_name="receptor.pdb",
                         key="dl_rec",
                         width='stretch',
@@ -2966,7 +3003,7 @@ with tab_batch:
                                          sel_res.get("out_sdf", sp3))
                     st.download_button(
                         f"⬇ Pose {b_pose_i+1} (.sdf)",
-                        open(sp3, "rb"),
+                        _file_bytes(sp3),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf",
                         key="b_dl_pose",
                         width='stretch',
@@ -2974,7 +3011,7 @@ with tab_batch:
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
                         st.download_button(
                             "⬇ All poses (.pdbqt)",
-                            open(sel_res["out_pdbqt"], "rb"),
+                            _file_bytes(sel_res["out_pdbqt"]),
                             file_name=f"{safe_nm}_out.pdbqt",
                             key="b_dl_pdbqt",
                             width='stretch',
