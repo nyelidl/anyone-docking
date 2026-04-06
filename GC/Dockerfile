@@ -86,6 +86,5 @@ CMD ["sh", "-c", \
       --server.headless=true \
       --server.enableCORS=false \
       --server.enableXsrfProtection=false \
-      --server.allowedOrigins=* \
       --server.fileWatcherType=none \
       --browser.gatherUsageStats=false"]
