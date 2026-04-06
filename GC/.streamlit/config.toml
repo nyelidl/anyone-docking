@@ -1,65 +1,11 @@
-# ══════════════════════════════════════════════════════════════════════════════
-#  .streamlit/config.toml
-#  Google Cloud Run + Safari compatibility configuration
-#
-#  IMPORTANT: this file must be committed to git so it is included in the
-#  Docker build context. If it is missing, the Dockerfile RUN test step
-#  will fail the build with a clear error message.
-# ══════════════════════════════════════════════════════════════════════════════
-
 [server]
-
-# Cloud Run expects $PORT (default 8080). Streamlit default is 8501.
 port = 8080
-
-# Must bind to 0.0.0.0 — Cloud Run's proxy connects on the container's
-# internal IP, not localhost.
 address = "0.0.0.0"
-
-# Running behind a proxy with no local browser. Without this, Streamlit
-# generates localhost-relative asset URLs that break through Cloud Run's
-# HTTPS load balancer.
 headless = true
-
-# Cloud Run's load balancer rewrites the Origin header, causing Streamlit's
-# built-in CORS check to fail for every proxied request.
-# Chrome ignores the mismatch; Safari enforces it — hence widgets show
-# "TypeError: Importing a module script failed" on Safari but not Chrome.
 enableCORS = false
-
-# Same root cause as CORS: Cloud Run strips/rewrites Origin and Referer
-# headers, breaking the XSRF token validation and the WebSocket upgrade.
 enableXsrfProtection = false
-
-# Safari fix: checks /_stcore/allowed-message-origins strictly and blocks
-# all component JS loads if the page origin is not on this list.
-# "*.run.app" covers all Cloud Run default URLs.
-# Add your custom domain here if you have one:
-#   allowedOrigins = ["*.run.app", "yourdomain.com"]
-allowedOrigins = ["*.run.app", "*"]
-
-# Nothing to watch in a container. Prevents CPU waste and inotify exhaustion.
 fileWatcherType = "none"
-
-# Keep uploads below Cloud Run's 32 MB request limit.
 maxUploadSize = 28
 
-
 [browser]
-
-# Disable telemetry — reduces outbound egress (Cloud Run charges for it).
 gatherUsageStats = false
-
-
-[runner]
-
-# Skip re-executing steps whose outputs haven't changed between reruns.
-# Safe here because all heavy computation is behind explicit buttons.
-fastReruns = true
-
-
-[logger]
-
-# Reduce noise in Cloud Run's structured logs.
-# Change to "debug" temporarily to trace a specific issue.
-level = "warning"
