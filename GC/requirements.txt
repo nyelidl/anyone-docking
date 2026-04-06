@@ -1,36 +1,30 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  requirements.txt — Anyone Can Dock
-#
-#  Pinned with >= lower bounds so pip resolves compatible latest versions
-#  while preventing known-broken older releases.
-#
-#  For reproducible builds pin exact versions:
-#    pip freeze > requirements.lock   (use requirements.lock in Dockerfile)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── Streamlit UI ──────────────────────────────────────────────────────────────
+# Streamlit — pinned below 1.45 to avoid CLI flag changes that crash startup
 streamlit>=1.35,<1.45
 streamlit-ketcher==0.0.1
 
-# ── Cheminformatics ───────────────────────────────────────────────────────────
+# Cheminformatics
 rdkit>=2023.3
 meeko==0.7.1
 dimorphite-dl>=1.3
 
-# ── Structural biology ────────────────────────────────────────────────────────
+# Structural biology
 prody>=2.4
 gemmi>=0.6
 
-# ── 3D / 2D visualization ─────────────────────────────────────────────────────
+# 3D / 2D visualization
 py3Dmol>=2.0
 stmol>=0.0.9
 matplotlib>=3.7
 cairosvg>=2.7.1
 Pillow>=10.0
 
-# ── Data / numerics ───────────────────────────────────────────────────────────
+# Data / numerics
 pandas>=2.0
 numpy>=1.24
 
-# ── Networking ────────────────────────────────────────────────────────────────
+# Networking
 requests>=2.31
