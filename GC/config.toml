@@ -1,0 +1,76 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  .streamlit/config.toml
+#  Google Cloud Run + Safari compatibility configuration
+#
+#  Why each setting exists is explained inline.
+#  The CMD in Dockerfile passes the same flags as CLI args — both are set so
+#  the app works whether launched via `streamlit run` or via Docker CMD.
+# ══════════════════════════════════════════════════════════════════════════════
+
+[server]
+
+# ── Port ──────────────────────────────────────────────────────────────────────
+# Cloud Run expects containers to listen on $PORT (default 8080).
+# Streamlit's default is 8501 — override it here.
+port = 8080
+
+# ── Address ───────────────────────────────────────────────────────────────────
+# Must bind to 0.0.0.0 (all interfaces) — Cloud Run's proxy connects on the
+# container's internal IP, not localhost.
+address = "0.0.0.0"
+
+# ── Headless mode ─────────────────────────────────────────────────────────────
+# Tells Streamlit it is running behind a proxy with no local browser.
+# Without this, Streamlit generates localhost-relative asset URLs that break
+# when served through Cloud Run's HTTPS load balancer.
+headless = true
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Disable Streamlit's own CORS enforcement.
+# Cloud Run's load balancer rewrites the Origin header, so Streamlit's built-in
+# CORS check fails for every request coming through the proxy.
+# Chrome is lenient and ignores the mismatch; Safari enforces it strictly,
+# which is why widgets show "TypeError: Importing a module script failed"
+# on Safari but not on Chrome.
+enableCORS = false
+
+# ── XSRF protection ───────────────────────────────────────────────────────────
+# Disable Streamlit's XSRF token check.
+# The XSRF check reads the Origin/Referer headers and validates them against
+# the server address. Cloud Run's proxy layer strips or rewrites these headers
+# in ways that cause the check to fail, breaking the WebSocket upgrade.
+# Again: Chrome ignores the broken handshake; Safari does not.
+enableXsrfProtection = false
+
+# ── Allowed origins ───────────────────────────────────────────────────────────
+# Safari enforces /_stcore/allowed-message-origins strictly.
+# If the page origin is not in this list, Safari blocks all component JS loads.
+# "*.run.app" covers all Cloud Run default URLs.
+# Add your custom domain here if you have one.
+#
+# Examples:
+#   allowedOrigins = ["*.run.app", "yourdomain.com"]
+#   allowedOrigins = ["anyone-docking-abc123-uc.a.run.app"]
+#
+# "*" is broadest — use your specific URL in production for tighter security.
+allowedOrigins = ["*.run.app", "*"]
+
+# ── File watcher ──────────────────────────────────────────────────────────────
+# Disable file watching — there is nothing to watch in a container.
+# Leaving it enabled wastes CPU polling the filesystem and can cause
+# inotify resource exhaustion under high concurrency on Cloud Run.
+fileWatcherType = "none"
+
+
+[browser]
+
+# ── Usage stats ───────────────────────────────────────────────────────────────
+# Disable telemetry pings to external Streamlit servers.
+# Keeps outbound network traffic to a minimum (Cloud Run charges for egress).
+gatherUsageStats = false
+
+# ── Server address shown in browser ───────────────────────────────────────────
+# Not strictly required but suppresses a harmless warning in the logs about
+# serverAddress not matching the request origin.
+serverAddress = "0.0.0.0"
+serverPort = 8080
