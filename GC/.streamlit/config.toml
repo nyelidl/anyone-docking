@@ -1,6 +1,10 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  .streamlit/config.toml
 #  Google Cloud Run + Safari compatibility configuration
+#
+#  IMPORTANT: this file must be committed to git so it is included in the
+#  Docker build context. If it is missing, the Dockerfile RUN test step
+#  will fail the build with a clear error message.
 # ══════════════════════════════════════════════════════════════════════════════
 
 [server]
@@ -27,15 +31,14 @@ enableCORS = false
 # headers, breaking the XSRF token validation and the WebSocket upgrade.
 enableXsrfProtection = false
 
-# Safari checks /_stcore/allowed-message-origins strictly and blocks all
-# component JS loads if the page origin is not on this list.
+# Safari fix: checks /_stcore/allowed-message-origins strictly and blocks
+# all component JS loads if the page origin is not on this list.
 # "*.run.app" covers all Cloud Run default URLs.
-# Add your custom domain alongside if needed:
+# Add your custom domain here if you have one:
 #   allowedOrigins = ["*.run.app", "yourdomain.com"]
 allowedOrigins = ["*.run.app", "*"]
 
-# Nothing to watch in a container. Prevents CPU waste and inotify exhaustion
-# under high concurrency.
+# Nothing to watch in a container. Prevents CPU waste and inotify exhaustion.
 fileWatcherType = "none"
 
 # Keep uploads below Cloud Run's 32 MB request limit.
