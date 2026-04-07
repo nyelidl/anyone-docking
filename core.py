@@ -698,6 +698,86 @@ def prepare_ligand(smiles: str, name: str, ph: float, wdir) -> dict:
         return {"success": False, "error": str(e), "log": log}
 
 
+def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
+    """
+    Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
+    WITHOUT protonation — use the molecule exactly as provided.
+    Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
+    """
+    _rdkit_six_patch()
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    wdir      = Path(wdir)
+    log       = []
+    out_pdbqt = str(wdir / f"{name}.pdbqt")
+    out_sdf   = str(wdir / f"{name}_3d.sdf")
+    ext       = Path(file_path).suffix.lower()
+
+    try:
+        mol = None
+        if ext == ".sdf":
+            supp = Chem.SDMolSupplier(file_path, removeHs=False, sanitize=True)
+            mols = [m for m in supp if m]
+            if mols:
+                mol = mols[0]
+        elif ext == ".mol2":
+            mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+        elif ext == ".pdb":
+            mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
+
+        if mol is None:
+            raise ValueError(f"Could not read molecule from {Path(file_path).name}")
+
+        log.append("✓ Loaded molecule from file (no protonation)")
+
+        # Get SMILES for display / downstream use
+        smi = Chem.MolToSmiles(Chem.RemoveHs(mol))
+        charge = Chem.GetFormalCharge(mol)
+        log.append(f"✓ Formal charge: {charge:+d}")
+
+        # Ensure hydrogens
+        if mol.GetNumAtoms() == Chem.RemoveHs(mol).GetNumAtoms():
+            mol = Chem.AddHs(mol, addCoords=True)
+            log.append("✓ Added explicit hydrogens")
+
+        # Check if 3D coordinates exist; generate if missing
+        conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
+        if conf is None or conf.Is3D() is False:
+            try:
+                params = AllChem.ETKDGv3()
+            except AttributeError:
+                params = AllChem.ETKDG()
+            params.randomSeed = 42
+            if AllChem.EmbedMolecule(mol, params) == -1:
+                AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+            if AllChem.MMFFHasAllMoleculeParams(mol):
+                AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
+            else:
+                AllChem.UFFOptimizeMolecule(mol, maxIters=500)
+            log.append("✓ 3D conformer generated (no coords in file)")
+        else:
+            log.append("✓ Using 3D coordinates from uploaded file")
+
+        with Chem.SDWriter(out_sdf) as w:
+            w.write(mol)
+
+        _meeko_to_pdbqt(mol, out_pdbqt)
+        log.append("✓ PDBQT written (Meeko)")
+
+        return {
+            "success":     True,
+            "pdbqt":       out_pdbqt,
+            "sdf":         out_sdf,
+            "prot_smiles": smi,
+            "charge":      charge,
+            "log":         log,
+        }
+    except Exception as e:
+        log.append(f"ERROR: {e}")
+        return {"success": False, "error": str(e), "log": log}
+
+
 def smiles_from_file(file_path: str, wdir) -> str:
     """Extract SMILES from SDF / MOL2 / PDB. Raises ValueError on failure."""
     wdir = Path(wdir)
