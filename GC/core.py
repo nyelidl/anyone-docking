@@ -223,166 +223,53 @@ def check_obabel():
 
 def get_vina_binary(path: str = ""):
     """
-    Locate or download AutoDock Vina 1.2.7.
-    Returns (binary_path, status_message).  binary_path is None on failure.
-
-    Resolution order — optimised for Google Cloud Run:
-    ─────────────────────────────────────────────────
-    1. shutil.which("vina")
-       Picks up Vina installed into the container image via Dockerfile
-       (e.g. COPY vina /usr/local/bin/vina) or apt/conda.
-       This is the recommended Cloud Run pattern: bake the binary into the
-       image so cold starts never need a network download.
-
-    2. Common fixed install locations
-       /usr/local/bin/vina, /usr/bin/vina, /opt/vina/vina
-       Fallback in case PATH is stripped in the Cloud Run environment.
-
-    3. Caller-supplied path (the `path` argument)
-       Lets callers pin a specific binary for testing or CI.
-
-    4. Already-downloaded binary in tempdir from a previous call this session
-       Cloud Run container instances are long-lived within a revision; if the
-       file was downloaded earlier in this instance's lifetime it is reused
-       without touching the network.
-
-    5. Runtime download from GitHub releases (fallback only)
-       Used when none of the above succeed — normal for local dev without a
-       system Vina install.  On Cloud Run this is the slow path and should
-       be avoided by pre-installing Vina in the container image.
-
-    Smoke-test
-    ──────────
-    Every candidate path is validated with `vina --version` (5 s timeout).
-    This catches truncated downloads and wrong-architecture binaries before
-    they fail silently during a real docking run.
+    Download AutoDock Vina 1.2.7 for the current platform if not present.
+    Supports Linux (x86_64), macOS (x86_64, arm64), and Windows (x86_64).
+    Returns (binary_path, status_message).
     """
     import platform
-    import shutil
-    import stat
 
     system  = platform.system().lower()
     machine = platform.machine().lower()
 
-    # ── Platform filename (needed only if we fall through to the download) ────
+    _BASE = (
+        "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/"
+    )
+
     if system == "linux":
         _FNAME = "vina_1.2.7_linux_x86_64"
     elif system == "darwin":
-        _FNAME = (
-            "vina_1.2.7_mac_arm64"
-            if machine in ("arm64", "aarch64")
-            else "vina_1.2.7_mac_x86_64"
-        )
+        if machine in ("arm64", "aarch64"):
+            _FNAME = "vina_1.2.7_mac_arm64"
+        else:
+            _FNAME = "vina_1.2.7_mac_x86_64"
     elif system == "windows":
         _FNAME = "vina_1.2.7_windows_x86_64.exe"
     else:
         return None, f"Unsupported platform: {system}/{machine}"
 
-    _DOWNLOAD_URL = (
-        "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/"
-        + _FNAME
-    )
+    _URL = _BASE + _FNAME
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    if not path:
+        path = os.path.join(tempfile.gettempdir(), _FNAME)
 
-    def _set_executable(p: str) -> None:
-        """Ensure the binary has execute permission (no-op on Windows)."""
-        if system != "windows":
+    if not os.path.exists(path) or os.path.getsize(path) < 100_000:
+        try:
+            import urllib.request
+            urllib.request.urlretrieve(_URL, path)
+        except Exception as e1:
             try:
-                current = os.stat(p).st_mode
-                os.chmod(p, current | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-            except OSError:
-                pass
-
-    def _is_usable(p: str) -> bool:
-        """
-        Return True when p exists, is large enough to be a real binary, and
-        responds to `vina --version`.
-
-        Size floor (100 KB) quickly rejects empty files, HTML error pages
-        saved by urllib, and truncated downloads without spawning a process.
-        The --version call catches wrong-architecture binaries and permission
-        problems before they surface during an actual docking job.
-        """
-        if not p or not os.path.isfile(p):
-            return False
-        if os.path.getsize(p) < 100_000:
-            return False
-        _set_executable(p)
-        try:
-            rc, _ = run_cmd(f'"{p}" --version')
-            return rc == 0
-        except Exception:
-            return False
-
-    # ── Step 1: PATH lookup ───────────────────────────────────────────────────
-    # Preferred Cloud Run path: install Vina in the Dockerfile so it lands in
-    # PATH and there is zero network dependency at runtime.
-    #
-    #   Example Dockerfile snippet:
-    #     COPY vina_1.2.7_linux_x86_64 /usr/local/bin/vina
-    #     RUN chmod +x /usr/local/bin/vina
-    #
-    _which = shutil.which("vina")
-    if _which and _is_usable(_which):
-        return _which, f"ok — system install ({_which})"
-
-    # ── Step 2: common fixed install locations ────────────────────────────────
-    for _fp in (
-        "/usr/local/bin/vina",
-        "/usr/bin/vina",
-        "/opt/vina/vina",
-        "/opt/autodock/vina",
-    ):
-        if _is_usable(_fp):
-            return _fp, f"ok — fixed path ({_fp})"
-
-    # ── Step 3: caller-supplied path ──────────────────────────────────────────
-    if path and _is_usable(path):
-        return path, f"ok — caller path ({path})"
-
-    # ── Step 4: previously-downloaded binary in tempdir ───────────────────────
-    # Cloud Run container instances can be reused across requests within the
-    # same revision.  If a prior request already downloaded the binary, reuse
-    # it without hitting the network again.
-    _tmp_path = path if path else os.path.join(tempfile.gettempdir(), _FNAME)
-    if _is_usable(_tmp_path):
-        return _tmp_path, f"ok — cached download ({_tmp_path})"
-
-    # ── Step 5: runtime download (fallback — avoid on Cloud Run) ─────────────
-    # Reach this point only when Vina was not pre-installed in the image.
-    # On Cloud Run, minimise how often this runs by building the binary into
-    # the container.  For local dev / Streamlit Community Cloud this is the
-    # normal first-run path.
-    try:
-        import urllib.request
-        urllib.request.urlretrieve(_DOWNLOAD_URL, _tmp_path)
-    except Exception as _e1:
-        try:
-            import requests as _req
-            _r = _req.get(_DOWNLOAD_URL, stream=True, timeout=120)
-            _r.raise_for_status()
-            with open(_tmp_path, "wb") as _fh:
-                for _chunk in _r.iter_content(chunk_size=1024 * 1024):
-                    _fh.write(_chunk)
-        except Exception as _e2:
-            return None, f"Download failed: {_e1} / {_e2}"
-
-    _set_executable(_tmp_path)
-
-    # Validate the freshly-downloaded file before returning it.
-    if not _is_usable(_tmp_path):
-        # Remove the bad file so the next startup attempt re-downloads cleanly.
-        try:
-            os.remove(_tmp_path)
-        except OSError:
-            pass
-        return None, (
-            "Downloaded Vina binary failed smoke-test "
-            f"({_tmp_path}) — removed for retry"
-        )
-
-    return _tmp_path, f"ok — downloaded ({system}/{machine})"
+                import requests
+                r = requests.get(_URL, stream=True, timeout=120)
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+            except Exception as e2:
+                return None, f"Download failed: {e1} / {e2}"
+    if system != "windows":
+        os.chmod(path, 0o755)
+    return path, f"ok ({system}/{machine})"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -658,24 +545,28 @@ def prepare_receptor(
             )
             log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
 
-            _resnames = list(dict.fromkeys(ref_atoms.getResnames()))
-            _resids   = list(dict.fromkeys(ref_atoms.getResnums()))
-            _chains   = list(dict.fromkeys(ref_atoms.getChids()))
-
-            if len(_resnames) == 1 and len(_resids) == 1:
-                rn = _resnames[0]
-                ri = int(_resids[0])
-                ch = _chains[0] if _chains else "A"
-                ligand_sel_str      = f"resname {rn} and resid {ri} and chain {ch}"
-                cocrystal_ligand_id = f"{rn}_{ch}_{ri}"
+            # The ProDy selection positions the docking box only.
+            # Co-crystal ligand detection, receptor stripping, ligand PDB
+            # saving, and PoseView2 ID are handled identically to 'auto' mode
+            # so that RMSD calculation, 3D viewer, and 2D interaction diagrams
+            # all work correctly regardless of what the user selected.
+            info = detect_cocrystal_ligand(raw_pdb)
+            if info["found"]:
+                rn, ch, ri          = info["resname"], info["chain"], info["resid"]
+                ligand_sel_str      = info["sel_str"]
+                cocrystal_ligand_id = info["ligand_id"]
                 ligand_pdb_path     = str(wdir / "LIG.pdb")
-                writePDB(ligand_pdb_path, ref_atoms)
-                log.append(f"✓ Ligand: {rn} chain {ch} resnum {ri}")
+                writePDB(ligand_pdb_path, info["atoms"])
+                log.append(
+                    f"✓ Co-crystal ligand: {rn} chain {ch} resnum {ri} "
+                    f"({info['n_atoms']} atoms)"
+                )
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
             else:
-                ligand_pdb_path = str(wdir / "LIG_ref.pdb")
-                writePDB(ligand_pdb_path, ref_atoms)
-                log.append("⚠ Multi-residue selection — PoseView2 ligand ID not set")
+                log.append(
+                    "⚠ No co-crystal ligand found — receptor keeps all "
+                    "HETATM; RMSD and co-crystal diagrams will be skipped"
+                )
 
         # Write receptor PDB without co-crystal ligand
         sel_str = (
@@ -806,6 +697,144 @@ def prepare_ligand(smiles: str, name: str, ph: float, wdir) -> dict:
             "log":         log,
         }
 
+    except Exception as e:
+        log.append(f"ERROR: {e}")
+        return {"success": False, "error": str(e), "log": log}
+
+
+def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
+    """
+    Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
+    WITHOUT protonation — use the molecule exactly as provided.
+    Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
+    """
+    _rdkit_six_patch()
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    wdir      = Path(wdir)
+    log       = []
+    out_pdbqt = str(wdir / f"{name}.pdbqt")
+    out_sdf   = str(wdir / f"{name}_3d.sdf")
+    ext       = Path(file_path).suffix.lower()
+
+    try:
+        mol = None
+        if ext == ".sdf":
+            supp = Chem.SDMolSupplier(file_path, removeHs=False, sanitize=True)
+            mols = [m for m in supp if m]
+            if not mols:
+                supp = Chem.SDMolSupplier(file_path, removeHs=False, sanitize=False)
+                mols = [m for m in supp if m]
+            if mols:
+                mol = mols[0]
+        elif ext in (".mol2", ".pdb"):
+            # Strategy A: convert via obabel first (handles GaussView bond types)
+            _ob_sdf = str(wdir / f"{name}_ob.sdf")
+            import subprocess
+            subprocess.run(
+                f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
+                shell=True, timeout=30,
+            )
+            if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
+                supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
+                mols = [m for m in supp if m]
+                if not mols:
+                    supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=False)
+                    mols = [m for m in supp if m]
+                if mols:
+                    mol = mols[0]
+                    log.append("✓ Converted via OpenBabel")
+            # Strategy B: direct RDKit read as fallback
+            if mol is None:
+                if ext == ".mol2":
+                    mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+                    if mol is None:
+                        mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
+                else:
+                    mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
+                    if mol is None:
+                        mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
+
+        if mol is None:
+            raise ValueError(f"Could not read molecule from {Path(file_path).name}")
+
+        # Keep only the largest fragment if multiple exist
+        frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+        if len(frags) > 1:
+            frags = sorted(frags, key=lambda m: m.GetNumAtoms(), reverse=True)
+            mol = frags[0]
+            log.append(f"⚠ {len(frags)} fragments — kept largest ({mol.GetNumAtoms()} atoms)")
+
+        # Try to sanitize if not already done
+        try:
+            Chem.SanitizeMol(mol)
+        except Exception:
+            pass
+
+        log.append("✓ Loaded molecule from file (no protonation)")
+
+        # Get SMILES for display / downstream use
+        try:
+            smi = Chem.MolToSmiles(Chem.RemoveHs(mol))
+        except Exception:
+            try:
+                smi = Chem.MolToSmiles(mol)
+            except Exception:
+                smi = name
+        try:
+            charge = Chem.GetFormalCharge(mol)
+        except Exception:
+            charge = 0
+        log.append(f"✓ Formal charge: {charge:+d}")
+
+        # Ensure ALL hydrogens are explicit (Meeko requirement)
+        mol = Chem.AddHs(mol, addCoords=True)
+        log.append("✓ All hydrogens made explicit")
+
+        # Check if 3D coordinates exist; generate if missing
+        conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
+        if conf is None or conf.Is3D() is False:
+            try:
+                params = AllChem.ETKDGv3()
+            except AttributeError:
+                params = AllChem.ETKDG()
+            params.randomSeed = 42
+            if AllChem.EmbedMolecule(mol, params) == -1:
+                AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+            if AllChem.MMFFHasAllMoleculeParams(mol):
+                AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
+            else:
+                AllChem.UFFOptimizeMolecule(mol, maxIters=500)
+            log.append("✓ 3D conformer generated (no coords in file)")
+        else:
+            log.append("✓ Using 3D coordinates from uploaded file")
+
+        with Chem.SDWriter(out_sdf) as w:
+            w.write(mol)
+
+        try:
+            _meeko_to_pdbqt(mol, out_pdbqt)
+            log.append("✓ PDBQT written (Meeko)")
+        except Exception as e_meeko:
+            log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
+            import subprocess
+            subprocess.run(
+                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
+                shell=True, timeout=30,
+            )
+            if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
+                raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
+            log.append("✓ PDBQT written (OpenBabel fallback)")
+
+        return {
+            "success":     True,
+            "pdbqt":       out_pdbqt,
+            "sdf":         out_sdf,
+            "prot_smiles": smi,
+            "charge":      charge,
+            "log":         log,
+        }
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
