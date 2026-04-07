@@ -2541,7 +2541,7 @@ with tab_batch:
     col_b1, col_b2 = st.columns([1.6, 1])
     with col_b1:
         b_input_mode = st.radio(
-            "Input mode", ["SMILES list (text)", "Upload .smi file", "Upload structure files (.pdb/.sdf/.mol2)"],
+            "Input mode", ["SMILES list (text)", "Upload .smi file", "Upload structure files (.pdb/.mol2)"],
             key="b_input_mode",
         )
         if b_input_mode == "SMILES list (text)":
