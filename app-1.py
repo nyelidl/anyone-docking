@@ -20,6 +20,7 @@ import streamlit.components.v1 as components
 from core import (
     prepare_receptor,
     prepare_ligand,
+    prepare_ligand_from_file,
     smiles_from_file,
     run_vina,
     get_vina_binary,
@@ -1754,6 +1755,13 @@ with tab_basic:
             "Upload structure file", type=["sdf", "mol2", "pdb"],
             key="lig_struct_file",
         )
+        lig_upload_prot = st.radio(
+            "Ligand preparation mode",
+            ["Use the uploaded form", "Protonation at target pH"],
+            horizontal=True, key="lig_upload_prot",
+            help="**Use the uploaded form** keeps the molecule exactly as provided (default). "
+                 "**Protonation** converts to SMILES and re-protonates at the target pH.",
+        )
     else:
         try:
             from streamlit_ketcher import st_ketcher
@@ -1792,18 +1800,28 @@ with tab_basic:
                 _tmp = str(WORKDIR / f"lig_upload{_ext}")
                 with open(_tmp, "wb") as _f:
                     _f.write(_sfobj.read())
-                try:
-                    smiles_in = smiles_from_file(_tmp, WORKDIR)
-                except Exception as e:
-                    st.error(f"❌ Could not read structure: {e}")
-                    st.stop()
+
+                _upload_prot = st.session_state.get("lig_upload_prot", "Use the uploaded form")
+                if _upload_prot == "Use the uploaded form":
+                    # Direct preparation — no protonation
+                    result = prepare_ligand_from_file(_tmp, lig_name, WORKDIR)
+                else:
+                    # Convert to SMILES then protonate
+                    try:
+                        smiles_in = smiles_from_file(_tmp, WORKDIR)
+                    except Exception as e:
+                        st.error(f"❌ Could not read structure: {e}")
+                        st.stop()
+                    result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
                     st.error("No molecule drawn in Ketcher.")
                     st.stop()
-
-            result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
+                result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
+            else:
+                # SMILES string mode
+                result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
 
         if result["success"]:
             st.session_state.update({
@@ -2523,7 +2541,7 @@ with tab_batch:
     col_b1, col_b2 = st.columns([1.6, 1])
     with col_b1:
         b_input_mode = st.radio(
-            "Input mode", ["SMILES list (text)", "Upload .smi file"],
+            "Input mode", ["SMILES list (text)", "Upload .smi file", "Upload structure files (.pdb/.sdf/.mol2)"],
             key="b_input_mode",
         )
         if b_input_mode == "SMILES list (text)":
@@ -2539,8 +2557,20 @@ with tab_batch:
                        "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)OC)O Galangin\n"
                        "CC1=C(C=C(C=C1)NC2=NC=NC3=C2C=CC=C3)OC Imatinib"),
                 height=300, key="b_smiles_text")
-        else:
+        elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
+        else:
+            st.file_uploader(
+                "Upload structure files", type=["sdf", "mol2", "pdb"],
+                accept_multiple_files=True, key="b_struct_files",
+            )
+            b_struct_prot = st.radio(
+                "Ligand preparation mode",
+                ["Use the uploaded form", "Protonation at target pH"],
+                horizontal=True, key="b_struct_prot",
+                help="**Use the uploaded form** keeps molecules exactly as provided (default). "
+                     "**Protonation** converts to SMILES and re-protonates at the target pH.",
+            )
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
 
     with col_b2:
@@ -2574,6 +2604,8 @@ with tab_batch:
         b_ph_val  = st.session_state.get("b_ph", 7.4)
 
         smiles_pairs = []
+        struct_file_pairs = []  # list of (file_path, name) for uploaded structure files
+        _b_use_struct_files = False
         try:
             if st.session_state.get("b_input_mode") == "SMILES list (text)":
                 for line in st.session_state.get("b_smiles_text", "").strip().splitlines():
@@ -2583,7 +2615,7 @@ with tab_batch:
                     pts = line.split(None, 1)
                     _nm = pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
                     smiles_pairs.append((pts[0], _nm))
-            else:
+            elif st.session_state.get("b_input_mode") == "Upload .smi file":
                 fobj = st.session_state.get("b_smi_file")
                 if fobj is None:
                     raise ValueError("No .smi file uploaded")
@@ -2594,8 +2626,21 @@ with tab_batch:
                     pts = line.split(None, 1)
                     _nm = pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
                     smiles_pairs.append((pts[0], _nm))
-            if not smiles_pairs:
-                raise ValueError("No valid SMILES found")
+            else:
+                # Upload structure files mode
+                _b_use_struct_files = True
+                _uploaded = st.session_state.get("b_struct_files", [])
+                if not _uploaded:
+                    raise ValueError("No structure files uploaded")
+                for _uf in _uploaded:
+                    _ext = Path(_uf.name).suffix.lower()
+                    _nm  = Path(_uf.name).stem.replace(" ", "_")
+                    _tmp = str(BATCH_WORKDIR / f"{_nm}{_ext}")
+                    with open(_tmp, "wb") as _wf:
+                        _wf.write(_uf.read())
+                    struct_file_pairs.append((_tmp, _nm))
+            if not smiles_pairs and not struct_file_pairs:
+                raise ValueError("No valid input found")
         except Exception as e:
             st.error(f"❌ Input parsing failed: {e}")
             st.stop()
@@ -2649,14 +2694,42 @@ with tab_batch:
                     st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
 
         results  = []
-        n        = len(smiles_pairs)
+        _items = struct_file_pairs if _b_use_struct_files else smiles_pairs
+        n        = len(_items)
         prog     = st.progress(0, text=f"Docking 0/{n}…")
         log_slot = st.empty()
         all_logs = []
 
-        for i, (smi, name) in enumerate(smiles_pairs):
+        for i, item in enumerate(_items):
+            if _b_use_struct_files:
+                fpath, name = item
+                smi = ""
+            else:
+                smi, name = item
+                fpath = None
+
             prog.progress(i / n, text=f"Docking {name} ({i+1}/{n})…")
-            prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
+
+            # --- ligand preparation ---
+            if _b_use_struct_files:
+                _struct_prot = st.session_state.get("b_struct_prot", "Use the uploaded form")
+                if _struct_prot == "Use the uploaded form":
+                    prep = prepare_ligand_from_file(fpath, name, BATCH_WORKDIR)
+                else:
+                    try:
+                        smi = smiles_from_file(fpath, BATCH_WORKDIR)
+                    except Exception as e:
+                        results.append({
+                            "Name": name, "SMILES": "", "Charge": None,
+                            "Top Score": None,
+                            "Status": f"PREP FAILED: {e}",
+                        })
+                        all_logs.append(f"[{name}] PREP ERROR: {e}")
+                        continue
+                    prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
+            else:
+                prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
+
             if not prep["success"]:
                 results.append({
                     "Name": name, "SMILES": smi, "Charge": None,
@@ -2665,6 +2738,8 @@ with tab_batch:
                 })
                 all_logs.append(f"[{name}] PREP ERROR: {prep['error']}")
                 continue
+
+            smi = smi or prep.get("prot_smiles", "")
 
             dock = run_vina(
                 rec_pdbqt, prep["pdbqt"], config,
