@@ -736,10 +736,9 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
         charge = Chem.GetFormalCharge(mol)
         log.append(f"✓ Formal charge: {charge:+d}")
 
-        # Ensure hydrogens
-        if mol.GetNumAtoms() == Chem.RemoveHs(mol).GetNumAtoms():
-            mol = Chem.AddHs(mol, addCoords=True)
-            log.append("✓ Added explicit hydrogens")
+        # Ensure ALL hydrogens are explicit (Meeko requirement)
+        mol = Chem.AddHs(mol, addCoords=True)
+        log.append("✓ All hydrogens made explicit")
 
         # Check if 3D coordinates exist; generate if missing
         conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
