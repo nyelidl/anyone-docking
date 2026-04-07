@@ -545,24 +545,28 @@ def prepare_receptor(
             )
             log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
 
-            _resnames = list(dict.fromkeys(ref_atoms.getResnames()))
-            _resids   = list(dict.fromkeys(ref_atoms.getResnums()))
-            _chains   = list(dict.fromkeys(ref_atoms.getChids()))
-
-            if len(_resnames) == 1 and len(_resids) == 1:
-                rn = _resnames[0]
-                ri = int(_resids[0])
-                ch = _chains[0] if _chains else "A"
-                ligand_sel_str      = f"resname {rn} and resid {ri} and chain {ch}"
-                cocrystal_ligand_id = f"{rn}_{ch}_{ri}"
+            # The ProDy selection positions the docking box only.
+            # Co-crystal ligand detection, receptor stripping, ligand PDB
+            # saving, and PoseView2 ID are handled identically to 'auto' mode
+            # so that RMSD calculation, 3D viewer, and 2D interaction diagrams
+            # all work correctly regardless of what the user selected.
+            info = detect_cocrystal_ligand(raw_pdb)
+            if info["found"]:
+                rn, ch, ri          = info["resname"], info["chain"], info["resid"]
+                ligand_sel_str      = info["sel_str"]
+                cocrystal_ligand_id = info["ligand_id"]
                 ligand_pdb_path     = str(wdir / "LIG.pdb")
-                writePDB(ligand_pdb_path, ref_atoms)
-                log.append(f"✓ Ligand: {rn} chain {ch} resnum {ri}")
+                writePDB(ligand_pdb_path, info["atoms"])
+                log.append(
+                    f"✓ Co-crystal ligand: {rn} chain {ch} resnum {ri} "
+                    f"({info['n_atoms']} atoms)"
+                )
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
             else:
-                ligand_pdb_path = str(wdir / "LIG_ref.pdb")
-                writePDB(ligand_pdb_path, ref_atoms)
-                log.append("⚠ Multi-residue selection — PoseView2 ligand ID not set")
+                log.append(
+                    "⚠ No co-crystal ligand found — receptor keeps all "
+                    "HETATM; RMSD and co-crystal diagrams will be skipped"
+                )
 
         # Write receptor PDB without co-crystal ligand
         sel_str = (
@@ -693,6 +697,144 @@ def prepare_ligand(smiles: str, name: str, ph: float, wdir) -> dict:
             "log":         log,
         }
 
+    except Exception as e:
+        log.append(f"ERROR: {e}")
+        return {"success": False, "error": str(e), "log": log}
+
+
+def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
+    """
+    Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
+    WITHOUT protonation — use the molecule exactly as provided.
+    Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
+    """
+    _rdkit_six_patch()
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    wdir      = Path(wdir)
+    log       = []
+    out_pdbqt = str(wdir / f"{name}.pdbqt")
+    out_sdf   = str(wdir / f"{name}_3d.sdf")
+    ext       = Path(file_path).suffix.lower()
+
+    try:
+        mol = None
+        if ext == ".sdf":
+            supp = Chem.SDMolSupplier(file_path, removeHs=False, sanitize=True)
+            mols = [m for m in supp if m]
+            if not mols:
+                supp = Chem.SDMolSupplier(file_path, removeHs=False, sanitize=False)
+                mols = [m for m in supp if m]
+            if mols:
+                mol = mols[0]
+        elif ext in (".mol2", ".pdb"):
+            # Strategy A: convert via obabel first (handles GaussView bond types)
+            _ob_sdf = str(wdir / f"{name}_ob.sdf")
+            import subprocess
+            subprocess.run(
+                f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
+                shell=True, timeout=30,
+            )
+            if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
+                supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
+                mols = [m for m in supp if m]
+                if not mols:
+                    supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=False)
+                    mols = [m for m in supp if m]
+                if mols:
+                    mol = mols[0]
+                    log.append("✓ Converted via OpenBabel")
+            # Strategy B: direct RDKit read as fallback
+            if mol is None:
+                if ext == ".mol2":
+                    mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+                    if mol is None:
+                        mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
+                else:
+                    mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
+                    if mol is None:
+                        mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
+
+        if mol is None:
+            raise ValueError(f"Could not read molecule from {Path(file_path).name}")
+
+        # Keep only the largest fragment if multiple exist
+        frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+        if len(frags) > 1:
+            frags = sorted(frags, key=lambda m: m.GetNumAtoms(), reverse=True)
+            mol = frags[0]
+            log.append(f"⚠ {len(frags)} fragments — kept largest ({mol.GetNumAtoms()} atoms)")
+
+        # Try to sanitize if not already done
+        try:
+            Chem.SanitizeMol(mol)
+        except Exception:
+            pass
+
+        log.append("✓ Loaded molecule from file (no protonation)")
+
+        # Get SMILES for display / downstream use
+        try:
+            smi = Chem.MolToSmiles(Chem.RemoveHs(mol))
+        except Exception:
+            try:
+                smi = Chem.MolToSmiles(mol)
+            except Exception:
+                smi = name
+        try:
+            charge = Chem.GetFormalCharge(mol)
+        except Exception:
+            charge = 0
+        log.append(f"✓ Formal charge: {charge:+d}")
+
+        # Ensure ALL hydrogens are explicit (Meeko requirement)
+        mol = Chem.AddHs(mol, addCoords=True)
+        log.append("✓ All hydrogens made explicit")
+
+        # Check if 3D coordinates exist; generate if missing
+        conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
+        if conf is None or conf.Is3D() is False:
+            try:
+                params = AllChem.ETKDGv3()
+            except AttributeError:
+                params = AllChem.ETKDG()
+            params.randomSeed = 42
+            if AllChem.EmbedMolecule(mol, params) == -1:
+                AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+            if AllChem.MMFFHasAllMoleculeParams(mol):
+                AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
+            else:
+                AllChem.UFFOptimizeMolecule(mol, maxIters=500)
+            log.append("✓ 3D conformer generated (no coords in file)")
+        else:
+            log.append("✓ Using 3D coordinates from uploaded file")
+
+        with Chem.SDWriter(out_sdf) as w:
+            w.write(mol)
+
+        try:
+            _meeko_to_pdbqt(mol, out_pdbqt)
+            log.append("✓ PDBQT written (Meeko)")
+        except Exception as e_meeko:
+            log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
+            import subprocess
+            subprocess.run(
+                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
+                shell=True, timeout=30,
+            )
+            if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
+                raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
+            log.append("✓ PDBQT written (OpenBabel fallback)")
+
+        return {
+            "success":     True,
+            "pdbqt":       out_pdbqt,
+            "sdf":         out_sdf,
+            "prot_smiles": smi,
+            "charge":      charge,
+            "log":         log,
+        }
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
