@@ -962,24 +962,30 @@ def _poseview_ui(
                     "View mode", ["🖱 Interactive (drag)", "🖼 Static SVG"],
                     horizontal=True, key=btn_key + "_viewmode",
                 )
-                _cl2, _cr2 = st.columns(2)
-                with _cl2:
+                if _has_ref_local:
+                    _cl2, _cr2 = st.columns(2)
+                    with _cl2:
+                        st.markdown("##### Docked Pose")
+                        if _view_mode.startswith("🖱") and _new_ihtml:
+                            components.html(_new_ihtml, height=860, scrolling=False)
+                        else:
+                            _show_svg_new(_new_svg, f"pose{pose_idx+1}_interaction")
+                    with _cr2:
+                        st.markdown("##### Co-Crystal Reference")
+                        if _new_ref_svg:
+                            if _view_mode.startswith("🖱") and _new_ref_ihtml:
+                                components.html(_new_ref_ihtml, height=860, scrolling=False)
+                            else:
+                                _show_svg_new(_new_ref_svg, "cocrystal_interaction")
+                        else:
+                            st.info("Click Generate to produce the co-crystal diagram.")
+                else:
                     st.markdown("##### Docked Pose")
                     if _view_mode.startswith("🖱") and _new_ihtml:
                         components.html(_new_ihtml, height=860, scrolling=False)
                     else:
                         _show_svg_new(_new_svg, f"pose{pose_idx+1}_interaction")
-                with _cr2:
-                    st.markdown("##### Co-Crystal Reference")
-                    if _new_ref_svg:
-                        if _view_mode.startswith("🖱") and _new_ref_ihtml:
-                            components.html(_new_ref_ihtml, height=860, scrolling=False)
-                        else:
-                            _show_svg_new(_new_ref_svg, "cocrystal_interaction")
-                    elif _has_ref_local:
-                        st.info("Click Generate to produce the co-crystal diagram.")
-                    else:
-                        st.caption("No co-crystal ligand — use Auto-detect in receptor prep.")
+                    st.caption("ℹ️ No co-crystal ligand detected — co-crystal reference diagram is not available.")
 
 
                 st.markdown("---")
@@ -1253,26 +1259,33 @@ def _poseview_ui(
                 )
 
             if _rdk_svg and not _rdk_stale:
-                _col_l2, _col_r2 = st.columns(2)
-                with _col_l2:
+                if _has_ref_rdkit2:
+                    _col_l2, _col_r2 = st.columns(2)
+                    with _col_l2:
+                        st.markdown("##### 🧪 Docked Pose (RDKit)")
+                        _show_rdkit_svg_tab(
+                            _rdk_svg,
+                            dl_key_prefix=btn_key + "_rdk_dl",
+                            dl_filename=f"pose{pose_idx+1}_rdkit.svg",
+                        )
+                    with _col_r2:
+                        st.markdown("##### 🔮 Co-Crystal Reference (RDKit)")
+                        if _ref_rdk_svg:
+                            _show_rdkit_svg_tab(
+                                _ref_rdk_svg,
+                                dl_key_prefix=btn_key + "_rdk_ref_dl",
+                                dl_filename="cocrystal_rdkit.svg",
+                            )
+                        else:
+                            st.info("Click **Generate RDKit Diagrams** to generate co-crystal diagram.")
+                else:
                     st.markdown("##### 🧪 Docked Pose (RDKit)")
                     _show_rdkit_svg_tab(
                         _rdk_svg,
                         dl_key_prefix=btn_key + "_rdk_dl",
                         dl_filename=f"pose{pose_idx+1}_rdkit.svg",
                     )
-                with _col_r2:
-                    st.markdown("##### 🔮 Co-Crystal Reference (RDKit)")
-                    if _ref_rdk_svg:
-                        _show_rdkit_svg_tab(
-                            _ref_rdk_svg,
-                            dl_key_prefix=btn_key + "_rdk_ref_dl",
-                            dl_filename="cocrystal_rdkit.svg",
-                        )
-                    elif _has_ref_rdkit2:
-                        st.info("Click **Generate RDKit Diagrams** to generate co-crystal diagram.")
-                    else:
-                        st.caption("⚠️ No co-crystal ligand — use Auto-detect in receptor preparation.")
+                    st.caption("ℹ️ No co-crystal ligand detected — co-crystal reference diagram is not available.")
 
                 st.markdown("---")
                 # AI Prompt (RDKit)
@@ -1498,8 +1511,62 @@ def _poseview_ui(
 
         if _pose_svg and not _stale:
             _lbl = st.session_state.get(smiles_key, "ligand")[:20]
-            col_l, col_r = st.columns(2)
-            with col_l:
+            if _has_ref:
+                col_l, col_r = st.columns(2)
+                with col_l:
+                    st.markdown("##### 🧪 Docked Pose (PoseView v1)")
+                    _png_data = st.session_state.get(img_png_key)
+                    _show_poseview_image(
+                        _png_data, _pose_svg,
+                        f"Docked pose {pose_idx+1} — {_lbl}",
+                        full_legend=False,
+                        stamp=f"Pose {pose_idx+1}  ·  {_lbl}",
+                    )
+                    _d1, _d2 = st.columns(2)
+                    with _d1:
+                        if _png_data:
+                            st.download_button(
+                                "⬇ PNG", data=_png_data,
+                                file_name=f"pose{pose_idx+1}_poseview.png",
+                                mime="image/png", key=dl_png_key + "_pv", width='stretch',
+                            )
+                    with _d2:
+                        st.download_button(
+                            "⬇ SVG", data=_pose_svg,
+                            file_name=f"pose{pose_idx+1}_poseview.svg",
+                            mime="image/svg+xml", key=dl_svg_key + "_pv", width='stretch',
+                        )
+                with col_r:
+                    st.markdown("##### 🔬 Co-Crystal Reference (PoseView2)")
+                    if _ref_svg2:
+                        _ref_png2 = st.session_state.get(ref_png_key) if ref_png_key else None
+                        _show_poseview_image(
+                            _ref_png2, _ref_svg2,
+                            f"Co-crystal: {pdb_id.upper()} · {cocrystal_ligand_id}",
+                            full_legend=True,
+                            stamp=f"{pdb_id.upper()}  ·  {cocrystal_ligand_id}",
+                        )
+                        _r1, _r2 = st.columns(2)
+                        with _r1:
+                            if _ref_png2:
+                                st.download_button(
+                                    "⬇ PNG", data=_ref_png2,
+                                    file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
+                                    mime="image/png",
+                                    key=dl_png_key + "_pv_ref",
+                                    width='stretch',
+                                )
+                        with _r2:
+                            st.download_button(
+                                "⬇ SVG", data=_ref_svg2,
+                                file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
+                                mime="image/svg+xml",
+                                key=dl_svg_key + "_pv_ref",
+                                width='stretch',
+                            )
+                    else:
+                        st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
+            else:
                 st.markdown("##### 🧪 Docked Pose (PoseView v1)")
                 _png_data = st.session_state.get(img_png_key)
                 _show_poseview_image(
@@ -1522,41 +1589,7 @@ def _poseview_ui(
                         file_name=f"pose{pose_idx+1}_poseview.svg",
                         mime="image/svg+xml", key=dl_svg_key + "_pv", width='stretch',
                     )
-
-            with col_r:
-                st.markdown("##### 🔬 Co-Crystal Reference (PoseView2)")
-                if _ref_svg2:
-                    _ref_png2 = st.session_state.get(ref_png_key) if ref_png_key else None
-                    _show_poseview_image(
-                        _ref_png2, _ref_svg2,
-                        f"Co-crystal: {pdb_id.upper()} · {cocrystal_ligand_id}",
-                        full_legend=True,
-                        stamp=f"{pdb_id.upper()}  ·  {cocrystal_ligand_id}",
-                    )
-                    _r1, _r2 = st.columns(2)
-                    with _r1:
-                        if _ref_png2:
-                            st.download_button(
-                                "⬇ PNG", data=_ref_png2,
-                                file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
-                                mime="image/png",
-                                key=dl_png_key + "_pv_ref",
-                                width='stretch',
-                            )
-                    with _r2:
-                        st.download_button(
-                            "⬇ SVG", data=_ref_svg2,
-                            file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
-                            mime="image/svg+xml",
-                            key=dl_svg_key + "_pv_ref",
-                            width='stretch',
-                        )
-                elif _has_ref:
-                    st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
-                else:
-                    st.caption(
-                        "⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation."
-                    )
+                st.caption("ℹ️ No co-crystal ligand detected — co-crystal reference diagram is not available.")
 
 
 def _receptor_section(pfx: str, wdir: Path, step_label: str):
