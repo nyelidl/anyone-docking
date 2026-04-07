@@ -20,6 +20,7 @@ import streamlit.components.v1 as components
 from core import (
     prepare_receptor,
     prepare_ligand,
+    prepare_ligand_from_file,
     smiles_from_file,
     run_vina,
     get_vina_binary,
@@ -789,7 +790,7 @@ def _poseview_ui(
     3-tab 2D interaction diagram UI.
       Tab 1 - New local diagram (SVG style, no API)
       Tab 2 - Classic RDKit highlight-circle diagram (no API)
-      Tab 3 - PoseView: download files only, no API calls
+      Tab 3 - PoseView: full API generation via proteins.plus
     """
     _pose_key = (
         f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
@@ -804,7 +805,7 @@ def _poseview_ui(
     _tab_new, _tab_rdkit, _tab_pv = st.tabs([
         "🧬 Anyone Can Dock 2D Diagram",
         "🔬 RDKit 2D Diagram",
-        "⬇ PoseView",
+        "🔬 PoseView (proteins.plus)",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1369,70 +1370,193 @@ def _poseview_ui(
                 st.code("\n".join(_rdk_lines), language=None)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 3 — POSEVIEW DOWNLOAD ONLY
+    # TAB 3 — POSEVIEW (proteins.plus API)
     # ══════════════════════════════════════════════════════════════════════════
     with _tab_pv:
-        st.caption(
-            "Download these files and upload manually at "
-            "[proteins.plus/poseview](https://proteins.plus/help/poseview). "
-            "No API calls are made from this app."
-        )
-        _rec_path = st.session_state.get(rec_key, "")
-        _pfx3     = rec_key.replace("receptor_fh", "")
-        _lig_pdb3 = st.session_state.get(_pfx3 + "ligand_pdb_path", "")
-        _c1, _c2, _c3 = st.columns(3)
-        with _c1:
-            st.markdown("**Receptor**")
-            if _rec_path and os.path.exists(_rec_path):
-                st.download_button(
-                    "⬇ receptor.pdb", open(_rec_path, "rb"),
-                    file_name="receptor.pdb", mime="chemical/x-pdb",
-                    key=btn_key + "_pv_rec", width="stretch",
-                )
+        _ci, _cb = st.columns([3, 1])
+        with _ci:
+            if _stale and st.session_state.get(img_svg_key):
+                st.caption("⚠️ Pose changed — click **Generate** to update.")
             else:
-                st.caption("Not ready.")
-        with _c2:
-            st.markdown("**Docked pose**")
-            if os.path.exists(pose_sdf_path):
-                st.download_button(
-                    "⬇ docked_pose.sdf", open(pose_sdf_path, "rb"),
-                    file_name=f"pose_{pose_idx+1}_docked.sdf",
-                    mime="chemical/x-mdl-sdfile",
-                    key=btn_key + "_pv_sdf", width="stretch",
+                _ref_note = (
+                    f" · PoseView2 reference: **{pdb_id.upper()}** `{cocrystal_ligand_id}`"
+                    if _has_ref else
+                    " · No co-crystal ID — only docked pose diagram will be generated."
                 )
-            else:
-                st.caption("Not ready.")
-        with _c3:
-            st.markdown("**Co-crystal ligand**")
-            if _lig_pdb3 and os.path.exists(_lig_pdb3):
-                _cc_sdf = _lig_pdb3.replace(".pdb", "_cocrystal.sdf")
-                if not os.path.exists(_cc_sdf):
-                    import subprocess as _sp3
-                    _sp3.run(
-                        f'obabel "{_lig_pdb3}" -O "{_cc_sdf}" 2>/dev/null',
-                        shell=True, capture_output=True,
+                st.caption(
+                    "**Left:** PoseView v1 — docked pose"
+                    " · **Right:** PoseView2 — co-crystal" + _ref_note
+                )
+        with _cb:
+            _run = st.button("🔬 Generate 2D Diagrams", key=btn_key + "_pv_run", type="primary")
+
+        with st.expander("🔍 Test PoseView API", expanded=False):
+            st.caption(
+                "Sends a known-good test structure (PDB 4AGN) to PoseView "
+                "to check if the server is working — independent of your files."
+            )
+            if st.button("▶ Run API Test", key=btn_key + "_pv_diag"):
+                with st.spinner("Testing proteins.plus PoseView API…"):
+                    try:
+                        from core import diagnose_poseview as _diagnose_poseview
+                        _diag = _diagnose_poseview()
+                        st.session_state[btn_key + "_pv_diag_result"] = _diag
+                    except ImportError:
+                        st.error("❌ diagnose_poseview not found — please deploy the latest core.py")
+            _diag = st.session_state.get(btn_key + "_pv_diag_result")
+            if _diag:
+                for _line in _diag["log"]:
+                    if _line.startswith("✓"):
+                        st.success(_line)
+                    else:
+                        st.error(_line)
+                if _diag["poseview_ok"]:
+                    st.success(
+                        "✅ API is working — if your diagram still fails, "
+                        "the issue is with your specific receptor/ligand files."
                     )
-                _dl_p  = _cc_sdf if os.path.exists(_cc_sdf) else _lig_pdb3
-                _dl_fn = "cocrystal.sdf" if _dl_p.endswith(".sdf") else "cocrystal.pdb"
-                st.download_button(
-                    f"⬇ {_dl_fn}", open(_dl_p, "rb"),
-                    file_name=_dl_fn,
-                    mime=(
-                        "chemical/x-mdl-sdfile"
-                        if _dl_fn.endswith(".sdf") else "chemical/x-pdb"
-                    ),
-                    key=btn_key + "_pv_cc", width="stretch",
-                )
+                    if _diag["image_url"]:
+                        st.markdown(f"[View test SVG]({_diag['image_url']})")
+                elif _diag["server_reachable"]:
+                    st.warning(f"⚠️ Server reachable but PoseView failed: {_diag['error']}")
+                else:
+                    st.error(f"❌ Server unreachable: {_diag['error']}")
+
+        with st.expander("⬇ Download files for manual PoseView upload", expanded=False):
+            st.caption(
+                "If the diagram above fails, download these files and upload manually at "
+                "[proteins.plus/poseview](https://proteins.plus/help/poseview)."
+            )
+            _rec_path = st.session_state.get(rec_key, "")
+            _pfx3     = rec_key.replace("receptor_fh", "")
+            _lig_pdb3 = st.session_state.get(_pfx3 + "ligand_pdb_path", "")
+            _dl_c1, _dl_c2 = st.columns(2)
+            with _dl_c1:
+                if _rec_path and os.path.exists(_rec_path):
+                    st.download_button(
+                        "⬇ receptor.pdb",
+                        data      = open(_rec_path, "rb"),
+                        file_name = "receptor.pdb",
+                        mime      = "chemical/x-pdb",
+                        key       = btn_key + "_pv_dl_rec",
+                        width     = 'stretch',
+                    )
+                else:
+                    st.caption("Receptor not ready.")
+            with _dl_c2:
+                if os.path.exists(pose_sdf_path):
+                    st.download_button(
+                        "⬇ docked_pose.sdf",
+                        data      = open(pose_sdf_path, "rb"),
+                        file_name = f"pose_{pose_idx+1}_docked.sdf",
+                        mime      = "chemical/x-mdl-sdfile",
+                        key       = btn_key + "_pv_dl_sdf",
+                        width     = 'stretch',
+                    )
+                else:
+                    st.caption("Pose SDF not ready.")
+
+        if _run:
+            _rec = st.session_state.get(rec_key, "")
+            if not _rec or not os.path.exists(_rec):
+                st.error("Receptor PDB not found — complete receptor preparation first.")
+            elif not os.path.exists(pose_sdf_path):
+                st.error("Pose SDF not found.")
             else:
-                st.caption("No co-crystal ligand detected.")
-        st.markdown("---")
-        st.markdown(
-            "**Steps:**  \n"
-            "1. Download `receptor.pdb` and `docked_pose.sdf`  \n"
-            "2. Go to [proteins.plus](https://proteins.plus/help/poseview)  \n"
-            "3. Upload the receptor, then the ligand SDF  \n"
-            "4. PoseView renders the diagram in your browser"
-        )
+                with st.spinner("⏳ PoseView v1 — generating 2D diagram… (30–60 s)"):
+                    _svg, _err = call_poseview_v1(_rec, pose_sdf_path)
+                if _err:
+                    st.error(f"❌ PoseView v1 error:\n\n```\n{_err}\n```")
+                    st.markdown(
+                        "**💡 What to do:**\n"
+                        "- **Use the local diagrams** in the other tabs above — they work instantly.\n"
+                        "- **Try again** — click Generate again, the server may be temporarily busy.\n"
+                        "- **Upload manually** — expand **⬇ Download files** above, "
+                        "download and upload at [proteins.plus/poseview](https://proteins.plus/help/poseview).",
+                        unsafe_allow_html=False,
+                    )
+                else:
+                    _png = svg_to_png(_svg)
+                    st.session_state[img_png_key]  = _png
+                    st.session_state[img_svg_key]  = _svg
+                    st.session_state[pose_key_key] = _pose_key
+
+                if _has_ref and ref_png_key and ref_svg_key:
+                    with st.spinner(
+                        f"⏳ PoseView2 — {pdb_id.upper()} / {cocrystal_ligand_id}… (may retry up to 3×)"
+                    ):
+                        _ref_svg, _ref_err = call_poseview2_ref(pdb_id, cocrystal_ligand_id)
+                    if _ref_err:
+                        st.warning(f"⚠️ PoseView2 error:\n\n```\n{_ref_err}\n```")
+                    else:
+                        st.session_state[ref_png_key] = svg_to_png(_ref_svg)
+                        st.session_state[ref_svg_key] = _ref_svg
+                st.rerun()
+
+        _pose_svg = st.session_state.get(img_svg_key)
+        _ref_svg2 = st.session_state.get(ref_svg_key) if ref_svg_key else None
+
+        if _pose_svg and not _stale:
+            _lbl = st.session_state.get(smiles_key, "ligand")[:20]
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.markdown("##### 🧪 Docked Pose (PoseView v1)")
+                _png_data = st.session_state.get(img_png_key)
+                _show_poseview_image(
+                    _png_data, _pose_svg,
+                    f"Docked pose {pose_idx+1} — {_lbl}",
+                    full_legend=False,
+                    stamp=f"Pose {pose_idx+1}  ·  {_lbl}",
+                )
+                _d1, _d2 = st.columns(2)
+                with _d1:
+                    if _png_data:
+                        st.download_button(
+                            "⬇ PNG", data=_png_data,
+                            file_name=f"pose{pose_idx+1}_poseview.png",
+                            mime="image/png", key=dl_png_key + "_pv", width='stretch',
+                        )
+                with _d2:
+                    st.download_button(
+                        "⬇ SVG", data=_pose_svg,
+                        file_name=f"pose{pose_idx+1}_poseview.svg",
+                        mime="image/svg+xml", key=dl_svg_key + "_pv", width='stretch',
+                    )
+
+            with col_r:
+                st.markdown("##### 🔬 Co-Crystal Reference (PoseView2)")
+                if _ref_svg2:
+                    _ref_png2 = st.session_state.get(ref_png_key) if ref_png_key else None
+                    _show_poseview_image(
+                        _ref_png2, _ref_svg2,
+                        f"Co-crystal: {pdb_id.upper()} · {cocrystal_ligand_id}",
+                        full_legend=True,
+                        stamp=f"{pdb_id.upper()}  ·  {cocrystal_ligand_id}",
+                    )
+                    _r1, _r2 = st.columns(2)
+                    with _r1:
+                        if _ref_png2:
+                            st.download_button(
+                                "⬇ PNG", data=_ref_png2,
+                                file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.png",
+                                mime="image/png",
+                                key=dl_png_key + "_pv_ref",
+                                width='stretch',
+                            )
+                    with _r2:
+                        st.download_button(
+                            "⬇ SVG", data=_ref_svg2,
+                            file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}.svg",
+                            mime="image/svg+xml",
+                            key=dl_svg_key + "_pv_ref",
+                            width='stretch',
+                        )
+                elif _has_ref:
+                    st.info("Click **Generate 2D Diagrams** to load the co-crystal reference.")
+                else:
+                    st.caption(
+                        "⚠️ No co-crystal ligand ID — use Auto-detect in receptor preparation."
+                    )
 
 
 def _receptor_section(pfx: str, wdir: Path, step_label: str):
@@ -1738,7 +1862,7 @@ with tab_basic:
 
     lig_input_mode = st.radio(
         "Input mode",
-        ["SMILES string", "Upload structure (.pdb)", "Draw structure (Ketcher)"],
+        ["SMILES string", "Upload structure (.pdb/.mol2)", "Draw structure (Ketcher)"],
         horizontal=True, key="lig_input_mode",
     )
 
@@ -1749,10 +1873,17 @@ with tab_basic:
             value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
             key="smiles_in",
         )
-    elif lig_input_mode == "Upload structure (.pdb)":
+    elif lig_input_mode == "Upload structure (.pdb/.mol2)":
         st.file_uploader(
             "Upload structure file", type=["sdf", "mol2", "pdb"],
             key="lig_struct_file",
+        )
+        lig_upload_prot = st.radio(
+            "Ligand preparation mode",
+            ["Use the uploaded form", "Protonation at target pH"],
+            horizontal=True, key="lig_upload_prot",
+            help="**Use the uploaded form** keeps the molecule exactly as provided (default). "
+                 "**Protonation** converts to SMILES and re-protonates at the target pH.",
         )
     else:
         try:
@@ -1792,18 +1923,28 @@ with tab_basic:
                 _tmp = str(WORKDIR / f"lig_upload{_ext}")
                 with open(_tmp, "wb") as _f:
                     _f.write(_sfobj.read())
-                try:
-                    smiles_in = smiles_from_file(_tmp, WORKDIR)
-                except Exception as e:
-                    st.error(f"❌ Could not read structure: {e}")
-                    st.stop()
+
+                _upload_prot = st.session_state.get("lig_upload_prot", "Use the uploaded form")
+                if _upload_prot == "Use the uploaded form":
+                    # Direct preparation — no protonation
+                    result = prepare_ligand_from_file(_tmp, lig_name, WORKDIR)
+                else:
+                    # Convert to SMILES then protonate
+                    try:
+                        smiles_in = smiles_from_file(_tmp, WORKDIR)
+                    except Exception as e:
+                        st.error(f"❌ Could not read structure: {e}")
+                        st.stop()
+                    result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
                     st.error("No molecule drawn in Ketcher.")
                     st.stop()
-
-            result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
+                result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
+            else:
+                # SMILES string mode
+                result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
 
         if result["success"]:
             st.session_state.update({
@@ -2523,7 +2664,7 @@ with tab_batch:
     col_b1, col_b2 = st.columns([1.6, 1])
     with col_b1:
         b_input_mode = st.radio(
-            "Input mode", ["SMILES list (text)", "Upload .smi file"],
+            "Input mode", ["SMILES list (text)", "Upload .smi file", "Upload structure files (.pdb/.mol2)"],
             key="b_input_mode",
         )
         if b_input_mode == "SMILES list (text)":
@@ -2539,8 +2680,20 @@ with tab_batch:
                        "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)OC)O Galangin\n"
                        "CC1=C(C=C(C=C1)NC2=NC=NC3=C2C=CC=C3)OC Imatinib"),
                 height=300, key="b_smiles_text")
-        else:
+        elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
+        else:
+            st.file_uploader(
+                "Upload structure files", type=["sdf", "mol2", "pdb"],
+                accept_multiple_files=True, key="b_struct_files",
+            )
+            b_struct_prot = st.radio(
+                "Ligand preparation mode",
+                ["Use the uploaded form", "Protonation at target pH"],
+                horizontal=True, key="b_struct_prot",
+                help="**Use the uploaded form** keeps molecules exactly as provided (default). "
+                     "**Protonation** converts to SMILES and re-protonates at the target pH.",
+            )
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
 
     with col_b2:
@@ -2574,6 +2727,8 @@ with tab_batch:
         b_ph_val  = st.session_state.get("b_ph", 7.4)
 
         smiles_pairs = []
+        struct_file_pairs = []  # list of (file_path, name) for uploaded structure files
+        _b_use_struct_files = False
         try:
             if st.session_state.get("b_input_mode") == "SMILES list (text)":
                 for line in st.session_state.get("b_smiles_text", "").strip().splitlines():
@@ -2583,7 +2738,7 @@ with tab_batch:
                     pts = line.split(None, 1)
                     _nm = pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
                     smiles_pairs.append((pts[0], _nm))
-            else:
+            elif st.session_state.get("b_input_mode") == "Upload .smi file":
                 fobj = st.session_state.get("b_smi_file")
                 if fobj is None:
                     raise ValueError("No .smi file uploaded")
@@ -2594,8 +2749,21 @@ with tab_batch:
                     pts = line.split(None, 1)
                     _nm = pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
                     smiles_pairs.append((pts[0], _nm))
-            if not smiles_pairs:
-                raise ValueError("No valid SMILES found")
+            else:
+                # Upload structure files mode
+                _b_use_struct_files = True
+                _uploaded = st.session_state.get("b_struct_files", [])
+                if not _uploaded:
+                    raise ValueError("No structure files uploaded")
+                for _uf in _uploaded:
+                    _ext = Path(_uf.name).suffix.lower()
+                    _nm  = Path(_uf.name).stem.replace(" ", "_")
+                    _tmp = str(BATCH_WORKDIR / f"{_nm}{_ext}")
+                    with open(_tmp, "wb") as _wf:
+                        _wf.write(_uf.read())
+                    struct_file_pairs.append((_tmp, _nm))
+            if not smiles_pairs and not struct_file_pairs:
+                raise ValueError("No valid input found")
         except Exception as e:
             st.error(f"❌ Input parsing failed: {e}")
             st.stop()
@@ -2649,14 +2817,42 @@ with tab_batch:
                     st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
 
         results  = []
-        n        = len(smiles_pairs)
+        _items = struct_file_pairs if _b_use_struct_files else smiles_pairs
+        n        = len(_items)
         prog     = st.progress(0, text=f"Docking 0/{n}…")
         log_slot = st.empty()
         all_logs = []
 
-        for i, (smi, name) in enumerate(smiles_pairs):
+        for i, item in enumerate(_items):
+            if _b_use_struct_files:
+                fpath, name = item
+                smi = ""
+            else:
+                smi, name = item
+                fpath = None
+
             prog.progress(i / n, text=f"Docking {name} ({i+1}/{n})…")
-            prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
+
+            # --- ligand preparation ---
+            if _b_use_struct_files:
+                _struct_prot = st.session_state.get("b_struct_prot", "Use the uploaded form")
+                if _struct_prot == "Use the uploaded form":
+                    prep = prepare_ligand_from_file(fpath, name, BATCH_WORKDIR)
+                else:
+                    try:
+                        smi = smiles_from_file(fpath, BATCH_WORKDIR)
+                    except Exception as e:
+                        results.append({
+                            "Name": name, "SMILES": "", "Charge": None,
+                            "Top Score": None,
+                            "Status": f"PREP FAILED: {e}",
+                        })
+                        all_logs.append(f"[{name}] PREP ERROR: {e}")
+                        continue
+                    prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
+            else:
+                prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
+
             if not prep["success"]:
                 results.append({
                     "Name": name, "SMILES": smi, "Charge": None,
@@ -2665,6 +2861,8 @@ with tab_batch:
                 })
                 all_logs.append(f"[{name}] PREP ERROR: {prep['error']}")
                 continue
+
+            smi = smi or prep.get("prot_smiles", "")
 
             dock = run_vina(
                 rec_pdbqt, prep["pdbqt"], config,
