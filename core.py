@@ -724,25 +724,43 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
                 mols = [m for m in supp if m]
             if mols:
                 mol = mols[0]
-        elif ext == ".mol2":
-            mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+        elif ext in (".mol2", ".pdb"):
+            # Strategy A: convert via obabel first (handles GaussView bond types)
+            _ob_sdf = str(wdir / f"{name}_ob.sdf")
+            import subprocess
+            subprocess.run(
+                f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
+                shell=True, timeout=30,
+            )
+            if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
+                supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
+                mols = [m for m in supp if m]
+                if not mols:
+                    supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=False)
+                    mols = [m for m in supp if m]
+                if mols:
+                    mol = mols[0]
+                    log.append("✓ Converted via OpenBabel")
+            # Strategy B: direct RDKit read as fallback
             if mol is None:
-                mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
-        elif ext == ".pdb":
-            mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
-            if mol is None:
-                mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
+                if ext == ".mol2":
+                    mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+                    if mol is None:
+                        mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
+                else:
+                    mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
+                    if mol is None:
+                        mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
 
         if mol is None:
             raise ValueError(f"Could not read molecule from {Path(file_path).name}")
 
-        # Keep only the largest fragment (mol2 files from GaussView
-        # can have bad bond types that cause RDKit to see fragments)
+        # Keep only the largest fragment if multiple exist
         frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
         if len(frags) > 1:
             frags = sorted(frags, key=lambda m: m.GetNumAtoms(), reverse=True)
             mol = frags[0]
-            log.append(f"⚠ {len(frags)} fragments detected — kept largest ({mol.GetNumAtoms()} atoms)")
+            log.append(f"⚠ {len(frags)} fragments — kept largest ({mol.GetNumAtoms()} atoms)")
 
         # Try to sanitize if not already done
         try:
