@@ -719,21 +719,51 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
         if ext == ".sdf":
             supp = Chem.SDMolSupplier(file_path, removeHs=False, sanitize=True)
             mols = [m for m in supp if m]
+            if not mols:
+                supp = Chem.SDMolSupplier(file_path, removeHs=False, sanitize=False)
+                mols = [m for m in supp if m]
             if mols:
                 mol = mols[0]
         elif ext == ".mol2":
             mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+            if mol is None:
+                mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
         elif ext == ".pdb":
             mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
+            if mol is None:
+                mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
 
         if mol is None:
             raise ValueError(f"Could not read molecule from {Path(file_path).name}")
 
+        # Keep only the largest fragment (mol2 files from GaussView
+        # can have bad bond types that cause RDKit to see fragments)
+        frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
+        if len(frags) > 1:
+            frags.sort(key=lambda m: m.GetNumAtoms(), reverse=True)
+            mol = frags[0]
+            log.append(f"⚠ {len(frags)} fragments detected — kept largest ({mol.GetNumAtoms()} atoms)")
+
+        # Try to sanitize if not already done
+        try:
+            Chem.SanitizeMol(mol)
+        except Exception:
+            pass
+
         log.append("✓ Loaded molecule from file (no protonation)")
 
         # Get SMILES for display / downstream use
-        smi = Chem.MolToSmiles(Chem.RemoveHs(mol))
-        charge = Chem.GetFormalCharge(mol)
+        try:
+            smi = Chem.MolToSmiles(Chem.RemoveHs(mol))
+        except Exception:
+            try:
+                smi = Chem.MolToSmiles(mol)
+            except Exception:
+                smi = name
+        try:
+            charge = Chem.GetFormalCharge(mol)
+        except Exception:
+            charge = 0
         log.append(f"✓ Formal charge: {charge:+d}")
 
         # Ensure ALL hydrogens are explicit (Meeko requirement)
@@ -761,8 +791,19 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
         with Chem.SDWriter(out_sdf) as w:
             w.write(mol)
 
-        _meeko_to_pdbqt(mol, out_pdbqt)
-        log.append("✓ PDBQT written (Meeko)")
+        try:
+            _meeko_to_pdbqt(mol, out_pdbqt)
+            log.append("✓ PDBQT written (Meeko)")
+        except Exception as e_meeko:
+            log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
+            import subprocess
+            subprocess.run(
+                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
+                shell=True, timeout=30,
+            )
+            if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
+                raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
+            log.append("✓ PDBQT written (OpenBabel fallback)")
 
         return {
             "success":     True,
