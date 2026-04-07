@@ -740,7 +740,7 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
         # can have bad bond types that cause RDKit to see fragments)
         frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
         if len(frags) > 1:
-            frags.sort(key=lambda m: m.GetNumAtoms(), reverse=True)
+            frags = sorted(frags, key=lambda m: m.GetNumAtoms(), reverse=True)
             mol = frags[0]
             log.append(f"⚠ {len(frags)} fragments detected — kept largest ({mol.GetNumAtoms()} atoms)")
 
