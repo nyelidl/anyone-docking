@@ -564,6 +564,37 @@ def prepare_receptor(
                 writePDB(ligand_pdb_path, ref_atoms)
                 log.append("⚠ Multi-residue selection — PoseView2 ligand ID not set")
 
+            # ── FIX: always detect and strip the co-crystal ligand ────────────
+            # The ProDy selection may point to a binding-site residue rather
+            # than the ligand itself (or cover multiple residues), so
+            # ligand_sel_str could be None or point to a protein residue.
+            # Independently detect any co-crystal ligand and merge it into the
+            # exclusion string so it is never left in the receptor.
+            _cc_info = detect_cocrystal_ligand(raw_pdb)
+            if _cc_info["found"]:
+                _cc_sel = _cc_info["sel_str"]
+                if ligand_sel_str is None:
+                    # multi-residue selection path: no exclusion set yet
+                    ligand_sel_str = _cc_sel
+                elif _cc_sel != ligand_sel_str:
+                    # single-residue path: user may have selected a protein
+                    # residue rather than the ligand — add the ligand too
+                    ligand_sel_str = f"({ligand_sel_str}) or ({_cc_sel})"
+                # Only set cocrystal_ligand_id if it wasn't already filled
+                if not cocrystal_ligand_id:
+                    cocrystal_ligand_id = _cc_info["ligand_id"]
+                log.append(
+                    f"✓ Co-crystal ligand will be excluded from receptor: "
+                    f"{_cc_info['resname']} chain {_cc_info['chain']} "
+                    f"resnum {_cc_info['resid']}"
+                )
+            else:
+                if ligand_sel_str is None:
+                    log.append(
+                        "⚠ No co-crystal ligand detected — "
+                        "receptor will include all HETATM residues"
+                    )
+
         # Write receptor PDB without co-crystal ligand
         sel_str = (
             f"not ({ligand_sel_str}) and not water"
