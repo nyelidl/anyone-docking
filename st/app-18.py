@@ -591,6 +591,7 @@ iframe { border: none !important; }
 # ══════════════════════════════════════════════════════════════════════════════
 _DEFAULTS = dict(
     workdir=None, ketcher_smi="",
+    dock_run_id=0,
     # Basic receptor
     pdb_token=None, receptor_fh=None, receptor_pdbqt=None,
     box_pdb=None, config_txt=None, cx=None, cy=None, cz=None,
@@ -2216,6 +2217,7 @@ with tab_basic:
                 "pv_image_png":  None,
                 "pv_image_svg":  None,
                 "pv_pose_key":   None,
+                "dock_run_id":   st.session_state.get("dock_run_id", 0) + 1,
                 "redock_done":          redock_result is not None,
                 "redock_score":         redock_score,
                 "redock_result":        redock_result,
@@ -2276,13 +2278,27 @@ with tab_basic:
         with ct:
             st.markdown("**Score Table**")
             if df is not None:
-                st.dataframe(
-                    df.style.background_gradient(
+                _run_id = st.session_state.get("dock_run_id", 0)
+                _has_rmsd = df["RMSD vs crystal (Å)"].notna().any()
+                _fmt = {"Affinity (kcal/mol)": "{:.2f}"}
+                if _has_rmsd:
+                    _fmt["RMSD vs crystal (Å)"] = lambda v: (
+                        f"{v:.2f} Å" if pd.notna(v) else "—"
+                    )
+                _styled = (
+                    df.style
+                    .background_gradient(
                         cmap="RdYlGn",
                         subset=["Affinity (kcal/mol)"],
                         gmap=-df["Affinity (kcal/mol)"],
-                    ),
-                    hide_index=True, width='stretch',
+                    )
+                    .format(_fmt)
+                )
+                st.dataframe(
+                    _styled,
+                    hide_index=True,
+                    width='stretch',
+                    key=f"score_table_{_run_id}",   # ← forces re-render on every dock
                 )
         with cc:
             st.markdown("**Affinity by Pose**")
