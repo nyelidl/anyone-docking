@@ -2165,17 +2165,36 @@ with tab_basic:
             )
             if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
                 pv_sdf = dock["out_sdf"]
-
-            df = (
-                pd.DataFrame([{
-                    "Pose":                  s["pose"],
-                    "Affinity (kcal/mol)":   s["affinity"],
-                    "RMSD lb":               s["rmsd_lb"],
-                    "RMSD ub":               s["rmsd_ub"],
-                } for s in dock["scores"]])
-                .sort_values("Affinity (kcal/mol)")
-                .reset_index(drop=True)
-            ) if dock["scores"] else None
+            if dock["scores"]:
+                _cryst_pdb_df = st.session_state.get("ligand_pdb_path") or ""
+                _pose_mols_df = (
+                    load_mols_from_sdf(dock["out_sdf"], sanitize=False)
+                    if os.path.exists(dock["out_sdf"]) else []
+                )
+                _rows = []
+                for s in dock["scores"]:
+                    _pose_num = s["pose"]
+                    _rmsd_crystal = None
+                    if _cryst_pdb_df and os.path.exists(_cryst_pdb_df):
+                        _mol_idx = (_pose_num - 1) if _pose_num else 0
+                        if _mol_idx < len(_pose_mols_df):
+                            _rmsd_crystal = calc_rmsd_heavy(
+                                _pose_mols_df[_mol_idx], _cryst_pdb_df
+                            )
+                    _rows.append({
+                        "Pose":                 _pose_num,
+                        "Affinity (kcal/mol)":  s["affinity"],
+                        "RMSD vs crystal (Å)":  round(_rmsd_crystal, 2) if _rmsd_crystal is not None else "—",
+                    })
+                df = (
+                    pd.DataFrame(_rows)
+                    .sort_values("Affinity (kcal/mol)")
+                    .reset_index(drop=True)
+                )
+            else:
+                df = None
+                
+        
 
             mols = (
                 load_mols_from_sdf(dock["out_sdf"], sanitize=False)
