@@ -1772,6 +1772,54 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 f.write(upload_file.read())
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
+        # ── Deduplicate identical protein chains ───────────────────────────
+        # Many RCSB entries contain homodimers/homotrimers (chains A, B, C …
+        # with identical sequences). Keep only chain A — or the first chain
+        # in file order if chain A is not a protein chain — to avoid bloating
+        # the receptor and slowing down Vina.
+        try:
+            from prody import parsePDB as _pPDB_ch, writePDB as _wPDB_ch
+            _atoms_ch = _pPDB_ch(raw_path)
+            if _atoms_ch is not None:
+                _hv_ch = _atoms_ch.getHierView()
+                # Collect protein chains only
+                _prot_chains = [
+                    _c for _c in _hv_ch.iterChains()
+                    if _atoms_ch.select(f"chain {_c.getChid()} and protein") is not None
+                ]
+                if len(_prot_chains) > 1:
+                    # Sort so chain A is tried first, then alphabetical
+                    _prot_chains.sort(key=lambda c: (c.getChid() != "A", c.getChid()))
+                    # Build residue-level sequence for each chain
+                    _seen_seqs = {}
+                    _keep_chids = []
+                    for _c in _prot_chains:
+                        _seq = "".join(
+                            r.getResname() for r in _c.iterResidues()
+                            if r.getResname() not in ("HOH", "WAT", "DOD")
+                        )
+                        if _seq not in _seen_seqs:
+                            _seen_seqs[_seq] = _c.getChid()
+                            _keep_chids.append(_c.getChid())
+                    _all_chids = [_c.getChid() for _c in _prot_chains]
+                    _dup_chids = [c for c in _all_chids if c not in _keep_chids]
+                    if _dup_chids:
+                        # Select only non-duplicate chains (keeps all HETATM
+                        # for retained chains; drops HETATM of removed chains)
+                        _ch_sel_str = " ".join(f"chain {c}" for c in _keep_chids)
+                        _atoms_filt = _atoms_ch.select(_ch_sel_str)
+                        _raw_chain_path = str(wdir / "raw_chain_filtered.pdb")
+                        _wPDB_ch(_raw_chain_path, _atoms_filt)
+                        raw_path = _raw_chain_path
+                        st.info(
+                            f"Multiple identical chain(s) detected — "
+                            f"kept: **{', '.join(_keep_chids)}** · "
+                            f"removed duplicate(s): {', '.join(_dup_chids)}"
+                        )
+        except Exception as _ce:
+            pass   # if deduplication fails, proceed with the original file
+        # ──────────────────────────────────────────────────────────────────
+
         # ── Pre-filter cofactors / heme before OpenBabel ────────────────
         # Heme is ALWAYS stripped from the raw file and re-injected into the
         # PDBQT after preparation — OpenBabel cannot handle Fe-porphyrin.
@@ -2012,10 +2060,12 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 mi += 1
 
             # ── Box wireframe corners (box_pdb) ───────────────────────────
+            _box_mi   = None   # model index of box corners — used for zoomTo
             _box_path = st.session_state.get(pfx + "box_pdb")
             if _box_path and os.path.exists(_box_path):
                 v3.addModel(open(_box_path).read(), "pdb")
                 v3.setStyle({"model": mi}, {"stick": {"radius": 0.2, "color": "gray"}})
+                _box_mi = mi
                 mi += 1
 
             # ── Co-crystal ligand ─────────────────────────────────────────
@@ -2071,10 +2121,16 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             except Exception:
                 pass
 
-            # ── Zoom to box center so pocket residues fill the view ───────
-            v3.zoomTo(mi)
-            v3.center({"x": float(cx_v), "y": float(cy_v), "z": float(cz_v)})
-            v3.zoom(1.5)
+            # ── Zoom to the docking box ──────────────────────────────────
+            # zoomTo the box_pdb corner atoms so the view fits exactly the
+            # grid box region; the protein is still visible around it.
+            if _box_mi is not None:
+                v3.zoomTo({"model": _box_mi})
+            else:
+                # fallback: center on box coordinates with manual zoom
+                v3.zoomTo()
+                v3.center({"x": float(cx_v), "y": float(cy_v), "z": float(cz_v)})
+                v3.zoom(1.5)
             show3d(v3, height=480)
 
     st.markdown('</div>', unsafe_allow_html=True)
