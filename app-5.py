@@ -1911,8 +1911,14 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     _pdbqt_lines.append("END\n")
                     with open(_pdbqt_path, "w") as _pf:
                         _pf.writelines(_pdbqt_lines)
+
+                    # Also append raw heme lines to rec.pdb so the 3D viewer
+                    # and interaction detection both see the cofactor
+                    with open(result["rec_fh"], "a") as _rf:
+                        _rf.writelines(_heme_lines)
+
                     _heme_log.append(
-                        f"Re-injected {_injected} heme atom(s) into PDBQT "
+                        f"Re-injected {_injected} heme atom(s) into PDBQT and rec.pdb "
                         f"(Fe -> type Fe charge +2.0)"
                     )
                 except Exception as _he2:
@@ -2019,6 +2025,30 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 v3.setStyle({"model": mi}, {
                     "stick": {"colorscheme": "magentaCarbon", "radius": 0.25}
                 })
+                mi += 1
+
+            # ── Heme cofactor ─────────────────────────────────────────────
+            # Heme is appended to rec.pdb after preparation; re-read it and
+            # render as distinct orange sticks so it is clearly visible.
+            _rec_fh_v = st.session_state.get(pfx + "receptor_fh", "")
+            if _rec_fh_v and os.path.exists(_rec_fh_v):
+                _heme_rn = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
+                _heme_pdb_lines = [
+                    l for l in open(_rec_fh_v)
+                    if l[:6].strip() in ("ATOM", "HETATM")
+                    and l[17:20].strip().upper() in _heme_rn
+                ]
+                if _heme_pdb_lines:
+                    v3.addModel("".join(_heme_pdb_lines) + "END\n", "pdb")
+                    v3.setStyle({"model": mi}, {
+                        "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}
+                    })
+                    v3.addLabel("HEM", {
+                        "fontSize": 12, "fontColor": "orange",
+                        "backgroundColor": "black", "backgroundOpacity": 0.5,
+                        "inFront": True, "showBackground": True,
+                    }, {"model": mi})
+                    mi += 1
 
             # ── Box volume + axes ─────────────────────────────────────────
             _add_box_to_view(v3, cx_v, cy_v, cz_v, _sx, _sy, _sz)
