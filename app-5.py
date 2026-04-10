@@ -62,6 +62,25 @@ except ImportError:
     draw_interaction_diagram = None
     draw_interactions_rdkit_classic = None
 
+# Graceful import of cofactor / heme name sets for pre-filtering
+try:
+    from core import COFACTOR_NAMES as _COFACTOR_NAMES
+except ImportError:
+    _COFACTOR_NAMES = {
+        "ATP", "ADP", "AMP", "GTP", "GDP", "GMP",
+        "NAD", "NAP", "NDP", "FAD", "FMN",
+        "GOL", "PEG", "EDO", "MPD", "PGE", "PG4",
+        "SO4", "PO4", "SUL", "PHO",
+        "IHP", "TTP", "CTP", "UTP",
+        "COA", "SAM", "SAH",
+        "EPE", "MES", "TRS", "ACT", "ACY",
+    }
+
+try:
+    from core import HEME_RESNAMES as _HEME_RESNAMES
+except ImportError:
+    _HEME_RESNAMES = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1669,6 +1688,45 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         sz = st.slider("Z size", 10, 40, 16, 2, key=pfx + "sz")
         st.markdown(f"Box volume: **{sx*sy*sz:,} Å³**")
 
+    # ── Blind docking ─────────────────────────────────────────────────────────
+    blind = st.checkbox(
+        "🔍 Blind docking (cover whole protein)",
+        value=False,
+        key=pfx + "blind_docking",
+        help=(
+            "Automatically sets the grid box to enclose the entire protein. "
+            "Useful when the binding site is unknown. "
+            "Box-size sliders above are ignored when this is checked. "
+            "Note: larger boxes significantly increase computation time."
+        ),
+    )
+    if blind:
+        st.caption(
+            "⚠️ Blind docking selected — box center and size will be computed "
+            "from the full protein extent. Box-size sliders are ignored."
+        )
+
+    # ── Cofactor handling ──────────────────────────────────────────────────────
+    with st.expander("⚗️ Cofactor options", expanded=False):
+        keep_cofactors = st.checkbox(
+            "Keep cofactors in receptor",
+            value=True,
+            key=pfx + "keep_cofactors",
+            help=(
+                "When checked, cofactors such as FAD, NAD, ATP, CoA, FMN and SAM "
+                "remain in the receptor and contribute to scoring. "
+                "Uncheck to strip them and dock into a cofactor-free pocket. "
+                "Heme (HEM/HEC/HEA) is included in this option."
+            ),
+        )
+        _strip_set = _COFACTOR_NAMES | _HEME_RESNAMES
+        _strip_sorted = ", ".join(sorted(_strip_set))
+        if keep_cofactors:
+            st.caption(f"✅ These residues will be **kept**: {_strip_sorted}")
+        else:
+            st.caption(f"⚠️ These residues will be **stripped** before docking: {_strip_sorted}")
+    # ──────────────────────────────────────────────────────────────────────────
+
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
 
         if src == "Download from RCSB":
@@ -1714,6 +1772,29 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 f.write(upload_file.read())
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
+        # ── Pre-filter cofactors / heme if user opted out ──────────────────
+        _keep = st.session_state.get(pfx + "keep_cofactors", True)
+        if not _keep:
+            _strip_resnames = _COFACTOR_NAMES | _HEME_RESNAMES
+            _filtered_path  = str(wdir / "raw_nocofactor.pdb")
+            _n_stripped = 0
+            with open(raw_path) as _fin, open(_filtered_path, "w") as _fout:
+                for _line in _fin:
+                    _field = _line[:6].strip()
+                    if _field in ("ATOM", "HETATM"):
+                        _rn = _line[17:20].strip().upper()
+                        if _rn in _strip_resnames:
+                            _n_stripped += 1
+                            continue
+                    _fout.write(_line)
+            raw_path = _filtered_path
+            if _n_stripped:
+                st.info(
+                    f"⚗️ Stripped {_n_stripped} cofactor/heme atom(s) "
+                    f"from receptor before preparation."
+                )
+        # ──────────────────────────────────────────────────────────────────
+
         _mode_map = {
             "Auto-detect co-crystal ligand":      "auto",
             "Enter XYZ manually":                 "manual",
@@ -1726,6 +1807,39 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             st.session_state.get(pfx + "mz", 0.0),
         )
         _prody_sel = st.session_state.get(pfx + "mda_sel", "")
+
+        # ── Blind docking: override center + box from full protein extent ──
+        _blind = st.session_state.get(pfx + "blind_docking", False)
+        if _blind:
+            try:
+                import numpy as _np
+                from prody import parsePDB as _parsePDB
+                _atoms = _parsePDB(raw_path)
+                _prot  = _atoms.select("protein")
+                if _prot is None:
+                    _prot = _atoms          # fallback: use all atoms
+                _coords = _prot.getCoords()
+                _mn  = _coords.min(axis=0)
+                _mx  = _coords.max(axis=0)
+                _ctr = ((_mn + _mx) / 2).tolist()
+                _pad = 4.0                 # 4 Å padding on each face
+                _sz  = ((_mx - _mn) + 2 * _pad).tolist()
+                _core_mode  = "manual"
+                _manual_xyz = tuple(_ctr)
+                sx = int(round(_sz[0]))
+                sy = int(round(_sz[1]))
+                sz = int(round(_sz[2]))
+                st.info(
+                    f"🔍 Blind docking box — "
+                    f"center ({_ctr[0]:.1f}, {_ctr[1]:.1f}, {_ctr[2]:.1f}) · "
+                    f"size {sx} × {sy} × {sz} Å"
+                )
+            except Exception as _be:
+                st.warning(
+                    f"⚠️ Could not compute blind docking box: {_be}. "
+                    "Falling back to current center/size settings."
+                )
+        # ──────────────────────────────────────────────────────────────────
 
         with st.spinner("⏳ Preparing receptor…"):
             result = prepare_receptor(
