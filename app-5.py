@@ -2072,7 +2072,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 pass
 
             # ── Zoom to box center so pocket residues fill the view ───────
-            v3.zoomTo()
+            v3.zoomTo(mi)
             v3.center({"x": float(cx_v), "y": float(cy_v), "z": float(cz_v)})
             v3.zoom(1.5)
             show3d(v3, height=480)
