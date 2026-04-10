@@ -1772,28 +1772,44 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 f.write(upload_file.read())
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
-        # ── Pre-filter cofactors / heme if user opted out ──────────────────
-        _keep = st.session_state.get(pfx + "keep_cofactors", True)
-        if not _keep:
-            _strip_resnames = _COFACTOR_NAMES | _HEME_RESNAMES
-            _filtered_path  = str(wdir / "raw_nocofactor.pdb")
-            _n_stripped = 0
-            with open(raw_path) as _fin, open(_filtered_path, "w") as _fout:
-                for _line in _fin:
-                    _field = _line[:6].strip()
-                    if _field in ("ATOM", "HETATM"):
-                        _rn = _line[17:20].strip().upper()
-                        if _rn in _strip_resnames:
-                            _n_stripped += 1
-                            continue
-                    _fout.write(_line)
-            raw_path = _filtered_path
-            if _n_stripped:
-                st.info(
-                    f"⚗️ Stripped {_n_stripped} cofactor/heme atom(s) "
-                    f"from receptor before preparation."
-                )
-        # ──────────────────────────────────────────────────────────────────
+        # ── Pre-filter cofactors / heme before OpenBabel ────────────────
+        # Heme is ALWAYS stripped from the raw file and re-injected into the
+        # PDBQT after preparation — OpenBabel cannot handle Fe-porphyrin.
+        # Other cofactors are stripped only when the user unchecks "Keep".
+        _keep           = st.session_state.get(pfx + "keep_cofactors", True)
+        _cofactor_strip = _COFACTOR_NAMES if not _keep else set()
+
+        _filtered_path = str(wdir / "raw_prefiltered.pdb")
+        _heme_lines    = []   # saved for re-injection into PDBQT
+        _n_cofactor    = 0
+
+        with open(raw_path) as _fin, open(_filtered_path, "w") as _fout:
+            for _line in _fin:
+                _field = _line[:6].strip()
+                if _field in ("ATOM", "HETATM"):
+                    _rn = _line[17:20].strip().upper()
+                    if _rn in _HEME_RESNAMES:
+                        _heme_lines.append(_line)
+                        continue
+                    if _rn in _cofactor_strip:
+                        _n_cofactor += 1
+                        continue
+                _fout.write(_line)
+
+        raw_path = _filtered_path
+
+        if _heme_lines:
+            _heme_names = ", ".join(sorted({l[17:20].strip() for l in _heme_lines}))
+            st.info(
+                f"Heme ({_heme_names}, {len(_heme_lines)} atoms) stripped before "
+                f"OpenBabel — will be re-injected with AD4 atom types."
+            )
+        if _n_cofactor:
+            st.info(
+                f"Stripped {_n_cofactor} cofactor atom(s) from receptor "
+                f"(cofactor option unchecked)."
+            )
+        # ──────────────────────────────────────────────────
 
         _mode_map = {
             "Auto-detect co-crystal ligand":      "auto",
@@ -1852,6 +1868,57 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             )
 
         if result["success"]:
+            # ── Re-inject heme atoms into PDBQT with AD4 atom types ─────────────
+            _heme_log = []
+            if _heme_lines:
+                _AD4_TYPE = {"FE": "Fe", "N": "NA", "O": "OA", "C": "A", "S": "SA"}
+                _AD4_CHG  = {"FE": 2.0, "N": -0.4, "C": 0.1, "O": -0.4, "S": 0.0}
+                try:
+                    _pdbqt_path = result["rec_pdbqt"]
+                    _pdbqt_lines = [
+                        l for l in open(_pdbqt_path).readlines()
+                        if l.strip() != "END"
+                    ]
+                    _injected = 0
+                    for _hl in _heme_lines:
+                        try:
+                            _serial  = int(_hl[6:11])
+                            _aname   = _hl[12:16].strip()
+                            _resname = _hl[17:20].strip().upper()
+                            _chain   = _hl[21] if len(_hl) > 21 else "A"
+                            _resid   = int(_hl[22:26])
+                            _x       = float(_hl[30:38])
+                            _y       = float(_hl[38:46])
+                            _z       = float(_hl[46:54])
+                            _el_raw  = (
+                                _hl[76:78].strip().upper()
+                                if len(_hl) > 76 and _hl[76:78].strip()
+                                else _aname[:2].strip().upper()
+                            )
+                            # Normalise "Fe" -> "FE"
+                            _el = _el_raw.upper()
+                            _atype  = _AD4_TYPE.get(_el, "C")
+                            _charge = _AD4_CHG.get(_el, 0.0)
+                            _pdbqt_lines.append(
+                                f"HETATM{_serial:5d} {_aname:<4s} {_resname:<3s} "
+                                f"{_chain}{_resid:4d}    "
+                                f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00"
+                                f"    {_charge:+.3f} {_atype}\n"
+                            )
+                            _injected += 1
+                        except Exception as _he:
+                            _heme_log.append(f"  Could not re-inject heme line: {_he}")
+                    _pdbqt_lines.append("END\n")
+                    with open(_pdbqt_path, "w") as _pf:
+                        _pf.writelines(_pdbqt_lines)
+                    _heme_log.append(
+                        f"Re-injected {_injected} heme atom(s) into PDBQT "
+                        f"(Fe -> type Fe charge +2.0)"
+                    )
+                except Exception as _he2:
+                    _heme_log.append(f"Heme re-injection failed: {_he2}")
+            # ───────────────────────────────────────────────────────────────
+            _full_log = result["log"] + _heme_log
             st.session_state.update({
                 pfx + "receptor_fh":         result["rec_fh"],
                 pfx + "receptor_pdbqt":      result["rec_pdbqt"],
@@ -1866,7 +1933,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 pfx + "ligand_pdb_path":     result["ligand_pdb_path"],
                 pfx + "cocrystal_ligand_id": result["cocrystal_ligand_id"],
                 pfx + "receptor_done":       True,
-                pfx + "receptor_log":        "\n".join(result["log"]),
+                pfx + "receptor_log":        "\n".join(_full_log),
             })
             clear_poseview_cache()
         else:
@@ -2397,7 +2464,7 @@ with tab_basic:
                 _fmt = {"Affinity (kcal/mol)": "{:.2f}"}
                 if _has_rmsd:
                     _fmt["RMSD vs crystal (Å)"] = lambda v: (
-                    f"{v:.2f} Å" if isinstance(v, (int, float)) else "—"
+                        f"{v:.2f} Å" if isinstance(v, (int, float)) else "—"
                     )
                 _styled = (
                     df.style
