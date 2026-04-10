@@ -2397,7 +2397,7 @@ with tab_basic:
                 _fmt = {"Affinity (kcal/mol)": "{:.2f}"}
                 if _has_rmsd:
                     _fmt["RMSD vs crystal (Å)"] = lambda v: (
-                        f"{v:.2f} Å" if pd.notna(v) else "—"
+                    f"{v:.2f} Å" if isinstance(v, (int, float)) else "—"
                     )
                 _styled = (
                     df.style
