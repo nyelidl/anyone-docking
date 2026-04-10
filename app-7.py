@@ -62,6 +62,25 @@ except ImportError:
     draw_interaction_diagram = None
     draw_interactions_rdkit_classic = None
 
+# Graceful import of cofactor / heme name sets for pre-filtering
+try:
+    from core import COFACTOR_NAMES as _COFACTOR_NAMES
+except ImportError:
+    _COFACTOR_NAMES = {
+        "ATP", "ADP", "AMP", "GTP", "GDP", "GMP",
+        "NAD", "NAP", "NDP", "FAD", "FMN",
+        "GOL", "PEG", "EDO", "MPD", "PGE", "PG4",
+        "SO4", "PO4", "SUL", "PHO",
+        "IHP", "TTP", "CTP", "UTP",
+        "COA", "SAM", "SAH",
+        "EPE", "MES", "TRS", "ACT", "ACY",
+    }
+
+try:
+    from core import HEME_RESNAMES as _HEME_RESNAMES
+except ImportError:
+    _HEME_RESNAMES = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1669,6 +1688,45 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         sz = st.slider("Z size", 10, 40, 16, 2, key=pfx + "sz")
         st.markdown(f"Box volume: **{sx*sy*sz:,} Å³**")
 
+    # ── Blind docking ─────────────────────────────────────────────────────────
+    blind = st.checkbox(
+        "🔍 Blind docking (cover whole protein)",
+        value=False,
+        key=pfx + "blind_docking",
+        help=(
+            "Automatically sets the grid box to enclose the entire protein. "
+            "Useful when the binding site is unknown. "
+            "Box-size sliders above are ignored when this is checked. "
+            "Note: larger boxes significantly increase computation time."
+        ),
+    )
+    if blind:
+        st.caption(
+            "⚠️ Blind docking selected — box center and size will be computed "
+            "from the full protein extent. Box-size sliders are ignored."
+        )
+
+    # ── Cofactor handling ──────────────────────────────────────────────────────
+    with st.expander("⚗️ Cofactor options", expanded=False):
+        keep_cofactors = st.checkbox(
+            "Keep cofactors in receptor",
+            value=True,
+            key=pfx + "keep_cofactors",
+            help=(
+                "When checked, cofactors such as FAD, NAD, ATP, CoA, FMN and SAM "
+                "remain in the receptor and contribute to scoring. "
+                "Uncheck to strip them and dock into a cofactor-free pocket. "
+                "Heme (HEM/HEC/HEA) is included in this option."
+            ),
+        )
+        _strip_set = _COFACTOR_NAMES | _HEME_RESNAMES
+        _strip_sorted = ", ".join(sorted(_strip_set))
+        if keep_cofactors:
+            st.caption(f"✅ These residues will be **kept**: {_strip_sorted}")
+        else:
+            st.caption(f"⚠️ These residues will be **stripped** before docking: {_strip_sorted}")
+    # ──────────────────────────────────────────────────────────────────────────
+
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
 
         if src == "Download from RCSB":
@@ -1714,6 +1772,93 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 f.write(upload_file.read())
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
+        # ── Deduplicate identical protein chains ───────────────────────────
+        # Many RCSB entries contain homodimers/homotrimers (chains A, B, C …
+        # with identical sequences). Keep only chain A — or the first chain
+        # in file order if chain A is not a protein chain — to avoid bloating
+        # the receptor and slowing down Vina.
+        try:
+            from prody import parsePDB as _pPDB_ch, writePDB as _wPDB_ch
+            _atoms_ch = _pPDB_ch(raw_path)
+            if _atoms_ch is not None:
+                _hv_ch = _atoms_ch.getHierView()
+                # Collect protein chains only
+                _prot_chains = [
+                    _c for _c in _hv_ch.iterChains()
+                    if _atoms_ch.select(f"chain {_c.getChid()} and protein") is not None
+                ]
+                if len(_prot_chains) > 1:
+                    # Sort so chain A is tried first, then alphabetical
+                    _prot_chains.sort(key=lambda c: (c.getChid() != "A", c.getChid()))
+                    # Build residue-level sequence for each chain
+                    _seen_seqs = {}
+                    _keep_chids = []
+                    for _c in _prot_chains:
+                        _seq = "".join(
+                            r.getResname() for r in _c.iterResidues()
+                            if r.getResname() not in ("HOH", "WAT", "DOD")
+                        )
+                        if _seq not in _seen_seqs:
+                            _seen_seqs[_seq] = _c.getChid()
+                            _keep_chids.append(_c.getChid())
+                    _all_chids = [_c.getChid() for _c in _prot_chains]
+                    _dup_chids = [c for c in _all_chids if c not in _keep_chids]
+                    if _dup_chids:
+                        # Select only non-duplicate chains (keeps all HETATM
+                        # for retained chains; drops HETATM of removed chains)
+                        _ch_sel_str = " ".join(f"chain {c}" for c in _keep_chids)
+                        _atoms_filt = _atoms_ch.select(_ch_sel_str)
+                        _raw_chain_path = str(wdir / "raw_chain_filtered.pdb")
+                        _wPDB_ch(_raw_chain_path, _atoms_filt)
+                        raw_path = _raw_chain_path
+                        st.info(
+                            f"Multiple identical chain(s) detected — "
+                            f"kept: **{', '.join(_keep_chids)}** · "
+                            f"removed duplicate(s): {', '.join(_dup_chids)}"
+                        )
+        except Exception as _ce:
+            pass   # if deduplication fails, proceed with the original file
+        # ──────────────────────────────────────────────────────────────────
+
+        # ── Pre-filter cofactors / heme before OpenBabel ────────────────
+        # Heme is ALWAYS stripped from the raw file and re-injected into the
+        # PDBQT after preparation — OpenBabel cannot handle Fe-porphyrin.
+        # Other cofactors are stripped only when the user unchecks "Keep".
+        _keep           = st.session_state.get(pfx + "keep_cofactors", True)
+        _cofactor_strip = _COFACTOR_NAMES if not _keep else set()
+
+        _filtered_path = str(wdir / "raw_prefiltered.pdb")
+        _heme_lines    = []   # saved for re-injection into PDBQT
+        _n_cofactor    = 0
+
+        with open(raw_path) as _fin, open(_filtered_path, "w") as _fout:
+            for _line in _fin:
+                _field = _line[:6].strip()
+                if _field in ("ATOM", "HETATM"):
+                    _rn = _line[17:20].strip().upper()
+                    if _rn in _HEME_RESNAMES:
+                        _heme_lines.append(_line)
+                        continue
+                    if _rn in _cofactor_strip:
+                        _n_cofactor += 1
+                        continue
+                _fout.write(_line)
+
+        raw_path = _filtered_path
+
+        if _heme_lines:
+            _heme_names = ", ".join(sorted({l[17:20].strip() for l in _heme_lines}))
+            st.info(
+                f"Heme ({_heme_names}, {len(_heme_lines)} atoms) stripped before "
+                f"OpenBabel — will be re-injected with AD4 atom types."
+            )
+        if _n_cofactor:
+            st.info(
+                f"Stripped {_n_cofactor} cofactor atom(s) from receptor "
+                f"(cofactor option unchecked)."
+            )
+        # ──────────────────────────────────────────────────
+
         _mode_map = {
             "Auto-detect co-crystal ligand":      "auto",
             "Enter XYZ manually":                 "manual",
@@ -1727,6 +1872,39 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         )
         _prody_sel = st.session_state.get(pfx + "mda_sel", "")
 
+        # ── Blind docking: override center + box from full protein extent ──
+        _blind = st.session_state.get(pfx + "blind_docking", False)
+        if _blind:
+            try:
+                import numpy as _np
+                from prody import parsePDB as _parsePDB
+                _atoms = _parsePDB(raw_path)
+                _prot  = _atoms.select("protein")
+                if _prot is None:
+                    _prot = _atoms          # fallback: use all atoms
+                _coords = _prot.getCoords()
+                _mn  = _coords.min(axis=0)
+                _mx  = _coords.max(axis=0)
+                _ctr = ((_mn + _mx) / 2).tolist()
+                _pad = 4.0                 # 4 Å padding on each face
+                _sz  = ((_mx - _mn) + 2 * _pad).tolist()
+                _core_mode  = "manual"
+                _manual_xyz = tuple(_ctr)
+                sx = int(round(_sz[0]))
+                sy = int(round(_sz[1]))
+                sz = int(round(_sz[2]))
+                st.info(
+                    f"🔍 Blind docking box — "
+                    f"center ({_ctr[0]:.1f}, {_ctr[1]:.1f}, {_ctr[2]:.1f}) · "
+                    f"size {sx} × {sy} × {sz} Å"
+                )
+            except Exception as _be:
+                st.warning(
+                    f"⚠️ Could not compute blind docking box: {_be}. "
+                    "Falling back to current center/size settings."
+                )
+        # ──────────────────────────────────────────────────────────────────
+
         with st.spinner("⏳ Preparing receptor…"):
             result = prepare_receptor(
                 raw_pdb     = raw_path,
@@ -1738,6 +1916,63 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             )
 
         if result["success"]:
+            # ── Re-inject heme atoms into PDBQT with AD4 atom types ─────────────
+            _heme_log = []
+            if _heme_lines:
+                _AD4_TYPE = {"FE": "Fe", "N": "NA", "O": "OA", "C": "A", "S": "SA"}
+                _AD4_CHG  = {"FE": 2.0, "N": -0.4, "C": 0.1, "O": -0.4, "S": 0.0}
+                try:
+                    _pdbqt_path = result["rec_pdbqt"]
+                    _pdbqt_lines = [
+                        l for l in open(_pdbqt_path).readlines()
+                        if l.strip() != "END"
+                    ]
+                    _injected = 0
+                    for _hl in _heme_lines:
+                        try:
+                            _serial  = int(_hl[6:11])
+                            _aname   = _hl[12:16].strip()
+                            _resname = _hl[17:20].strip().upper()
+                            _chain   = _hl[21] if len(_hl) > 21 else "A"
+                            _resid   = int(_hl[22:26])
+                            _x       = float(_hl[30:38])
+                            _y       = float(_hl[38:46])
+                            _z       = float(_hl[46:54])
+                            _el_raw  = (
+                                _hl[76:78].strip().upper()
+                                if len(_hl) > 76 and _hl[76:78].strip()
+                                else _aname[:2].strip().upper()
+                            )
+                            # Normalise "Fe" -> "FE"
+                            _el = _el_raw.upper()
+                            _atype  = _AD4_TYPE.get(_el, "C")
+                            _charge = _AD4_CHG.get(_el, 0.0)
+                            _pdbqt_lines.append(
+                                f"HETATM{_serial:5d} {_aname:<4s} {_resname:<3s} "
+                                f"{_chain}{_resid:4d}    "
+                                f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00"
+                                f"    {_charge:+.3f} {_atype}\n"
+                            )
+                            _injected += 1
+                        except Exception as _he:
+                            _heme_log.append(f"  Could not re-inject heme line: {_he}")
+                    _pdbqt_lines.append("END\n")
+                    with open(_pdbqt_path, "w") as _pf:
+                        _pf.writelines(_pdbqt_lines)
+
+                    # Also append raw heme lines to rec.pdb so the 3D viewer
+                    # and interaction detection both see the cofactor
+                    with open(result["rec_fh"], "a") as _rf:
+                        _rf.writelines(_heme_lines)
+
+                    _heme_log.append(
+                        f"Re-injected {_injected} heme atom(s) into PDBQT and rec.pdb "
+                        f"(Fe -> type Fe charge +2.0)"
+                    )
+                except Exception as _he2:
+                    _heme_log.append(f"Heme re-injection failed: {_he2}")
+            # ───────────────────────────────────────────────────────────────
+            _full_log = result["log"] + _heme_log
             st.session_state.update({
                 pfx + "receptor_fh":         result["rec_fh"],
                 pfx + "receptor_pdbqt":      result["rec_pdbqt"],
@@ -1752,7 +1987,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 pfx + "ligand_pdb_path":     result["ligand_pdb_path"],
                 pfx + "cocrystal_ligand_id": result["cocrystal_ligand_id"],
                 pfx + "receptor_done":       True,
-                pfx + "receptor_log":        "\n".join(result["log"]),
+                pfx + "receptor_log":        "\n".join(_full_log),
             })
             clear_poseview_cache()
         else:
@@ -1789,22 +2024,83 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             v3 = py3Dmol.view(width="100%", height=480)
             v3.setBackgroundColor(_viewer_bg())
             mi = 0
-            for _path, _style in [
-                (st.session_state.get(pfx + "receptor_fh"),
-                 {"cartoon": {"color": "spectrum", "opacity": 0.65}}),
-                (st.session_state.get(pfx + "box_pdb"),
-                 {"stick": {"radius": 0.2, "color": "gray"}}),
-            ]:
-                if _path and os.path.exists(_path):
-                    v3.addModel(open(_path).read(), "pdb")
-                    v3.setStyle({"model": mi}, _style)
-                    mi += 1
+
+            # ── Protein ──────────────────────────────────────────────────────
+            _rec_path = st.session_state.get(pfx + "receptor_fh")
+            if _rec_path and os.path.exists(_rec_path):
+                v3.addModel(open(_rec_path).read(), "pdb")
+                # Whole protein: transparent cartoon
+                v3.setStyle(
+                    {"model": mi},
+                    {"cartoon": {"color": "spectrum", "opacity": 0.4}},
+                )
+                # Residues inside the docking box: also show as sticks so
+                # the binding pocket is clearly visible at any zoom level
+                try:
+                    from prody import parsePDB as _pPDB
+                    _ra = _pPDB(_rec_path)
+                    _hx, _hy, _hz = _sx / 2.0, _sy / 2.0, _sz / 2.0
+                    _pocket = _ra.select(
+                        f"protein and "
+                        f"x > {cx_v - _hx:.2f} and x < {cx_v + _hx:.2f} and "
+                        f"y > {cy_v - _hy:.2f} and y < {cy_v + _hy:.2f} and "
+                        f"z > {cz_v - _hz:.2f} and z < {cz_v + _hz:.2f}"
+                    )
+                    if _pocket is not None and _pocket.numAtoms() > 0:
+                        _resi_list = sorted(set(int(r) for r in _pocket.getResnums()))
+                        v3.setStyle(
+                            {"model": mi, "resi": _resi_list},
+                            {
+                                "stick":   {"colorscheme": "whiteCarbon", "radius": 0.18},
+                                "cartoon": {"color": "spectrum", "opacity": 0.75},
+                            },
+                        )
+                except Exception:
+                    pass   # fall back to cartoon-only if ProDy fails
+                mi += 1
+
+            # ── Box wireframe corners (box_pdb) ───────────────────────────
+            _box_mi   = None   # model index of box corners — used for zoomTo
+            _box_path = st.session_state.get(pfx + "box_pdb")
+            if _box_path and os.path.exists(_box_path):
+                v3.addModel(open(_box_path).read(), "pdb")
+                v3.setStyle({"model": mi}, {"stick": {"radius": 0.2, "color": "gray"}})
+                _box_mi = mi
+                mi += 1
+
+            # ── Co-crystal ligand ─────────────────────────────────────────
             lig_p = st.session_state.get(pfx + "ligand_pdb_path")
             if lig_p and os.path.exists(lig_p):
                 v3.addModel(open(lig_p).read(), "pdb")
                 v3.setStyle({"model": mi}, {
                     "stick": {"colorscheme": "magentaCarbon", "radius": 0.25}
                 })
+                mi += 1
+
+            # ── Heme cofactor ─────────────────────────────────────────────
+            # Heme is appended to rec.pdb after preparation; re-read it and
+            # render as distinct orange sticks so it is clearly visible.
+            _rec_fh_v = st.session_state.get(pfx + "receptor_fh", "")
+            if _rec_fh_v and os.path.exists(_rec_fh_v):
+                _heme_rn = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
+                _heme_pdb_lines = [
+                    l for l in open(_rec_fh_v)
+                    if l[:6].strip() in ("ATOM", "HETATM")
+                    and l[17:20].strip().upper() in _heme_rn
+                ]
+                if _heme_pdb_lines:
+                    v3.addModel("".join(_heme_pdb_lines) + "END\n", "pdb")
+                    v3.setStyle({"model": mi}, {
+                        "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}
+                    })
+                    v3.addLabel("HEM", {
+                        "fontSize": 12, "fontColor": "orange",
+                        "backgroundColor": "black", "backgroundOpacity": 0.5,
+                        "inFront": True, "showBackground": True,
+                    }, {"model": mi})
+                    mi += 1
+
+            # ── Box volume + axes ─────────────────────────────────────────
             _add_box_to_view(v3, cx_v, cy_v, cz_v, _sx, _sy, _sz)
             try:
                 for _end, _col, _lbl in [
@@ -1824,7 +2120,17 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     }, _end)
             except Exception:
                 pass
-            v3.zoomTo()
+
+            # ── Zoom to the docking box ──────────────────────────────────
+            # zoomTo the box_pdb corner atoms so the view fits exactly the
+            # grid box region; the protein is still visible around it.
+            if _box_mi is not None:
+                v3.zoomTo({"model": _box_mi})
+            else:
+                # fallback: center on box coordinates with manual zoom
+                v3.zoomTo()
+                v3.center({"x": float(cx_v), "y": float(cy_v), "z": float(cz_v)})
+                v3.zoom(1.5)
             show3d(v3, height=480)
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -2283,7 +2589,7 @@ with tab_basic:
                 _fmt = {"Affinity (kcal/mol)": "{:.2f}"}
                 if _has_rmsd:
                     _fmt["RMSD vs crystal (Å)"] = lambda v: (
-                        f"{v:.2f} Å" if pd.notna(v) else "—"
+                        f"{v:.2f} Å" if isinstance(v, (int, float)) else "—"
                     )
                 _styled = (
                     df.style
