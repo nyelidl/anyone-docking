@@ -1970,22 +1970,57 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             v3 = py3Dmol.view(width="100%", height=480)
             v3.setBackgroundColor(_viewer_bg())
             mi = 0
-            for _path, _style in [
-                (st.session_state.get(pfx + "receptor_fh"),
-                 {"cartoon": {"color": "spectrum", "opacity": 0.65}}),
-                (st.session_state.get(pfx + "box_pdb"),
-                 {"stick": {"radius": 0.2, "color": "gray"}}),
-            ]:
-                if _path and os.path.exists(_path):
-                    v3.addModel(open(_path).read(), "pdb")
-                    v3.setStyle({"model": mi}, _style)
-                    mi += 1
+
+            # ── Protein ──────────────────────────────────────────────────────
+            _rec_path = st.session_state.get(pfx + "receptor_fh")
+            if _rec_path and os.path.exists(_rec_path):
+                v3.addModel(open(_rec_path).read(), "pdb")
+                # Whole protein: transparent cartoon
+                v3.setStyle(
+                    {"model": mi},
+                    {"cartoon": {"color": "spectrum", "opacity": 0.4}},
+                )
+                # Residues inside the docking box: also show as sticks so
+                # the binding pocket is clearly visible at any zoom level
+                try:
+                    from prody import parsePDB as _pPDB
+                    _ra = _pPDB(_rec_path)
+                    _hx, _hy, _hz = _sx / 2.0, _sy / 2.0, _sz / 2.0
+                    _pocket = _ra.select(
+                        f"protein and "
+                        f"x > {cx_v - _hx:.2f} and x < {cx_v + _hx:.2f} and "
+                        f"y > {cy_v - _hy:.2f} and y < {cy_v + _hy:.2f} and "
+                        f"z > {cz_v - _hz:.2f} and z < {cz_v + _hz:.2f}"
+                    )
+                    if _pocket is not None and _pocket.numAtoms() > 0:
+                        _resi_list = sorted(set(int(r) for r in _pocket.getResnums()))
+                        v3.setStyle(
+                            {"model": mi, "resi": _resi_list},
+                            {
+                                "stick":   {"colorscheme": "whiteCarbon", "radius": 0.18},
+                                "cartoon": {"color": "spectrum", "opacity": 0.75},
+                            },
+                        )
+                except Exception:
+                    pass   # fall back to cartoon-only if ProDy fails
+                mi += 1
+
+            # ── Box wireframe corners (box_pdb) ───────────────────────────
+            _box_path = st.session_state.get(pfx + "box_pdb")
+            if _box_path and os.path.exists(_box_path):
+                v3.addModel(open(_box_path).read(), "pdb")
+                v3.setStyle({"model": mi}, {"stick": {"radius": 0.2, "color": "gray"}})
+                mi += 1
+
+            # ── Co-crystal ligand ─────────────────────────────────────────
             lig_p = st.session_state.get(pfx + "ligand_pdb_path")
             if lig_p and os.path.exists(lig_p):
                 v3.addModel(open(lig_p).read(), "pdb")
                 v3.setStyle({"model": mi}, {
                     "stick": {"colorscheme": "magentaCarbon", "radius": 0.25}
                 })
+
+            # ── Box volume + axes ─────────────────────────────────────────
             _add_box_to_view(v3, cx_v, cy_v, cz_v, _sx, _sy, _sz)
             try:
                 for _end, _col, _lbl in [
@@ -2005,7 +2040,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     }, _end)
             except Exception:
                 pass
+
+            # ── Zoom to box center so pocket residues fill the view ───────
             v3.zoomTo()
+            v3.center({"x": float(cx_v), "y": float(cy_v), "z": float(cz_v)})
+            v3.zoom(1.5)
             show3d(v3, height=480)
 
     st.markdown('</div>', unsafe_allow_html=True)
