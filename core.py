@@ -310,7 +310,9 @@ def detect_cocrystal_ligand(raw_pdb: str) -> dict:
     rn         = chosen.getResname()
     ch         = chosen.getChid()
     ri         = chosen.getResnum()
-    sel_str    = f"resname {rn} and resid {ri} and chain {ch}"
+    sel_str    = (f"resname {rn} and resid {ri} and chain {ch}"
+                  if ch and ch.strip()
+                  else f"resname {rn} and resid {ri}")
     lig_atoms  = atoms.select(sel_str)
     cx, cy, cz = (float(v) for v in calcCenter(lig_atoms))
 
