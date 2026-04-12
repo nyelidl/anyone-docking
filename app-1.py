@@ -2782,13 +2782,36 @@ with tab_basic:
                     "stick":   {"radius": 0.1, "opacity": 0.2},
                 })
                 mai += 1
+            
             if st.session_state.ligand_pdb_path and os.path.exists(st.session_state.ligand_pdb_path):
                 va.addModel(open(st.session_state.ligand_pdb_path).read(), "pdb")
                 va.setStyle({"model": mai}, {
                     "stick": {"colorscheme": "magentaCarbon", "radius": 0.22}
                 })
                 mai += 1
+            # ── Heme cofactor ─────────────────────────────────────────────
+            _rec_fh_anim = st.session_state.get("receptor_fh", "")
+            if _rec_fh_anim and os.path.exists(_rec_fh_anim):
+                _heme_rn_anim = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
+                _heme_lines_anim = [
+                    l for l in open(_rec_fh_anim)
+                    if l[:6].strip() in ("ATOM", "HETATM")
+                    and l[17:20].strip().upper() in _heme_rn_anim
+                ]
+                if _heme_lines_anim:
+                    va.addModel("".join(_heme_lines_anim) + "END\n", "pdb")
+                    va.setStyle({"model": mai}, {
+                        "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}
+                    })
+                    va.addLabel("HEM", {
+                        "fontSize": 12, "fontColor": "orange",
+                        "backgroundColor": "black", "backgroundOpacity": 0.5,
+                        "inFront": True, "showBackground": True,
+                    }, {"model": mai})
+                    mai += 1
+            # ─────────────────────────────────────────────────────────────
             va.addModelsAsFrames(sdf_txt)
+            
             va.setStyle({"model": mai}, {"stick": {"colorscheme": "greenCarbon", "radius": 0.25}})
             va.animate({"interval": anim_spd, "loop": "forward"})
             va.addSurface("SES", {"opacity": 0.18, "color": "lightblue"}, {"model": 0}, {"model": mai})
