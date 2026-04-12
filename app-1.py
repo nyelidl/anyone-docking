@@ -3015,24 +3015,30 @@ with tab_basic:
                     "stick": {"colorscheme": "cyanCarbon", "radius": 0.30}
                 })
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
+
                     _ir = get_interacting_residues(
                         st.session_state.receptor_fh, sel_mol, cutoff=_cutoff
                     )
                     for _rb in _ir:
+                        _has_chain = bool(_rb["chain"] and _rb["chain"].strip())
+                        _sel = {"model": 0, "resi": _rb["resi"]}
+                        if _has_chain:
+                            _sel["chain"] = _rb["chain"]
                         vbp.setStyle(
-                            {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
+                            _sel,
                             {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}},
                         )
                         if _show_labels:
+                            _lbl_chain = _rb["chain"] if _has_chain else ""
                             vbp.addLabel(
-                                f"{_rb['resn']}{_rb['resi']}",
+                                f"{_rb['resn']}{_rb['resi']}{_lbl_chain}",
                                 {
                                     "fontSize": 11, "fontColor": "yellow",
                                     "backgroundColor": "black",
                                     "backgroundOpacity": 0.65,
                                     "inFront": True, "showBackground": True,
                                 },
-                                {"model": 0, "chain": _rb["chain"], "resi": _rb["resi"]},
+                                _sel,
                             )
                     _n         = len(_ir)
                     _res_label = f"{_n} residue" + ("s" if _n != 1 else "")
