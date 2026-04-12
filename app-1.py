@@ -1963,7 +1963,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                                 f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00"
                                 f"    {_charge:+.3f}{_pdb_el}\n"
                             )
-                            )
                             _injected += 1
                         except Exception as _he:
                             _heme_log.append(f"  Could not re-inject heme line: {_he}")
