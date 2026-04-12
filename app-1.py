@@ -1951,7 +1951,18 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                                 f"HETATM{_serial:5d} {_aname:<4s} {_resname:<3s} "
                                 f"{_chain}{_resid:4d}    "
                                 f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00"
-                                f"    {_charge:+.3f} {_atype}\n"
+                                f"    {_charge:+.3f}
+                            _pdb_el = {
+                                "Fe":"FE","NA":" N","OA":" O",
+                                "A": " C","SA":" S","C": " C",
+                                "N": " N","O": " O","S": " S",
+                            }.get(_atype, f"{_atype[0]:>2s}")
+                            pdbqt_lines.append(
+                                f"HETATM{_serial:5d} {_aname:<4s} {_resname:<3s} "
+                                f"{_chain}{_resid:4d}    "
+                                f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00"
+                                f"    {_charge:+.3f}{_pdb_el}\n"
+                            )
                             )
                             _injected += 1
                         except Exception as _he:
