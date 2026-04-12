@@ -1984,8 +1984,9 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                         itype="ionic",distance=round(float(dists_j[i]),1),
                         lig_atom_idx=i,prot_el=el,is_donor=True,ring_atom_indices=None)); break
 
-        _an2 = r_an[j].strip().upper()[:2]
-        if rn.strip().upper() in _METALS_SET or el in _METALS_SET or _an2 in _METALS_SET:
+        _is_heme_fe = (r_rn[j] in HEME_RESNAMES
+                       and r_an[j].strip().upper() == "FE")
+        if rn.strip().upper() in _METALS_SET or el in _METALS_SET or _is_heme_fe:
             if md < 2.8:
                 results.append(dict(resname=rn,chain=ch,resid=ri,
                     itype="metal",distance=round(md,1),lig_atom_idx=mi,
@@ -2672,7 +2673,7 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
         bx,by=p["bx"],p["by"]
         cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
         rn=p["resname"]; ri=p["resid"]; ch=p.get("chain","")
-        lbl=f"{rn.upper()} {ri}{ch}"
+        lbl = rn.upper() if rn.upper() in HEME_RESNAMES else f"{rn.upper()} {ri}{ch}"
         lbl_clr=_LBL_CLR.get(itype,"#333")
         parts.append(f'<text x="{cbx:.1f}" y="{cby:.1f}" text-anchor="middle"'
                      f' dominant-baseline="central"'
@@ -2838,7 +2839,8 @@ def draw_interaction_diagram_data(
                 lx, ly = rx, ry
         pl_serial.append({
             "id":       f"r{len(pl_serial)}",
-            "label":    f"{p['resname']} {p['resid']}{p.get('chain','')}",
+            "label":    (p['resname'].upper() if p['resname'].upper() in HEME_RESNAMES
+                         else f"{p['resname']} {p['resid']}{p.get('chain','')}"),
             "itype":    p["itype"],
             "distance": p.get("distance"),
             "lx":       round(lx, 2),
@@ -2944,7 +2946,8 @@ def draw_interaction_diagram_interactive(
             if rx is not None: lx, ly = rx, ry
         residues_js.append({
             "id":      p["resname"] + str(p["resid"]) + p.get("chain",""),
-            "label":   f"{p['resname']} {p['resid']}{p.get('chain','')}",
+            "label":   (p['resname'].upper() if p['resname'].upper() in HEME_RESNAMES
+                        else f"{p['resname']} {p['resid']}{p.get('chain','')}"),
             "itype":   itype,
             "dist":    str(p["distance"]) + "Å" if p.get("distance") else "",
             "lx":      round(lx, 2),
