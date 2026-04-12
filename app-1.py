@@ -2974,6 +2974,27 @@ with tab_basic:
                             {"model": mbp},
                         )
                     mbp += 1
+                # ── Heme cofactor ─────────────────────────────────────────
+                _rec_fh_bp = st.session_state.get("receptor_fh", "")
+                if _rec_fh_bp and os.path.exists(_rec_fh_bp):
+                    _heme_rn_bp = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
+                    _heme_lines_bp = [
+                        l for l in open(_rec_fh_bp)
+                        if l[:6].strip() in ("ATOM", "HETATM")
+                        and l[17:20].strip().upper() in _heme_rn_bp
+                    ]
+                    if _heme_lines_bp:
+                        vbp.addModel("".join(_heme_lines_bp) + "END\n", "pdb")
+                        vbp.setStyle({"model": mbp}, {
+                            "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}
+                        })
+                        vbp.addLabel("HEM", {
+                            "fontSize": 12, "fontColor": "orange",
+                            "backgroundColor": "black", "backgroundOpacity": 0.5,
+                            "inFront": True, "showBackground": True,
+                        }, {"model": mbp})
+                        mbp += 1
+                
                 vbp.addModel(Chem.MolToMolBlock(sel_mol), "mol")
                 _lig_m = mbp
                 vbp.setStyle({"model": _lig_m}, {
