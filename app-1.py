@@ -2837,13 +2837,38 @@ with tab_basic:
                             "stick":   {"radius": 0.08, "opacity": 0.15},
                         })
                         mi2 += 1
+                    
                     if _cryst_pdb and os.path.exists(_cryst_pdb):
                         v2.addModel(open(_cryst_pdb).read(), "pdb")
                         v2.setStyle({"model": mi2}, {
                             "stick": {"colorscheme": "magentaCarbon", "radius": 0.2}
                         })
                         mi2 += 1
+                    # ── Heme cofactor ─────────────────────────────────────
+                    _rec_fh_ps = st.session_state.get("receptor_fh", "")
+                    if _rec_fh_ps and os.path.exists(_rec_fh_ps):
+                        _heme_rn_ps = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
+                        _heme_lines_ps = [
+                            l for l in open(_rec_fh_ps)
+                            if l[:6].strip() in ("ATOM", "HETATM")
+                            and l[17:20].strip().upper() in _heme_rn_ps
+                        ]
+                        if _heme_lines_ps:
+                            v2.addModel("".join(_heme_lines_ps) + "END\n", "pdb")
+                            v2.setStyle({"model": mi2}, {
+                                "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}
+                            })
+                            v2.addLabel("HEM", {
+                                "fontSize": 12, "fontColor": "orange",
+                                "backgroundColor": "black", "backgroundOpacity": 0.5,
+                                "inFront": True, "showBackground": True,
+                            }, {"model": mi2})
+                            mi2 += 1
+                    # ─────────────────────────────────────────────────────
                     v2.addModel(Chem.MolToMolBlock(sel_mol), "mol")
+
+
+    
                     v2.setStyle({"model": mi2}, {
                         "stick": {"colorscheme": "cyanCarbon", "radius": 0.28}
                     })
