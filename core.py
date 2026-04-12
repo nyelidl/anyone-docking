@@ -1984,7 +1984,8 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                         itype="ionic",distance=round(float(dists_j[i]),1),
                         lig_atom_idx=i,prot_el=el,is_donor=True,ring_atom_indices=None)); break
 
-        if rn.strip().upper() in _METALS_SET or el in _METALS_SET:
+        _an2 = r_an[j].strip().upper()[:2]
+        if rn.strip().upper() in _METALS_SET or el in _METALS_SET or _an2 in _METALS_SET:
             if md < 2.8:
                 results.append(dict(resname=rn,chain=ch,resid=ri,
                     itype="metal",distance=round(md,1),lig_atom_idx=mi,
