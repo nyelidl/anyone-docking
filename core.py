@@ -301,7 +301,11 @@ def _collect_removable_ligands(atoms) -> list:
     from prody import calcCenter
 
     excl = EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES
-    het  = atoms.select("hetero and not water")
+    # Use "hetatm" not "hetero": ProDy's "hetero" = "hetatm AND NOT protein".
+    # Non-standard resnames (MOL, LIG, UNL, etc.) are sometimes incorrectly
+    # flagged as protein=True by ProDy, so "hetero" silently drops them.
+    # "hetatm" selects purely on the HETATM record type — always correct.
+    het  = atoms.select("hetatm and not water")
     if het is None:
         return []
 
