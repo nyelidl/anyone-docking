@@ -2675,7 +2675,8 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
         bx,by=p["bx"],p["by"]
         cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
         rn=p["resname"]; ri=p["resid"]; ch=p.get("chain","")
-        lbl = rn.upper() if rn.upper() in HEME_RESNAMES else f"{rn.upper()} {ri}{ch}"
+        _NO_NUM = HEME_RESNAMES | METAL_RESNAMES
+        lbl = rn.upper() if rn.upper() in _NO_NUM else f"{rn.upper()} {ri}{ch}"
         lbl_clr=_LBL_CLR.get(itype,"#333")
         parts.append(f'<text x="{cbx:.1f}" y="{cby:.1f}" text-anchor="middle"'
                      f' dominant-baseline="central"'
@@ -2841,7 +2842,7 @@ def draw_interaction_diagram_data(
                 lx, ly = rx, ry
         pl_serial.append({
             "id":       f"r{len(pl_serial)}",
-            "label":    (p['resname'].upper() if p['resname'].upper() in HEME_RESNAMES
+            "label":    (p['resname'].upper() if p['resname'].upper() in (HEME_RESNAMES | METAL_RESNAMES)
                          else f"{p['resname']} {p['resid']}{p.get('chain','')}"),
             "itype":    p["itype"],
             "distance": p.get("distance"),
@@ -2948,7 +2949,7 @@ def draw_interaction_diagram_interactive(
             if rx is not None: lx, ly = rx, ry
         residues_js.append({
             "id":      p["resname"] + str(p["resid"]) + p.get("chain",""),
-            "label":   (p['resname'].upper() if p['resname'].upper() in HEME_RESNAMES
+            "label":   (p['resname'].upper() if p['resname'].upper() in (HEME_RESNAMES | METAL_RESNAMES)
                         else f"{p['resname']} {p['resid']}{p.get('chain','')}"),
             "itype":   itype,
             "dist":    str(p["distance"]) + "Å" if p.get("distance") else "",
@@ -3330,7 +3331,8 @@ def draw_interactions_rdkit_classic(
             color = _C_OT
 
         rn = ix["resname"]; ri = ix["resid"]; ch = ix.get("chain","")
-        lbl = f"{rn}{ri}{ch}"
+        _NO_NUM = HEME_RESNAMES | METAL_RESNAMES
+        lbl = rn.upper() if rn.upper() in _NO_NUM else f"{rn}{ri}{ch}"
 
         res_atom = Chem.Atom(0)
         res_atom.SetProp("atomLabel", lbl)
