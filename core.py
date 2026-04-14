@@ -306,6 +306,12 @@ def _collect_removable_ligands(atoms) -> list:
     # flagged as protein=True by ProDy, so "hetero" silently drops them.
     # "hetatm" selects purely on the HETATM record type — always correct.
     het  = atoms.select("hetatm and not water")
+
+    # Backbone atom names that identify a residue as a modified amino acid.
+    # If a HETATM residue contains ALL four backbone atoms it is treated as
+    # part of the protein (e.g. CYP = proximal cysteine in CYP450 enzymes,
+    # MSE = selenomethionine, etc.) and must NOT be removed as a ligand.
+    _BACKBONE = {"N", "CA", "C", "O"}
     if het is None:
         return []
 
@@ -316,6 +322,12 @@ def _collect_removable_ligands(atoms) -> list:
             continue
         if r.numAtoms() <= _MIN_LIG_ATOMS:
             continue   # too small — ion / solvent fragment
+        # Skip modified amino acids: residues that contain all 4 backbone
+        # heavy atoms (N, CA, C, O) are protein residues stored as HETATM
+        # (e.g. CYP = proximal Cys in P450, MSE = selenomethionine, etc.)
+        _atom_names = set(r.getNames())
+        if _BACKBONE.issubset(_atom_names):
+            continue
         ch = r.getChid()
         ri = r.getResnum()
         sel = (f"resname {rn} and resid {ri} and chain {ch}"
