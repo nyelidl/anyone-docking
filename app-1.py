@@ -1705,7 +1705,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                                 f"HETATM{_serial:5d} {_aname:<4s} {_resname:<3s} "
                                 f"{_chain}{_resid:4d}    "
                                 f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00"
-                                f"    {_charge:+.3f}{_vina_type}\n"
+                                f"    {_charge:+.3f} {_vina_type}\n"
                             )
                             _injected += 1
                         except Exception as _he:
