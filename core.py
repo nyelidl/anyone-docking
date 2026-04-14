@@ -635,6 +635,31 @@ def prepare_receptor(
         writePDB(rec_raw_path, rec_sel)
         log.append(f"✓ Receptor: {rec_sel.numAtoms()} atoms")
 
+        # ── Fix blank chain IDs ───────────────────────────────────────────
+        # PDB files from MD software (GROMACS, AMBER, etc.) often have no
+        # chain ID (space). OpenBabel and Vina both require a real chain
+        # letter — a fully-blank-chain receptor causes Vina exit code 1.
+        # If ALL atom/HETATM records have blank chain, assign chain A.
+        try:
+            _rec_lines  = open(rec_raw_path).readlines()
+            _coord_lines = [l for l in _rec_lines if l[:6].strip() in ("ATOM", "HETATM")]
+            _all_blank  = all(
+                (l[21] == " " if len(l) > 21 else True)
+                for l in _coord_lines
+            )
+            if _all_blank and _coord_lines:
+                _fixed = []
+                for l in _rec_lines:
+                    if l[:6].strip() in ("ATOM", "HETATM") and len(l) > 21:
+                        l = l[:21] + "A" + l[22:]
+                    _fixed.append(l)
+                with open(rec_raw_path, "w") as _f:
+                    _f.writelines(_fixed)
+                log.append("✓ Assigned chain A to all blank-chain atoms")
+        except Exception as _ce:
+            log.append(f"⚠ Chain-fix skipped: {_ce}")
+        # ─────────────────────────────────────────────────────────────────
+
         # PDBQT conversion (metal-safe)
         conv = strip_and_convert_receptor(rec_raw_path, wdir)
         log.extend(conv["log"])
