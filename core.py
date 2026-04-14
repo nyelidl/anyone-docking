@@ -280,52 +280,94 @@ def get_vina_binary(path: str = ""):
 #  RECEPTOR PREPARATION
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Minimum heavy atoms for a HETATM group to be treated as a real ligand.
+# Groups with ≤ this count are treated as ions/solvent and ignored.
+_MIN_LIG_ATOMS = 4
+
+
+def _collect_removable_ligands(atoms) -> list:
+    """
+    Return a list of dicts, one per HETATM residue that qualifies as a
+    "drug-like" molecule to be removed from the receptor before docking.
+
+    Qualification rules (all must pass):
+      • Not in EXCLUDE_IONS, GLYCAN_NAMES, COFACTOR_NAMES,
+        HEME_RESNAMES, or METAL_RESNAMES  (those are handled separately)
+      • Has > _MIN_LIG_ATOMS heavy atoms  (filters out ions / small solvent)
+
+    Each dict has keys: resname, chain, resid, sel_str, n_atoms, atoms
+    Sorted descending by atom count (largest = primary co-crystal ligand).
+    """
+    from prody import calcCenter
+
+    excl = EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES
+    het  = atoms.select("hetero and not water")
+    if het is None:
+        return []
+
+    results = []
+    for r in het.getHierView().iterResidues():
+        rn = (r.getResname() or "").strip().upper()
+        if rn in excl:
+            continue
+        if r.numAtoms() <= _MIN_LIG_ATOMS:
+            continue   # too small — ion / solvent fragment
+        ch = r.getChid()
+        ri = r.getResnum()
+        sel = (f"resname {rn} and resid {ri} and chain {ch}"
+               if ch and ch.strip()
+               else f"resname {rn} and resid {ri}")
+        lig_atoms = atoms.select(sel)
+        if lig_atoms is None or lig_atoms.numAtoms() == 0:
+            continue
+        cx_, cy_, cz_ = (float(v) for v in calcCenter(lig_atoms))
+        results.append({
+            "resname":   rn,
+            "chain":     ch,
+            "resid":     ri,
+            "sel_str":   sel,
+            "ligand_id": f"{rn}_{ch}_{ri}",
+            "n_atoms":   lig_atoms.numAtoms(),
+            "atoms":     lig_atoms,
+            "cx": cx_, "cy": cy_, "cz": cz_,
+        })
+
+    # Sort: largest first, chain A preferred on tie
+    results.sort(key=lambda d: (-d["n_atoms"], d["chain"] != "A"))
+    return results
+
+
 def detect_cocrystal_ligand(raw_pdb: str) -> dict:
     """
-    Parse PDB and return the best co-crystal ligand candidate.
+    Parse PDB and return the best co-crystal ligand candidate
+    (largest HETATM residue with > _MIN_LIG_ATOMS atoms that is not
+    a known cofactor, heme, metal, ion, or glycan).
+
     Returns dict with keys:
         found, resname, chain, resid, sel_str, ligand_id,
         cx, cy, cz, n_atoms, atoms
     """
-    from prody import parsePDB, calcCenter
+    from prody import parsePDB
 
     atoms = parsePDB(raw_pdb)
     if atoms is None:
         return {"found": False}
 
-    excl = EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES
-    het  = atoms.select("hetero and not water")
-    if het is None:
-        return {"found": False}
-
-    cands = [
-        r for r in het.getHierView().iterResidues()
-        if (r.getResname() or "").strip() not in excl
-    ]
+    cands = _collect_removable_ligands(atoms)
     if not cands:
         return {"found": False}
 
-    cands.sort(key=lambda r: (-r.numAtoms(), r.getChid() != "A"))
-    chosen     = cands[0]
-    rn         = chosen.getResname()
-    ch         = chosen.getChid()
-    ri         = chosen.getResnum()
-    sel_str    = (f"resname {rn} and resid {ri} and chain {ch}"
-                  if ch and ch.strip()
-                  else f"resname {rn} and resid {ri}")
-    lig_atoms  = atoms.select(sel_str)
-    cx, cy, cz = (float(v) for v in calcCenter(lig_atoms))
-
+    chosen = cands[0]   # largest qualifying residue
     return {
         "found":     True,
-        "resname":   rn,
-        "chain":     ch,
-        "resid":     ri,
-        "sel_str":   sel_str,
-        "ligand_id": f"{rn}_{ch}_{ri}",
-        "cx": cx, "cy": cy, "cz": cz,
-        "n_atoms":   lig_atoms.numAtoms(),
-        "atoms":     lig_atoms,
+        "resname":   chosen["resname"],
+        "chain":     chosen["chain"],
+        "resid":     chosen["resid"],
+        "sel_str":   chosen["sel_str"],
+        "ligand_id": chosen["ligand_id"],
+        "cx": chosen["cx"], "cy": chosen["cy"], "cz": chosen["cz"],
+        "n_atoms":   chosen["n_atoms"],
+        "atoms":     chosen["atoms"],
     }
 
 
@@ -514,27 +556,40 @@ def prepare_receptor(
         ri = 0
         cx = cy = cz = 0.0
 
+        # ── Detect ALL removable ligands (>_MIN_LIG_ATOMS atoms, non-cofactor) ─
+        # This runs for every center mode so the receptor is always clean.
+        _all_ligs = _collect_removable_ligands(atoms)
+        _primary  = _all_ligs[0] if _all_ligs else None
+
+        # Save primary ligand PDB for RMSD, 3D viewer, PoseView2
+        if _primary is not None:
+            rn  = _primary["resname"]
+            ch  = _primary["chain"]
+            ri  = _primary["resid"]
+            ligand_sel_str      = _primary["sel_str"]
+            cocrystal_ligand_id = _primary["ligand_id"]
+            ligand_pdb_path     = str(wdir / "LIG.pdb")
+            writePDB(ligand_pdb_path, _primary["atoms"])
+            _n_extra = len(_all_ligs) - 1
+            log.append(
+                f"✓ Co-crystal ligand: {rn} chain '{ch}' resnum {ri} "
+                f"({_primary['n_atoms']} atoms)"
+                + (f"  +{_n_extra} additional ligand(s) will also be removed" if _n_extra else "")
+            )
+
         if center_mode == "auto":
-            info = detect_cocrystal_ligand(raw_pdb)
-            if info["found"]:
-                rn, ch, ri          = info["resname"], info["chain"], info["resid"]
-                ligand_sel_str      = info["sel_str"]
-                cocrystal_ligand_id = info["ligand_id"]
-                cx, cy, cz          = info["cx"], info["cy"], info["cz"]
-                ligand_pdb_path     = str(wdir / "LIG.pdb")
-                writePDB(ligand_pdb_path, info["atoms"])
-                log.append(
-                    f"✓ Co-crystal ligand: {rn} chain {ch} resnum {ri} "
-                    f"({info['n_atoms']} atoms)"
-                )
-                log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+            if _primary is not None:
+                cx, cy, cz = _primary["cx"], _primary["cy"], _primary["cz"]
+                log.append(f"📍 Auto center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
             else:
-                log.append("⚠ No co-crystal ligand found after filtering")
+                log.append("⚠ No co-crystal ligand found (all HETATM ≤ 4 atoms or excluded)")
 
         elif center_mode == "manual":
             cx, cy, cz = (float(v) for v in manual_xyz)
             log.append(f"🛠 Manual center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+            if _primary is not None:
+                log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
 
         elif center_mode == "selection":
             if not prody_sel.strip():
@@ -550,30 +605,24 @@ def prepare_receptor(
                 f"→ {ref_atoms.numAtoms()} atoms"
             )
             log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
-
-            info = detect_cocrystal_ligand(raw_pdb)
-            if info["found"]:
-                rn, ch, ri          = info["resname"], info["chain"], info["resid"]
-                ligand_sel_str      = info["sel_str"]
-                cocrystal_ligand_id = info["ligand_id"]
-                ligand_pdb_path     = str(wdir / "LIG.pdb")
-                writePDB(ligand_pdb_path, info["atoms"])
-                log.append(
-                    f"✓ Co-crystal ligand: {rn} chain {ch} resnum {ri} "
-                    f"({info['n_atoms']} atoms)"
-                )
+            if _primary is not None:
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
             else:
-                log.append(
-                    "⚠ No co-crystal ligand found — receptor keeps all "
-                    "HETATM; RMSD and co-crystal diagrams will be skipped"
-                )
+                log.append("⚠ No co-crystal ligand found — RMSD and co-crystal diagrams skipped")
 
-        # Write receptor PDB without co-crystal ligand
-        sel_str = (
-            f"not ({ligand_sel_str}) and not water"
-            if ligand_sel_str else "not water"
-        )
+        # ── Build receptor selection: exclude ALL removable ligands + water ───
+        # Each ligand's sel_str is negated so multi-ligand structures are
+        # fully cleaned regardless of which center mode was chosen.
+        if _all_ligs:
+            _excl_expr = " or ".join(f"({d['sel_str']})" for d in _all_ligs)
+            sel_str = f"not ({_excl_expr}) and not water"
+            if len(_all_ligs) > 1:
+                log.append(
+                    f"🧹 Removing {len(_all_ligs)} ligand(s) from receptor: "
+                    + ", ".join(f"{d['resname']}({d['n_atoms']}at)" for d in _all_ligs)
+                )
+        else:
+            sel_str = "not water"
         rec_sel = atoms.select(sel_str)
         if rec_sel is None or rec_sel.numAtoms() == 0:
             raise ValueError("Receptor selection returned no atoms")
