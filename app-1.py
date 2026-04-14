@@ -1504,13 +1504,24 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
     with st.expander("⚗️ Cofactor options", expanded=False):
         keep_cofactors = st.checkbox(
             "Keep cofactors in receptor", value=True, key=pfx + "keep_cofactors",
+            help="ATP, FAD, NAD, CoA, SAM, etc. Uncheck to dock into a cofactor-free pocket.",
+        )
+        keep_metals = st.checkbox(
+            "Keep metal ions in receptor", value=True, key=pfx + "keep_metals",
+            help="ZN, MG, CA, MN, FE, CU, etc. Uncheck to remove metals before docking.",
         )
         _strip_set = _COFACTOR_NAMES | _HEME_RESNAMES
-        _strip_sorted = ", ".join(sorted(_strip_set))
+        from core import METAL_RESNAMES as _METAL_RESNAMES
+        _strip_sorted_cof   = ", ".join(sorted(_strip_set))
+        _strip_sorted_metal = ", ".join(sorted(_METAL_RESNAMES))
         if keep_cofactors:
-            st.caption(f"✅ These residues will be **kept**: {_strip_sorted}")
+            st.caption(f"✅ Cofactors **kept**: {_strip_sorted_cof}")
         else:
-            st.caption(f"⚠️ These residues will be **stripped**: {_strip_sorted}")
+            st.caption(f"⚠️ Cofactors **stripped**: {_strip_sorted_cof}")
+        if keep_metals:
+            st.caption(f"✅ Metal ions **kept**: {_strip_sorted_metal}")
+        else:
+            st.caption(f"⚠️ Metal ions **stripped**: {_strip_sorted_metal}")
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
 
@@ -1589,13 +1600,22 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         except Exception:
             pass
 
-        # ── Pre-filter cofactors / heme ────────────────────────────────────
-        _keep           = st.session_state.get(pfx + "keep_cofactors", True)
+        # ── Pre-filter cofactors / heme / metals ──────────────────────────
+        _keep        = st.session_state.get(pfx + "keep_cofactors", True)
+        _keep_metals = st.session_state.get(pfx + "keep_metals", True)
         _cofactor_strip = _COFACTOR_NAMES if not _keep else set()
+
+        # Import metal resnames for optional stripping
+        try:
+            from core import METAL_RESNAMES as _MRNS
+        except ImportError:
+            _MRNS = {"MG","ZN","CA","MN","FE","CU","CO","NI","CD","HG","NA","K"}
+        _metal_strip = _MRNS if not _keep_metals else set()
 
         _filtered_path = str(wdir / "raw_prefiltered.pdb")
         _heme_lines    = []
         _n_cofactor    = 0
+        _n_metal       = 0
 
         with open(raw_path) as _fin, open(_filtered_path, "w") as _fout:
             for _line in _fin:
@@ -1608,9 +1628,34 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     if _rn in _cofactor_strip:
                         _n_cofactor += 1
                         continue
+                    # Strip metals if user unchecked "Keep metal ions"
+                    # (they won't be re-injected → not scored by Vina)
+                    if _rn in _metal_strip:
+                        _n_metal += 1
+                        continue
                 _fout.write(_line)
 
         raw_path = _filtered_path
+
+        # ── Compute heme center for auto-detect fallback ───────────────────
+        # If heme is the only notable feature (no drug-like ligand present),
+        # use the Fe atom (or heme centroid) as the auto-detected grid center.
+        _heme_center = None
+        if _heme_lines:
+            try:
+                _fe_lines = [l for l in _heme_lines
+                             if l[12:16].strip().upper() == "FE"]
+                _ref_lines = _fe_lines if _fe_lines else _heme_lines
+                _hxs = [float(l[30:38]) for l in _ref_lines]
+                _hys = [float(l[38:46]) for l in _ref_lines]
+                _hzs = [float(l[46:54]) for l in _ref_lines]
+                _heme_center = (
+                    sum(_hxs) / len(_hxs),
+                    sum(_hys) / len(_hys),
+                    sum(_hzs) / len(_hzs),
+                )
+            except Exception:
+                pass
 
         if _heme_lines:
             _heme_names = ", ".join(sorted({l[17:20].strip() for l in _heme_lines}))
@@ -1620,6 +1665,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             )
         if _n_cofactor:
             st.info(f"Stripped {_n_cofactor} cofactor atom(s) from receptor.")
+        if _n_metal:
+            st.info(f"Stripped {_n_metal} metal ion atom(s) from receptor (will not be re-injected).")
 
         _mode_map = {
             "Auto-detect co-crystal ligand":      "auto",
@@ -1669,6 +1716,23 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             )
 
         if result["success"]:
+            # ── Heme center fallback ────────────────────────────────────────
+            # If auto-detect found no drug-like ligand but heme was present,
+            # re-center the grid on the Fe atom (substrate binding site).
+            if (_core_mode == "auto"
+                    and not result.get("cocrystal_ligand_id")
+                    and _heme_center is not None):
+                from core import write_vina_config as _wvc, write_box_pdb as _wbp
+                _hcx, _hcy, _hcz = _heme_center
+                _wbp(result["box_pdb"],    _hcx, _hcy, _hcz, result["sx"], result["sy"], result["sz"])
+                _wvc(result["config_txt"], _hcx, _hcy, _hcz, result["sx"], result["sy"], result["sz"])
+                result["cx"] = _hcx; result["cy"] = _hcy; result["cz"] = _hcz
+                _fe_found = any(l[12:16].strip().upper() == "FE" for l in _heme_lines)
+                st.info(
+                    f"🧲 No co-crystal ligand found — grid auto-centered at "
+                    f"{'Fe' if _fe_found else 'heme centroid'} "
+                    f"({_hcx:.2f}, {_hcy:.2f}, {_hcz:.2f})"
+                )
             # ── Re-inject heme ─────────────────────────────────────────────
             _heme_log = []
             if _heme_lines:
