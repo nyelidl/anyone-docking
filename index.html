@@ -201,9 +201,9 @@
       "https://anyone-docking-20.streamlit.app/",
     ];
 
-    const TIMEOUT_MS   = 25000;  // 25s — allows Streamlit cold start ~15-20s
-    const MIN_DELAY_MS = 1200;
-    const FALLBACK_MS  = 28000;
+    const TIMEOUT_MS   = 8000;   // ⚡ was 25s — abort slow servers quickly
+    const MIN_DELAY_MS = 0;      // ⚡ was 1200ms — redirect on first response
+    const FALLBACK_MS  = 10000;  // ⚡ was 28s — hard fallback at 10s
 
     const n          = APPS.length;
     const results    = new Array(n).fill(null);
