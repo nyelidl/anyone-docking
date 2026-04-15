@@ -126,7 +126,7 @@ Copy the prompt + a screenshot of your diagram into Claude, GPT-4o, or Gemini. T
 | **macOS Apple Silicon** (M1–M4) | ✅ Native `aarch64` binary | `brew install open-babel` | Fully supported |
 | **Windows x86_64** | ✅ Auto-download | [Installer](https://openbabel.org/wiki/Category:Installation) | Supported (WSL2 recommended) |
 | **Streamlit Cloud** | ✅ Auto-download | via `packages.txt` | Fully supported |
-| **Google Colab** | ✅ Auto-download | `!apt install openbabel` | Fully supported |
+| **Google Colab** | ✅ Auto-download | `!apt install openbabel` | Fully supported in both Google Colab and web-based interfaces|
 
 > **Easiest option:** Use the [hosted Streamlit app](https://nyelidl.github.io/anyone-docking/) — no installation needed.
 
