@@ -243,10 +243,10 @@ def get_vina_binary(path: str = ""):
     if system == "linux":
         _FNAME = "vina_1.2.7_linux_x86_64"
     elif system == "darwin":
-        # GitHub releases use "aarch64" for Apple Silicon (not "arm64")
-        _FNAME = ("vina_1.2.7_mac_aarch64"
-                  if machine in ("arm64", "aarch64")
-                  else "vina_1.2.7_mac_x86_64")
+        if machine in ("arm64", "aarch64"):
+            _FNAME = "vina_1.2.7_mac_arm64"
+        else:
+            _FNAME = "vina_1.2.7_mac_x86_64"
     elif system == "windows":
         _FNAME = "vina_1.2.7_windows_x86_64.exe"
     else:
@@ -257,31 +257,20 @@ def get_vina_binary(path: str = ""):
     if not path:
         path = os.path.join(tempfile.gettempdir(), _FNAME)
 
-    def _download(url, dest):
-        """Download with requests (follows GitHub → S3 redirects reliably)."""
-        import requests as _rq
-        r = _rq.get(url, stream=True, timeout=120, allow_redirects=True)
-        r.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1 << 20):
-                f.write(chunk)
-
     if not os.path.exists(path) or os.path.getsize(path) < 100_000:
         try:
-            _download(_URL, path)
+            import urllib.request
+            urllib.request.urlretrieve(_URL, path)
         except Exception as e1:
-            # Apple Silicon fallback: x86_64 runs fine under Rosetta 2
-            if system == "darwin" and machine in ("arm64", "aarch64"):
-                _FNAME2 = "vina_1.2.7_mac_x86_64"
-                path2   = os.path.join(tempfile.gettempdir(), _FNAME2)
-                try:
-                    _download(_BASE + _FNAME2, path2)
-                    path = path2
-                except Exception as e2:
-                    return None, f"Download failed: {e1} / x86_64 fallback: {e2}"
-            else:
-                return None, f"Download failed: {e1}"
-
+            try:
+                import requests
+                r = requests.get(_URL, stream=True, timeout=120)
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+            except Exception as e2:
+                return None, f"Download failed: {e1} / {e2}"
     if system != "windows":
         os.chmod(path, 0o755)
     return path, f"ok ({system}/{machine})"
@@ -398,42 +387,7 @@ def detect_cocrystal_ligand(raw_pdb: str) -> dict:
     }
 
 
-def scan_ligands(raw_pdb: str) -> list:
-    """
-    Quick scan of a PDB file to list all removable ligands without
-    performing any receptor preparation.  Used by app.py to populate
-    the ligand-selector UI before the user clicks Prepare Receptor.
-
-    Returns a list of dicts (may be empty):
-        [{"resname": str, "chain": str, "resid": int, "n_atoms": int}, ...]
-    Sorted by atom count descending (largest = most likely co-crystal ligand).
-    """
-    try:
-        from prody import parsePDB, confProDy
-        confProDy(verbosity="none")
-
-        # CIF auto-convert
-        if is_cif_file(raw_pdb):
-            import tempfile as _tf
-            _tmp = _tf.mktemp(suffix=".pdb")
-            res  = convert_cif_to_pdb(raw_pdb, _tmp)
-            if res["success"]:
-                raw_pdb = _tmp
-
-        atoms = parsePDB(raw_pdb)
-        if atoms is None:
-            return []
-        ligs = _collect_removable_ligands(atoms)
-        return [
-            {"resname": d["resname"], "chain": d["chain"],
-             "resid": d["resid"], "n_atoms": d["n_atoms"]}
-            for d in ligs
-        ]
-    except Exception:
-        return []
-
-
-
+def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
     """
     Full receptor PDBQT preparation with metal-ion safety:
       (a) Strip metal HETATM lines before OpenBabel
@@ -578,18 +532,14 @@ def prepare_receptor(
     manual_xyz: tuple = (0.0, 0.0, 0.0),
     prody_sel: str = "",
     box_size: tuple = (16, 16, 16),
-    preferred_ligand: str = "",
 ) -> dict:
     """
     Full receptor preparation pipeline.
     Accepts PDB or mmCIF (.cif) files — CIF is auto-converted to PDB first.
     center_mode: 'auto' | 'manual' | 'selection'
-    preferred_ligand: resname of the ligand to center on when multiple are
-                      detected (e.g. "ELR"). Empty = use largest (default).
     Returns dict: success, rec_fh, rec_pdbqt, box_pdb, config_txt,
                   cx, cy, cz, sx, sy, sz, ligand_pdb_path,
-                  cocrystal_ligand_id, n_atoms, log, error,
-                  all_ligands (list of detected ligand dicts)
+                  cocrystal_ligand_id, n_atoms, log, error
     """
     from prody import parsePDB, calcCenter, writePDB
 
@@ -625,24 +575,7 @@ def prepare_receptor(
         # ── Detect ALL removable ligands (>_MIN_LIG_ATOMS atoms, non-cofactor) ─
         # This runs for every center mode so the receptor is always clean.
         _all_ligs = _collect_removable_ligands(atoms)
-
-        # Honour caller's preferred ligand (by resname) when multiple detected.
-        # Falls back to largest (index 0) if preferred not found or not specified.
-        _primary = None
-        if _all_ligs:
-            if preferred_ligand:
-                _pref = preferred_ligand.strip().upper()
-                _primary = next(
-                    (d for d in _all_ligs if d["resname"].upper() == _pref),
-                    None,
-                )
-                if _primary is None:
-                    log.append(
-                        f"⚠ Preferred ligand '{preferred_ligand}' not found — "
-                        f"using largest ({_all_ligs[0]['resname']})"
-                    )
-            if _primary is None:
-                _primary = _all_ligs[0]
+        _primary  = _all_ligs[0] if _all_ligs else None
 
         # Save primary ligand PDB for RMSD, 3D viewer, PoseView2
         if _primary is not None:
@@ -763,391 +696,12 @@ def prepare_receptor(
             "ligand_pdb_path":     ligand_pdb_path,
             "cocrystal_ligand_id": cocrystal_ligand_id,
             "n_atoms":             rec_sel.numAtoms(),
-            "all_ligands":         [
-                {"resname": d["resname"], "chain": d["chain"],
-                 "resid": d["resid"], "n_atoms": d["n_atoms"]}
-                for d in _all_ligs
-            ],
             "log":                 log,
         }
 
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  LIGAND PREPARATION
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  PKANET CLOUD — ionizable site table + HH scoring helpers
-#  Ported from pKaNET_Cloud notebook (Hengphasatporn et al. 2026)
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Ionizable site SMARTS table: (label, SMARTS, heuristic_pKa, site_type)
-_IONIZABLE_SITE_DEF = [
-    ("sulfonic_acid",     "[SX4](=O)(=O)[OX2H1]",                               1.0,  "acid"),
-    ("phosphoric_mono",   "[PX4](=O)([OX2H1])([OX2H1])[OX2H1]",                2.1,  "acid"),
-    ("carboxylic_acid",   "[CX3](=O)[OX2H1]",                                   4.5,  "acid"),
-    ("tetrazole",         "c1nn[nH]n1",                                          4.9,  "acid"),
-    ("imidazole_acid",    "c1cn[nH]c1",                                          6.0,  "acid"),
-    ("benzimidazole",     "c1ccc2[nH]cnc2c1",                                   5.5,  "acid"),
-    ("phosphonate",       "[PX4](=O)([OX2H1])[OX2H1,OX1-]",                    6.5,  "acid"),
-    ("sulfonamide_NH",    "[SX4](=O)(=O)[NX3;H1]",                             10.1,  "acid"),
-    ("imide_NH",          "[CX3](=O)[NX3;H1][CX3]=O",                           9.6,  "acid"),
-    ("phenol",            "c[OX2H1]",                                           10.0,  "acid"),
-    ("thiol_arom",        "c[SX2H1]",                                            6.5,  "acid"),
-    ("thiol_aliph",       "[CX4][SX2H1]",                                       10.5,  "acid"),
-    ("aniline",           "c[NX3;H1,H2;!$(N~[!#6])]",                           4.6,  "base"),
-    ("pyridine_like",     "[$([nX2]1:[c,n]:c:[c,n]:c1),$([nX2]:c:n)]",          5.2,  "base"),
-    ("aliphatic_amine",   "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH])]",      9.5,  "base"),
-    ("aliphatic_amine_t", "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6])]",   9.0,  "base"),
-    ("amidine",           "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                   12.4,  "base"),
-    ("guanidine",         "[NX3][CX3](=[NX2])[NX3]",                           13.0,  "base"),
-]
-
-# Chemistry bonus/penalty rules for tautomer plausibility scoring
-_CHEM_BONUS_DEF = [
-    ("amide",            +2.5, "[CX3](=O)[NX3;H1,H2]"),
-    ("lactam",           +2.5, "[C;R](=O)[N;R]"),
-    ("urea_NH",          +1.5, "[NX3;H1][CX3](=O)[NX3;H1,H2]"),
-    ("aromatic_ring",    +0.3, "c1ccccc1"),
-]
-_CHEM_PENALTY_DEF = [
-    ("lactim_ring",      -4.0, "[C;R](=[NX2])[OX2H1]"),
-    ("iminol_general",   -3.5, "[NX2]=[CX3][OX2H1]"),
-    ("amide_N_deproton", -5.0, "[$([NX3-]C=O),$([NX3-]c=O)]"),
-    ("enol_simple",      -1.2, "[CX3](=[CX3])[OX2H1]"),
-]
-
-# In-memory pKaNET cache: InChIKey → {pka_values, confidence, source}
-_PKANET_CACHE: dict = {}
-# PubChem pKa regex patterns
-import re as _re
-_PKA_PATTERNS = [
-    _re.compile(r"pK[aA][\w\s\(\)]*?=\s*([+-]?\d+(?:\.\d+)?)", _re.IGNORECASE),
-    _re.compile(r"([+-]?\d+(?:\.\d+)?)\s*\((?:pK[aA]|acid dissociation)[^)]*\)", _re.IGNORECASE),
-]
-
-
-def _compile_smarts_table(defs):
-    from rdkit import Chem
-    compiled = []
-    for row in defs:
-        lbl, *rest = row
-        sma = rest[0] if isinstance(rest[0], str) else rest[-1]
-        extra = rest[1:] if isinstance(rest[0], str) else []
-        pat = Chem.MolFromSmarts(sma)
-        if pat is not None:
-            compiled.append((lbl, pat) + tuple(extra))
-    return compiled
-
-
-def _pubchem_pka_lookup(smiles: str) -> dict:
-    """
-    Fetch experimental pKa values from PubChem for a SMILES.
-    Returns dict: {available, pka_values, confidence, source}
-    Cached by InChIKey — free, but ~0.5–2 s on first call.
-    """
-    from rdkit import Chem
-    import time as _time
-    result = {"available": False, "pka_values": [], "confidence": "low", "source": "pubchem"}
-    try:
-        import requests as _req
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return result
-        ik = Chem.MolToInchiKey(mol)
-        if not ik:
-            return result
-
-        # Check cache
-        if ik in _PKANET_CACHE:
-            return _PKANET_CACHE[ik]
-
-        _time.sleep(0.25)  # PubChem rate limit
-        r = _req.get(
-            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{ik}/cids/JSON",
-            timeout=8,
-        )
-        if r.status_code != 200:
-            _PKANET_CACHE[ik] = result
-            return result
-        cid = r.json()["IdentifierList"]["CID"][0]
-
-        _time.sleep(0.25)
-        r2 = _req.get(
-            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound/{cid}/JSON"
-            f"?heading=Dissociation+Constants",
-            timeout=10,
-        )
-        if r2.status_code != 200:
-            _PKANET_CACHE[ik] = result
-            return result
-
-        # Parse pKa values from response text
-        texts = []
-        def _collect(sec):
-            if "dissociation" in sec.get("TOCHeading", "").lower():
-                for info in sec.get("Information", []):
-                    for swm in info.get("Value", {}).get("StringWithMarkup", []):
-                        s = swm.get("String", "").strip()
-                        if s:
-                            texts.append(s)
-            for sub in sec.get("Section", []):
-                _collect(sub)
-        for sec in r2.json().get("Record", {}).get("Section", []):
-            _collect(sec)
-
-        vals = []
-        for text in texts:
-            for pat in _PKA_PATTERNS:
-                for m in pat.finditer(text):
-                    try:
-                        v = float(m.group(1))
-                        if -5.0 <= v <= 20.0 and not any(abs(v - e) < 0.05 for e in vals):
-                            vals.append(v)
-                    except ValueError:
-                        pass
-
-        confidence = "high" if len(vals) == 1 else ("medium" if vals else "low")
-        result = {"available": bool(vals), "pka_values": vals,
-                  "confidence": confidence, "source": "pubchem"}
-        _PKANET_CACHE[ik] = result
-        return result
-
-    except Exception:
-        return result
-
-
-def _find_ionizable_sites(mol) -> list:
-    """Return ionizable sites found in mol using heuristic SMARTS table."""
-    from rdkit import Chem
-    _compiled = _compile_smarts_table(
-        [(lbl, sma, pka, stype) for lbl, sma, pka, stype in _IONIZABLE_SITE_DEF]
-    )
-    sites = []
-    seen = set()
-    for lbl, pat, pka, stype in _compiled:
-        for match in mol.GetSubstructMatches(pat):
-            k = frozenset(match)
-            if k not in seen:
-                seen.add(k)
-                sites.append({"label": lbl, "atom_indices": list(match),
-                               "heuristic_pka": pka, "site_type": stype})
-    return sites
-
-
-def _hh_fraction_charged(pka: float, ph: float, site_type: str) -> float:
-    """Henderson–Hasselbalch fraction in charged form."""
-    if site_type == "acid":
-        return 1.0 / (1.0 + 10.0 ** (pka - ph))
-    return 1.0 / (1.0 + 10.0 ** (ph - pka))
-
-
-def _hh_match_score(pka: float, ph: float, site_type: str, actual_charge: int) -> float:
-    """Score how well an observed site charge matches HH prediction."""
-    f_charged = _hh_fraction_charged(pka, ph, site_type)
-    dpH = abs(ph - pka)
-    if site_type == "acid":
-        expected_neg = f_charged > 0.5
-        if expected_neg and actual_charge < 0:
-            return min(1.2, dpH * 0.45)
-        elif expected_neg:
-            return -min(1.0, dpH * 0.35)
-        elif actual_charge >= 0:
-            return 0.1
-        else:
-            return -min(1.2, dpH * 0.40)
-    else:
-        expected_pos = f_charged > 0.5
-        if expected_pos and actual_charge > 0:
-            return min(1.2, dpH * 0.45)
-        elif expected_pos:
-            return -min(1.0, dpH * 0.35)
-        elif actual_charge <= 0:
-            return 0.1
-        else:
-            return -min(1.2, dpH * 0.40)
-
-
-def _score_tautomer(smiles: str) -> float:
-    """Simple tautomer plausibility score from SMARTS bonuses/penalties."""
-    from rdkit import Chem
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return -999.0
-    total = 0.0
-    for lbl, wt, sma in _CHEM_BONUS_DEF + _CHEM_PENALTY_DEF:
-        pat = Chem.MolFromSmarts(sma)
-        if pat and mol.HasSubstructMatch(pat):
-            total += wt
-    return total
-
-
-def _score_microstate(smiles: str, ph: float,
-                       taut_score: float, pubchem: dict) -> float:
-    """
-    Layered microstate score (simplified from pKaNET Cloud Stage G).
-    Layer 1: amide N-deprotonation safety penalty
-    Layer 2: tautomer plausibility
-    Layer 3: Henderson–Hasselbalch pH consistency
-    Layer 4: PubChem evidence bonus
-    Layer 5: charge-structure reasonableness
-    """
-    from rdkit import Chem
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return -1e9
-
-    fc_map = {a.GetIdx(): int(a.GetFormalCharge()) for a in mol.GetAtoms()}
-    net = sum(fc_map.values())
-    n_pos = sum(1 for v in fc_map.values() if v > 0)
-    n_neg = sum(1 for v in fc_map.values() if v < 0)
-
-    # Layer 1 — amide N-deprotonation hard penalty
-    pat_bad = Chem.MolFromSmarts("[$([NX3-]C=O),$([NX3-]c=O)]")
-    s1 = -5.0 * len(mol.GetSubstructMatches(pat_bad)) if pat_bad else 0.0
-
-    # Layer 2 — tautomer plausibility
-    s2 = 0.65 * taut_score
-
-    # Layer 3 — HH pH consistency
-    sites = _find_ionizable_sites(mol)
-    s3 = 0.0
-    for site in sites:
-        pka = site["heuristic_pka"]
-        # Upgrade pKa if PubChem has high-confidence data
-        if pubchem.get("available") and pubchem.get("confidence") in ("high", "medium"):
-            pc_vals = pubchem.get("pka_values", [])
-            if pc_vals:
-                pka = min(pc_vals, key=lambda v: abs(v - pka))
-        site_charge = sum(fc_map.get(i, 0) for i in site["atom_indices"])
-        s3 += _hh_match_score(pka, ph, site["site_type"], site_charge)
-
-    # Layer 4 — PubChem bonus (charge-sign only)
-    s4 = 0.0
-    if pubchem.get("available"):
-        w = {"high": 1.0, "medium": 0.6, "low": 0.2}.get(pubchem.get("confidence", "low"), 0.2)
-        for pv in pubchem.get("pka_values", []):
-            exp = -1 if _hh_fraction_charged(pv, ph, "acid") > 0.5 else 0
-            s4 += 0.25 * w if net == exp else -0.15 * w
-        s4 = max(-0.4, min(0.5, s4))
-
-    # Layer 5 — zwitterion reasonableness
-    has_acid = any(s["site_type"] == "acid" and (ph - s["heuristic_pka"]) > 1.0 for s in sites)
-    has_base = any(s["site_type"] == "base" and (s["heuristic_pka"] - ph) > 1.0 for s in sites)
-    is_zw = (n_pos > 0 and n_neg > 0 and net == 0)
-    if is_zw:
-        s5 = 0.8 if (has_acid and has_base) else -0.6
-    else:
-        s5 = 0.0
-
-    return s1 + s2 + s3 + s4 + s5
-
-
-def protonate_pkanet(
-    smiles: str,
-    ph: float,
-    use_pubchem: bool = True,
-    max_tautomers: int = 4,
-) -> tuple:
-    """
-    pKaNET Cloud protonation pipeline (Hengphasatporn et al. 2026).
-
-    Steps:
-      A. RDKit standardize (largest fragment, normalize, canonicalize)
-      B. PubChem experimental pKa lookup (optional, cached by InChIKey)
-      C. Dimorphite-DL protonation enumeration
-      D. Tautomer scoring + HH microstate ranking
-      E. Return best-scoring protonation state SMILES
-
-    Returns (best_smiles, charge, log_list)
-    Falls back to plain Dimorphite result on any error.
-    """
-    from rdkit import Chem
-    from rdkit.Chem.MolStandardize import rdMolStandardize
-
-    log = []
-    canonical = smiles.strip()
-
-    # ── A. Standardize ────────────────────────────────────────────────────────
-    try:
-        mol = Chem.MolFromSmiles(canonical)
-        if mol:
-            mol = rdMolStandardize.LargestFragmentChooser().choose(mol)
-            try:
-                mol = rdMolStandardize.Normalizer().normalize(mol)
-            except Exception:
-                pass
-            canonical = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-            log.append("✓ RDKit standardized")
-    except Exception as e:
-        log.append(f"⚠ Standardization skipped: {e}")
-
-    # ── B. PubChem lookup (optional, cached) ──────────────────────────────────
-    pubchem = {"available": False, "pka_values": [], "confidence": "low"}
-    if use_pubchem:
-        try:
-            pubchem = _pubchem_pka_lookup(canonical)
-            if pubchem["available"]:
-                log.append(
-                    f"✓ PubChem pKa: {pubchem['pka_values']} "
-                    f"(confidence: {pubchem['confidence']})"
-                )
-            else:
-                log.append("ℹ PubChem: no experimental pKa found — using heuristic SMARTS")
-        except Exception as e:
-            log.append(f"⚠ PubChem lookup failed: {e}")
-
-    # ── C. Dimorphite-DL enumeration ──────────────────────────────────────────
-    candidates = [canonical]
-    try:
-        from dimorphite_dl import protonate_smiles as _dim
-        ph_win = 1.0
-        raw = None
-        for kwargs in [
-            {"ph_min": ph - ph_win, "ph_max": ph + ph_win, "max_variants": 16},
-            {"min_ph": ph - ph_win, "max_ph": ph + ph_win, "max_variants": 16},
-        ]:
-            try:
-                raw = _dim(canonical, **kwargs)
-                break
-            except TypeError:
-                continue
-        if raw:
-            seen = {canonical}
-            for s in (raw if isinstance(raw, list) else [raw]):
-                c = Chem.MolToSmiles(Chem.MolFromSmiles(s), canonical=True) if Chem.MolFromSmiles(s) else None
-                if c and c not in seen:
-                    seen.add(c)
-                    candidates.append(c)
-        log.append(f"✓ Dimorphite-DL: {len(candidates)} candidate(s)")
-    except Exception as e:
-        log.append(f"⚠ Dimorphite-DL skipped: {e}")
-
-    # ── D. Tautomer scoring + HH microstate ranking ───────────────────────────
-    try:
-        scored = []
-        for smi in candidates:
-            ts = _score_tautomer(smi)
-            ms = _score_microstate(smi, ph, ts, pubchem)
-            scored.append((ms, smi))
-        scored.sort(reverse=True)
-        best_smi = scored[0][1]
-        log.append(
-            f"✓ pKaNET ranked {len(scored)} state(s) — "
-            f"best score: {scored[0][0]:.2f}"
-        )
-    except Exception as e:
-        log.append(f"⚠ Ranking failed ({e}) — using first Dimorphite state")
-        best_smi = candidates[0]
-
-    mol_best = Chem.MolFromSmiles(best_smi)
-    charge = int(Chem.GetFormalCharge(mol_best)) if mol_best else 0
-    return best_smi, charge, log
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1169,30 +723,10 @@ def _meeko_to_pdbqt(mol, out_path: str):
         f.write(pdbqt_str)
 
 
-def prepare_ligand(
-    smiles: str,
-    name: str,
-    ph: float,
-    wdir,
-    mode: str = "dimorphite",
-    use_pubchem: bool = True,
-) -> dict:
+def prepare_ligand(smiles: str, name: str, ph: float, wdir) -> dict:
     """
-    Protonate ligand → 3D conformer (ETKDGv3) → MMFF/UFF → PDBQT + SDF.
-
-    Parameters
-    ----------
-    smiles       : input SMILES string
-    name         : output file base name
-    ph           : target pH
-    wdir         : working directory
-    mode         : protonation mode —
-                   "neutral"     : add all H, no ionization (fastest)
-                   "dimorphite"  : Dimorphite-DL only (default, fast)
-                   "pkanet"      : pKaNET Cloud pipeline — Dimorphite +
-                                   PubChem pKa + HH microstate ranking
-    use_pubchem  : if mode=="pkanet", query PubChem (cached; ~0.5–2s first call)
-
+    Protonate at target pH → 3D conformer (ETKDGv3) → MMFF/UFF minimise
+    → PDBQT (Meeko) + SDF.
     Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
     """
     _rdkit_six_patch()
@@ -1205,53 +739,24 @@ def prepare_ligand(
     out_sdf   = str(wdir / f"{name}_3d.sdf")
 
     try:
-        raw = smiles.strip()
+        prot = smiles.strip()
 
-        # ── Protonation ───────────────────────────────────────────────────────
-        if mode == "neutral":
-            # Just add all hydrogens — no ionization, no pKa
-            mol_check = Chem.MolFromSmiles(raw)
-            if mol_check is None:
-                raise ValueError(f"RDKit could not parse SMILES: {raw[:60]}")
-            # Strip any existing charges and add H neutrally
-            from rdkit.Chem.MolStandardize import rdMolStandardize
-            try:
-                mol_check = rdMolStandardize.Uncharger().uncharge(mol_check)
-                raw = Chem.MolToSmiles(mol_check, isomericSmiles=True, canonical=True)
-            except Exception:
-                pass
-            prot = raw
-            log.append("✓ Neutral form (all H added, no ionization)")
-
-        elif mode == "pkanet":
-            # Full pKaNET Cloud pipeline
-            prot, _, pkanet_log = protonate_pkanet(
-                raw, ph,
-                use_pubchem=use_pubchem,
-                max_tautomers=4,
-            )
-            log.extend(pkanet_log)
-
-        else:
-            # Default: Dimorphite-DL (mode == "dimorphite")
-            prot = raw
-            try:
-                from dimorphite_dl import protonate_smiles
-                vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
-                if vs:
-                    prot = vs[0]
-                    log.append(f"✓ Dimorphite-DL pH {ph}")
-            except Exception as e:
-                log.append(f"⚠ Dimorphite-DL skipped: {e}")
+        try:
+            from dimorphite_dl import protonate_smiles
+            vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
+            if vs:
+                prot = vs[0]
+                log.append(f"✓ Dimorphite-DL pH {ph}")
+        except Exception as e:
+            log.append(f"⚠ Dimorphite-DL skipped: {e}")
 
         mol = Chem.MolFromSmiles(prot)
         if mol is None:
-            raise ValueError(f"RDKit could not parse protonated SMILES: {prot[:60]}")
+            raise ValueError(f"RDKit could not parse SMILES: {prot[:60]}")
 
         charge = Chem.GetFormalCharge(mol)
         log.append(f"✓ Formal charge: {charge:+d}")
 
-        # ── 3D conformer + minimization ───────────────────────────────────────
         mol = Chem.AddHs(mol)
         try:
             params = AllChem.ETKDGv3()
@@ -1286,8 +791,6 @@ def prepare_ligand(
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
-
-
 
 
 def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
@@ -2336,18 +1839,11 @@ _AROM_ATOM_NAMES = {
     # Amino acid aromatic ring atoms
     "CG","CD1","CD2","CE1","CE2","CZ",
     "ND1","NE2","CE3","CZ2","CZ3","CH2",
-    # Heme porphyrin macrocycle — meso and pyrrole carbons
+    # Heme porphyrin macrocycle carbons
     "C1","C2","C3","C4","C5","C6","C7","C8",
     "C10","C11","C12","C13","C14","C15","C16","C17",
     "C19","C20",
-    "CA","CB",        # pyrrole alpha/beta (some naming conventions)
-    "CAA","CAB","CAC","CAD",   # alpha carbons (alt convention)
-    "CBA","CBB","CBC","CBD",   # beta carbons  (alt convention)
-    "C2A","C3A","C4A",         # pyrrole A ring
-    "C2B","C3B","C4B",         # pyrrole B ring
-    "C2C","C3C","C4C",         # pyrrole C ring
-    "C2D","C3D","C4D",         # pyrrole D ring
-    "CHA","CHB","CHC","CHD",   # meso carbons
+    "CA","CB",   # pyrrole alpha/beta carbons
 }
 
 # ── Hydrophobic residues: amino acids + heme ─────────────────────────────────
