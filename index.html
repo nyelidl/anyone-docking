@@ -57,6 +57,17 @@
       height: 84px;
       margin-bottom: 1.4rem;
       filter: drop-shadow(0 4px 16px rgba(255,75,75,.25));
+      animation: logoFloatPulse 3s ease-in-out infinite;
+      transform-origin: center;
+    }
+
+    @keyframes logoFloatPulse {
+      0%, 100% {
+        transform: translateY(0) scale(1);
+      }
+      50% {
+        transform: translateY(-8px) scale(1.04);
+      }
     }
 
     h1 {
@@ -108,7 +119,6 @@
       transition: width 0.4s ease;
     }
 
-    /* 8 dots per row using CSS grid */
     .server-grid {
       display: grid;
       grid-template-columns: repeat(8, 10px);
@@ -178,7 +188,6 @@
 
   <script>
     const APPS = [
-      // ── Streamlit Cloud ───────────────────────────────────────────────────
       "https://anyone-docking-1.streamlit.app/",
       "https://anyone-docking-2.streamlit.app/",
       "https://anyone-docking-3.streamlit.app/",
@@ -201,16 +210,15 @@
       "https://anyone-docking-20.streamlit.app/",
     ];
 
-    const TIMEOUT_MS   = 8000;   // ⚡ was 25s — abort slow servers quickly
-    const MIN_DELAY_MS = 0;      // ⚡ was 1200ms — redirect on first response
-    const FALLBACK_MS  = 10000;  // ⚡ was 28s — hard fallback at 10s
+    const TIMEOUT_MS   = 8000;
+    const MIN_DELAY_MS = 0;
+    const FALLBACK_MS  = 10000;
 
     const n          = APPS.length;
     const results    = new Array(n).fill(null);
     let   redirected = false;
     const startTime  = Date.now();
 
-    // ── Build dot grid ────────────────────────────────────────────────────────
     const grid = document.getElementById("serverGrid");
     const dots = APPS.map((_, i) => {
       const d = document.createElement("div");
@@ -224,7 +232,6 @@
     function setHint(msg)     { document.getElementById("hint").textContent = msg; }
     function setProgress(pct) { document.getElementById("progressBar").style.width = pct + "%"; }
 
-    // ── Round-robin across ALL online servers equally (no platform preference) ─
     function getNextServer(onlineIndices) {
       const key = "acd_rr_counter";
       let c = parseInt(localStorage.getItem(key) || "0");
@@ -259,7 +266,6 @@
       setProgress(Math.round((done / n) * 90));
     }
 
-    // Redirect once all responded OR min delay passed and ≥1 online
     function tryRedirect() {
       if (redirected) return;
       const done   = results.filter(r => r !== null).length;
@@ -271,7 +277,6 @@
       }
     }
 
-    // ── Ping all servers in parallel ──────────────────────────────────────────
     APPS.forEach((url, i) => {
       dots[i].className = "server-dot checking";
 
@@ -297,7 +302,6 @@
         });
     });
 
-    // ── Hard fallback ─────────────────────────────────────────────────────────
     setTimeout(() => {
       if (!redirected) {
         const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
