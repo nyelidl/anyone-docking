@@ -193,7 +193,13 @@ Available in **both single and batch** docking modes:
 
 ---
 
+---
+
 ## 🖥️ Run locally
+
+### Google Colab (web-based interface)
+Run locally on Google colab with web-based interface: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1WtWYUUB1AREZMeB5qEJ9OD84AvWk1z4z?usp=sharing)
+
 
 ### Linux (Ubuntu / Debian)
 ```bash
@@ -217,7 +223,7 @@ pip install -r requirements.txt && \
 streamlit run app.py
 ```
 
-> **Apple Silicon (M1/M2/M3/M4):** Fully supported — the app auto-downloads the correct native `aarch64` Vina binary, with automatic Rosetta 2 x86_64 fallback if needed.
+> **Apple Silicon (M1/M2/M3/M4):** Fully supported — the app auto-downloads the correct `aarch64` Vina binary.
 
 ### Windows
 
@@ -229,11 +235,11 @@ For native Windows, install dependencies manually first:
 
 Then:
 ```bash
-git clone https://github.com/nyelidl/anyone-docking-local.git
-cd anyone-docking-local
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+git clone https://github.com/nyelidl/anyone-docking-local.git && \
+cd anyone-docking-local && \
+python -m venv venv && \
+venv\Scripts\activate && \
+pip install -r requirements.txt && \
 streamlit run app.py
 ```
 
