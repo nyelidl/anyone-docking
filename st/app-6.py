@@ -795,11 +795,15 @@ def _render_binding_pocket_panel(
     show_labels: bool,
     show_surface: bool,
     heme_rec_fh: str = "",
-    cryst_pdb: str = "",
+    cryst_pdb: str = "",    # ignored inside figure (no co-crystal in figure view)
     height: int = 440,
     key_prefix: str = "fig",
+    show_cryst: bool = False,   # False = figure mode, True = normal app mode
 ):
-    """Render the Binding Pocket View into the current column/container."""
+    """
+    Render the Binding Pocket View.
+    show_cryst=False (default for figure) suppresses the co-crystal ligand overlay.
+    """
     import py3Dmol
     from rdkit import Chem
     try:
@@ -813,7 +817,8 @@ def _render_binding_pocket_panel(
                 v.addSurface(py3Dmol.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
             mi += 1
         mi = _add_heme_to_view(v, heme_rec_fh or rec_fh, mi)
-        if cryst_pdb and os.path.exists(cryst_pdb):
+        # Co-crystal only in normal app mode, never in figure panel
+        if show_cryst and cryst_pdb and os.path.exists(cryst_pdb):
             v.addModel(open(cryst_pdb).read(), "pdb")
             v.setStyle({"model": mi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.18}})
             mi += 1
@@ -843,6 +848,242 @@ def _render_binding_pocket_panel(
         st.info(f"Binding pocket viewer error: {_e}")
 
 
+def _strip_acd_toolbar(html_str: str) -> str:
+    """
+    Remove the toolbar div from the ACD interactive HTML so only the clean SVG
+    diagram is shown inside the figure panel (no Reset/Export/drag-hint UI).
+    Works by replacing the toolbar block with an empty string.
+    """
+    import re
+    # Remove the outer toolbar div (between <div style="display:flex... and </div>)
+    cleaned = re.sub(
+        r'<div\s+style="display:flex[^"]*"[^>]*>.*?</div>\s*(?=<svg)',
+        '',
+        html_str,
+        count=1,
+        flags=re.DOTALL,
+    )
+    # Also strip the border/background wrapper div so the SVG sits flush
+    cleaned = cleaned.replace(
+        'style="font-family:Arial,sans-serif;background:white;border-radius:8px;\n'
+        '            border:1px solid #e0e0e0;overflow:hidden;"',
+        'style="font-family:Arial,sans-serif;background:white;"',
+    )
+    return cleaned
+
+
+def _2d_svg_bytes(acd_svg, acd_ihtml, rdk_svg, pv_svg, pv_png,
+                  diag_source: str):
+    """
+    Return (svg_bytes_or_None, png_bytes_or_None) for the currently selected
+    2D diagram source, for use in the figure export.
+    """
+    import base64, re
+    if diag_source == "acd":
+        if acd_svg:
+            raw = acd_svg if isinstance(acd_svg, bytes) else acd_svg.encode()
+            return raw, None
+        if acd_ihtml:
+            # Extract SVG element from the interactive HTML
+            m = re.search(r'(<svg\b.*?</svg>)', acd_ihtml, re.DOTALL)
+            if m:
+                return m.group(1).encode(), None
+        return None, None
+    elif diag_source == "rdkit":
+        if rdk_svg:
+            raw = rdk_svg if isinstance(rdk_svg, bytes) else rdk_svg.encode()
+            return raw, None
+        return None, None
+    else:  # poseview
+        if pv_png:
+            return None, pv_png
+        if pv_svg:
+            raw = pv_svg if isinstance(pv_svg, bytes) else pv_svg.encode()
+            return raw, None
+        return None, None
+
+
+def _build_figure_svg(
+    diag_svg_bytes,  # bytes of 2D SVG (may be None if only PNG available)
+    diag_png_bytes,  # bytes of 2D PNG (fallback)
+    capsule_text: str,
+    plot_fig=None,   # matplotlib figure for top-left panel (batch 4-panel only)
+    layout: str = "2panel",  # "2panel" | "4panel"
+) -> bytes:
+    """
+    Compose a publication-quality SVG figure:
+
+    2-panel  [a | b]  — a = placeholder note (3D can't embed), b = 2D diagram
+    4-panel  top: [a=plot | b=note]  bottom: [c=note | d=2D diagram]
+
+    The 3D binding pocket view cannot be embedded in SVG (WebGL), so panel a/c
+    shows a clean placeholder label. The exported SVG is intended for vector-
+    quality 2D diagram + capsule + legend export. For a screenshot of the
+    combined 3D+2D layout, instruct the user to use browser screenshot.
+    """
+    import base64, io
+
+    W, H_panel = 900, 500  # per-panel width x height
+
+    LEGEND_ITEMS = [
+        ("#a0c8ff", "#2287ff", None,      "Hydrophobic"),
+        ("#80dd80", "#1a7a1a", "5 3",     "H-bond"),
+        ("#f0a0ff", "#e200e8", "5 3",     "π-π stacking"),
+        ("#ffe090", "#cc8800", "3 2",     "Metal"),
+        ("#ffb0d0", "#cc2277", "5 2",     "Halogen bond"),
+        ("#c4a0ff", "#6633aa", "4 2 1 2", "H···Halogen"),
+    ]
+
+    def _capsule_svg(cx, cy, text, panel_w):
+        tw = len(text) * 8.5 + 40
+        px = cx - tw / 2
+        return (
+            f'<rect x="{px:.1f}" y="{cy-15:.1f}" width="{tw:.0f}" height="30" rx="15"'
+            f' fill="#f0f0ec" stroke="#c4c4c0" stroke-width="1"/>'
+            f'<text x="{cx:.1f}" y="{cy:.1f}" text-anchor="middle" dominant-baseline="central"'
+            f' font-family="Arial,sans-serif" font-size="13" font-weight="700" fill="#1e1e1c">'
+            f'{text}</text>'
+        )
+
+    def _legend_svg(cx, y, items):
+        parts = []
+        entry_w = 110
+        total = len(items) * entry_w
+        x0 = cx - total / 2
+        parts.append(
+            f'<rect x="{x0-8:.0f}" y="{y-6}" width="{total+16:.0f}" height="28"'
+            f' fill="white" stroke="#e8e8e4" stroke-width="0.8" rx="5"/>'
+        )
+        for k, (fill, stroke, dash, label) in enumerate(items):
+            ix = x0 + k * entry_w + 10
+            parts.append(
+                f'<circle cx="{ix+7:.0f}" cy="{y+8}" r="7"'
+                f' fill="{fill}" opacity="0.6" stroke="{stroke}" stroke-width="1.2"/>'
+            )
+            if dash:
+                parts.append(
+                    f'<line x1="{ix+17:.0f}" y1="{y+8}" x2="{ix+30:.0f}" y2="{y+8}"'
+                    f' stroke="{stroke}" stroke-width="1.5" stroke-dasharray="{dash}"/>'
+                )
+                tx = ix + 34
+            else:
+                tx = ix + 18
+            parts.append(
+                f'<text x="{tx:.0f}" y="{y+8}" dominant-baseline="central"'
+                f' font-family="Arial,sans-serif" font-size="11" font-weight="700"'
+                f' fill="#555">{label}</text>'
+            )
+        return "\n".join(parts)
+
+    def _panel_label(x, y, label):
+        return (
+            f'<text x="{x}" y="{y}" font-family="Arial,sans-serif"'
+            f' font-size="22" font-weight="700" fill="#1e1e1c">{label}</text>'
+        )
+
+    def _3d_placeholder(px, py, pw, ph, label):
+        return (
+            f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}"'
+            f' fill="#f8f8f5" stroke="#d0d0cc" stroke-width="1" rx="6"/>'
+            f'<text x="{px+pw/2:.0f}" y="{py+ph/2-10:.0f}" text-anchor="middle"'
+            f' font-family="Arial,sans-serif" font-size="14" fill="#888882">'
+            f'🔬 3D Binding Pocket View</text>'
+            f'<text x="{px+pw/2:.0f}" y="{py+ph/2+12:.0f}" text-anchor="middle"'
+            f' font-family="Arial,sans-serif" font-size="11" fill="#aaa">'
+            f'(screenshot the interactive panel above)</text>'
+        )
+
+    def _embed_2d(svg_b, png_b, px, py, pw, ph):
+        """Embed 2D diagram SVG (inline) or PNG (base64) into the figure SVG."""
+        if svg_b:
+            raw = svg_b.decode("utf-8", errors="replace") if isinstance(svg_b, bytes) else svg_b
+            # Strip xml declaration and embed as foreignObject or image
+            raw = raw.strip()
+            if raw.startswith("<?xml"):
+                raw = raw[raw.index("<svg"):]
+            # Embed via <image> using base64 data URI
+            b64 = base64.b64encode(raw.encode()).decode()
+            return (
+                f'<image x="{px}" y="{py}" width="{pw}" height="{ph}"'
+                f' href="data:image/svg+xml;base64,{b64}"'
+                f' preserveAspectRatio="xMidYMid meet"/>'
+            )
+        elif png_b:
+            b64 = base64.b64encode(png_b).decode()
+            return (
+                f'<image x="{px}" y="{py}" width="{pw}" height="{ph}"'
+                f' href="data:image/png;base64,{b64}"'
+                f' preserveAspectRatio="xMidYMid meet"/>'
+            )
+        return (
+            f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}"'
+            f' fill="#f8f8f5" stroke="#d0d0cc" stroke-width="1" rx="6"/>'
+            f'<text x="{px+pw/2:.0f}" y="{py+ph/2:.0f}" text-anchor="middle"'
+            f' font-family="Arial,sans-serif" font-size="13" fill="#888">No 2D diagram yet</text>'
+        )
+
+    if layout == "2panel":
+        SVG_W = W * 2
+        SVG_H = H_panel + 80  # extra for capsule + legend
+        pad = 20
+        pw = W - pad * 2
+
+        body = [
+            f'<svg width="{SVG_W}" height="{SVG_H}" viewBox="0 0 {SVG_W} {SVG_H}"'
+            f' xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
+            '<rect width="100%" height="100%" fill="white"/>',
+            # Panel a — 3D placeholder
+            _panel_label(pad, 28, "a)"),
+            _3d_placeholder(pad, 36, pw, H_panel - 36, "a"),
+            # Panel b — 2D diagram
+            _panel_label(W + pad, 28, "b)"),
+            _embed_2d(diag_svg_bytes, diag_png_bytes, W + pad, 36, pw, H_panel - 80),
+            _capsule_svg(W + W / 2, H_panel - 30, capsule_text, W),
+            _legend_svg(W + W / 2, H_panel + 12, LEGEND_ITEMS),
+            '</svg>',
+        ]
+
+    else:  # 4panel
+        TOP_H    = 320
+        BOT_H    = H_panel + 80
+        SVG_W    = W * 2
+        SVG_H    = TOP_H + BOT_H + 16
+        pad      = 20
+        pw       = W - pad * 2
+
+        # Top-left: embed matplotlib plot PNG if available
+        plot_png = None
+        if plot_fig is not None:
+            _buf = io.BytesIO()
+            plot_fig.savefig(_buf, format="png", dpi=150,
+                             bbox_inches="tight", facecolor=plot_fig.get_facecolor())
+            _buf.seek(0)
+            plot_png = _buf.getvalue()
+
+        body = [
+            f'<svg width="{SVG_W}" height="{SVG_H}" viewBox="0 0 {SVG_W} {SVG_H}"'
+            f' xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
+            '<rect width="100%" height="100%" fill="white"/>',
+            # Top row
+            _panel_label(pad, 24, "a)"),
+            _embed_2d(None, plot_png, pad, 32, pw, TOP_H - 36) if plot_png else
+                _3d_placeholder(pad, 32, pw, TOP_H - 36, "a"),
+            _panel_label(W + pad, 24, "b)"),
+            _3d_placeholder(W + pad, 32, pw, TOP_H - 36, "b"),
+            # Bottom row
+            _panel_label(pad, TOP_H + 16 + 8, "c)"),
+            _3d_placeholder(pad, TOP_H + 16 + 16, pw, BOT_H - 80, "c"),
+            _panel_label(W + pad, TOP_H + 16 + 8, "d)"),
+            _embed_2d(diag_svg_bytes, diag_png_bytes,
+                      W + pad, TOP_H + 16 + 16, pw, BOT_H - 100),
+            _capsule_svg(W + W / 2, TOP_H + 16 + BOT_H - 60, capsule_text, W),
+            _legend_svg(W + W / 2, TOP_H + 16 + BOT_H - 22, LEGEND_ITEMS),
+            '</svg>',
+        ]
+
+    return "\n".join(body).encode()
+
+
 def _render_2d_panel_b(
     acd_svg, acd_ihtml,
     rdk_svg,
@@ -852,52 +1093,77 @@ def _render_2d_panel_b(
     height: int = 480,
     key_prefix: str = "fig",
 ):
-    """Render the 2D diagram + capsule + legend for panel b / panel d."""
+    """
+    Render the 2D diagram + capsule + legend for panel b / panel d.
+    The ACD interactive toolbar is stripped so only the clean diagram shows.
+    """
     import base64
 
     # ── Diagram ──────────────────────────────────────────────────────────────
     if diag_source == "acd":
         if acd_ihtml:
-            components.html(acd_ihtml, height=height, scrolling=False)
+            # Strip toolbar/controls — show only the SVG diagram
+            _clean = _strip_acd_toolbar(acd_ihtml)
+            components.html(_clean, height=height, scrolling=False)
         elif acd_svg:
             svg_str = acd_svg.decode() if isinstance(acd_svg, bytes) else acd_svg
             b64 = base64.b64encode(svg_str.encode()).decode()
             st.markdown(
                 f'<img src="data:image/svg+xml;base64,{b64}" '
-                f'style="width:100%;height:auto;display:block;border-radius:6px;">',
+                f'style="width:100%;height:auto;display:block;">',
                 unsafe_allow_html=True,
             )
         else:
-            st.info("Generate the ACD 2D diagram first (tab above).")
+            st.markdown(
+                '<div style="display:flex;align-items:center;justify-content:center;'
+                'height:200px;background:#f8f8f5;border-radius:6px;color:#888;">'
+                'Generate the ACD 2D diagram first (tab above).</div>',
+                unsafe_allow_html=True,
+            )
     elif diag_source == "rdkit":
         if rdk_svg:
             svg_str = rdk_svg.decode() if isinstance(rdk_svg, bytes) else rdk_svg
             b64 = base64.b64encode(svg_str.encode()).decode()
             st.markdown(
                 f'<img src="data:image/svg+xml;base64,{b64}" '
-                f'style="width:100%;height:auto;display:block;border-radius:6px;">',
+                f'style="width:100%;height:auto;display:block;">',
                 unsafe_allow_html=True,
             )
         else:
-            st.info("Generate the RDKit 2D diagram first (tab above).")
+            st.markdown(
+                '<div style="display:flex;align-items:center;justify-content:center;'
+                'height:200px;background:#f8f8f5;border-radius:6px;color:#888;">'
+                'Generate the RDKit 2D diagram first (tab above).</div>',
+                unsafe_allow_html=True,
+            )
     else:  # poseview
         if pv_png:
-            _png_to_b64_img(pv_png)
+            b64 = base64.b64encode(pv_png).decode()
+            st.markdown(
+                f'<img src="data:image/png;base64,{b64}" '
+                f'style="width:100%;height:auto;display:block;">',
+                unsafe_allow_html=True,
+            )
         elif pv_svg:
             svg_str = pv_svg.decode() if isinstance(pv_svg, bytes) else pv_svg
             b64 = base64.b64encode(svg_str.encode()).decode()
             st.markdown(
                 f'<img src="data:image/svg+xml;base64,{b64}" '
-                f'style="width:100%;height:auto;display:block;border-radius:6px;">',
+                f'style="width:100%;height:auto;display:block;">',
                 unsafe_allow_html=True,
             )
         else:
-            st.info("Generate the PoseView 2D diagram first (tab above).")
+            st.markdown(
+                '<div style="display:flex;align-items:center;justify-content:center;'
+                'height:200px;background:#f8f8f5;border-radius:6px;color:#888;">'
+                'Generate the PoseView 2D diagram first (tab above).</div>',
+                unsafe_allow_html=True,
+            )
 
     # ── Capsule label ─────────────────────────────────────────────────────────
     st.markdown(
-        f'<div style="text-align:center;margin:10px 0 6px;">'
-        f'<span style="display:inline-block;padding:6px 22px;border-radius:999px;'
+        f'<div style="text-align:center;margin:12px 0 6px;">'
+        f'<span style="display:inline-block;padding:7px 26px;border-radius:999px;'
         f'background:#f0f0ec;border:1px solid #c4c4c0;font-size:14px;'
         f'font-weight:700;color:#1e1e1c;letter-spacing:0.01em;">'
         f'{capsule_text}</span></div>',
@@ -918,22 +1184,19 @@ def _render_2d_panel_b(
         circle = (
             f'<span style="display:inline-block;width:14px;height:14px;'
             f'border-radius:50%;background:{fill};border:1.5px solid {stroke};'
-            f'vertical-align:middle;margin-right:4px;"></span>'
+            f'vertical-align:middle;margin-right:3px;"></span>'
         )
-        if dash:
-            line = (
-                f'<span style="display:inline-block;width:22px;height:2px;'
-                f'border-top:2px dashed {stroke};vertical-align:middle;'
-                f'margin:0 4px;"></span>'
-            )
-        else:
-            line = ""
+        line = (
+            f'<span style="display:inline-block;width:18px;height:2px;'
+            f'border-top:2px dashed {stroke};vertical-align:middle;margin:0 3px;"></span>'
+            if dash else ""
+        )
         parts.append(
-            f'<span style="margin:0 8px 4px 0;display:inline-flex;align-items:center;'
+            f'<span style="margin:0 6px 4px 0;display:inline-flex;align-items:center;'
             f'font-size:11px;color:#555;">{circle}{line}{label}</span>'
         )
     st.markdown(
-        f'<div style="text-align:center;margin:4px 0 2px;line-height:1.8;">'
+        '<div style="text-align:center;margin:4px 0 2px;line-height:1.8;">'
         + "".join(parts) + "</div>",
         unsafe_allow_html=True,
     )
@@ -972,70 +1235,77 @@ def _ready_figure_section(
     Single mode: [a: Binding Pocket | b: 2D diagram + capsule + legend]
     Batch mode:  [a: score plot | b: pose browser] top row (shorter)
                  [c: Binding Pocket | d: 2D diagram + capsule + legend] bottom row
+
+    All controls are OUTSIDE the figure canvas.
+    The figure canvas is visually framed (white card, border).
+    No co-crystal ligand is shown inside figure panels a/c.
+    The ACD interactive toolbar is stripped from the figure panel.
+    Export buttons (SVG + PNG) produce the full composed figure.
     """
+    import base64, io
     st.markdown("---")
     st.markdown("### 📊 Ready-to-use Figure")
 
-    # ── Source selector ──────────────────────────────────────────────────────
-    _src = st.radio(
-        "2D diagram source",
-        ["🧬 Anyone Can Dock", "🔬 RDKit", "🔬 PoseView"],
-        horizontal=True,
-        key=f"rtf_src_{mode}",
-    )
-    _src_key = "acd" if "Anyone" in _src else ("rdkit" if "RDKit" in _src else "poseview")
-
-    if mode == "batch":
-        _layout = st.radio(
-            "Layout",
-            ["[a | b]  Single-style", "[a b / c d]  4-panel"],
+    # ═════════════════════════════════════════════════════════════════════════
+    #  ALL CONTROLS — outside figure canvas
+    # ═════════════════════════════════════════════════════════════════════════
+    with st.expander("⚙️ Figure settings", expanded=True):
+        _src = st.radio(
+            "2D diagram source",
+            ["🧬 Anyone Can Dock", "🔬 RDKit", "🔬 PoseView"],
             horizontal=True,
-            key="rtf_batch_layout",
+            key=f"rtf_src_{mode}",
         )
-        _4panel = "4-panel" in _layout
-    else:
-        _4panel = False
+        _src_key = "acd" if "Anyone" in _src else ("rdkit" if "RDKit" in _src else "poseview")
 
-    # ── Controls row ─────────────────────────────────────────────────────────
-    _ctl1, _ctl2, _ctl3 = st.columns(3)
-    with _ctl1:
-        _cutoff = st.slider(
-            "Pocket cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
-            key=f"rtf_cutoff_{mode}",
-        )
-    with _ctl2:
-        _show_labels = st.checkbox(
-            "Residue labels", value=True, key=f"rtf_lbl_{mode}"
-        )
-    with _ctl3:
-        _show_surf = st.checkbox(
-            "Protein surface", value=False, key=f"rtf_surf_{mode}"
-        )
+        if mode == "batch":
+            _layout = st.radio(
+                "Layout",
+                ["[a | b]  Single-style", "[a b / c d]  4-panel"],
+                horizontal=True,
+                key="rtf_batch_layout",
+            )
+            _4panel = "4-panel" in _layout
+        else:
+            _4panel = False
 
-    # ── Resolve data for the current mode ────────────────────────────────────
+        _ctl1, _ctl2, _ctl3 = st.columns(3)
+        with _ctl1:
+            _cutoff = st.slider(
+                "Pocket cutoff (Å)", 2.5, 5.0, 3.5, 0.1,
+                key=f"rtf_cutoff_{mode}",
+            )
+        with _ctl2:
+            _show_labels = st.checkbox(
+                "Residue labels", value=True, key=f"rtf_lbl_{mode}"
+            )
+        with _ctl3:
+            _show_surf = st.checkbox(
+                "Protein surface", value=False, key=f"rtf_surf_{mode}"
+            )
+
+    # ── Resolve data ──────────────────────────────────────────────────────────
     if mode == "single":
-        _rec      = rec_fh
-        _mol      = sel_mol
-        _cryst    = cryst_pdb
-        _p_idx    = pose_idx
-        _lname    = lig_name
-        _score    = binding_energy
-        _a_svg    = acd_svg;   _a_ihtml = acd_ihtml
-        _r_svg    = rdk_svg
-        _pv_svg_  = pv_svg;    _pv_png_ = pv_png
+        _rec     = rec_fh;         _mol    = sel_mol
+        _p_idx   = pose_idx;       _lname  = lig_name
+        _score   = binding_energy
+        _a_svg   = acd_svg;        _a_ihtml = acd_ihtml
+        _r_svg   = rdk_svg
+        _pv_svg_ = pv_svg;         _pv_png_ = pv_png
+        _plot_fn = None;           _plot_n  = 0
+        _browsable_rtf = None
     else:
-        # batch — use selected ligand/pose
-        _b_res   = b_sel_res or {}
         _b_mols  = b_mols or []
         _mol     = _b_mols[b_pose_i] if _b_mols else None
         _rec     = b_rec_fh
-        _cryst   = b_cryst_pdb
         _p_idx   = b_pose_i
         _lname   = b_sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
         _score   = b_this_score
-        _a_svg   = b_acd_svg;   _a_ihtml = b_acd_ihtml
+        _a_svg   = b_acd_svg;      _a_ihtml = b_acd_ihtml
         _r_svg   = b_rdk_svg
-        _pv_svg_ = b_pv_svg;    _pv_png_ = b_pv_png
+        _pv_svg_ = b_pv_svg;       _pv_png_ = b_pv_png
+        _plot_fn = b_plot_draw_fn; _plot_n  = b_plot_n
+        _browsable_rtf = b_browsable
 
     _capsule = (
         f"Pose {_p_idx + 1}  ·  {_lname}"
@@ -1046,20 +1316,36 @@ def _ready_figure_section(
         st.info("Select a pose to render the figure.")
         return
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  SINGLE / BATCH single-style  →  [a | b]
-    # ─────────────────────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════════
+    #  FIGURE CANVAS  — framed, clean, no controls inside
+    # ═════════════════════════════════════════════════════════════════════════
+    st.markdown(
+        '<div style="background:white;border:1.5px solid #d0d0cc;border-radius:10px;'
+        'padding:18px 18px 14px;margin:8px 0 4px;">',
+        unsafe_allow_html=True,
+    )
+
     if not _4panel:
+        # ── [a | b] ──────────────────────────────────────────────────────────
         col_a, col_b = st.columns(2)
         with col_a:
-            st.markdown(f"**a)**", help="Binding Pocket View")
+            st.markdown(
+                '<p style="font-family:Arial,sans-serif;font-size:18px;'
+                'font-weight:700;color:#1e1e1c;margin:0 0 6px;">a)</p>',
+                unsafe_allow_html=True,
+            )
             _render_binding_pocket_panel(
                 rec_fh=_rec, mol=_mol, cutoff=_cutoff,
                 show_labels=_show_labels, show_surface=_show_surf,
-                cryst_pdb=_cryst, height=500, key_prefix=f"rtf_{mode}",
+                show_cryst=False,        # no co-crystal in figure panel
+                height=500, key_prefix=f"rtf_{mode}",
             )
         with col_b:
-            st.markdown(f"**b)**", help="2D Interaction Diagram")
+            st.markdown(
+                '<p style="font-family:Arial,sans-serif;font-size:18px;'
+                'font-weight:700;color:#1e1e1c;margin:0 0 6px;">b)</p>',
+                unsafe_allow_html=True,
+            )
             _render_2d_panel_b(
                 acd_svg=_a_svg, acd_ihtml=_a_ihtml,
                 rdk_svg=_r_svg,
@@ -1069,98 +1355,185 @@ def _ready_figure_section(
                 height=480,
                 key_prefix=f"rtf_{mode}",
             )
-        return
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  BATCH 4-panel  →  [a | b]  (short, overview)
-    #                    [c | d]  (tall, main figure)
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # ── Top row — shorter ─────────────────────────────────────────────────────
-    st.markdown('<div style="margin-bottom:4px;">', unsafe_allow_html=True)
-    top_a, top_b = st.columns(2)
-
-    with top_a:
-        st.markdown("**a)**", help="Docking score plot")
-        if b_plot_draw_fn and b_plot_n > 0:
-            _fig_t, _ax_t = plt.subplots(figsize=(max(4, b_plot_n * 0.55 + 1.2), 2.8))
-            b_plot_draw_fn(_ax_t)
-            _fig_t.tight_layout()
-            st.pyplot(_fig_t, use_container_width=True)
-            plt.close(_fig_t)
-        else:
-            st.info("Run batch docking to see the score plot.")
-
-    with top_b:
-        st.markdown("**b)**", help="Pose Browser")
-        if b_browsable:
-            _b_nm2 = st.selectbox(
-                "Ligand", [r["Name"] for r in b_browsable],
-                index=([r["Name"] for r in b_browsable].index(b_sel_nm)
-                       if b_sel_nm in [r["Name"] for r in b_browsable] else 0),
-                key="rtf_b_lig_sel",
+    else:
+        # ── Top row [a | b] — shorter ─────────────────────────────────────────
+        top_a, top_b = st.columns(2)
+        with top_a:
+            st.markdown(
+                '<p style="font-family:Arial,sans-serif;font-size:18px;'
+                'font-weight:700;color:#1e1e1c;margin:0 0 4px;">a)</p>',
+                unsafe_allow_html=True,
             )
-            _b_res2 = next((r for r in b_browsable if r["Name"] == _b_nm2), b_browsable[0])
-            _b_mols2 = load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False) if _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", "")) else []
-            if _b_mols2:
-                _b_pi2 = st.slider("Pose", 1, len(_b_mols2), 1, key="rtf_b_pose_sel") - 1
-                _b_sc2 = (_b_res2.get("pose_scores") or [])[_b_pi2] if _b_pi2 < len(_b_res2.get("pose_scores") or []) else _b_res2.get("Top Score")
-                _b_score_kind = "success" if (_b_sc2 and _b_sc2 < -8) else "warn"
-                _b_score_pill = f" {_pill(f'{_b_sc2:.2f} kcal/mol', _b_score_kind)}" if _b_sc2 else ""
-                st.markdown(
-                    f"{_pill(f'Pose {_b_pi2+1}/{len(_b_mols2)}')}"
-                    + _b_score_pill,
-                    unsafe_allow_html=True,
-                )
-                import py3Dmol as _p3d2
-                try:
-                    _vbr = _p3d2.view(width="100%", height=240)
-                    _vbr.setBackgroundColor(_viewer_bg())
-                    _bri = 0
-                    if b_rec_fh and os.path.exists(b_rec_fh):
-                        _vbr.addModel(open(b_rec_fh).read(), "pdb")
-                        _vbr.setStyle({"model": _bri}, {"cartoon": {"color": "spectrum", "opacity": 0.6}})
-                        _bri += 1
-                    _bri = _add_heme_to_view(_vbr, b_rec_fh, _bri)
-                    from rdkit import Chem as _Chem_br
-                    _vbr.addModel(_Chem_br.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
-                    _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                    _vbr.zoomTo({"model": _bri})
-                    show3d(_vbr, height=240)
-                except Exception as _bve:
-                    st.info(f"Viewer: {_bve}")
+            if _plot_fn and _plot_n > 0:
+                _fig_t, _ax_t = plt.subplots(
+                    figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
+                _plot_fn(_ax_t)
+                _fig_t.tight_layout()
+                # stash for export
+                st.session_state["_rtf_plot_fig"] = _fig_t
+                st.pyplot(_fig_t, use_container_width=True)
+                plt.close(_fig_t)
             else:
-                st.info("No poses available for selected ligand.")
+                st.info("Run batch docking to see the score plot.")
+
+        with top_b:
+            st.markdown(
+                '<p style="font-family:Arial,sans-serif;font-size:18px;'
+                'font-weight:700;color:#1e1e1c;margin:0 0 4px;">b)</p>',
+                unsafe_allow_html=True,
+            )
+            if _browsable_rtf:
+                _b_nm2 = st.selectbox(
+                    "Ligand",
+                    [r["Name"] for r in _browsable_rtf],
+                    index=(
+                        [r["Name"] for r in _browsable_rtf].index(b_sel_nm)
+                        if b_sel_nm in [r["Name"] for r in _browsable_rtf] else 0
+                    ),
+                    key="rtf_b_lig_sel",
+                )
+                _b_res2  = next((r for r in _browsable_rtf if r["Name"] == _b_nm2), _browsable_rtf[0])
+                _b_mols2 = (
+                    load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False)
+                    if _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", ""))
+                    else []
+                )
+                if _b_mols2:
+                    _b_pi2 = st.slider("Pose", 1, len(_b_mols2), 1, key="rtf_b_pose_sel") - 1
+                    _b_sc2 = (
+                        (_b_res2.get("pose_scores") or [])[_b_pi2]
+                        if _b_pi2 < len(_b_res2.get("pose_scores") or [])
+                        else _b_res2.get("Top Score")
+                    )
+                    _b_score_kind = "success" if (_b_sc2 and _b_sc2 < -8) else "warn"
+                    _b_score_pill = f" {_pill(f'{_b_sc2:.2f} kcal/mol', _b_score_kind)}" if _b_sc2 else ""
+                    st.markdown(
+                        f"{_pill(f'Pose {_b_pi2+1}/{len(_b_mols2)}')}" + _b_score_pill,
+                        unsafe_allow_html=True,
+                    )
+                    import py3Dmol as _p3d2
+                    try:
+                        _vbr = _p3d2.view(width="100%", height=240)
+                        _vbr.setBackgroundColor(_viewer_bg())
+                        _bri = 0
+                        if b_rec_fh and os.path.exists(b_rec_fh):
+                            _vbr.addModel(open(b_rec_fh).read(), "pdb")
+                            _vbr.setStyle({"model": _bri}, {"cartoon": {"color": "spectrum", "opacity": 0.6}})
+                            _bri += 1
+                        _bri = _add_heme_to_view(_vbr, b_rec_fh, _bri)
+                        from rdkit import Chem as _Chem_br
+                        _vbr.addModel(_Chem_br.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
+                        _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
+                        _vbr.zoomTo({"model": _bri})
+                        show3d(_vbr, height=240)
+                    except Exception as _bve:
+                        st.info(f"Viewer: {_bve}")
+                else:
+                    st.info("No poses for this ligand.")
+            else:
+                st.info("No batch results yet.")
+
+        st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
+
+        # ── Bottom row [c | d] — taller ───────────────────────────────────────
+        bot_c, bot_d = st.columns(2)
+        with bot_c:
+            st.markdown(
+                '<p style="font-family:Arial,sans-serif;font-size:18px;'
+                'font-weight:700;color:#1e1e1c;margin:0 0 6px;">c)</p>',
+                unsafe_allow_html=True,
+            )
+            _render_binding_pocket_panel(
+                rec_fh=_rec, mol=_mol, cutoff=_cutoff,
+                show_labels=_show_labels, show_surface=_show_surf,
+                show_cryst=False,
+                height=520, key_prefix="rtf_batch4",
+            )
+        with bot_d:
+            st.markdown(
+                '<p style="font-family:Arial,sans-serif;font-size:18px;'
+                'font-weight:700;color:#1e1e1c;margin:0 0 6px;">d)</p>',
+                unsafe_allow_html=True,
+            )
+            _render_2d_panel_b(
+                acd_svg=_a_svg, acd_ihtml=_a_ihtml,
+                rdk_svg=_r_svg,
+                pv_svg=_pv_svg_, pv_png=_pv_png_,
+                diag_source=_src_key,
+                capsule_text=_capsule,
+                height=500,
+                key_prefix="rtf_batch4d",
+            )
+
+    # close figure canvas div
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  EXPORT BUTTONS  — below figure canvas, styled as primary green
+    # ═════════════════════════════════════════════════════════════════════════
+    st.markdown(
+        '<p style="font-size:12px;color:#888;margin:6px 0 4px;">'
+        '⬇ Export full figure (2D diagram panel exported as vector SVG; '
+        '3D panel requires browser screenshot)</p>',
+        unsafe_allow_html=True,
+    )
+    _diag_svg_b, _diag_png_b = _2d_svg_bytes(
+        _a_svg, _a_ihtml, _r_svg, _pv_svg_, _pv_png_, _src_key
+    )
+    _layout_key = "4panel" if _4panel else "2panel"
+
+    # Build the composed SVG figure
+    _plot_mpl = None
+    if _4panel and _plot_fn and _plot_n > 0:
+        _plot_mpl_fig, _plot_mpl_ax = plt.subplots(
+            figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
+        _plot_fn(_plot_mpl_ax)
+        _plot_mpl_fig.tight_layout()
+        _plot_mpl = _plot_mpl_fig
+
+    _export_svg = _build_figure_svg(
+        diag_svg_bytes=_diag_svg_b,
+        diag_png_bytes=_diag_png_b,
+        capsule_text=_capsule,
+        plot_fig=_plot_mpl,
+        layout=_layout_key,
+    )
+    if _plot_mpl is not None:
+        plt.close(_plot_mpl)
+
+    _ecol1, _ecol2 = st.columns(2)
+    with _ecol1:
+        st.download_button(
+            "⬇ Save SVG",
+            data=_export_svg,
+            file_name="ready_to_use_figure.svg",
+            mime="image/svg+xml",
+            key=f"rtf_dl_svg_{mode}",
+            type="primary",
+            width="stretch",
+        )
+    with _ecol2:
+        # PNG: convert the composed SVG via cairosvg, or offer the SVG as fallback
+        try:
+            import cairosvg as _cs
+            _export_png = _cs.svg2png(
+                bytestring=_export_svg, scale=2, background_color="white"
+            )
+        except Exception:
+            _export_png = None
+        if _export_png:
+            st.download_button(
+                "⬇ Save PNG",
+                data=_export_png,
+                file_name="ready_to_use_figure.png",
+                mime="image/png",
+                key=f"rtf_dl_png_{mode}",
+                type="primary",
+                width="stretch",
+            )
         else:
-            st.info("No batch results yet.")
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ── Bottom row — taller ───────────────────────────────────────────────────
-    st.markdown('<div style="margin-top:8px;">', unsafe_allow_html=True)
-    bot_c, bot_d = st.columns(2)
-
-    with bot_c:
-        st.markdown("**c)**", help="Binding Pocket View")
-        _render_binding_pocket_panel(
-            rec_fh=_rec, mol=_mol, cutoff=_cutoff,
-            show_labels=_show_labels, show_surface=_show_surf,
-            cryst_pdb=_cryst, height=520, key_prefix="rtf_batch4",
-        )
-
-    with bot_d:
-        st.markdown("**d)**", help="2D Interaction Diagram")
-        _render_2d_panel_b(
-            acd_svg=_a_svg, acd_ihtml=_a_ihtml,
-            rdk_svg=_r_svg,
-            pv_svg=_pv_svg_, pv_png=_pv_png_,
-            diag_source=_src_key,
-            capsule_text=_capsule,
-            height=500,
-            key_prefix="rtf_batch4d",
-        )
-
-    st.markdown('</div>', unsafe_allow_html=True)
+            st.caption("PNG export requires cairosvg — SVG available above.")
 
 
 def _ai_prompt_section(
