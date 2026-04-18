@@ -1318,56 +1318,70 @@ def _make_figure_html(
     diag_source: str,
     capsule_text: str,
     layout: str = "2panel",   # "2panel" | "4panel"
-    plot_png_bytes=None,      # matplotlib plot as PNG bytes (4-panel top-left)
-    b_browsable=None,         # browsable results list (4-panel top-right)
+    plot_png_bytes=None,
+    b_browsable=None,
     b_sel_nm: str = "",
     b_mols=None,
     b_pose_i: int = 0,
     b_rec_fh: str = "",
 ) -> str:
     """
-    Build a self-contained HTML string that renders the full artwork canvas
-    at exactly CANVAS_W × CANVAS_H pixels, independent of browser width.
+    Build a self-contained HTML string that renders a TRUE two-panel (or
+    four-panel) artwork canvas at fixed pixel dimensions.
 
-    Layout 2-panel:  [a: 3D pocket | b: 2D diagram]
-    Layout 4-panel:  top [a: plot | b: pose viewer] (shorter)
-                     bot [c: 3D pocket | d: 2D diagram] (taller)
+    Key layout decisions:
+    • Each panel sits inside a fixed-width .col wrapper with explicit `width:Npx`
+      (NOT flex-grow), so the columns always sit side-by-side even inside a
+      narrow parent iframe.
+    • Interactive content (3D viewer, ACD dragable SVG) is isolated in nested
+      <iframe src="data:text/html;base64,…"> so its scripts don't clash with
+      sibling panels' scripts.
+    • Static content (RDKit SVG, PoseView PNG) uses <img> with object-fit:
+      contain so it fills and centres inside its panel.
 
-    The outer frame border is drawn in the HTML so it appears both on-screen
-    and in exports.
+    Layout 2-panel:  [ a: 3D pocket | b: 2D diagram + capsule + legend ]
+    Layout 4-panel:  top  [ a: plot | b: pose viewer ]   (shorter)
+                     bot  [ c: 3D pocket | d: 2D + caps + leg ]  (taller)
     """
     import base64, re
     from rdkit import Chem
 
-    CANVAS_W   = 1100   # px — fixed artwork width
-    PAD        = 16     # inner padding
+    # ── Canvas geometry (FIXED, does not depend on viewport) ──────────────────
+    CANVAS_W   = 1100
+    PAD        = 16
+    GAP        = 16
+
+    PANEL_W    = (CANVAS_W - PAD * 2 - GAP) // 2     # 526 px each
 
     if layout == "2panel":
-        CANVAS_H  = 620
-        PANEL_W   = (CANVAS_W - PAD * 3) // 2   # ~530 px each
-        PANEL_H   = CANVAS_H - PAD * 2 - 120    # space for capsule+legend below
-        CAP_Y     = PAD + PANEL_H + 12
-        LEG_Y     = CAP_Y + 44
+        PANEL_H        = 500
+        PANEL_H_2D     = 500
+        CANVAS_H       = PAD + 28 + PANEL_H + 90 + PAD   # label + panel + caps+legend
     else:
-        TOP_H     = 280
-        BOT_PANEL_H = 440
-        CANVAS_H  = PAD + TOP_H + 12 + BOT_PANEL_H + 120 + PAD
-        PANEL_W   = (CANVAS_W - PAD * 3) // 2
+        TOP_PANEL_H    = 260
+        BOT_PANEL_H    = 440
+        PANEL_H        = BOT_PANEL_H
+        PANEL_H_2D     = BOT_PANEL_H
+        CANVAS_H       = PAD + 28 + TOP_PANEL_H + GAP + 28 + BOT_PANEL_H + 90 + PAD
 
-    LEGEND_ITEMS = [
-        ("#a0c8ff", "#2287ff", None,      "Hydrophobic"),
-        ("#80dd80", "#1a7a1a", "5 3",     "H-bond"),
-        ("#f0a0ff", "#e200e8", "5 3",     "π-π stacking"),
-        ("#ffe090", "#cc8800", "3 2",     "Metal"),
-        ("#ffb0d0", "#cc2277", "5 2",     "Halogen bond"),
-        ("#c4a0ff", "#6633aa", "4 2 1 2", "H···Halogen"),
-    ]
+    # ── Helper: wrap any HTML fragment in a full HTML page + base64 iframe ────
+    def _iframe_wrap(inner_html: str, bg: str = "white") -> str:
+        page = (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<style>html,body{{margin:0;padding:0;background:{bg};'
+            f'width:100%;height:100%;overflow:hidden;}}</style></head>'
+            f'<body>{inner_html}</body></html>'
+        )
+        b64 = base64.b64encode(page.encode("utf-8")).decode()
+        return (f'<iframe src="data:text/html;base64,{b64}" '
+                f'style="width:100%;height:100%;border:0;display:block;" '
+                f'frameborder="0" scrolling="no"></iframe>')
 
-    # ── 3D binding pocket HTML (panel a / panel c) ────────────────────────────
+    # ── Build 3D panel (panel a / panel c) — real py3Dmol in isolated iframe ──
     import py3Dmol
-    _3d_html = ""
+    _3d_pocket_html = ""
     try:
-        v3d = py3Dmol.view(width=PANEL_W, height=(PANEL_H if layout == "2panel" else BOT_PANEL_H))
+        v3d = py3Dmol.view(width=PANEL_W, height=PANEL_H)
         v3d.setBackgroundColor("#ffffff")
         mi = 0
         if rec_fh and os.path.exists(rec_fh):
@@ -1377,7 +1391,7 @@ def _make_figure_html(
                 v3d.addSurface(py3Dmol.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
             mi += 1
         mi = _add_heme_to_view(v3d, rec_fh, mi)
-        # NO co-crystal in figure panel
+        # NO co-crystal ligand in the figure panel
         v3d.addModel(Chem.MolToMolBlock(mol), "mol")
         _lig_m = mi
         v3d.setStyle({"model": _lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
@@ -1399,52 +1413,90 @@ def _make_figure_html(
                         _sel,
                     )
         v3d.zoomTo({"model": _lig_m})
+        # _make_html() returns a FULL HTML page (with 3Dmol <script src>).
+        # We iframe it AS-IS via base64, so the scripts run in an isolated doc.
         raw3d = v3d._make_html()
-        # Strip the outer <html>/<body> scaffolding — keep just the div/script
-        raw3d = re.sub(r'<html[^>]*>|</html>|<head>.*?</head>|<body[^>]*>|</body>', '', raw3d, flags=re.DOTALL)
-        # Force fixed dimensions on the viewer div
-        raw3d = re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>"100%"', raw3d)
-        raw3d = re.sub(r'(height\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>"100%"', raw3d)
-        _3d_html = raw3d.strip()
+        b3d = base64.b64encode(raw3d.encode("utf-8")).decode()
+        _3d_pocket_html = (
+            f'<iframe src="data:text/html;base64,{b3d}" '
+            f'style="width:100%;height:100%;border:0;display:block;" '
+            f'frameborder="0" scrolling="no"></iframe>'
+        )
     except Exception as _e3:
-        _3d_html = f'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-family:Arial;font-size:13px;">3D viewer error: {_e3}</div>'
+        _3d_pocket_html = (
+            f'<div style="display:flex;align-items:center;justify-content:center;'
+            f'height:100%;color:#888;font-family:Arial,sans-serif;font-size:13px;">'
+            f'3D viewer: {_e3}</div>'
+        )
 
-    # ── 2D diagram content (panel b / panel d) ────────────────────────────────
-    _2d_html = ""
+    # ── Build 2D panel content (panel b / panel d) ────────────────────────────
+    _2d_content = ""
     if diag_source == "acd" and acd_ihtml:
-        # strip toolbar + top pill, keep only SVG+JS
+        # Strip toolbar + title pill, then iframe-isolate so drag script works
         _clean = _strip_acd_toolbar(acd_ihtml)
-        # Make SVG fill the panel: remove fixed width/height attrs, rely on viewBox
-        _clean = re.sub(r'<svg([^>]*?)style="[^"]*"', r'<svg\1style="width:100%;height:100%;display:block;"', _clean)
-        _2d_html = _clean
+        # Make the SVG fill its iframe
+        _clean = re.sub(
+            r'<svg([^>]*?)style="[^"]*"',
+            r'<svg\1style="width:100%;height:100%;display:block;"',
+            _clean, count=1,
+        )
+        _clean = re.sub(
+            r'<svg(?![^>]*style=)([^>]*?)>',
+            r'<svg\1 style="width:100%;height:100%;display:block;">',
+            _clean, count=1,
+        )
+        _2d_content = _iframe_wrap(_clean)
     elif diag_source == "acd" and acd_svg:
         s = acd_svg.decode() if isinstance(acd_svg, bytes) else acd_svg
         b64 = base64.b64encode(s.encode()).decode()
-        _2d_html = f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;height:100%;object-fit:contain;">'
+        _2d_content = (
+            f'<img src="data:image/svg+xml;base64,{b64}" '
+            f'style="width:100%;height:100%;object-fit:contain;display:block;">'
+        )
     elif diag_source == "rdkit" and rdk_svg:
         s = rdk_svg.decode() if isinstance(rdk_svg, bytes) else rdk_svg
         b64 = base64.b64encode(s.encode()).decode()
-        _2d_html = f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;height:100%;object-fit:contain;">'
+        _2d_content = (
+            f'<img src="data:image/svg+xml;base64,{b64}" '
+            f'style="width:100%;height:100%;object-fit:contain;display:block;">'
+        )
     elif diag_source == "poseview" and pv_png:
         b64 = base64.b64encode(pv_png).decode()
-        _2d_html = f'<img src="data:image/png;base64,{b64}" style="width:100%;height:100%;object-fit:contain;">'
+        _2d_content = (
+            f'<img src="data:image/png;base64,{b64}" '
+            f'style="width:100%;height:100%;object-fit:contain;display:block;">'
+        )
     elif diag_source == "poseview" and pv_svg:
         s = pv_svg.decode() if isinstance(pv_svg, bytes) else pv_svg
         b64 = base64.b64encode(s.encode()).decode()
-        _2d_html = f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;height:100%;object-fit:contain;">'
+        _2d_content = (
+            f'<img src="data:image/svg+xml;base64,{b64}" '
+            f'style="width:100%;height:100%;object-fit:contain;display:block;">'
+        )
     else:
-        _2d_html = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-family:Arial;font-size:13px;">Generate a 2D diagram first (tab above)</div>'
+        _2d_content = (
+            '<div style="display:flex;align-items:center;justify-content:center;'
+            'height:100%;color:#aaa;font-family:Arial,sans-serif;font-size:13px;">'
+            'Generate a 2D diagram first (tab above)</div>'
+        )
 
-    # ── Capsule HTML ──────────────────────────────────────────────────────────
+    # ── Capsule + legend (below 2D panel only) ────────────────────────────────
     _cap_html = (
-        f'<div style="text-align:center;margin:10px 0 6px;">'
+        f'<div style="text-align:center;margin:10px 0 4px;">'
         f'<span style="display:inline-block;padding:7px 28px;border-radius:999px;'
         f'background:#f0f0ec;border:1px solid #c4c4c0;font-size:14px;'
-        f'font-weight:700;color:#1e1e1c;letter-spacing:0.01em;">'
+        f'font-weight:700;color:#1e1e1c;letter-spacing:0.01em;'
+        f'font-family:Arial,sans-serif;">'
         f'{capsule_text}</span></div>'
     )
-
-    # ── Legend HTML ───────────────────────────────────────────────────────────
+    LEGEND_ITEMS = [
+        ("#a0c8ff", "#2287ff", None,      "Hydrophobic"),
+        ("#80dd80", "#1a7a1a", "5 3",     "H-bond"),
+        ("#f0a0ff", "#e200e8", "5 3",     "π-π stacking"),
+        ("#ffe090", "#cc8800", "3 2",     "Metal"),
+        ("#ffb0d0", "#cc2277", "5 2",     "Halogen bond"),
+        ("#c4a0ff", "#6633aa", "4 2 1 2", "H···Halogen"),
+    ]
     _leg_parts = []
     for fill, stroke, dash, label in LEGEND_ITEMS:
         circ = (f'<span style="display:inline-block;width:13px;height:13px;'
@@ -1454,120 +1506,152 @@ def _make_figure_html(
                    f'border-top:2px dashed {stroke};vertical-align:middle;margin:0 3px;"></span>'
                    if dash else "")
         _leg_parts.append(
-            f'<span style="margin:0 5px 3px 0;display:inline-flex;align-items:center;'
-            f'font-size:11px;color:#555;">{circ}{dash_el}{label}</span>'
+            f'<span style="margin:0 5px 2px 0;display:inline-flex;align-items:center;'
+            f'font-size:11px;color:#555;font-family:Arial,sans-serif;">'
+            f'{circ}{dash_el}{label}</span>'
         )
-    _leg_html = '<div style="text-align:center;line-height:1.8;">' + "".join(_leg_parts) + '</div>'
+    _leg_html = ('<div style="text-align:center;line-height:1.7;">'
+                 + "".join(_leg_parts) + '</div>')
 
-    # ── 4-panel helpers ───────────────────────────────────────────────────────
+    # ── 4-panel top row content (plot + pose browser) ─────────────────────────
     _plot_html = ""
-    if layout == "4panel" and plot_png_bytes:
-        b64 = base64.b64encode(plot_png_bytes).decode()
-        _plot_html = f'<img src="data:image/png;base64,{b64}" style="width:100%;height:100%;object-fit:contain;">'
-    elif layout == "4panel":
-        _plot_html = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-family:Arial;font-size:12px;">Score plot — run batch docking</div>'
-
     _browser_html = ""
-    if layout == "4panel" and b_browsable and b_mols:
-        _sel_nm_clean = b_sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
-        _sc = (b_mols[b_pose_i] if b_pose_i < len(b_mols) else None)
-        # mini 3D viewer for pose browser panel
-        try:
-            import py3Dmol as _p3b
-            from rdkit import Chem as _Cb
-            _vb = _p3b.view(width=PANEL_W, height=TOP_H)
-            _vb.setBackgroundColor("#ffffff")
-            _bi = 0
-            if b_rec_fh and os.path.exists(b_rec_fh):
-                _vb.addModel(open(b_rec_fh).read(), "pdb")
-                _vb.setStyle({"model": _bi}, {"cartoon": {"color": "spectrum", "opacity": 0.6}})
-                _bi += 1
-            _bi = _add_heme_to_view(_vb, b_rec_fh, _bi)
-            if _sc:
-                _vb.addModel(_Cb.MolToMolBlock(_sc), "mol")
-                _vb.setStyle({"model": _bi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                _vb.zoomTo({"model": _bi})
-            _rb = _vb._make_html()
-            _rb = re.sub(r'<html[^>]*>|</html>|<head>.*?</head>|<body[^>]*>|</body>', '', _rb, flags=re.DOTALL)
-            _rb = re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>"100%"', _rb)
-            _rb = re.sub(r'(height\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>"100%"', _rb)
-            _browser_html = _rb.strip()
-        except Exception:
-            _score_txt = ""
-            if b_mols and b_pose_i < len((b_sel_res := {}) or []):
-                pass
-            _browser_html = f'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-family:Arial;font-size:13px;">{_sel_nm_clean} · Pose {b_pose_i+1}</div>'
-    elif layout == "4panel":
-        _browser_html = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-family:Arial;font-size:12px;">Pose Browser</div>'
+    if layout == "4panel":
+        if plot_png_bytes:
+            b64 = base64.b64encode(plot_png_bytes).decode()
+            _plot_html = (f'<img src="data:image/png;base64,{b64}" '
+                          f'style="width:100%;height:100%;object-fit:contain;display:block;">')
+        else:
+            _plot_html = ('<div style="display:flex;align-items:center;justify-content:center;'
+                          'height:100%;color:#aaa;font-family:Arial,sans-serif;font-size:12px;">'
+                          'Score plot — run batch docking</div>')
+
+        # Mini 3D pose viewer for panel b
+        if b_browsable and b_mols:
+            try:
+                import py3Dmol as _p3b
+                from rdkit import Chem as _Cb
+                _sc = b_mols[b_pose_i] if b_pose_i < len(b_mols) else None
+                _vb = _p3b.view(width=PANEL_W, height=TOP_PANEL_H)
+                _vb.setBackgroundColor("#ffffff")
+                _bi = 0
+                if b_rec_fh and os.path.exists(b_rec_fh):
+                    _vb.addModel(open(b_rec_fh).read(), "pdb")
+                    _vb.setStyle({"model": _bi}, {"cartoon": {"color": "spectrum", "opacity": 0.6}})
+                    _bi += 1
+                _bi = _add_heme_to_view(_vb, b_rec_fh, _bi)
+                if _sc is not None:
+                    _vb.addModel(_Cb.MolToMolBlock(_sc), "mol")
+                    _vb.setStyle({"model": _bi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
+                    _vb.zoomTo({"model": _bi})
+                raw_b = _vb._make_html()
+                b_b64 = base64.b64encode(raw_b.encode("utf-8")).decode()
+                _browser_html = (
+                    f'<iframe src="data:text/html;base64,{b_b64}" '
+                    f'style="width:100%;height:100%;border:0;display:block;" '
+                    f'frameborder="0" scrolling="no"></iframe>'
+                )
+            except Exception as _be:
+                _browser_html = (f'<div style="display:flex;align-items:center;justify-content:center;'
+                                 f'height:100%;color:#888;font-family:Arial,sans-serif;font-size:13px;">'
+                                 f'Pose viewer: {_be}</div>')
+        else:
+            _browser_html = ('<div style="display:flex;align-items:center;justify-content:center;'
+                             'height:100%;color:#aaa;font-family:Arial,sans-serif;font-size:12px;">'
+                             'Pose Browser</div>')
+
+    # ── CSS with EXPLICIT-WIDTH columns (not flex-grow) ───────────────────────
+    #    This is the critical fix: .col has width:PANEL_W px so the two columns
+    #    always sit side-by-side regardless of parent width.
+    CSS = f"""
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html, body {{
+        background: #ffffff;
+        font-family: Arial, sans-serif;
+        overflow-x: auto;
+    }}
+    body {{ padding: 8px 0; display: flex; justify-content: center; }}
+    #canvas {{
+        width: {CANVAS_W}px;
+        min-width: {CANVAS_W}px;
+        max-width: {CANVAS_W}px;
+        background: white;
+        border: 1.5px solid #c8c8c4;
+        border-radius: 8px;
+        padding: {PAD}px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }}
+    .row {{
+        display: flex;
+        gap: {GAP}px;
+        align-items: flex-start;
+        width: 100%;
+    }}
+    .col {{
+        width: {PANEL_W}px;
+        min-width: {PANEL_W}px;
+        max-width: {PANEL_W}px;
+        flex: 0 0 {PANEL_W}px;
+    }}
+    .plabel {{
+        font-family: Arial, sans-serif;
+        font-size: 18px;
+        font-weight: 700;
+        color: #1e1e1c;
+        margin: 0 0 6px 2px;
+        line-height: 1;
+    }}
+    .panel {{
+        width: {PANEL_W}px;
+        background: #fafaf8;
+        border: 1px solid #ececea;
+        border-radius: 4px;
+        overflow: hidden;
+        position: relative;
+    }}
+    """
 
     # ── Compose final HTML ────────────────────────────────────────────────────
-    LBL_STYLE = "font-family:Arial,sans-serif;font-size:18px;font-weight:700;color:#1e1e1c;margin:0 0 6px;line-height:1;"
-
     if layout == "2panel":
-        A_X  = PAD
-        B_X  = PAD * 2 + PANEL_W
-        A_Y  = PAD
         html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-  * {{ box-sizing:border-box; margin:0; padding:0; }}
-  body {{ background:#f5f5f0; display:flex; align-items:flex-start; justify-content:center; padding:12px; font-family:Arial,sans-serif; }}
-  #canvas {{
-    width:{CANVAS_W}px; min-width:{CANVAS_W}px; max-width:{CANVAS_W}px;
-    background:white; border:1.5px solid #c8c8c4; border-radius:8px;
-    padding:{PAD}px; box-shadow:0 2px 8px rgba(0,0,0,0.08);
-    position:relative;
-  }}
-  .row {{ display:flex; gap:{PAD}px; }}
-  .panel {{ flex:0 0 {PANEL_W}px; position:relative; background:#fafaf8; border-radius:4px; overflow:hidden; }}
-  .plabel {{ {LBL_STYLE} }}
-</style>
-</head><body>
+<html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
 <div id="canvas">
   <div class="row">
-    <div>
+    <div class="col">
       <p class="plabel">a)</p>
-      <div class="panel" style="height:{PANEL_H}px;">{_3d_html}</div>
+      <div class="panel" style="height:{PANEL_H}px;">{_3d_pocket_html}</div>
     </div>
-    <div>
+    <div class="col">
       <p class="plabel">b)</p>
-      <div class="panel" style="height:{PANEL_H}px;">{_2d_html}</div>
+      <div class="panel" style="height:{PANEL_H_2D}px;">{_2d_content}</div>
       {_cap_html}
       {_leg_html}
     </div>
   </div>
 </div>
 </body></html>"""
-
     else:  # 4panel
-        TOP_PW = PANEL_W
         html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-  * {{ box-sizing:border-box; margin:0; padding:0; }}
-  body {{ background:#f5f5f0; display:flex; align-items:flex-start; justify-content:center; padding:12px; font-family:Arial,sans-serif; }}
-  #canvas {{
-    width:{CANVAS_W}px; min-width:{CANVAS_W}px; max-width:{CANVAS_W}px;
-    background:white; border:1.5px solid #c8c8c4; border-radius:8px;
-    padding:{PAD}px; box-shadow:0 2px 8px rgba(0,0,0,0.08);
-  }}
-  .row {{ display:flex; gap:{PAD}px; margin-bottom:12px; }}
-  .panel {{ flex:0 0 {TOP_PW}px; position:relative; background:#fafaf8; border-radius:4px; overflow:hidden; }}
-  .plabel {{ {LBL_STYLE} }}
-</style>
-</head><body>
+<html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
 <div id="canvas">
-  <div class="row">
-    <div><p class="plabel">a)</p>
-      <div class="panel" style="height:{TOP_H}px;">{_plot_html}</div></div>
-    <div><p class="plabel">b)</p>
-      <div class="panel" style="height:{TOP_H}px;">{_browser_html}</div></div>
+  <div class="row" style="margin-bottom:{GAP}px;">
+    <div class="col">
+      <p class="plabel">a)</p>
+      <div class="panel" style="height:{TOP_PANEL_H}px;">{_plot_html}</div>
+    </div>
+    <div class="col">
+      <p class="plabel">b)</p>
+      <div class="panel" style="height:{TOP_PANEL_H}px;">{_browser_html}</div>
+    </div>
   </div>
-  <div class="row" style="margin-bottom:0;">
-    <div><p class="plabel">c)</p>
-      <div class="panel" style="height:{BOT_PANEL_H}px;">{_3d_html}</div></div>
-    <div><p class="plabel">d)</p>
-      <div class="panel" style="height:{BOT_PANEL_H}px;">{_2d_html}</div>
+  <div class="row">
+    <div class="col">
+      <p class="plabel">c)</p>
+      <div class="panel" style="height:{BOT_PANEL_H}px;">{_3d_pocket_html}</div>
+    </div>
+    <div class="col">
+      <p class="plabel">d)</p>
+      <div class="panel" style="height:{PANEL_H_2D}px;">{_2d_content}</div>
       {_cap_html}
       {_leg_html}
     </div>
