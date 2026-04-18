@@ -213,7 +213,8 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
           font-family="Arial,sans-serif" font-size="20" font-weight="700"
           fill="#1a1a1a">{title}</text>
     <g id="iac-lines"></g>
-    <g id="iac-ligand">{lig_svg}</g>
+    <g id="iac-ligand" transform="translate(0,0)"
+       style="cursor:move;" title="Drag to reposition ligand">{lig_svg}</g>
     <g id="iac-residues"></g>
     <g id="iac-legend">{legend_svg}</g>
   </svg>
@@ -426,6 +427,89 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
   }};
 
   buildAll();
+
+  // ── Ligand structure drag ──────────────────────────────────────────────────
+  // The entire ligand group (#iac-ligand) can be moved as a whole.
+  // Residue interaction lines originate from absolute SVG coordinates (lx/ly)
+  // that don't change when the ligand moves — so we also shift the line origins
+  // by storing a global ligand offset and applying it in updateElement.
+  (function() {{
+    const ligG = document.getElementById("iac-ligand");
+    if (!ligG) return;
+
+    let ligOffset = {{ x: 0, y: 0 }};   // running translate of the ligand group
+    let dragActive = false;
+    let startMouse = null;
+    let startOffset = null;
+
+    function applyOffset(ox, oy) {{
+      ligG.setAttribute("transform", `translate(${{ox}},${{oy}})`);
+      // Shift all residue line start-points by the same delta so lines track the atoms
+      PLACEMENTS.forEach(p => {{
+        const cache = els[p.id];
+        if (cache && cache.line) {{
+          cache.line.setAttribute("x1", p.lx + ox);
+          cache.line.setAttribute("y1", p.ly + oy);
+        }}
+        if (cache && cache.distRect && cache.distTxt) {{
+          // Recompute distance label position with shifted lx/ly
+          const {{ x, y }} = pos[p.id];
+          const lx2 = p.lx + ox, ly2 = p.ly + oy;
+          const t  = 0.4;
+          const mx = lx2 + (x - lx2) * t, my = ly2 + (y - ly2) * t;
+          const dx = x - lx2, dy = y - ly2;
+          const len = Math.sqrt(dx*dx + dy*dy) + 0.001;
+          const px  = -dy/len*14, py = dx/len*14;
+          cache.distRect.setAttribute("x", mx + px - cache.tw2/2);
+          cache.distRect.setAttribute("y", my + py - 8);
+          cache.distTxt.setAttribute("x", mx + px);
+          cache.distTxt.setAttribute("y", my + py);
+        }}
+      }});
+    }}
+
+    ligG.addEventListener("mousedown", function(e) {{
+      dragActive = true;
+      startMouse = toSVGCoords(e.clientX, e.clientY);
+      startOffset = {{ ...ligOffset }};
+      ligG.style.cursor = "grabbing";
+      e.preventDefault();
+      e.stopPropagation();
+    }});
+    ligG.addEventListener("touchstart", function(e) {{
+      dragActive = true;
+      startMouse = toSVGCoords(e.touches[0].clientX, e.touches[0].clientY);
+      startOffset = {{ ...ligOffset }};
+      e.preventDefault();
+      e.stopPropagation();
+    }}, {{passive: false}});
+
+    window.addEventListener("mousemove", function(e) {{
+      if (!dragActive) return;
+      const cur = toSVGCoords(e.clientX, e.clientY);
+      ligOffset.x = startOffset.x + cur.x - startMouse.x;
+      ligOffset.y = startOffset.y + cur.y - startMouse.y;
+      applyOffset(ligOffset.x, ligOffset.y);
+    }});
+    window.addEventListener("touchmove", function(e) {{
+      if (!dragActive) return;
+      const cur = toSVGCoords(e.touches[0].clientX, e.touches[0].clientY);
+      ligOffset.x = startOffset.x + cur.x - startMouse.x;
+      ligOffset.y = startOffset.y + cur.y - startMouse.y;
+      applyOffset(ligOffset.x, ligOffset.y);
+      e.preventDefault();
+    }}, {{passive: false}});
+    window.addEventListener("mouseup",  function() {{ dragActive = false; ligG.style.cursor = "move"; }});
+    window.addEventListener("touchend", function() {{ dragActive = false; }});
+
+    // Extend resetLayout to also reset ligand position
+    const _origReset = window.resetLayout;
+    window.resetLayout = function() {{
+      ligOffset = {{ x: 0, y: 0 }};
+      applyOffset(0, 0);
+      if (_origReset) _origReset();
+    }};
+  }})();
 }})();
 </script>
 """
@@ -553,6 +637,12 @@ h2, h3 { font-family: 'IBM Plex Mono', monospace; color: var(--accent2); }
 .stButton > button[kind="secondary"] {
     background: var(--btn-sec-bg); border: 1px solid var(--border); color: var(--text);
 }
+.stDownloadButton > button {
+    background: var(--success); color: white; border: none; border-radius: 6px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.88rem;
+    padding: 8px 20px; transition: background 0.2s;
+}
+.stDownloadButton > button:hover { filter: brightness(1.15); }
 .stTextInput > div > div > input,
 .stSelectbox > div > div,
 .stNumberInput > div > div > input {
@@ -850,12 +940,15 @@ def _render_binding_pocket_panel(
 
 def _strip_acd_toolbar(html_str: str) -> str:
     """
-    Remove the toolbar div from the ACD interactive HTML so only the clean SVG
-    diagram is shown inside the figure panel (no Reset/Export/drag-hint UI).
-    Works by replacing the toolbar block with an empty string.
+    Remove the toolbar div AND the top title pill from the ACD interactive HTML
+    so only the clean diagram is shown inside the figure panel.
+
+    What is stripped:
+    1. The <div style="display:flex..."> toolbar block (Reset / Export / drag hint).
+    2. The title pill <rect> + <text> at the top of the SVG (ligand-name capsule).
     """
     import re
-    # Remove the outer toolbar div (between <div style="display:flex... and </div>)
+    # 1. Remove the outer toolbar div (between <div style="display:flex... and </div>)
     cleaned = re.sub(
         r'<div\s+style="display:flex[^"]*"[^>]*>.*?</div>\s*(?=<svg)',
         '',
@@ -863,11 +956,22 @@ def _strip_acd_toolbar(html_str: str) -> str:
         count=1,
         flags=re.DOTALL,
     )
-    # Also strip the border/background wrapper div so the SVG sits flush
+    # 2. Strip the border/background wrapper div styling
     cleaned = cleaned.replace(
         'style="font-family:Arial,sans-serif;background:white;border-radius:8px;\n'
         '            border:1px solid #e0e0e0;overflow:hidden;"',
         'style="font-family:Arial,sans-serif;background:white;"',
+    )
+    # 3. Remove the title pill: <rect … rx="22" … fill="#f2f2f2" …/>
+    #    and the <text … fill="#1a1a1a"> title </text> that follows it.
+    #    Both are inside the SVG; we target the two elements by their unique attributes.
+    cleaned = re.sub(
+        r'<rect\s[^>]*rx="22"[^>]*fill="#f2f2f2"[^>]*/>\s*'
+        r'<text\s[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
+        '',
+        cleaned,
+        count=1,
+        flags=re.DOTALL,
     )
     return cleaned
 
