@@ -1635,6 +1635,23 @@ def _ready_figure_section(
         with _ctl3:
             _show_surf = st.checkbox("Protein surface", value=False, key=f"rtf_surf_{mode}")
 
+        # ── Panel b) Pose Browser selectors (4-panel batch only) ─────────────
+        if mode == "batch" and _4panel and b_browsable:
+            st.markdown("---")
+            st.markdown("**Panel b) — Pose Browser**")
+            _pb_names = [r["Name"] for r in b_browsable]
+            _pb_def   = _pb_names.index(b_sel_nm) if b_sel_nm in _pb_names else 0
+            _pb_lig   = st.selectbox(
+                "Ligand (panel b)", _pb_names, index=_pb_def, key="rtf_b_lig_sel"
+            )
+            _pb_res  = next((r for r in b_browsable if r["Name"] == _pb_lig), b_browsable[0])
+            _pb_mols = (
+                load_mols_from_sdf(_pb_res["out_sdf"], sanitize=False)
+                if _pb_res.get("out_sdf") and os.path.exists(_pb_res.get("out_sdf", "")) else []
+            )
+            if _pb_mols:
+                st.slider("Pose (panel b)", 1, len(_pb_mols), 1, key="rtf_b_pose_sel")
+
     # ── Resolve data ──────────────────────────────────────────────────────────
     if mode == "single":
         _rec     = rec_fh;    _mol    = sel_mol
@@ -1766,39 +1783,45 @@ def _ready_figure_section(
 
         with top_b:
             _panel_label_md("b)")
-            if _browsable_rtf:
-                _b_nm2 = st.selectbox(
-                    "Ligand", [r["Name"] for r in _browsable_rtf],
-                    index=([r["Name"] for r in _browsable_rtf].index(b_sel_nm)
-                           if b_sel_nm in [r["Name"] for r in _browsable_rtf] else 0),
-                    key="rtf_b_lig_sel",
-                )
-                _b_res2 = next((r for r in _browsable_rtf if r["Name"] == _b_nm2), _browsable_rtf[0])
-                _b_mols2 = (
-                    load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False)
-                    if _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", "")) else []
-                )
-                if _b_mols2:
-                    _b_pi2 = st.slider("Pose", 1, len(_b_mols2), 1, key="rtf_b_pose_sel") - 1
-                    try:
-                        import py3Dmol as _p3d2; from rdkit import Chem as _Cb
-                        _vbr = _p3d2.view(width="100%", height=TOP_H - 50)
-                        _vbr.setBackgroundColor(_viewer_bg()); _bri = 0
-                        if b_rec_fh and os.path.exists(b_rec_fh):
-                            _vbr.addModel(open(b_rec_fh).read(), "pdb")
-                            _vbr.setStyle({"model": _bri}, {"cartoon": {"color": "spectrum", "opacity": 0.6}})
-                            _bri += 1
-                        _bri = _add_heme_to_view(_vbr, b_rec_fh, _bri)
-                        _vbr.addModel(_Cb.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
-                        _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                        _vbr.zoomTo({"model": _bri})
-                        show3d(_vbr, height=TOP_H - 50)
-                    except Exception as _bve:
-                        st.info(f"Viewer: {_bve}")
-                else:
-                    st.info("No poses for this ligand.")
+            # Selectors live in Figure Settings — just read the chosen values here
+            _b_nm2  = st.session_state.get("rtf_b_lig_sel",
+                       (_browsable_rtf[0]["Name"] if _browsable_rtf else ""))
+            _b_pi2  = st.session_state.get("rtf_b_pose_sel", 1) - 1
+            _b_res2 = next((r for r in (_browsable_rtf or []) if r["Name"] == _b_nm2),
+                           (_browsable_rtf[0] if _browsable_rtf else None))
+            _b_mols2 = (
+                load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False)
+                if _b_res2 and _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", ""))
+                else []
+            )
+            _b_pi2 = max(0, min(_b_pi2, len(_b_mols2) - 1)) if _b_mols2 else 0
+            if _b_mols2:
+                try:
+                    from rdkit import Chem as _Cb
+                    _vbr = _py3d.view(width="100%", height=TOP_H - 10)
+                    _vbr.setBackgroundColor("#ffffff")
+                    _bri = 0
+                    if b_rec_fh and os.path.exists(b_rec_fh):
+                        _vbr.addModel(open(b_rec_fh).read(), "pdb")
+                        _vbr.setStyle({"model": _bri}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+                        _bri += 1
+                    _bri = _add_heme_to_view(_vbr, b_rec_fh, _bri)
+                    # Co-crystal ligand in pink/magenta (same as Pose Browser)
+                    if b_cryst_pdb and os.path.exists(b_cryst_pdb):
+                        _vbr.addModel(open(b_cryst_pdb).read(), "pdb")
+                        _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.20}})
+                        _bri += 1
+                    # Selected docked pose in cyan
+                    _vbr.addModel(_Cb.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
+                    _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
+                    _vbr.addSurface("SES", {"opacity": 0.15, "color": "lightblue"},
+                                    {"model": 0}, {"model": _bri})
+                    _vbr.zoomTo({"model": _bri})
+                    show3d(_vbr, height=TOP_H - 10)
+                except Exception as _bve:
+                    st.info(f"Viewer: {_bve}")
             else:
-                st.info("No batch results yet.")
+                st.info("Select a ligand in Figure Settings.")
 
         st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
 
