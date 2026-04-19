@@ -962,12 +962,11 @@ def _strip_acd_toolbar(html_str: str) -> str:
         '            border:1px solid #e0e0e0;overflow:hidden;"',
         'style="font-family:Arial,sans-serif;background:white;"',
     )
-    # 3. Remove the title pill: <rect … rx="22" … fill="#f2f2f2" …/>
-    #    and the <text … fill="#1a1a1a"> title </text> that follows it.
-    #    Both are inside the SVG; we target the two elements by their unique attributes.
+    # 3. Remove the title pill — match by fill="#f2f2f2" which is common to
+    #    both static SVG (rx≈23.0) and interactive HTML SVG (rx=22) variants.
     cleaned = re.sub(
-        r'<rect\s[^>]*rx="22"[^>]*fill="#f2f2f2"[^>]*/>\s*'
-        r'<text\s[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
+        r'<rect\b[^>]*fill="#f2f2f2"[^>]*/>\s*'
+        r'<text\b[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
         '',
         cleaned,
         count=1,
@@ -982,17 +981,27 @@ def _2d_svg_bytes(acd_svg, acd_ihtml, rdk_svg, pv_svg, pv_png,
     Return (svg_bytes_or_None, png_bytes_or_None) for the currently selected
     2D diagram source, for use in the figure export.
 
-    For ACD interactive HTML: the raw SVG is extracted and the title pill
-    (top capsule rect+text) is stripped so it doesn't duplicate the
+    For ACD diagrams: the title pill is stripped so it doesn't duplicate the
     summary capsule that _build_figure_svg adds below the diagram.
+
+    Two SVG variants exist:
+      • Static SVG from draw_interaction_diagram (core.py):
+            rx="{pr:.1f}" where pr = ph/2 = 23.0, fill="#f2f2f2"
+      • Interactive HTML SVG from _render_interactive_diagram (app.py):
+            rx="22", fill="#f2f2f2"
+    The regex must match BOTH — match by fill="#f2f2f2", not by rx value.
     """
-    import base64, re
+    import re
 
     def _strip_title_pill_from_svg(svg_text: str) -> str:
-        """Remove the <rect rx='22' fill='#f2f2f2'/> + following <text> title pill."""
+        """
+        Remove the title pill <rect fill="#f2f2f2"> and the <text fill="#1a1a1a">
+        that follows it.  Works on both static SVG (rx≈23.0) and interactive
+        HTML SVG (rx=22) variants.
+        """
         return re.sub(
-            r'<rect\s[^>]*rx="22"[^>]*fill="#f2f2f2"[^>]*/>\s*'
-            r'<text\s[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
+            r'<rect\b[^>]*fill="#f2f2f2"[^>]*/>\s*'
+            r'<text\b[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
             '',
             svg_text,
             count=1,
@@ -1002,11 +1011,9 @@ def _2d_svg_bytes(acd_svg, acd_ihtml, rdk_svg, pv_svg, pv_png,
     if diag_source == "acd":
         if acd_svg:
             raw = acd_svg if isinstance(acd_svg, bytes) else acd_svg.encode()
-            # acd_svg is the static SVG — strip title pill too
             cleaned = _strip_title_pill_from_svg(raw.decode("utf-8", errors="replace"))
             return cleaned.encode(), None
         if acd_ihtml:
-            # Extract SVG element from the interactive HTML then strip title pill
             m = re.search(r'(<svg\b.*?</svg>)', acd_ihtml, re.DOTALL)
             if m:
                 cleaned = _strip_title_pill_from_svg(m.group(1))
@@ -1032,6 +1039,7 @@ def _build_figure_svg(
     capsule_text: str,
     plot_fig=None,   # matplotlib figure for top-left panel (batch 4-panel only)
     layout: str = "2panel",  # "2panel" | "4panel"
+    panel_a_png: bytes = None,   # captured 3D screenshot for panel a / c
 ) -> bytes:
     """
     Compose a publication-quality SVG figure:
@@ -1151,6 +1159,13 @@ def _build_figure_svg(
         pad = 20
         pw = W - pad * 2
 
+        # Panel a: use captured 3D screenshot if available, else empty placeholder
+        _panel_a_el = (
+            _embed_2d(None, panel_a_png, pad, 36, pw, H_panel - 36)
+            if panel_a_png else
+            _3d_placeholder(pad, 36, pw, H_panel - 36, "a")
+        )
+
         body = [
             f'<svg width="{SVG_W}" height="{SVG_H}" viewBox="0 0 {SVG_W} {SVG_H}"'
             f' xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
@@ -1158,10 +1173,10 @@ def _build_figure_svg(
             # outer frame border
             f'<rect x="4" y="4" width="{SVG_W-8}" height="{SVG_H-8}"'
             f' fill="none" stroke="#c8c8c4" stroke-width="1.5" rx="8"/>',
-            # Panel a — clean empty panel (user adds 3D screenshot)
+            # Panel a
             _panel_label(pad, 28, "a)"),
-            _3d_placeholder(pad, 36, pw, H_panel - 36, "a"),
-            # Panel b — 2D diagram (capsule below, no extra legend since ACD has own)
+            _panel_a_el,
+            # Panel b — 2D diagram
             _panel_label(W + pad, 28, "b)"),
             _embed_2d(diag_svg_bytes, diag_png_bytes, W + pad, 36, pw, H_panel - 36),
             _capsule_svg(W + W / 2, H_panel + 20, capsule_text, W),
@@ -1185,6 +1200,13 @@ def _build_figure_svg(
             _buf.seek(0)
             plot_png = _buf.getvalue()
 
+        # Panel c: use captured 3D screenshot if available, else empty placeholder
+        _panel_c_el = (
+            _embed_2d(None, panel_a_png, pad, TOP_H + 16 + 16, pw, BOT_H - 80)
+            if panel_a_png else
+            _3d_placeholder(pad, TOP_H + 16 + 16, pw, BOT_H - 80, "c")
+        )
+
         body = [
             f'<svg width="{SVG_W}" height="{SVG_H}" viewBox="0 0 {SVG_W} {SVG_H}"'
             f' xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
@@ -1200,7 +1222,7 @@ def _build_figure_svg(
             _3d_placeholder(W + pad, 32, pw, TOP_H - 36, "b"),
             # Bottom row
             _panel_label(pad, TOP_H + 16 + 8, "c)"),
-            _3d_placeholder(pad, TOP_H + 16 + 16, pw, BOT_H - 80, "c"),
+            _panel_c_el,
             _panel_label(W + pad, TOP_H + 16 + 8, "d)"),
             _embed_2d(diag_svg_bytes, diag_png_bytes,
                       W + pad, TOP_H + 16 + 16, pw, BOT_H - 80),
@@ -1404,6 +1426,33 @@ def _ready_figure_section(
         with _ctl3:
             _show_surf = st.checkbox("Protein surface", value=False, key=f"rtf_surf_{mode}")
 
+        # ── Panel a) capture upload ───────────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            "**Panel a) — 3D snapshot for export**  \n"
+            "Click **📸 Capture** inside the 3D panel → a PNG downloads automatically.  \n"
+            "Then upload it here to include it in the exported SVG/PNG:"
+        )
+        _cap_key = f"_rtf_a_png_{mode}"
+        _cap_upload = st.file_uploader(
+            "Upload 3D snapshot",
+            type=["png", "jpg", "jpeg"],
+            key=f"rtf_a_upload_{mode}",
+            label_visibility="collapsed",
+        )
+        if _cap_upload is not None:
+            st.session_state[_cap_key] = _cap_upload.read()
+            st.success("✓ 3D snapshot stored — will be used in next export.")
+        _has_a_png = bool(st.session_state.get(_cap_key))
+        if _has_a_png:
+            _c1, _c2 = st.columns([3, 1])
+            with _c1:
+                st.caption("✓ 3D snapshot ready for export.")
+            with _c2:
+                if st.button("✕ Clear", key=f"rtf_a_clear_{mode}"):
+                    st.session_state[_cap_key] = None
+                    st.rerun()
+
     # ── Resolve data ──────────────────────────────────────────────────────────
     if mode == "single":
         _rec     = rec_fh;    _mol    = sel_mol
@@ -1500,7 +1549,33 @@ def _ready_figure_section(
                                 _sel3,
                             )
                 _v3d.zoomTo({"model": _lig_m3})
-                show3d(_v3d, height=500)
+                # Inject 📸 Capture button INSIDE the py3Dmol HTML so the button
+                # and the WebGL canvas share the same document — no cross-origin issues.
+                _raw3d = _v3d._make_html()
+                _CAP_INJECT = """
+<style>
+#rtf-cap-btn{position:fixed;bottom:10px;right:10px;z-index:9999;
+  background:#1a7f37;color:white;border:none;border-radius:6px;
+  padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;
+  font-family:'IBM Plex Mono',monospace;box-shadow:0 1px 4px rgba(0,0,0,.3);}
+#rtf-cap-btn:hover{filter:brightness(1.15);}
+#rtf-cap-st{position:fixed;bottom:13px;right:130px;z-index:9999;
+  font-size:11px;color:#aaa;}
+</style>
+<button id="rtf-cap-btn" onclick="(function(){
+  var c=document.querySelector('canvas');
+  if(!c){document.getElementById('rtf-cap-st').textContent='⚠ not found';return;}
+  var a=document.createElement('a');
+  a.href=c.toDataURL('image/png');
+  a.download='3d_panel_a.png';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  document.getElementById('rtf-cap-st').textContent='✓ downloading…';
+})()">📸 Capture</button>
+<span id="rtf-cap-st"></span>"""
+                _raw3d = _raw3d.replace("</body>", _CAP_INJECT + "\n</body>")
+                import re as _re3d
+                _raw3d = _re3d.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', _raw3d)
+                components.html(_raw3d, height=500, scrolling=False)
             except Exception as _e3d:
                 st.info(f"3D viewer error: {_e3d}")
 
@@ -1624,7 +1699,31 @@ def _ready_figure_section(
                                 _sel4,
                             )
                 _v4.zoomTo({"model": _lig_m4})
-                show3d(_v4, height=BOT_H)
+                _raw4 = _v4._make_html()
+                _CAP4 = """
+<style>
+#rtf-cap-btn4{position:fixed;bottom:10px;right:10px;z-index:9999;
+  background:#1a7f37;color:white;border:none;border-radius:6px;
+  padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;
+  font-family:'IBM Plex Mono',monospace;box-shadow:0 1px 4px rgba(0,0,0,.3);}
+#rtf-cap-btn4:hover{filter:brightness(1.15);}
+#rtf-cap-st4{position:fixed;bottom:13px;right:130px;z-index:9999;
+  font-size:11px;color:#aaa;}
+</style>
+<button id="rtf-cap-btn4" onclick="(function(){
+  var c=document.querySelector('canvas');
+  if(!c){document.getElementById('rtf-cap-st4').textContent='⚠ not found';return;}
+  var a=document.createElement('a');
+  a.href=c.toDataURL('image/png');
+  a.download='3d_panel_c.png';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  document.getElementById('rtf-cap-st4').textContent='✓ downloading…';
+})()">📸 Capture</button>
+<span id="rtf-cap-st4"></span>"""
+                _raw4 = _raw4.replace("</body>", _CAP4 + "\n</body>")
+                import re as _re4
+                _raw4 = _re4.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', _raw4)
+                components.html(_raw4, height=BOT_H, scrolling=False)
             except Exception as _e4:
                 st.info(f"3D viewer error: {_e4}")
         with bot_d:
@@ -1667,6 +1766,7 @@ def _ready_figure_section(
         capsule_text=_capsule,
         plot_fig=_plot_mpl,
         layout=_layout_key,
+        panel_a_png=st.session_state.get(f"_rtf_a_png_{mode}"),
     )
     if _plot_mpl is not None:
         plt.close(_plot_mpl)
