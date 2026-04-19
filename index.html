@@ -13,8 +13,16 @@
 
   <title>Anyone can dock</title>
   <link rel="manifest" href="manifest.json" />
-  <!-- Replace with a 180x180 PNG for best iOS icon quality -->
-  <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-D.svg" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+
+  <!-- Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-DX3PNRV443"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-DX3PNRV443');
+  </script>
 
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -37,7 +45,6 @@
       text-align: center;
       padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
       overflow: hidden;
-      /* Prevent rubber-band bounce revealing off-white */
       overscroll-behavior: none;
     }
 
@@ -397,7 +404,7 @@
   <!-- ── Original card ── -->
   <div class="card">
     <img class="logo"
-      src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-D.svg"
+      src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg"
       alt="Anyone can dock logo"/>
     <h1>Anyone can dock,<br>everyone can do!</h1>
     <p class="subtitle" id="status">Checking server availability…</p>
@@ -421,10 +428,10 @@
       <span>Faster, smoother — no browser needed when added to Home Screen</span>
     </div>
   </div>
-  
+
   <!-- ── Sheet overlay ── -->
   <div class="sheet-overlay" id="sheet-overlay"></div>
-  
+
   <!-- ── iOS install bottom sheet ── -->
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="How to install on iOS">
     <div class="sheet-handle"></div>
@@ -432,7 +439,7 @@
       <h2>Install on iOS</h2>
       <button class="sheet-close" id="sheet-close" aria-label="Close">✕</button>
     </div>
-  
+
     <div class="step">
       <span class="step-num">1</span>
       <div class="step-icon">
@@ -440,7 +447,7 @@
       </div>
       <p class="step-label">Tap the <strong>Share</strong> button (box with arrow) at the bottom of Safari</p>
     </div>
-  
+
     <div class="step">
       <span class="step-num">2</span>
       <div class="step-icon">
@@ -448,7 +455,7 @@
       </div>
       <p class="step-label">Select <strong>"Add to Home Screen"</strong> from the menu</p>
     </div>
-  
+
     <div class="step">
       <span class="step-num">3</span>
       <div class="step-icon add-btn">
@@ -603,7 +610,7 @@
     const overlay  = document.getElementById('sheet-overlay');
     const closeBtn = document.getElementById('sheet-close');
 
-    function openSheet()  {
+    function openSheet() {
       sheet.classList.add('open');
       overlay.classList.add('open');
       hint.classList.remove('visible');
