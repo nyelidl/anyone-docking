@@ -213,7 +213,8 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
           font-family="Arial,sans-serif" font-size="20" font-weight="700"
           fill="#1a1a1a">{title}</text>
     <g id="iac-lines"></g>
-    <g id="iac-ligand">{lig_svg}</g>
+    <g id="iac-ligand" transform="translate(0,0)"
+       style="cursor:move;" title="Drag to reposition ligand">{lig_svg}</g>
     <g id="iac-residues"></g>
     <g id="iac-legend">{legend_svg}</g>
   </svg>
@@ -426,6 +427,89 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
   }};
 
   buildAll();
+
+  // ── Ligand structure drag ──────────────────────────────────────────────────
+  // The entire ligand group (#iac-ligand) can be moved as a whole.
+  // Residue interaction lines originate from absolute SVG coordinates (lx/ly)
+  // that don't change when the ligand moves — so we also shift the line origins
+  // by storing a global ligand offset and applying it in updateElement.
+  (function() {{
+    const ligG = document.getElementById("iac-ligand");
+    if (!ligG) return;
+
+    let ligOffset = {{ x: 0, y: 0 }};   // running translate of the ligand group
+    let dragActive = false;
+    let startMouse = null;
+    let startOffset = null;
+
+    function applyOffset(ox, oy) {{
+      ligG.setAttribute("transform", `translate(${{ox}},${{oy}})`);
+      // Shift all residue line start-points by the same delta so lines track the atoms
+      PLACEMENTS.forEach(p => {{
+        const cache = els[p.id];
+        if (cache && cache.line) {{
+          cache.line.setAttribute("x1", p.lx + ox);
+          cache.line.setAttribute("y1", p.ly + oy);
+        }}
+        if (cache && cache.distRect && cache.distTxt) {{
+          // Recompute distance label position with shifted lx/ly
+          const {{ x, y }} = pos[p.id];
+          const lx2 = p.lx + ox, ly2 = p.ly + oy;
+          const t  = 0.4;
+          const mx = lx2 + (x - lx2) * t, my = ly2 + (y - ly2) * t;
+          const dx = x - lx2, dy = y - ly2;
+          const len = Math.sqrt(dx*dx + dy*dy) + 0.001;
+          const px  = -dy/len*14, py = dx/len*14;
+          cache.distRect.setAttribute("x", mx + px - cache.tw2/2);
+          cache.distRect.setAttribute("y", my + py - 8);
+          cache.distTxt.setAttribute("x", mx + px);
+          cache.distTxt.setAttribute("y", my + py);
+        }}
+      }});
+    }}
+
+    ligG.addEventListener("mousedown", function(e) {{
+      dragActive = true;
+      startMouse = toSVGCoords(e.clientX, e.clientY);
+      startOffset = {{ ...ligOffset }};
+      ligG.style.cursor = "grabbing";
+      e.preventDefault();
+      e.stopPropagation();
+    }});
+    ligG.addEventListener("touchstart", function(e) {{
+      dragActive = true;
+      startMouse = toSVGCoords(e.touches[0].clientX, e.touches[0].clientY);
+      startOffset = {{ ...ligOffset }};
+      e.preventDefault();
+      e.stopPropagation();
+    }}, {{passive: false}});
+
+    window.addEventListener("mousemove", function(e) {{
+      if (!dragActive) return;
+      const cur = toSVGCoords(e.clientX, e.clientY);
+      ligOffset.x = startOffset.x + cur.x - startMouse.x;
+      ligOffset.y = startOffset.y + cur.y - startMouse.y;
+      applyOffset(ligOffset.x, ligOffset.y);
+    }});
+    window.addEventListener("touchmove", function(e) {{
+      if (!dragActive) return;
+      const cur = toSVGCoords(e.touches[0].clientX, e.touches[0].clientY);
+      ligOffset.x = startOffset.x + cur.x - startMouse.x;
+      ligOffset.y = startOffset.y + cur.y - startMouse.y;
+      applyOffset(ligOffset.x, ligOffset.y);
+      e.preventDefault();
+    }}, {{passive: false}});
+    window.addEventListener("mouseup",  function() {{ dragActive = false; ligG.style.cursor = "move"; }});
+    window.addEventListener("touchend", function() {{ dragActive = false; }});
+
+    // Extend resetLayout to also reset ligand position
+    const _origReset = window.resetLayout;
+    window.resetLayout = function() {{
+      ligOffset = {{ x: 0, y: 0 }};
+      applyOffset(0, 0);
+      if (_origReset) _origReset();
+    }};
+  }})();
 }})();
 </script>
 """
@@ -553,6 +637,12 @@ h2, h3 { font-family: 'IBM Plex Mono', monospace; color: var(--accent2); }
 .stButton > button[kind="secondary"] {
     background: var(--btn-sec-bg); border: 1px solid var(--border); color: var(--text);
 }
+.stDownloadButton > button {
+    background: var(--success); color: white; border: none; border-radius: 6px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.88rem;
+    padding: 8px 20px; transition: background 0.2s;
+}
+.stDownloadButton > button:hover { filter: brightness(1.15); }
 .stTextInput > div > div > input,
 .stSelectbox > div > div,
 .stNumberInput > div > div > input {
@@ -782,6 +872,1222 @@ def _show_poseview_image(png_data, svg_data, caption, full_legend=False, stamp="
 #  POSEVIEW UI BLOCK (reusable)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  READY-TO-USE FIGURE  —  2-panel (single) and 4-panel (batch) layouts
+#  Inserted between 2D diagram section and 🤖 AI prompt.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _render_binding_pocket_panel(
+    rec_fh: str,
+    mol,                    # RDKit mol (selected pose)
+    cutoff: float,
+    show_labels: bool,
+    show_surface: bool,
+    heme_rec_fh: str = "",
+    cryst_pdb: str = "",    # ignored inside figure (no co-crystal in figure view)
+    height: int = 440,
+    key_prefix: str = "fig",
+    show_cryst: bool = False,   # False = figure mode, True = normal app mode
+):
+    """
+    Render the Binding Pocket View.
+    show_cryst=False (default for figure) suppresses the co-crystal ligand overlay.
+    """
+    import py3Dmol
+    from rdkit import Chem
+    try:
+        v = py3Dmol.view(width="100%", height=height)
+        v.setBackgroundColor(_viewer_bg())
+        mi = 0
+        if rec_fh and os.path.exists(rec_fh):
+            v.addModel(open(rec_fh).read(), "pdb")
+            v.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+            if show_surface:
+                v.addSurface(py3Dmol.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
+            mi += 1
+        mi = _add_heme_to_view(v, heme_rec_fh or rec_fh, mi)
+        # Co-crystal only in normal app mode, never in figure panel
+        if show_cryst and cryst_pdb and os.path.exists(cryst_pdb):
+            v.addModel(open(cryst_pdb).read(), "pdb")
+            v.setStyle({"model": mi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.18}})
+            mi += 1
+        v.addModel(Chem.MolToMolBlock(mol), "mol")
+        _lig_m = mi
+        v.setStyle({"model": _lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
+        if rec_fh and os.path.exists(rec_fh):
+            _ir = get_interacting_residues(rec_fh, mol, cutoff=cutoff)
+            for _rb in _ir:
+                _has_chain = bool(_rb["chain"] and _rb["chain"].strip())
+                _sel = {"model": 0, "resi": _rb["resi"]}
+                if _has_chain:
+                    _sel["chain"] = _rb["chain"]
+                v.setStyle(_sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
+                if show_labels:
+                    _lbl_chain = _rb["chain"] if _has_chain else ""
+                    v.addLabel(
+                        f"{_rb['resn']}{_rb['resi']}{_lbl_chain}",
+                        {"fontSize": 11, "fontColor": "yellow",
+                         "backgroundColor": "black", "backgroundOpacity": 0.65,
+                         "inFront": True, "showBackground": True},
+                        _sel,
+                    )
+        v.zoomTo({"model": _lig_m})
+        show3d(v, height=height)
+    except Exception as _e:
+        st.info(f"Binding pocket viewer error: {_e}")
+
+
+def _strip_acd_toolbar(html_str: str) -> str:
+    """
+    Remove the toolbar div AND the top title pill from the ACD interactive HTML
+    so only the clean diagram is shown inside the figure panel.
+
+    What is stripped:
+    1. The <div style="display:flex..."> toolbar block (Reset / Export / drag hint).
+    2. The title pill <rect> + <text> at the top of the SVG (ligand-name capsule).
+    """
+    import re
+    # 1. Remove the outer toolbar div (between <div style="display:flex... and </div>)
+    cleaned = re.sub(
+        r'<div\s+style="display:flex[^"]*"[^>]*>.*?</div>\s*(?=<svg)',
+        '',
+        html_str,
+        count=1,
+        flags=re.DOTALL,
+    )
+    # 2. Strip the border/background wrapper div styling
+    cleaned = cleaned.replace(
+        'style="font-family:Arial,sans-serif;background:white;border-radius:8px;\n'
+        '            border:1px solid #e0e0e0;overflow:hidden;"',
+        'style="font-family:Arial,sans-serif;background:white;"',
+    )
+    # 3. Remove the title pill — match by fill="#f2f2f2" which is common to
+    #    both static SVG (rx≈23.0) and interactive HTML SVG (rx=22) variants.
+    cleaned = re.sub(
+        r'<rect\b[^>]*fill="#f2f2f2"[^>]*/>\s*'
+        r'<text\b[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
+        '',
+        cleaned,
+        count=1,
+        flags=re.DOTALL,
+    )
+    return cleaned
+
+
+def _2d_svg_bytes(acd_svg, acd_ihtml, rdk_svg, pv_svg, pv_png,
+                  diag_source: str):
+    """
+    Return (svg_bytes_or_None, png_bytes_or_None) for the currently selected
+    2D diagram source, for use in the figure export.
+
+    For ACD diagrams: the title pill is stripped so it doesn't duplicate the
+    summary capsule that _build_figure_svg adds below the diagram.
+
+    Two SVG variants exist:
+      • Static SVG from draw_interaction_diagram (core.py):
+            rx="{pr:.1f}" where pr = ph/2 = 23.0, fill="#f2f2f2"
+      • Interactive HTML SVG from _render_interactive_diagram (app.py):
+            rx="22", fill="#f2f2f2"
+    The regex must match BOTH — match by fill="#f2f2f2", not by rx value.
+    """
+    import re
+
+    def _strip_title_pill_from_svg(svg_text: str) -> str:
+        """
+        Remove the title pill <rect fill="#f2f2f2"> and the <text fill="#1a1a1a">
+        that follows it.  Works on both static SVG (rx≈23.0) and interactive
+        HTML SVG (rx=22) variants.
+        """
+        return re.sub(
+            r'<rect\b[^>]*fill="#f2f2f2"[^>]*/>\s*'
+            r'<text\b[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
+            '',
+            svg_text,
+            count=1,
+            flags=re.DOTALL,
+        )
+
+    if diag_source == "acd":
+        if acd_svg:
+            raw = acd_svg if isinstance(acd_svg, bytes) else acd_svg.encode()
+            cleaned = _strip_title_pill_from_svg(raw.decode("utf-8", errors="replace"))
+            return cleaned.encode(), None
+        if acd_ihtml:
+            m = re.search(r'(<svg\b.*?</svg>)', acd_ihtml, re.DOTALL)
+            if m:
+                cleaned = _strip_title_pill_from_svg(m.group(1))
+                return cleaned.encode(), None
+        return None, None
+    elif diag_source == "rdkit":
+        if rdk_svg:
+            raw = rdk_svg if isinstance(rdk_svg, bytes) else rdk_svg.encode()
+            return raw, None
+        return None, None
+    else:  # poseview
+        if pv_png:
+            return None, pv_png
+        if pv_svg:
+            raw = pv_svg if isinstance(pv_svg, bytes) else pv_svg.encode()
+            return raw, None
+        return None, None
+
+
+def _build_figure_svg(
+    diag_svg_bytes,  # bytes of 2D SVG (may be None if only PNG available)
+    diag_png_bytes,  # bytes of 2D PNG (fallback)
+    capsule_text: str,
+    plot_fig=None,   # matplotlib figure for top-left panel (batch 4-panel only)
+    layout: str = "2panel",  # "2panel" | "4panel"
+    panel_a_png: bytes = None,   # captured 3D screenshot for panel a / c
+) -> bytes:
+    """
+    Compose a publication-quality SVG figure:
+
+    2-panel  [a | b]  — a = placeholder note (3D can't embed), b = 2D diagram
+    4-panel  top: [a=plot | b=note]  bottom: [c=note | d=2D diagram]
+
+    The 3D binding pocket view cannot be embedded in SVG (WebGL), so panel a/c
+    shows a clean placeholder label. The exported SVG is intended for vector-
+    quality 2D diagram + capsule + legend export. For a screenshot of the
+    combined 3D+2D layout, instruct the user to use browser screenshot.
+    """
+    import base64, io
+
+    W, H_panel = 900, 500  # per-panel width x height
+
+    LEGEND_ITEMS = [
+        ("#a0c8ff", "#2287ff", None,      "Hydrophobic"),
+        ("#80dd80", "#1a7a1a", "5 3",     "H-bond"),
+        ("#f0a0ff", "#e200e8", "5 3",     "π-π stacking"),
+        ("#ffe090", "#cc8800", "3 2",     "Metal"),
+        ("#ffb0d0", "#cc2277", "5 2",     "Halogen bond"),
+        ("#c4a0ff", "#6633aa", "4 2 1 2", "H···Halogen"),
+    ]
+
+    def _capsule_svg(cx, cy, text, panel_w):
+        tw = len(text) * 8.5 + 40
+        px = cx - tw / 2
+        return (
+            f'<rect x="{px:.1f}" y="{cy-15:.1f}" width="{tw:.0f}" height="30" rx="15"'
+            f' fill="#f0f0ec" stroke="#c4c4c0" stroke-width="1"/>'
+            f'<text x="{cx:.1f}" y="{cy:.1f}" text-anchor="middle" dominant-baseline="central"'
+            f' font-family="Arial,sans-serif" font-size="13" font-weight="700" fill="#1e1e1c">'
+            f'{text}</text>'
+        )
+
+    def _legend_svg(cx, y, items):
+        parts = []
+        entry_w = 110
+        total = len(items) * entry_w
+        x0 = cx - total / 2
+        parts.append(
+            f'<rect x="{x0-8:.0f}" y="{y-6}" width="{total+16:.0f}" height="28"'
+            f' fill="white" stroke="#e8e8e4" stroke-width="0.8" rx="5"/>'
+        )
+        for k, (fill, stroke, dash, label) in enumerate(items):
+            ix = x0 + k * entry_w + 10
+            parts.append(
+                f'<circle cx="{ix+7:.0f}" cy="{y+8}" r="7"'
+                f' fill="{fill}" opacity="0.6" stroke="{stroke}" stroke-width="1.2"/>'
+            )
+            if dash:
+                parts.append(
+                    f'<line x1="{ix+17:.0f}" y1="{y+8}" x2="{ix+30:.0f}" y2="{y+8}"'
+                    f' stroke="{stroke}" stroke-width="1.5" stroke-dasharray="{dash}"/>'
+                )
+                tx = ix + 34
+            else:
+                tx = ix + 18
+            parts.append(
+                f'<text x="{tx:.0f}" y="{y+8}" dominant-baseline="central"'
+                f' font-family="Arial,sans-serif" font-size="11" font-weight="700"'
+                f' fill="#555">{label}</text>'
+            )
+        return "\n".join(parts)
+
+    def _panel_label(x, y, label):
+        return (
+            f'<text x="{x}" y="{y}" font-family="Arial,sans-serif"'
+            f' font-size="22" font-weight="700" fill="#1e1e1c">{label}</text>'
+        )
+
+    def _3d_placeholder(px, py, pw, ph, label):
+        # Clean empty panel — no instructional text.
+        # User composites the 3D screenshot separately.
+        return (
+            f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}"'
+            f' fill="#f7f7f5" stroke="#d8d8d4" stroke-width="1" rx="6"/>'
+        )
+
+    def _embed_2d(svg_b, png_b, px, py, pw, ph):
+        """
+        Embed 2D diagram into the figure SVG, vertically shifted down so the
+        content sits more in the vertical centre of the allocated space
+        (avoids the diagram being pushed hard to the top of the panel).
+        """
+        # Extra top offset to push diagram toward vertical centre
+        V_OFFSET = 30
+        if svg_b:
+            raw = svg_b.decode("utf-8", errors="replace") if isinstance(svg_b, bytes) else svg_b
+            raw = raw.strip()
+            if raw.startswith("<?xml"):
+                raw = raw[raw.index("<svg"):]
+            b64 = base64.b64encode(raw.encode()).decode()
+            return (
+                f'<image x="{px}" y="{py + V_OFFSET}" width="{pw}" height="{ph - V_OFFSET}"'
+                f' href="data:image/svg+xml;base64,{b64}"'
+                f' preserveAspectRatio="xMidYMid meet"/>'
+            )
+        elif png_b:
+            b64 = base64.b64encode(png_b).decode()
+            return (
+                f'<image x="{px}" y="{py + V_OFFSET}" width="{pw}" height="{ph - V_OFFSET}"'
+                f' href="data:image/png;base64,{b64}"'
+                f' preserveAspectRatio="xMidYMid meet"/>'
+            )
+        return (
+            f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}"'
+            f' fill="#f8f8f5" stroke="#d0d0cc" stroke-width="1" rx="6"/>'
+            f'<text x="{px+pw/2:.0f}" y="{py+ph/2:.0f}" text-anchor="middle"'
+            f' font-family="Arial,sans-serif" font-size="13" fill="#888">No 2D diagram yet</text>'
+        )
+
+    if layout == "2panel":
+        SVG_W = W * 2
+        SVG_H = H_panel + 60   # capsule only — ACD SVG has own legend
+        pad = 20
+        pw = W - pad * 2
+
+        # Panel a: use captured 3D screenshot if available, else empty placeholder
+        _panel_a_el = (
+            _embed_2d(None, panel_a_png, pad, 36, pw, H_panel - 36)
+            if panel_a_png else
+            _3d_placeholder(pad, 36, pw, H_panel - 36, "a")
+        )
+
+        body = [
+            f'<svg width="{SVG_W}" height="{SVG_H}" viewBox="0 0 {SVG_W} {SVG_H}"'
+            f' xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
+            '<rect width="100%" height="100%" fill="white"/>',
+            # outer frame border
+            f'<rect x="4" y="4" width="{SVG_W-8}" height="{SVG_H-8}"'
+            f' fill="none" stroke="#c8c8c4" stroke-width="1.5" rx="8"/>',
+            # Panel a
+            _panel_label(pad, 28, "a)"),
+            _panel_a_el,
+            # Panel b — 2D diagram
+            _panel_label(W + pad, 28, "b)"),
+            _embed_2d(diag_svg_bytes, diag_png_bytes, W + pad, 36, pw, H_panel - 36),
+            _capsule_svg(W + W / 2, H_panel + 20, capsule_text, W),
+            '</svg>',
+        ]
+
+    else:  # 4panel
+        TOP_H    = 320
+        BOT_H    = H_panel + 60
+        SVG_W    = W * 2
+        SVG_H    = TOP_H + BOT_H + 16
+        pad      = 20
+        pw       = W - pad * 2
+
+        # Top-left: embed matplotlib plot PNG if available
+        plot_png = None
+        if plot_fig is not None:
+            _buf = io.BytesIO()
+            plot_fig.savefig(_buf, format="png", dpi=150,
+                             bbox_inches="tight", facecolor=plot_fig.get_facecolor())
+            _buf.seek(0)
+            plot_png = _buf.getvalue()
+
+        # Panel c: use captured 3D screenshot if available, else empty placeholder
+        _panel_c_el = (
+            _embed_2d(None, panel_a_png, pad, TOP_H + 16 + 16, pw, BOT_H - 80)
+            if panel_a_png else
+            _3d_placeholder(pad, TOP_H + 16 + 16, pw, BOT_H - 80, "c")
+        )
+
+        body = [
+            f'<svg width="{SVG_W}" height="{SVG_H}" viewBox="0 0 {SVG_W} {SVG_H}"'
+            f' xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
+            '<rect width="100%" height="100%" fill="white"/>',
+            # outer frame border
+            f'<rect x="4" y="4" width="{SVG_W-8}" height="{SVG_H-8}"'
+            f' fill="none" stroke="#c8c8c4" stroke-width="1.5" rx="8"/>',
+            # Top row
+            _panel_label(pad, 24, "a)"),
+            _embed_2d(None, plot_png, pad, 32, pw, TOP_H - 36) if plot_png else
+                _3d_placeholder(pad, 32, pw, TOP_H - 36, "a"),
+            _panel_label(W + pad, 24, "b)"),
+            _3d_placeholder(W + pad, 32, pw, TOP_H - 36, "b"),
+            # Bottom row
+            _panel_label(pad, TOP_H + 16 + 8, "c)"),
+            _panel_c_el,
+            _panel_label(W + pad, TOP_H + 16 + 8, "d)"),
+            _embed_2d(diag_svg_bytes, diag_png_bytes,
+                      W + pad, TOP_H + 16 + 16, pw, BOT_H - 80),
+            _capsule_svg(W + W / 2, TOP_H + 16 + BOT_H - 20, capsule_text, W),
+            '</svg>',
+        ]
+
+    return "\n".join(body).encode()
+
+
+def _render_2d_panel_b(
+    acd_svg, acd_ihtml,
+    rdk_svg,
+    pv_svg, pv_png,
+    diag_source: str,           # "acd" | "rdkit" | "poseview"
+    capsule_text: str,
+    height: int = 480,
+    key_prefix: str = "fig",
+):
+    """
+    Render the 2D diagram + capsule + legend for panel b / panel d.
+    The ACD interactive toolbar is stripped so only the clean diagram shows.
+    """
+    import base64
+
+    # ── Diagram ──────────────────────────────────────────────────────────────
+    if diag_source == "acd":
+        if acd_ihtml:
+            # Strip toolbar/controls — show only the SVG diagram
+            _clean = _strip_acd_toolbar(acd_ihtml)
+            components.html(_clean, height=height, scrolling=False)
+        elif acd_svg:
+            svg_str = acd_svg.decode() if isinstance(acd_svg, bytes) else acd_svg
+            b64 = base64.b64encode(svg_str.encode()).decode()
+            st.markdown(
+                f'<img src="data:image/svg+xml;base64,{b64}" '
+                f'style="width:100%;height:auto;display:block;">',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="display:flex;align-items:center;justify-content:center;'
+                'height:200px;background:#f8f8f5;border-radius:6px;color:#888;">'
+                'Generate the ACD 2D diagram first (tab above).</div>',
+                unsafe_allow_html=True,
+            )
+    elif diag_source == "rdkit":
+        if rdk_svg:
+            svg_str = rdk_svg.decode() if isinstance(rdk_svg, bytes) else rdk_svg
+            b64 = base64.b64encode(svg_str.encode()).decode()
+            st.markdown(
+                f'<img src="data:image/svg+xml;base64,{b64}" '
+                f'style="width:100%;height:auto;display:block;">',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="display:flex;align-items:center;justify-content:center;'
+                'height:200px;background:#f8f8f5;border-radius:6px;color:#888;">'
+                'Generate the RDKit 2D diagram first (tab above).</div>',
+                unsafe_allow_html=True,
+            )
+    else:  # poseview
+        if pv_png:
+            b64 = base64.b64encode(pv_png).decode()
+            st.markdown(
+                f'<img src="data:image/png;base64,{b64}" '
+                f'style="width:100%;height:auto;display:block;">',
+                unsafe_allow_html=True,
+            )
+        elif pv_svg:
+            svg_str = pv_svg.decode() if isinstance(pv_svg, bytes) else pv_svg
+            b64 = base64.b64encode(svg_str.encode()).decode()
+            st.markdown(
+                f'<img src="data:image/svg+xml;base64,{b64}" '
+                f'style="width:100%;height:auto;display:block;">',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="display:flex;align-items:center;justify-content:center;'
+                'height:200px;background:#f8f8f5;border-radius:6px;color:#888;">'
+                'Generate the PoseView 2D diagram first (tab above).</div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── Capsule label ─────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div style="text-align:center;margin:12px 0 6px;">'
+        f'<span style="display:inline-block;padding:7px 26px;border-radius:999px;'
+        f'background:#f0f0ec;border:1px solid #c4c4c0;font-size:14px;'
+        f'font-weight:700;color:#1e1e1c;letter-spacing:0.01em;">'
+        f'{capsule_text}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Interaction legend ─────────────────────────────────────────────────────
+    LEGEND_ITEMS = [
+        ("#a0c8ff", "#2287ff", None,      "Hydrophobic"),
+        ("#80dd80", "#1a7a1a", "5 3",     "H-bond"),
+        ("#f0a0ff", "#e200e8", "5 3",     "π-π stacking"),
+        ("#ffe090", "#cc8800", "3 2",     "Metal"),
+        ("#ffb0d0", "#cc2277", "5 2",     "Halogen bond"),
+        ("#c4a0ff", "#6633aa", "4 2 1 2", "H···Halogen"),
+    ]
+    parts = []
+    for fill, stroke, dash, label in LEGEND_ITEMS:
+        circle = (
+            f'<span style="display:inline-block;width:14px;height:14px;'
+            f'border-radius:50%;background:{fill};border:1.5px solid {stroke};'
+            f'vertical-align:middle;margin-right:3px;"></span>'
+        )
+        line = (
+            f'<span style="display:inline-block;width:18px;height:2px;'
+            f'border-top:2px dashed {stroke};vertical-align:middle;margin:0 3px;"></span>'
+            if dash else ""
+        )
+        parts.append(
+            f'<span style="margin:0 6px 4px 0;display:inline-flex;align-items:center;'
+            f'font-size:11px;color:#555;">{circle}{line}{label}</span>'
+        )
+    st.markdown(
+        '<div style="text-align:center;margin:4px 0 2px;line-height:1.8;">'
+        + "".join(parts) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _make_combined_figure_html(
+    v3d_raw_html: str,       # 3D for panel a (2panel) / panel c (4panel)
+    diag_b64_src: str,       # 2D data-URI for panel b (2panel) / panel d (4panel)
+    capsule_text: str,
+    panel_w: int = 530,
+    panel_h: int = 500,      # bottom row height (2panel) or panel c/d height (4panel)
+    layout: str = "2panel",  # "2panel" | "4panel"
+    # ── 4-panel extras ───────────────────────────────────────────────────────
+    plot_b64_src: str = "",   # score plot PNG data-URI  → panel a
+    v3d_b_raw_html: str = "", # 3D viewer (pose browser) → panel b
+    top_h: int = 280,         # height of top row (panels a & b)
+) -> tuple:
+    """
+    Build a self-contained HTML page containing the full figure.
+    One outer frame, panel labels inside their panels, Save buttons outside frame.
+
+    2-panel:  [ a: 3D pocket | b: 2D diagram ]
+    4-panel:  [ a: score plot | b: 3D pose browser ]   ← top row (top_h)
+              [ c: 3D pocket  | d: 2D diagram      ]   ← bottom row (panel_h)
+
+    The ⬇ Save PNG/SVG buttons compose all panels via HTML5 Canvas + download.
+    Works because every 3D canvas is in the SAME document.
+    """
+    import re as _re2
+
+    PAD, GAP = 16, 16
+    LBL_H    = 28   # label row height
+    CAP_H    = 54   # capsule row below panel d/b
+    SAVE_H   = 52   # save-bar height above figure
+
+    FW = PAD + panel_w + GAP + panel_w + PAD
+
+    if layout == "2panel":
+        FH     = PAD + LBL_H + panel_h + CAP_H + PAD
+    else:
+        FH     = PAD + LBL_H + top_h + GAP + LBL_H + panel_h + CAP_H + PAD
+
+    TOTAL_H = SAVE_H + FH + 12
+
+    # ── Extract 3Dmol CDN script tag (take from whichever html is available) ─
+    def _extract_cdn(html):
+        m = _re2.search(r'(<script\b[^>]*3[Dd]mol[^>]*>(?:</script>)?)', html)
+        return m.group(1) if m else ""
+
+    cdn_tag = _extract_cdn(v3d_raw_html) or _extract_cdn(v3d_b_raw_html)
+    if cdn_tag and not cdn_tag.endswith("</script>"):
+        cdn_tag += "</script>"
+
+    # ── Extract <body> content (viewer div + setup script) from each html ────
+    def _body(html, target_h):
+        m = _re2.search(r'<body[^>]*>(.*?)</body>', html, _re2.DOTALL)
+        b = m.group(1).strip() if m else html
+        # Override viewer height so it fills the panel
+        b = _re2.sub(r'(height\s*:\s*)\d+px', f'\\g<1>{target_h}px', b, count=1)
+        b = _re2.sub(r'(width\s*:\s*)\d+px',  '\\g<1>100%',           b, count=1)
+        return b
+
+    body_c = _body(v3d_raw_html,   panel_h)   # panel c (or panel a in 2panel)
+    body_b = _body(v3d_b_raw_html, top_h) if v3d_b_raw_html else ""
+
+    cap_js = capsule_text.replace("'", "\\'").replace('"', '\\"')
+
+    # ── Panel CSS (shared) ────────────────────────────────────────────────────
+    CSS = f"""
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{background:white;font-family:Arial,sans-serif;overflow:hidden;}}
+#save-bar{{display:flex;gap:10px;align-items:center;padding:8px 8px 4px;}}
+.sbtn{{background:#1a7f37;color:white;border:none;border-radius:6px;
+  padding:7px 26px;font-size:13px;font-weight:600;cursor:pointer;
+  font-family:'IBM Plex Mono',monospace;}}
+.sbtn:hover{{filter:brightness(1.15);}}
+#sstatus{{font-size:11px;color:#888;}}
+#fig{{border:1.5px solid #c8c8c4;border-radius:8px;background:white;
+  margin:0 4px;padding:{PAD}px;width:{FW}px;}}
+.row{{display:flex;gap:{GAP}px;}}
+.col{{width:{panel_w}px;flex:0 0 {panel_w}px;}}
+.plbl{{font-size:18px;font-weight:700;color:#1e1e1c;margin-bottom:6px;line-height:1;}}
+.panel{{width:{panel_w}px;background:#fafaf8;border-radius:4px;overflow:hidden;position:relative;}}
+.panel canvas{{width:100%!important;height:100%!important;}}
+.panel>div[id]{{width:100%!important;}}
+.panel img{{width:100%;object-fit:contain;display:block;}}
+.cap{{text-align:center;margin:10px 0 4px;}}
+.cap span{{display:inline-block;padding:7px 28px;border-radius:999px;
+  background:#f0f0ec;border:1px solid #c4c4c0;font-size:14px;font-weight:700;color:#1e1e1c;}}
+"""
+
+    # ── Build panel markup ────────────────────────────────────────────────────
+    if layout == "2panel":
+        PANELS_HTML = f"""
+<div class="row">
+  <div class="col">
+    <p class="plbl">a)</p>
+    <div class="panel" id="panel-a" style="height:{panel_h}px;">{body_c}</div>
+  </div>
+  <div class="col">
+    <p class="plbl">b)</p>
+    <div class="panel" id="panel-d" style="height:{panel_h}px;">
+      <img id="img-2d" src="{diag_b64_src}" crossorigin="anonymous">
+    </div>
+    <div class="cap"><span>{capsule_text}</span></div>
+  </div>
+</div>"""
+
+    else:  # 4panel
+        plot_img = (f'<img id="img-plot" src="{plot_b64_src}">'
+                    if plot_b64_src else
+                    '<div style="display:flex;align-items:center;justify-content:center;'
+                    'height:100%;color:#aaa;font-size:13px;">Score plot unavailable</div>')
+        PANELS_HTML = f"""
+<div class="row" style="margin-bottom:{GAP}px;">
+  <div class="col">
+    <p class="plbl">a)</p>
+    <div class="panel" id="panel-a" style="height:{top_h}px;">{plot_img}</div>
+  </div>
+  <div class="col">
+    <p class="plbl">b)</p>
+    <div class="panel" id="panel-b" style="height:{top_h}px;">{body_b}</div>
+  </div>
+</div>
+<div class="row">
+  <div class="col">
+    <p class="plbl">c)</p>
+    <div class="panel" id="panel-c" style="height:{panel_h}px;">{body_c}</div>
+  </div>
+  <div class="col">
+    <p class="plbl">d)</p>
+    <div class="panel" id="panel-d" style="height:{panel_h}px;">
+      <img id="img-2d" src="{diag_b64_src}" crossorigin="anonymous">
+    </div>
+    <div class="cap"><span>{capsule_text}</span></div>
+  </div>
+</div>"""
+
+    # ── JavaScript ────────────────────────────────────────────────────────────
+    # compose() captures ALL panels and draws onto one HTML5 Canvas
+    IS_4PANEL = "true" if layout == "4panel" else "false"
+
+    JS = f"""
+function RR(g,x,y,w,h,r){{
+  g.beginPath();g.moveTo(x+r,y);
+  g.lineTo(x+w-r,y);g.quadraticCurveTo(x+w,y,x+w,y+r);
+  g.lineTo(x+w,y+h-r);g.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  g.lineTo(x+r,y+h);g.quadraticCurveTo(x,y+h,x,y+h-r);
+  g.lineTo(x,y+r);g.quadraticCurveTo(x,y,x+r,y);g.closePath();
+}}
+function sleep(ms){{return new Promise(r=>setTimeout(r,ms));}}
+function st(m){{document.getElementById('sstatus').textContent=m;}}
+
+async function capture3d(sel){{
+  for(let i=0;i<30;i++){{
+    const c=document.querySelector(sel+' canvas');
+    if(c&&c.width>0){{
+      const img=new Image();
+      await new Promise(r=>{{img.onload=r;img.src=c.toDataURL('image/png');}});
+      return img;
+    }}
+    await sleep(100);
+  }}
+  return null;
+}}
+
+async function drawFit(g,img,x,y,w,h){{
+  if(!img||!img.naturalWidth) return;
+  const sc=Math.min(w/img.naturalWidth,h/img.naturalHeight);
+  const dw=img.naturalWidth*sc, dh=img.naturalHeight*sc;
+  try{{g.drawImage(img,x+(w-dw)/2,y+(h-dh)/2,dw,dh);}}
+  catch(e){{
+    const i2=new Image();i2.crossOrigin='anonymous';
+    await new Promise(r=>{{i2.onload=r;i2.onerror=r;i2.src=img.src;}});
+    if(i2.naturalWidth>0){{
+      const sc2=Math.min(w/i2.naturalWidth,h/i2.naturalHeight);
+      g.drawImage(i2,x+(w-sc2*i2.naturalWidth)/2,y+(h-sc2*i2.naturalHeight)/2,sc2*i2.naturalWidth,sc2*i2.naturalHeight);
+    }}
+  }}
+}}
+
+async function compose(){{
+  const PW={panel_w},PH={panel_h},TH={top_h};
+  const P={PAD},G={GAP},LH={LBL_H},CAPH={CAP_H};
+  const FW=P+PW+G+PW+P;
+  const is4={IS_4PANEL};
+  const FH=is4 ? P+LH+TH+G+LH+PH+CAPH+P : P+LH+PH+CAPH+P;
+
+  const cv=document.createElement('canvas');
+  cv.width=FW; cv.height=FH;
+  const g=cv.getContext('2d');
+
+  g.fillStyle='white'; g.fillRect(0,0,FW,FH);
+  g.strokeStyle='#c8c8c4'; g.lineWidth=1.5;
+  RR(g,2,2,FW-4,FH-4,8); g.stroke();
+
+  if(is4){{
+    // top row
+    const AX=P, AY=P+LH;
+    const BX=P+PW+G, BY=P+LH;
+    g.fillStyle='#fafaf8';
+    g.fillRect(AX,AY,PW,TH); g.fillRect(BX,BY,PW,TH);
+    g.fillStyle='#1e1e1c'; g.font='bold 18px Arial';
+    g.textAlign='left'; g.textBaseline='top';
+    g.fillText('a)',AX,P+4); g.fillText('b)',BX,P+4);
+
+    // panel a: plot
+    const imgPlot=document.getElementById('img-plot');
+    if(imgPlot) await drawFit(g,imgPlot,AX,AY,PW,TH);
+
+    // panel b: 3D pose browser
+    const imgB=await capture3d('#panel-b');
+    if(imgB) g.drawImage(imgB,BX,BY,PW,TH);
+
+    // bottom row
+    const CX=P, CY=P+LH+TH+G+LH;
+    const DX=P+PW+G, DY=P+LH+TH+G+LH;
+    g.fillStyle='#fafaf8';
+    g.fillRect(CX,CY,PW,PH); g.fillRect(DX,DY,PW,PH);
+    g.fillStyle='#1e1e1c'; g.font='bold 18px Arial';
+    g.fillText('c)',CX,P+LH+TH+G+4); g.fillText('d)',DX,P+LH+TH+G+4);
+
+    // panel c: 3D binding pocket
+    const imgC=await capture3d('#panel-c');
+    if(imgC) g.drawImage(imgC,CX,CY,PW,PH);
+
+    // panel d: 2D diagram
+    const img2d=document.getElementById('img-2d');
+    if(img2d) await drawFit(g,img2d,DX,DY,PW,PH);
+
+    // capsule below d
+    g.font='bold 13px Arial';
+    const CAP='{cap_js}';
+    const cw=g.measureText(CAP).width+56;
+    const cx=DX+(PW-cw)/2, cy=DY+PH+26;
+    g.fillStyle='#f0f0ec';g.strokeStyle='#c4c4c0';g.lineWidth=1;
+    RR(g,cx,cy-14,cw,28,14);g.fill();g.stroke();
+    g.fillStyle='#1e1e1c';g.textAlign='center';g.textBaseline='middle';
+    g.fillText(CAP,cx+cw/2,cy);
+
+  }}else{{
+    // 2-panel
+    const AX=P, AY=P+LH;
+    const BX=P+PW+G, BY=P+LH;
+    g.fillStyle='#fafaf8';
+    g.fillRect(AX,AY,PW,PH); g.fillRect(BX,BY,PW,PH);
+    g.fillStyle='#1e1e1c'; g.font='bold 18px Arial';
+    g.textAlign='left'; g.textBaseline='top';
+    g.fillText('a)',AX,P+4); g.fillText('b)',BX,P+4);
+
+    // panel a: 3D pocket
+    const imgA=await capture3d('#panel-a');
+    if(imgA) g.drawImage(imgA,AX,AY,PW,PH);
+
+    // panel b: 2D diagram
+    const img2d=document.getElementById('img-2d');
+    if(img2d) await drawFit(g,img2d,BX,BY,PW,PH);
+
+    // capsule
+    g.font='bold 13px Arial';
+    const CAP='{cap_js}';
+    const cw=g.measureText(CAP).width+56;
+    const cx=BX+(PW-cw)/2, cy=BY+PH+26;
+    g.fillStyle='#f0f0ec';g.strokeStyle='#c4c4c0';g.lineWidth=1;
+    RR(g,cx,cy-14,cw,28,14);g.fill();g.stroke();
+    g.fillStyle='#1e1e1c';g.textAlign='center';g.textBaseline='middle';
+    g.fillText(CAP,cx+cw/2,cy);
+  }}
+  return cv;
+}}
+
+async function doSave(type){{
+  st('Composing…');
+  try{{
+    const cv=await compose();
+    if(type==='png'){{
+      const a=document.createElement('a');
+      a.href=cv.toDataURL('image/png');
+      a.download='ready_to_use_figure.png';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      st('✓ PNG saved');
+    }}else{{
+      const b64=cv.toDataURL('image/png').split(',')[1];
+      const svg='<svg xmlns="http://www.w3.org/2000/svg" '
+               +'xmlns:xlink="http://www.w3.org/1999/xlink" '
+               +'width="'+cv.width+'" height="'+cv.height+'">'
+               +'<image href="data:image/png;base64,'+b64+'" '
+               +'x="0" y="0" width="'+cv.width+'" height="'+cv.height+'"/>'
+               +'</svg>';
+      const blob=new Blob([svg],{{type:'image/svg+xml'}});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url;a.download='ready_to_use_figure.svg';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      st('✓ SVG saved');
+    }}
+  }}catch(e){{st('Error: '+e);}}
+}}
+"""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+{cdn_tag}
+<style>{CSS}</style>
+</head>
+<body>
+<div id="save-bar">
+  <button class="sbtn" onclick="doSave('png')">⬇ Save PNG</button>
+  <button class="sbtn" onclick="doSave('svg')">⬇ Save SVG</button>
+  <span id="sstatus"></span>
+</div>
+<div id="fig">{PANELS_HTML}</div>
+<script>{JS}</script>
+</body>
+</html>"""
+
+    return html, TOTAL_H
+
+
+def _ready_figure_section(
+    mode: str,           # "single" | "batch"
+    # ── single dock state ──────────────────────────────────────────
+    rec_fh: str = "",
+    sel_mol=None,
+    pose_idx: int = 0,
+    lig_name: str = "",
+    binding_energy=None,
+    cryst_pdb: str = "",
+    acd_svg=None,  acd_ihtml=None,
+    rdk_svg=None,
+    pv_svg=None,   pv_png=None,
+    # ── batch-only state ───────────────────────────────────────────
+    b_browsable=None,
+    b_sel_res=None,
+    b_mols=None,
+    b_pose_i: int = 0,
+    b_plot_draw_fn=None,
+    b_plot_n: int = 0,
+    b_rec_fh: str = "",
+    b_cryst_pdb: str = "",
+    b_acd_svg=None,  b_acd_ihtml=None,
+    b_rdk_svg=None,
+    b_pv_svg=None,   b_pv_png=None,
+    b_this_score=None,
+    b_sel_nm: str = "",
+):
+    """
+    Ready-to-use Figure section.
+
+    For the [a | b] layout, the entire figure is rendered in ONE
+    components.html() call so the ⬇ Save buttons live in the SAME document
+    as the py3Dmol canvas.  JavaScript composes both panels on an HTML5
+    Canvas and triggers a browser download — no Python roundtrip, no upload.
+
+    Flow: click Save PNG/SVG
+      → wait for 3Dmol render (up to 3 s)
+      → canvas.toDataURL() captures panel a)
+      → drawImage() places panel b) alongside
+      → capsule + border drawn
+      → a.click() triggers browser download
+    """
+    import base64, io
+    st.markdown("---")
+    st.markdown("### 📊 Ready-to-use Figure")
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  CONTROLS — all outside the figure canvas
+    # ═════════════════════════════════════════════════════════════════════════
+    with st.expander("⚙️ Figure settings", expanded=True):
+        _src = st.radio(
+            "2D diagram source",
+            ["🧬 Anyone Can Dock", "🔬 RDKit", "🔬 PoseView"],
+            horizontal=True,
+            key=f"rtf_src_{mode}",
+        )
+        _src_key = "acd" if "Anyone" in _src else ("rdkit" if "RDKit" in _src else "poseview")
+
+        if mode == "batch":
+            _layout = st.radio(
+                "Layout",
+                ["[a | b]  Single-style", "[a b / c d]  4-panel"],
+                horizontal=True,
+                key="rtf_batch_layout",
+            )
+            _4panel = "4-panel" in _layout
+        else:
+            _4panel = False
+
+        _ctl1, _ctl2, _ctl3 = st.columns(3)
+        with _ctl1:
+            _cutoff = st.slider("Pocket cutoff (Å)", 2.5, 5.0, 3.5, 0.1, key=f"rtf_cutoff_{mode}")
+        with _ctl2:
+            _show_labels = st.checkbox("Residue labels", value=True, key=f"rtf_lbl_{mode}")
+        with _ctl3:
+            _show_surf = st.checkbox("Protein surface", value=False, key=f"rtf_surf_{mode}")
+
+        # ── Panel b) Pose Browser selectors (4-panel batch only) ─────────────
+        if mode == "batch" and _4panel and b_browsable:
+            st.markdown("---")
+            st.markdown("**Panel b) — Pose Browser**")
+            _pb_names = [r["Name"] for r in b_browsable]
+            _pb_def   = _pb_names.index(b_sel_nm) if b_sel_nm in _pb_names else 0
+            _pb_lig   = st.selectbox(
+                "Ligand (panel b)", _pb_names, index=_pb_def, key="rtf_b_lig_sel"
+            )
+            _pb_res  = next((r for r in b_browsable if r["Name"] == _pb_lig), b_browsable[0])
+            _pb_mols = (
+                load_mols_from_sdf(_pb_res["out_sdf"], sanitize=False)
+                if _pb_res.get("out_sdf") and os.path.exists(_pb_res.get("out_sdf", "")) else []
+            )
+            if _pb_mols:
+                st.slider("Pose (panel b)", 1, len(_pb_mols), 1, key="rtf_b_pose_sel")
+
+    # ── Resolve data ──────────────────────────────────────────────────────────
+    if mode == "single":
+        _rec     = rec_fh;    _mol    = sel_mol
+        _p_idx   = pose_idx;  _lname  = lig_name
+        _score   = binding_energy
+        _a_svg   = acd_svg;   _a_ihtml = acd_ihtml
+        _r_svg   = rdk_svg
+        _pv_svg_ = pv_svg;    _pv_png_ = pv_png
+        _plot_fn = None;      _plot_n  = 0
+        _browsable_rtf = None
+    else:
+        _b_mols  = b_mols or []
+        _mol     = _b_mols[b_pose_i] if _b_mols else None
+        _rec     = b_rec_fh
+        _p_idx   = b_pose_i
+        _lname   = b_sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
+        _score   = b_this_score
+        _a_svg   = b_acd_svg;  _a_ihtml = b_acd_ihtml
+        _r_svg   = b_rdk_svg
+        _pv_svg_ = b_pv_svg;   _pv_png_ = b_pv_png
+        _plot_fn = b_plot_draw_fn; _plot_n = b_plot_n
+        _browsable_rtf = b_browsable
+
+    _capsule = (
+        f"Pose {_p_idx + 1}  ·  {_lname}"
+        + (f"  ·  {_score:.2f} kcal/mol" if _score is not None else "")
+    )
+
+    if _mol is None:
+        st.info("Select a pose to render the figure.")
+        return
+
+    # ── Build 3D viewer HTML ──────────────────────────────────────────────────
+    import py3Dmol as _py3d
+    from rdkit import Chem as _Chem_fig
+
+    PANEL_W, PANEL_H = 530, 500
+
+    def _build_v3d(rec, mol, cutoff, show_labels, show_surf):
+        v = _py3d.view(width=PANEL_W, height=PANEL_H)
+        v.setBackgroundColor("#ffffff")
+        mi = 0
+        if rec and os.path.exists(rec):
+            v.addModel(open(rec).read(), "pdb")
+            v.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+            if show_surf:
+                v.addSurface(_py3d.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
+            mi += 1
+        mi = _add_heme_to_view(v, rec, mi)
+        v.addModel(_Chem_fig.MolToMolBlock(mol), "mol")
+        lig_m = mi
+        v.setStyle({"model": lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
+        if rec and os.path.exists(rec):
+            for rb in get_interacting_residues(rec, mol, cutoff=cutoff):
+                hc  = bool(rb["chain"] and rb["chain"].strip())
+                sel = {"model": 0, "resi": rb["resi"]}
+                if hc:
+                    sel["chain"] = rb["chain"]
+                v.setStyle(sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
+                if show_labels:
+                    v.addLabel(
+                        f"{rb['resn']}{rb['resi']}{rb['chain'] if hc else ''}",
+                        {"fontSize": 11, "fontColor": "yellow",
+                         "backgroundColor": "black", "backgroundOpacity": 0.65,
+                         "inFront": True, "showBackground": True},
+                        sel,
+                    )
+        v.zoomTo({"model": lig_m})
+        return v._make_html()
+
+    try:
+        _v3d_html = _build_v3d(_rec, _mol, _cutoff, _show_labels, _show_surf)
+    except Exception as _e3:
+        st.error(f"3D viewer error: {_e3}")
+        return
+
+    # ── Build 2D data-URI (panel b) ───────────────────────────────────────────
+    _diag_svg_b, _diag_png_b = _2d_svg_bytes(
+        _a_svg, _a_ihtml, _r_svg, _pv_svg_, _pv_png_, _src_key
+    )
+    if _diag_svg_b:
+        _diag_b64_src = "data:image/svg+xml;base64," + base64.b64encode(_diag_svg_b).decode()
+    elif _diag_png_b:
+        _diag_b64_src = "data:image/png;base64," + base64.b64encode(_diag_png_b).decode()
+    else:
+        _diag_b64_src = ""
+
+    # ═════════════════════════════════════════════════════════════════════════
+    #  RENDER:  single [a | b]  or  batch 4-panel
+    #  Both use _make_combined_figure_html() which puts everything in one
+    #  components.html() call so the JS save buttons can access the canvas.
+    # ═════════════════════════════════════════════════════════════════════════
+    if not _4panel:
+        _fig_html, _fig_h = _make_combined_figure_html(
+            v3d_raw_html = _v3d_html,
+            diag_b64_src = _diag_b64_src,
+            capsule_text = _capsule,
+            panel_w      = PANEL_W,
+            panel_h      = PANEL_H,
+        )
+        components.html(_fig_html, height=_fig_h, scrolling=False)
+
+    else:
+        # ── Batch 4-panel — one unified HTML via _make_combined_figure_html ──
+        TOP_H = 320
+        BOT_H = 480
+
+        # Build panel b 3D viewer (pose browser + co-crystal)
+        _b_nm2  = st.session_state.get("rtf_b_lig_sel",
+                   (_browsable_rtf[0]["Name"] if _browsable_rtf else ""))
+        _b_pi2  = st.session_state.get("rtf_b_pose_sel", 1) - 1
+        _b_res2 = next((r for r in (_browsable_rtf or []) if r["Name"] == _b_nm2),
+                       (_browsable_rtf[0] if _browsable_rtf else None))
+        _b_mols2 = (
+            load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False)
+            if _b_res2 and _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", ""))
+            else []
+        )
+        _b_pi2 = max(0, min(_b_pi2, len(_b_mols2) - 1)) if _b_mols2 else 0
+
+        _v3d_b_html = ""
+        if _b_mols2:
+            try:
+                _vb = _py3d.view(width=PANEL_W, height=TOP_H)
+                _vb.setBackgroundColor("#ffffff")
+                _vbi = 0
+                if b_rec_fh and os.path.exists(b_rec_fh):
+                    _vb.addModel(open(b_rec_fh).read(), "pdb")
+                    _vb.setStyle({"model": _vbi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+                    _vbi += 1
+                _vbi = _add_heme_to_view(_vb, b_rec_fh, _vbi)
+                if b_cryst_pdb and os.path.exists(b_cryst_pdb):
+                    _vb.addModel(open(b_cryst_pdb).read(), "pdb")
+                    _vb.setStyle({"model": _vbi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.20}})
+                    _vbi += 1
+                _vb.addModel(_Chem_fig.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
+                _vb.setStyle({"model": _vbi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
+                _vb.zoomTo({"model": _vbi})
+                _v3d_b_html = _vb._make_html()
+            except Exception as _evb:
+                _v3d_b_html = ""
+
+        # Score plot PNG for panel a
+        _plot_b64_src = ""
+        if _plot_fn and _plot_n > 0:
+            try:
+                _pfig, _pax = plt.subplots(figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
+                _plot_fn(_pax); _pfig.tight_layout()
+                _pbuf = io.BytesIO()
+                _pfig.savefig(_pbuf, format="png", dpi=150,
+                              bbox_inches="tight", facecolor=_pfig.get_facecolor())
+                _pbuf.seek(0)
+                _plot_b64_src = "data:image/png;base64," + base64.b64encode(_pbuf.getvalue()).decode()
+                plt.close(_pfig)
+            except Exception:
+                pass
+
+        _fig_html4, _fig_h4 = _make_combined_figure_html(
+            v3d_raw_html  = _v3d_html,     # panel c: binding pocket
+            diag_b64_src  = _diag_b64_src, # panel d: 2D diagram
+            capsule_text  = _capsule,
+            panel_w       = PANEL_W,
+            panel_h       = BOT_H,
+            layout        = "4panel",
+            plot_b64_src  = _plot_b64_src,
+            v3d_b_raw_html= _v3d_b_html,
+            top_h         = TOP_H,
+        )
+        components.html(_fig_html4, height=_fig_h4, scrolling=False)
+
+
+def _ai_prompt_section(
+    engine: str,          # "acd" | "rdkit" | "poseview"
+    lig_name: str,
+    pdb_id: str,
+    binding_energy,       # float or None
+    has_ref: bool,
+    cocrystal_ligand_id: str = "",
+    ref_lig_name: str = "",
+    ref_lig_energy=None,  # float or None
+    ref_redocked: bool = False,
+    rmsd_crystal=None,    # float or None — RMSD of selected pose vs co-crystal
+    key_suffix: str = "",
+):
+    """
+    Render the 🤖 AI interpretation prompt block, adapted to the diagram engine.
+    Call this at the bottom of every 2D diagram tab after images are shown.
+    """
+    st.markdown("---")
+    st.markdown("### 🤖 Understand Your Results with AI")
+
+    _engine_labels = {
+        "acd":      "Anyone Can Dock 2D Diagram",
+        "rdkit":    "RDKit 2D Diagram",
+        "poseview": "PoseView (proteins.plus)",
+    }
+    _engine_label = _engine_labels.get(engine, "2D interaction diagram")
+
+    _legend = {
+        "acd": (
+            "  Green dashed line     = hydrogen bond (number on line = distance in Å)\n"
+            "  Magenta dashed line   = pi-pi stacking (aromatic ring interaction)\n"
+            "  Blue circle (no line) = hydrophobic contact\n"
+            "  Gold dashed line      = metal / heme coordination\n"
+            "  Labels on circles     = amino acid name + residue number + chain"
+        ),
+        "rdkit": (
+            "  Blue highlight circle   = hydrogen bond / polar interaction\n"
+            "  Green highlight circle  = hydrophobic contact\n"
+            "  Pink highlight circle   = other interaction (ionic, metal, etc.)\n"
+            "  Labels on circles       = amino acid name + residue number + chain"
+        ),
+        "poseview": (
+            "  Green dashed line     = hydrogen bond (number on line = distance in Å)\n"
+            "  Yellow filled circle  = hydrophobic contact\n"
+            "  Blue dashed line      = pi-pi / aromatic stacking\n"
+            "  Labels on circles     = amino acid name + residue number + chain"
+        ),
+    }.get(engine, "  See legend in diagram.")
+
+    _n_diagrams = "two 2D" if has_ref else "a 2D"
+    _plural     = "diagrams" if has_ref else "diagram"
+
+    if engine == "acd":
+        st.caption(
+            f"Download your diagram (PNG button above), then paste the prompt "
+            f"below + the image into **Claude**, **GPT-4o**, or **Gemini** "
+            f"to get a plain-English explanation of your docking results."
+        )
+    else:
+        st.caption(
+            f"Screenshot or download the {_engine_label} above, then paste the prompt "
+            f"below + the image into **Claude**, **GPT-4o**, or **Gemini** "
+            f"to get a plain-English explanation of your docking results."
+        )
+
+    _estr       = f"{binding_energy:.2f} kcal/mol" if binding_energy is not None else "[binding energy]"
+    _lig_disp   = lig_name or "[ligand]"
+    _pdb_disp   = pdb_id.upper() if pdb_id else "[PDB ID]"
+    _ref_disp   = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
+    _ref_estr   = f"{ref_lig_energy:.2f} kcal/mol" if ref_lig_energy is not None else None
+    # RMSD line — shown when available regardless of redocking
+    _rmsd_line  = (
+        f"  RMSD vs co-crystal pose: {rmsd_crystal:.2f} Å"
+        + (" ✓ (≤2.0 Å — good reproduction)" if rmsd_crystal <= 2.0
+           else " ⚠ (2–3 Å — moderate)" if rmsd_crystal <= 3.0
+           else " ✗ (>3 Å — pose differs significantly from crystal)")
+        if rmsd_crystal is not None else ""
+    )
+
+    if has_ref:
+        _ref_line = (
+            f"Reference: {_ref_disp} co-crystallised in PDB {_pdb_disp}"
+            + (f"  |  binding energy from re-docking: {_ref_estr}" if ref_redocked
+               else "  (see 2D diagram — no re-docking performed)")
+        )
+        _lines = [
+            "I have just run a molecular docking experiment and I need help",
+            f"understanding what my results mean. I am attaching {_n_diagrams}",
+            f"interaction {_plural} generated with the {_engine_label} in the Anyone Can Dock app.",
+            "",
+            "Docking software: AutoDock Vina v1.2.7",
+            f"Protein target (PDB): {_pdb_disp}",
+            f"My docked ligand: {_lig_disp}",
+            f"  Predicted binding energy: {_estr}",
+            "  (more negative = stronger predicted binding)",
+        ] + ([_rmsd_line] if _rmsd_line else []) + [
+            _ref_line,
+            "",
+            "How to read the diagram:",
+            _legend,
+            "",
+            "Please help me understand:",
+            "1. What are the most important interactions my ligand makes,",
+            "   and why do they matter for binding?",
+            "2. How does my docked ligand compare to the reference — are the",
+            "   key contacts conserved or different?",
+            "3. Based on the binding energy"
+            + (" and the interaction pattern," if ref_redocked else " (docked ligand only) and the interaction pattern,")
+            + " does my",
+            "   ligand look like a promising binder, and what could be improved?",
+        ] + (["4. My pose RMSD vs the co-crystal is " + _rmsd_line.strip() + ". What does this tell me",
+              "   about how well the docking reproduced the experimental binding mode?"] if _rmsd_line else []) + [
+            "",
+            "Please explain in plain language that a non-expert can follow,",
+            "but include the specific residue names and distances from the diagram.",
+            "",
+            "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
+            "can copy directly into a report or presentation slide.",
+            "Label this section: 'Ready-to-use summary:'",
+        ]
+    else:
+        _lines = [
+            "I have just run a molecular docking experiment and I need help",
+            f"understanding what my results mean. I am attaching {_n_diagrams}",
+            f"interaction {_plural} generated with the {_engine_label} in the Anyone Can Dock app.",
+            "",
+            "Docking software: AutoDock Vina v1.2.7",
+            f"Protein target (PDB): {_pdb_disp}",
+            f"My docked ligand: {_lig_disp}",
+            f"  Predicted binding energy: {_estr}",
+            "  (more negative = stronger predicted binding)",
+        ] + ([_rmsd_line] if _rmsd_line else []) + [
+            "",
+            "How to read the diagram:",
+            _legend,
+            "",
+            "Please help me understand:",
+            "1. What interactions is my ligand making with the protein,",
+            "   and which ones are most important for binding?",
+            "2. What does the binding energy value tell me?",
+            "3. Are there any obvious ways the binding could be improved?",
+        ] + (["4. My pose RMSD vs the co-crystal is " + _rmsd_line.strip() + ". What does this tell me",
+              "   about how well the docking reproduced the experimental binding mode?"] if _rmsd_line else []) + [
+            "",
+            "Please explain in plain language that a non-expert can follow,",
+            "but include the specific residue names and distances from the diagram.",
+            "",
+            "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
+            "can copy directly into a report or presentation slide.",
+            "Label this section: 'Ready-to-use summary:'",
+        ]
+
+    st.code("\n".join(_lines), language=None)
+
+
 def _poseview_ui(
     rec_key, pose_sdf_path,
     pdb_id="", cocrystal_ligand_id="",
@@ -793,6 +2099,7 @@ def _poseview_ui(
     lig_name="", lig_smiles="", binding_energy=None,
     ref_lig_name="", ref_lig_smiles="", ref_lig_energy=None,
     show_header=True,
+    rmsd_crystal=None,   # float or None — RMSD of selected pose vs co-crystal PDB
 ):
     _pose_key = (
         f"{st.session_state.get(smiles_key, 'lig')}_pose{pose_idx+1}{label_suffix}"
@@ -987,95 +2294,19 @@ def _poseview_ui(
                         _show_svg_new(_new_svg, f"pose{pose_idx+1}_interaction")
                     st.caption("ℹ️ No co-crystal ligand detected — co-crystal reference diagram is not available.")
 
-                st.markdown("---")
-                st.markdown("### 🤖 Understand Your Results with AI")
-                st.caption(
-                    "Download your diagram (PNG button above), then paste the prompt "
-                    "below + the image into **Claude**, **GPT-4o**, or **Gemini** "
-                    "to get a plain-English explanation of your docking results."
+                _ai_prompt_section(
+                    engine="acd",
+                    lig_name=lig_name,
+                    pdb_id=pdb_id,
+                    binding_energy=binding_energy,
+                    has_ref=bool(_new_ref_svg),
+                    cocrystal_ligand_id=cocrystal_ligand_id,
+                    ref_lig_name=ref_lig_name,
+                    ref_lig_energy=ref_lig_energy,
+                    ref_redocked=(ref_lig_energy is not None),
+                    rmsd_crystal=rmsd_crystal,
+                    key_suffix=btn_key + "_acd",
                 )
-                _estr = (
-                    f"{binding_energy:.2f} kcal/mol"
-                    if binding_energy is not None else "[binding energy]"
-                )
-                _lig_display = lig_name or "[ligand]"
-                _pdb_display = pdb_id.upper() or "[PDB ID]"
-                _has_ref_prompt = bool(_new_ref_svg)
-                _ref_display = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
-                _ref_redocked = (ref_lig_energy is not None)
-                _ref_estr = (
-                    f"{ref_lig_energy:.2f} kcal/mol"
-                    if _ref_redocked else None
-                )
-
-                if _has_ref_prompt:
-                    _lines = [
-                        "I have just run a molecular docking experiment and I need help",
-                        "understanding what my results mean. I am attaching two 2D",
-                        "interaction diagrams from the Anyone Can Dock app.",
-                        "",
-                        f"Docking software: AutoDock Vina v1.2.7",
-                        f"Protein target (PDB): {_pdb_display}",
-                        f"My docked ligand: {_lig_display}",
-                        f"  Predicted binding energy: {_estr}",
-                        f"  (more negative = stronger predicted binding)",
-                        f"Reference: {_ref_display} co-crystallised in PDB {_pdb_display}" + (f"  |  binding energy from re-docking: {_ref_estr}" if _ref_redocked else "  (see 2D diagram — no re-docking performed)"),
-                        "",
-                        "How to read the diagrams:",
-                        "  Green dashed line     = hydrogen bond (number on line = distance in Angstrom)",
-                        "  Magenta dashed line   = pi-pi stacking (aromatic ring interaction)",
-                        "  Blue circle (no line) = hydrophobic contact",
-                        "  Gold dashed line      = metal / heme coordination",
-                        "  Labels on circles     = amino acid name + residue number + chain",
-                        "",
-                        "Please help me understand:",
-                        "1. What are the most important interactions my ligand makes,",
-                        "   and why do they matter for binding?",
-                        "2. How does my docked ligand compare to the reference — are the",
-                        "   key contacts conserved or different?",
-                        "3. Based on the binding energy" + (" and the interaction pattern," if _ref_redocked else " (docked ligand only) and the interaction pattern,") + " does my",
-                        "   ligand look like a promising binder, and what could be improved?",
-                        "",
-                        "Please explain in plain language that a non-expert can follow,",
-                        "but include the specific residue names and distances from the diagram.",
-                        "",
-                        "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
-                        "can copy directly into a report or presentation slide.",
-                        "Label this section: 'Ready-to-use summary:'",
-                    ]
-                else:
-                    _lines = [
-                        "I have just run a molecular docking experiment and I need help",
-                        "understanding what my results mean. I am attaching a 2D",
-                        "interaction diagram from the Anyone Can Dock app.",
-                        "",
-                        f"Docking software: AutoDock Vina v1.2.7",
-                        f"Protein target (PDB): {_pdb_display}",
-                        f"My docked ligand: {_lig_display}",
-                        f"  Predicted binding energy: {_estr}",
-                        f"  (more negative = stronger predicted binding)",
-                        "",
-                        "How to read the diagram:",
-                        "  Green dashed line     = hydrogen bond (number on line = distance in Angstrom)",
-                        "  Magenta dashed line   = pi-pi stacking (aromatic ring interaction)",
-                        "  Blue circle (no line) = hydrophobic contact",
-                        "  Gold dashed line      = metal / heme coordination",
-                        "  Labels on circles     = amino acid name + residue number + chain",
-                        "",
-                        "Please help me understand:",
-                        "1. What interactions is my ligand making with the protein,",
-                        "   and which ones are most important for binding?",
-                        "2. What does the binding energy value tell me?",
-                        "3. Are there any obvious ways the binding could be improved?",
-                        "",
-                        "Please explain in plain language that a non-expert can follow,",
-                        "but include the specific residue names and distances from the diagram.",
-                        "",
-                        "Finally, write a short ready-to-use paragraph (3-4 sentences) that I",
-                        "can copy directly into a report or presentation slide.",
-                        "Label this section: 'Ready-to-use summary:'",
-                    ]
-                st.code("\n".join(_lines), language=None)
 
     # ── TAB 2: RDKit diagram ──────────────────────────────────────────────────
     with _tab_rdkit:
@@ -1257,6 +2488,20 @@ def _poseview_ui(
                     _show_rdkit_svg_tab(_rdk_svg, f"pose{pose_idx+1}_rdkit.svg")
                     st.caption("ℹ️ No co-crystal ligand detected.")
 
+                _ai_prompt_section(
+                    engine="rdkit",
+                    lig_name=lig_name,
+                    pdb_id=pdb_id,
+                    binding_energy=binding_energy,
+                    has_ref=bool(_has_ref_rdkit2 and _ref_rdk_svg),
+                    cocrystal_ligand_id=cocrystal_ligand_id,
+                    ref_lig_name=ref_lig_name,
+                    ref_lig_energy=ref_lig_energy,
+                    ref_redocked=(ref_lig_energy is not None),
+                    rmsd_crystal=rmsd_crystal,
+                    key_suffix=btn_key + "_rdkit",
+                )
+
     # ── TAB 3: PoseView ───────────────────────────────────────────────────────
     with _tab_pv:
         _ci, _cb = st.columns([3, 1])
@@ -1422,6 +2667,22 @@ def _poseview_ui(
                     )
                 st.caption("ℹ️ No co-crystal ligand detected.")
 
+            # ── AI prompt for PoseView ──────────────────────────────────────
+            if _pose_svg and not _stale:
+                _ai_prompt_section(
+                    engine="poseview",
+                    lig_name=lig_name,
+                    pdb_id=pdb_id,
+                    binding_energy=binding_energy,
+                    has_ref=bool(_has_ref and _ref_svg2),
+                    cocrystal_ligand_id=cocrystal_ligand_id,
+                    ref_lig_name=ref_lig_name,
+                    ref_lig_energy=ref_lig_energy,
+                    ref_redocked=(ref_lig_energy is not None),
+                    rmsd_crystal=rmsd_crystal,
+                    key_suffix=btn_key + "_pv",
+                )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  RECEPTOR SECTION (shared between Basic and Batch)
@@ -1474,6 +2735,53 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             ],
             horizontal=True, key=pfx + "center_mode",
         )
+        if center_mode == "Auto-detect co-crystal ligand":
+            # ── Multi-ligand selector ─────────────────────────────────────
+            # Pre-scan the file for qualifying ligands so the user can pick
+            # which one to center the grid on before clicking Prepare.
+            # We only scan when a file is already on disk (download) or
+            # uploaded — skip if neither is ready yet.
+            _scan_path = None
+            if src == "Download from RCSB" and st.session_state.get(pfx + "pdb_token"):
+                _maybe = str(wdir / "raw_prefiltered.pdb")
+                if not os.path.exists(_maybe):
+                    _maybe = str(wdir / "raw.pdb")
+                if os.path.exists(_maybe):
+                    _scan_path = _maybe
+            elif src != "Download from RCSB" and upload_file is not None:
+                _scan_path = str(wdir / "raw_upload_prescan.pdb")
+                if not os.path.exists(_scan_path):
+                    with open(_scan_path, "wb") as _sf:
+                        _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
+
+            if _scan_path and os.path.exists(_scan_path):
+                try:
+                    from core import scan_ligands as _scan_ligands
+                    _found_ligs = _scan_ligands(_scan_path)
+                    if len(_found_ligs) > 1:
+                        _lig_labels = [
+                            f"{d['resname']} (chain {d['chain'] or '—'}, "
+                            f"resid {d['resid']}, {d['n_atoms']} atoms)"
+                            for d in _found_ligs
+                        ]
+                        _sel_idx = st.selectbox(
+                            f"🔍 {len(_found_ligs)} ligands detected — select grid center:",
+                            options=range(len(_lig_labels)),
+                            format_func=lambda i: _lig_labels[i],
+                            key=pfx + "preferred_lig_idx",
+                        )
+                        st.session_state[pfx + "preferred_ligand"] = _found_ligs[_sel_idx]["resname"]
+                        st.caption(
+                            f"All {len(_found_ligs)} ligands will be removed from the receptor. "
+                            f"Grid will be centered on the selected one."
+                        )
+                    elif len(_found_ligs) == 1:
+                        st.session_state[pfx + "preferred_ligand"] = _found_ligs[0]["resname"]
+                    else:
+                        st.session_state[pfx + "preferred_ligand"] = ""
+                except Exception:
+                    st.session_state.setdefault(pfx + "preferred_ligand", "")
+            # ─────────────────────────────────────────────────────────────
         if center_mode == "Enter XYZ manually":
             c1, c2, c3 = st.columns(3)
             c1.number_input("X", value=0.0, key=pfx + "mx")
@@ -1707,12 +3015,13 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
         with st.spinner("⏳ Preparing receptor…"):
             result = prepare_receptor(
-                raw_pdb     = raw_path,
-                wdir        = wdir,
-                center_mode = _core_mode,
-                manual_xyz  = _manual_xyz,
-                prody_sel   = _prody_sel,
-                box_size    = (sx, sy, sz),
+                raw_pdb          = raw_path,
+                wdir             = wdir,
+                center_mode      = _core_mode,
+                manual_xyz       = _manual_xyz,
+                prody_sel        = _prody_sel,
+                box_size         = (sx, sy, sz),
+                preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
             )
 
         if result["success"]:
@@ -2005,6 +3314,43 @@ with tab_basic:
     lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
     ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
+    # ── Protonation mode ──────────────────────────────────────────────────────
+    prot_mode = st.radio(
+        "Protonation mode",
+        ["⚡ Fast (Dimorphite-DL)", "🧪 pKaNET Cloud (recommended)", "🔬 Neutral (add H only)"],
+        horizontal=True, key="prot_mode",
+        help=(
+            "**Fast**: Dimorphite-DL SMARTS rules, ~1–3 s. "
+            "**pKaNET Cloud**: Dimorphite + PubChem pKa lookup + "
+            "Henderson–Hasselbalch microstate ranking (Hengphasatporn et al. 2026), "
+            "~2–5 s (cached after first run). "
+            "**Neutral**: no ionization — adds all H in neutral form, ~0.5 s."
+        ),
+    )
+    _prot_mode_map = {
+        "⚡ Fast (Dimorphite-DL)":          "dimorphite",
+        "🧪 pKaNET Cloud (recommended)":    "pkanet",
+        "🔬 Neutral (add H only)":          "neutral",
+    }
+    _prot_mode_key = _prot_mode_map[prot_mode]
+
+    _use_pubchem = True
+    if _prot_mode_key == "pkanet":
+        _use_pubchem = st.checkbox(
+            "Query PubChem for experimental pKa (cached, ~1s per new compound)",
+            value=True, key="use_pubchem",
+            help="Looks up experimental dissociation constants on PubChem by InChIKey. "
+                 "Results are cached in memory so repeated runs are instant. "
+                 "Uncheck for faster batch docking of novel/proprietary compounds."
+        )
+        if _prot_mode_key == "pkanet" and _use_pubchem:
+            st.caption(
+                "💡 PubChem is queried once per unique compound (InChIKey cache). "
+                "Novel or proprietary structures not in PubChem fall back gracefully "
+                "to heuristic SMARTS pKa table."
+            )
+    # ─────────────────────────────────────────────────────────────────────────
+
     if not st.session_state.receptor_done:
         st.caption("⚠ Complete Step 1 first.")
     if st.button(
@@ -2014,6 +3360,12 @@ with tab_basic:
         lig_name = lig_name_in.strip() or "LIG"
         with st.spinner("Preparing ligand…"):
             _mode = st.session_state.get("lig_input_mode", "SMILES string")
+            _prot_mode_key  = st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)")
+            _prot_mode_key  = {"⚡ Fast (Dimorphite-DL)": "dimorphite",
+                                "🧪 pKaNET Cloud (recommended)": "pkanet",
+                                "🔬 Neutral (add H only)": "neutral"}.get(_prot_mode_key, "dimorphite")
+            _use_pubchem    = st.session_state.get("use_pubchem", True)
+
             if "Upload" in _mode:
                 _sfobj = st.session_state.get("lig_struct_file")
                 if _sfobj is None:
@@ -2030,14 +3382,17 @@ with tab_basic:
                         smiles_in = smiles_from_file(_tmp, WORKDIR)
                     except Exception as e:
                         st.error(f"❌ Could not read structure: {e}"); st.stop()
-                    result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
+                    result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
+                                            mode=_prot_mode_key, use_pubchem=_use_pubchem)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
                     st.error("No molecule drawn in Ketcher."); st.stop()
-                result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
+                result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
+                                        mode=_prot_mode_key, use_pubchem=_use_pubchem)
             else:
-                result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR)
+                result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
+                                        mode=_prot_mode_key, use_pubchem=_use_pubchem)
 
         if result["success"]:
             st.session_state.update({
@@ -2149,8 +3504,14 @@ with tab_basic:
             rd_smi = pts[0]
             rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             ph_val = st.session_state.get("ph_in", 7.4)
+            _rd_prot_mode = st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)")
+            _rd_prot_mode = {"⚡ Fast (Dimorphite-DL)": "dimorphite",
+                              "🧪 pKaNET Cloud (recommended)": "pkanet",
+                              "🔬 Neutral (add H only)": "neutral"}.get(_rd_prot_mode, "dimorphite")
+            _rd_use_pubchem = st.session_state.get("use_pubchem", True)
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
-                rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, ph_val, WORKDIR)
+                rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, ph_val, WORKDIR,
+                                         mode=_rd_prot_mode, use_pubchem=_rd_use_pubchem)
                 if rd_prep["success"]:
                     rd_dock = run_vina(
                         st.session_state.receptor_pdbqt, rd_prep["pdbqt"],
@@ -2291,14 +3652,13 @@ with tab_basic:
                 fig.patch.set_facecolor(_cc["bg"]); ax.set_facecolor(_cc["bg_sub"])
                 cols = ["#3fb950" if v == df["Affinity (kcal/mol)"].min() else "#58a6ff" for v in df["Affinity (kcal/mol)"]]
                 ax.bar(df["Pose"].astype(str), df["Affinity (kcal/mol)"], color=cols, edgecolor=_cc["border"], linewidth=0.6)
-                ax.invert_yaxis()
                 _ref_score_plot = st.session_state.get("confirmed_ref_score") or st.session_state.get("redock_score")
                 if _ref_score_plot is not None:
                     _ref_nm = st.session_state.get("confirmed_ref_name") or "co-crystal ref"
                     ax.axhline(_ref_score_plot, color="#f85149", linewidth=1.8, linestyle="--", label=f"{_ref_nm}: {_ref_score_plot:.2f}")
                     ax.legend(facecolor=_cc["legend_bg"], edgecolor=_cc["border"], labelcolor=_cc["text"], fontsize=8)
                 ax.set_xlabel("Pose", color=_cc["muted"], fontsize=9)
-                ax.set_ylabel("Affinity (kcal/mol)", color=_cc["muted"], fontsize=9)
+                ax.set_ylabel("Vina score (kcal/mol)", color=_cc["muted"], fontsize=9)
                 ax.tick_params(colors=_cc["muted"], labelsize=8)
                 for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
                 fig.tight_layout()
@@ -2549,6 +3909,15 @@ with tab_basic:
             else:
                 write_single_pose(sel_mol, sp_pv)
 
+            # RMSD for selected pose vs co-crystal — pass to AI prompt
+            _cryst_pdb_pv = st.session_state.get("ligand_pdb_path") or ""
+            _rmsd_pv = None
+            if _cryst_pdb_pv and os.path.exists(_cryst_pdb_pv):
+                try:
+                    _rmsd_pv = calc_rmsd_heavy(sel_mol, _cryst_pdb_pv)
+                except Exception:
+                    pass
+
             _poseview_ui(
                 rec_key             = "receptor_fh",
                 pose_sdf_path       = sp_pv,
@@ -2574,6 +3943,26 @@ with tab_basic:
                 ref_lig_name   = (st.session_state.get("redock_result", {}).get("ref_name", "") if st.session_state.get("redock_result") else ""),
                 ref_lig_smiles = ((st.session_state.get("redock_result", {}).get("prot_smiles") or st.session_state.get("redock_result", {}).get("SMILES", "")) if st.session_state.get("redock_result") else ""),
                 ref_lig_energy = (st.session_state.get("redock_result", {}).get("Top Score") if st.session_state.get("redock_result") else None),
+                rmsd_crystal   = _rmsd_pv,
+            )
+
+            # ── Ready-to-use Figure (after 2D diagrams) ───────────────────
+            _ready_figure_section(
+                mode            = "single",
+                rec_fh          = st.session_state.get("receptor_fh", ""),
+                sel_mol         = sel_mol,
+                pose_idx        = pose_idx,
+                lig_name        = st.session_state.get("ligand_name", ""),
+                binding_energy  = (
+                    float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
+                    if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0 else None
+                ),
+                cryst_pdb       = _cryst_pdb_pv,
+                acd_svg         = st.session_state.get("pv_image_svg_new"),
+                acd_ihtml       = st.session_state.get("pv_image_svg_ihtml"),
+                rdk_svg         = st.session_state.get("pv_image_svg_rdk"),
+                pv_svg          = st.session_state.get("pv_image_svg"),
+                pv_png          = st.session_state.get("pv_image_png"),
             )
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -2621,6 +4010,23 @@ with tab_batch:
             )
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
 
+        b_prot_mode = st.radio(
+            "Protonation mode",
+            ["⚡ Fast (Dimorphite-DL)", "🧪 pKaNET Cloud (recommended)", "🔬 Neutral (add H only)"],
+            horizontal=True, key="b_prot_mode",
+        )
+        _b_prot_mode_map = {
+            "⚡ Fast (Dimorphite-DL)":       "dimorphite",
+            "🧪 pKaNET Cloud (recommended)": "pkanet",
+            "🔬 Neutral (add H only)":       "neutral",
+        }
+        _b_use_pubchem = True
+        if b_prot_mode == "🧪 pKaNET Cloud (recommended)":
+            _b_use_pubchem = st.checkbox(
+                "Query PubChem for experimental pKa (cached per compound)",
+                value=True, key="b_use_pubchem",
+            )
+
     with col_b2:
         st.markdown("**Redocking validation**")
         b_do_redock = st.checkbox("Dock co-crystal ligand as reference", value=True, key="b_do_redock")
@@ -2640,7 +4046,11 @@ with tab_batch:
     if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=not b_rec_done):
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
-        b_ph_val  = st.session_state.get("b_ph", 7.4)
+        b_ph_val      = st.session_state.get("b_ph", 7.4)
+        _b_prot_mode  = _b_prot_mode_map.get(
+            st.session_state.get("b_prot_mode", "⚡ Fast (Dimorphite-DL)"), "dimorphite"
+        )
+        _b_use_pubchem = st.session_state.get("b_use_pubchem", True)
 
         smiles_pairs = []
         struct_file_pairs = []
@@ -2685,7 +4095,8 @@ with tab_batch:
             rd_smi = pts[0]
             rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
-                rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR)
+                rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR,
+                                         mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
                 if rd_prep["success"]:
                     rd_dock = run_vina(rec_pdbqt, rd_prep["pdbqt"], config,
                         VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm)
@@ -2735,9 +4146,11 @@ with tab_batch:
                     except Exception as e:
                         results.append({"Name": name, "SMILES": "", "Charge": None, "Top Score": None, "Status": f"PREP FAILED: {e}"})
                         all_logs.append(f"[{name}] PREP ERROR: {e}"); continue
-                    prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
+                    prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR,
+                                          mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
             else:
-                prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR)
+                prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR,
+                                      mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
 
             if not prep["success"]:
                 results.append({"Name": name, "SMILES": smi, "Charge": None, "Top Score": None, "Status": f"PREP FAILED: {prep['error']}"})
@@ -3012,6 +4425,18 @@ with tab_batch:
                 else:
                     write_single_pose(pv_all_mols[pv_pose_i], sp_pv2)
 
+                # RMSD for selected batch pose vs co-crystal
+                _b_cryst_pv = st.session_state.get("b_ligand_pdb_path") or ""
+                _rmsd_pv2   = None
+                if _b_cryst_pv and os.path.exists(_b_cryst_pv) and pv_all_mols:
+                    try:
+                        _rmsd_pv2 = calc_rmsd_heavy(
+                            pv_all_mols[pv_pose_i] if pv_pose_i < len(pv_all_mols) else pv_all_mols[0],
+                            _b_cryst_pv,
+                        )
+                    except Exception:
+                        pass
+
                 _poseview_ui(
                     rec_key             = "b_receptor_fh",
                     pose_sdf_path       = sp_pv2,
@@ -3035,6 +4460,42 @@ with tab_batch:
                     ref_lig_smiles      = (redock_result.get("prot_smiles") or redock_result.get("SMILES", "")) if redock_result else "",
                     ref_lig_energy      = redock_result.get("Top Score") if redock_result else None,
                     show_header         = False,
+                    rmsd_crystal        = _rmsd_pv2,
+                )
+
+                # ── Ready-to-use Figure ───────────────────────────────────
+                def _b_draw_plot_fn(ax):
+                    if not plot_df.empty:
+                        _draw_plot(ax)
+
+                _ready_figure_section(
+                    mode            = "batch",
+                    rec_fh          = st.session_state.get("b_receptor_fh", ""),
+                    sel_mol         = pv_all_mols[pv_pose_i] if pv_pose_i < len(pv_all_mols) else None,
+                    pose_idx        = pv_pose_i,
+                    lig_name        = pv_safe_nm,
+                    binding_energy  = pv_score,
+                    cryst_pdb       = _b_cryst_pv,
+                    acd_svg         = st.session_state.get("b_pv2_image_svg_new"),
+                    acd_ihtml       = st.session_state.get("b_pv2_image_svg_ihtml"),
+                    rdk_svg         = st.session_state.get("b_pv2_image_svg_rdk"),
+                    pv_svg          = st.session_state.get("b_pv2_image_svg"),
+                    pv_png          = st.session_state.get("b_pv2_image_png"),
+                    b_browsable     = browsable,
+                    b_sel_res       = pv_sel_res,
+                    b_mols          = pv_all_mols,
+                    b_pose_i        = pv_pose_i,
+                    b_plot_draw_fn  = _b_draw_plot_fn,
+                    b_plot_n        = len(plot_df),
+                    b_rec_fh        = st.session_state.get("b_receptor_fh", ""),
+                    b_cryst_pdb     = _b_cryst_pv,
+                    b_acd_svg       = st.session_state.get("b_pv2_image_svg_new"),
+                    b_acd_ihtml     = st.session_state.get("b_pv2_image_svg_ihtml"),
+                    b_rdk_svg       = st.session_state.get("b_pv2_image_svg_rdk"),
+                    b_pv_svg        = st.session_state.get("b_pv2_image_svg"),
+                    b_pv_png        = st.session_state.get("b_pv2_image_png"),
+                    b_this_score    = pv_score,
+                    b_sel_nm        = pv_sel_nm,
                 )
 
     st.markdown('</div>', unsafe_allow_html=True)
