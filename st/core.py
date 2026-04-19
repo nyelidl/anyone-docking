@@ -802,7 +802,8 @@ _IONIZABLE_SITE_DEF = [
     ("thiol_aliph",       "[CX4][SX2H1]",                                       10.5,  "acid"),
     ("aniline",           "c[NX3;H1,H2;!$(N~[!#6])]",                           4.6,  "base"),
     ("pyridine_like",     "[$([nX2]1:[c,n]:c:[c,n]:c1),$([nX2]:c:n)]",          5.2,  "base"),
-    ("aliphatic_amine",   "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH])]",      9.5,  "base"),
+    # !$(Nc) explicitly excludes anilines (N attached to aromatic carbon)
+    ("aliphatic_amine",   "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);!$(Nc)]", 9.5,  "base"),
     ("aliphatic_amine_t", "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6])]",   9.0,  "base"),
     ("amidine",           "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                   12.4,  "base"),
     ("guanidine",         "[NX3][CX3](=[NX2])[NX3]",                           13.0,  "base"),
@@ -820,6 +821,10 @@ _CHEM_PENALTY_DEF = [
     ("iminol_general",   -3.5, "[NX2]=[CX3][OX2H1]"),
     ("amide_N_deproton", -5.0, "[$([NX3-]C=O),$([NX3-]c=O)]"),
     ("enol_simple",      -1.2, "[CX3](=[CX3])[OX2H1]"),
+    # Penalise exo-imine tautomers of aromatic-amine systems (e.g. quinazoline-NH2
+    # → imine form).  The correct amine tautomer has NX3;H1 on an aromatic carbon;
+    # the wrong imine form has NX2= on the same carbon.
+    ("exo_imine_arom",   -2.5, "[NX2;!r]=[cX3]"),
 ]
 
 # In-memory pKaNET cache: InChIKey → {pka_values, confidence, source}
@@ -1052,7 +1057,8 @@ def protonate_pkanet(
     smiles: str,
     ph: float,
     use_pubchem: bool = True,
-    max_tautomers: int = 4,
+    max_tautomers: int = 8,   # match standalone pKaNET Cloud+ default
+    ph_window: float = 1.0,   # Dimorphite enumeration window ±ph_window
 ) -> tuple:
     """
     pKaNET Cloud protonation pipeline (Hengphasatporn et al. 2026).
@@ -1060,9 +1066,10 @@ def protonate_pkanet(
     Steps:
       A. RDKit standardize (largest fragment, normalize, canonicalize)
       B. PubChem experimental pKa lookup (optional, cached by InChIKey)
-      C. Dimorphite-DL protonation enumeration
-      D. Tautomer scoring + HH microstate ranking
-      E. Return best-scoring protonation state SMILES
+      C. Dimorphite-DL protonation enumeration  (ph ± ph_window)
+      D. Tautomer enumeration (up to max_tautomers per candidate)
+      E. HH microstate ranking over all tautomer×protonation states
+      F. Return best-scoring protonation state SMILES
 
     Returns (best_smiles, charge, log_list)
     Falls back to plain Dimorphite result on any error.
@@ -1102,15 +1109,14 @@ def protonate_pkanet(
         except Exception as e:
             log.append(f"⚠ PubChem lookup failed: {e}")
 
-    # ── C. Dimorphite-DL enumeration ──────────────────────────────────────────
+    # ── C. Dimorphite-DL protonation enumeration ──────────────────────────────
     candidates = [canonical]
     try:
         from dimorphite_dl import protonate_smiles as _dim
-        ph_win = 1.0
         raw = None
         for kwargs in [
-            {"ph_min": ph - ph_win, "ph_max": ph + ph_win, "max_variants": 16},
-            {"min_ph": ph - ph_win, "max_ph": ph + ph_win, "max_variants": 16},
+            {"ph_min": ph - ph_window, "ph_max": ph + ph_window, "max_variants": 16},
+            {"min_ph": ph - ph_window, "max_ph": ph + ph_window, "max_variants": 16},
         ]:
             try:
                 raw = _dim(canonical, **kwargs)
@@ -1124,14 +1130,42 @@ def protonate_pkanet(
                 if c and c not in seen:
                     seen.add(c)
                     candidates.append(c)
-        log.append(f"✓ Dimorphite-DL: {len(candidates)} candidate(s)")
+        log.append(f"✓ Dimorphite-DL: {len(candidates)} protonation state(s)")
     except Exception as e:
         log.append(f"⚠ Dimorphite-DL skipped: {e}")
 
-    # ── D. Tautomer scoring + HH microstate ranking ───────────────────────────
+    # ── D. Tautomer expansion (up to max_tautomers per protonation state) ─────
+    all_states = []
+    try:
+        from rdkit.Chem.MolStandardize import rdMolStandardize as _rms
+        te = _rms.TautomerEnumerator()
+        te.SetMaxTautomers(max_tautomers)
+        seen_all = set()
+        for base_smi in candidates:
+            base_mol = Chem.MolFromSmiles(base_smi)
+            if base_mol is None:
+                all_states.append(base_smi)
+                continue
+            try:
+                tauts = te.Enumerate(base_mol)
+                for t in tauts:
+                    ts = Chem.MolToSmiles(t, canonical=True)
+                    if ts not in seen_all:
+                        seen_all.add(ts)
+                        all_states.append(ts)
+            except Exception:
+                if base_smi not in seen_all:
+                    seen_all.add(base_smi)
+                    all_states.append(base_smi)
+        log.append(f"✓ Tautomer expansion: {len(all_states)} total state(s) to rank")
+    except Exception as e:
+        log.append(f"⚠ Tautomer expansion skipped: {e}")
+        all_states = candidates
+
+    # ── E. Microstate ranking (HH scoring over all states) ────────────────────
     try:
         scored = []
-        for smi in candidates:
+        for smi in all_states:
             ts = _score_tautomer(smi)
             ms = _score_microstate(smi, ph, ts, pubchem)
             scored.append((ms, smi))
@@ -1176,22 +1210,27 @@ def prepare_ligand(
     wdir,
     mode: str = "dimorphite",
     use_pubchem: bool = True,
+    max_tautomers: int = 8,
+    ph_window: float = 1.0,
 ) -> dict:
     """
     Protonate ligand → 3D conformer (ETKDGv3) → MMFF/UFF → PDBQT + SDF.
 
     Parameters
     ----------
-    smiles       : input SMILES string
-    name         : output file base name
-    ph           : target pH
-    wdir         : working directory
-    mode         : protonation mode —
+    smiles        : input SMILES string
+    name          : output file base name
+    ph            : target pH
+    wdir          : working directory
+    mode          : protonation mode —
                    "neutral"     : add all H, no ionization (fastest)
                    "dimorphite"  : Dimorphite-DL only (default, fast)
                    "pkanet"      : pKaNET Cloud pipeline — Dimorphite +
                                    PubChem pKa + HH microstate ranking
-    use_pubchem  : if mode=="pkanet", query PubChem (cached; ~0.5–2s first call)
+    use_pubchem   : if mode=="pkanet", query PubChem (cached; ~0.5–2s first call)
+    max_tautomers : pKaNET only — tautomers per protonation state (default 8,
+                   matching standalone pKaNET Cloud+ default)
+    ph_window     : pKaNET/Dimorphite — Dimorphite enumeration window ±ph_window
 
     Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
     """
@@ -1228,7 +1267,8 @@ def prepare_ligand(
             prot, _, pkanet_log = protonate_pkanet(
                 raw, ph,
                 use_pubchem=use_pubchem,
-                max_tautomers=4,
+                max_tautomers=max_tautomers,
+                ph_window=ph_window,
             )
             log.extend(pkanet_log)
 
