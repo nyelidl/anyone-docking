@@ -1866,7 +1866,7 @@ def _ready_figure_section(
 
     else:
         # ── Batch 4-panel — one unified HTML via _make_combined_figure_html ──
-        TOP_H = 320
+        TOP_H = 280
         BOT_H = 480
 
         # Build panel b 3D viewer (pose browser + co-crystal)
@@ -3343,7 +3343,16 @@ with tab_basic:
                  "Results are cached in memory so repeated runs are instant. "
                  "Uncheck for faster batch docking of novel/proprietary compounds."
         )
-        if _prot_mode_key == "pkanet" and _use_pubchem:
+        _pk1, _pk2 = st.columns(2)
+        with _pk1:
+            st.slider("Max tautomers", 2, 16, 8, 2, key="pkanet_max_tau",
+                      help="Tautomers explored per protonation state. "
+                           "Standalone pKaNET Cloud+ default is 8.")
+        with _pk2:
+            st.slider("pH window (±)", 0.2, 2.0, 1.0, 0.1, key="pkanet_ph_win",
+                      help="Dimorphite-DL enumerates states within pH ± window. "
+                           "Standalone pKaNET Cloud+ default is ±1.0.")
+        if _use_pubchem:
             st.caption(
                 "💡 PubChem is queried once per unique compound (InChIKey cache). "
                 "Novel or proprietary structures not in PubChem fall back gracefully "
@@ -3365,6 +3374,8 @@ with tab_basic:
                                 "🧪 pKaNET Cloud (recommended)": "pkanet",
                                 "🔬 Neutral (add H only)": "neutral"}.get(_prot_mode_key, "dimorphite")
             _use_pubchem    = st.session_state.get("use_pubchem", True)
+            _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
+            _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
 
             if "Upload" in _mode:
                 _sfobj = st.session_state.get("lig_struct_file")
@@ -3383,16 +3394,19 @@ with tab_basic:
                     except Exception as e:
                         st.error(f"❌ Could not read structure: {e}"); st.stop()
                     result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
-                                            mode=_prot_mode_key, use_pubchem=_use_pubchem)
+                                            mode=_prot_mode_key, use_pubchem=_use_pubchem,
+                                            max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
                     st.error("No molecule drawn in Ketcher."); st.stop()
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
-                                        mode=_prot_mode_key, use_pubchem=_use_pubchem)
+                                        mode=_prot_mode_key, use_pubchem=_use_pubchem,
+                                        max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
             else:
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
-                                        mode=_prot_mode_key, use_pubchem=_use_pubchem)
+                                        mode=_prot_mode_key, use_pubchem=_use_pubchem,
+                                        max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
 
         if result["success"]:
             st.session_state.update({
@@ -3509,9 +3523,12 @@ with tab_basic:
                               "🧪 pKaNET Cloud (recommended)": "pkanet",
                               "🔬 Neutral (add H only)": "neutral"}.get(_rd_prot_mode, "dimorphite")
             _rd_use_pubchem = st.session_state.get("use_pubchem", True)
+            _rd_max_tau = st.session_state.get("pkanet_max_tau", 8)
+            _rd_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
                 rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, ph_val, WORKDIR,
-                                         mode=_rd_prot_mode, use_pubchem=_rd_use_pubchem)
+                                         mode=_rd_prot_mode, use_pubchem=_rd_use_pubchem,
+                                         max_tautomers=_rd_max_tau, ph_window=_rd_ph_win)
                 if rd_prep["success"]:
                     rd_dock = run_vina(
                         st.session_state.receptor_pdbqt, rd_prep["pdbqt"],
@@ -4026,6 +4043,13 @@ with tab_batch:
                 "Query PubChem for experimental pKa (cached per compound)",
                 value=True, key="b_use_pubchem",
             )
+            _bpk1, _bpk2 = st.columns(2)
+            with _bpk1:
+                st.slider("Max tautomers", 2, 16, 8, 2, key="b_pkanet_max_tau",
+                          help="Tautomers per protonation state. Standalone default: 8.")
+            with _bpk2:
+                st.slider("pH window (±)", 0.2, 2.0, 1.0, 0.1, key="b_pkanet_ph_win",
+                          help="Dimorphite enumeration window. Standalone default: ±1.0.")
 
     with col_b2:
         st.markdown("**Redocking validation**")
@@ -4050,7 +4074,9 @@ with tab_batch:
         _b_prot_mode  = _b_prot_mode_map.get(
             st.session_state.get("b_prot_mode", "⚡ Fast (Dimorphite-DL)"), "dimorphite"
         )
-        _b_use_pubchem = st.session_state.get("b_use_pubchem", True)
+        _b_use_pubchem  = st.session_state.get("b_use_pubchem", True)
+        _b_pkanet_max_tau = st.session_state.get("b_pkanet_max_tau", 8)
+        _b_pkanet_ph_win  = st.session_state.get("b_pkanet_ph_win", 1.0)
 
         smiles_pairs = []
         struct_file_pairs = []
@@ -4096,7 +4122,8 @@ with tab_batch:
             rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
                 rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR,
-                                         mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
+                                         mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
+                                         max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
                 if rd_prep["success"]:
                     rd_dock = run_vina(rec_pdbqt, rd_prep["pdbqt"], config,
                         VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm)
@@ -4147,10 +4174,12 @@ with tab_batch:
                         results.append({"Name": name, "SMILES": "", "Charge": None, "Top Score": None, "Status": f"PREP FAILED: {e}"})
                         all_logs.append(f"[{name}] PREP ERROR: {e}"); continue
                     prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR,
-                                          mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
+                                          mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
+                                          max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
             else:
                 prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR,
-                                      mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
+                                      mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
+                                      max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
 
             if not prep["success"]:
                 results.append({"Name": name, "SMILES": smi, "Charge": None, "Top Score": None, "Status": f"PREP FAILED: {prep['error']}"})
