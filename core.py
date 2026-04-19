@@ -1176,6 +1176,14 @@ def protonate_pkanet(
 
     # ── C. Dimorphite-DL protonation enumeration ──────────────────────────────
     candidates = [canonical]
+    # Determine if the input molecule has ANY acid sites (needed for sanity filter)
+    _mol_chk_dim = Chem.MolFromSmiles(canonical)
+    _has_acid_sites = bool(
+        _mol_chk_dim and any(
+            s["site_type"] == "acid"
+            for s in _find_ionizable_sites(_mol_chk_dim)
+        )
+    )
     try:
         from dimorphite_dl import protonate_smiles as _dim
         raw = None
@@ -1191,10 +1199,19 @@ def protonate_pkanet(
         if raw:
             seen = {canonical}
             for s in (raw if isinstance(raw, list) else [raw]):
-                c = Chem.MolToSmiles(Chem.MolFromSmiles(s), canonical=True) if Chem.MolFromSmiles(s) else None
-                if c and c not in seen:
-                    seen.add(c)
-                    candidates.append(c)
+                mol_s = Chem.MolFromSmiles(s) if s else None
+                if mol_s is None:
+                    continue
+                c = Chem.MolToSmiles(mol_s, canonical=True)
+                if not c or c in seen:
+                    continue
+                # Sanity filter: reject negative-charge Dimorphite outputs for
+                # molecules that have NO acid sites in our table (e.g. Gefitinib).
+                # Dimorphite occasionally misassigns a ring N as deprotonatable.
+                if Chem.GetFormalCharge(mol_s) < 0 and not _has_acid_sites:
+                    continue
+                seen.add(c)
+                candidates.append(c)
         log.append(f"✓ Dimorphite-DL: {len(candidates)} protonation state(s)")
     except Exception as e:
         log.append(f"⚠ Dimorphite-DL skipped: {e}")
