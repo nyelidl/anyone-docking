@@ -1352,53 +1352,69 @@ def _render_2d_panel_b(
 
 
 def _make_combined_figure_html(
-    v3d_raw_html: str,   # full output of v3d._make_html()
-    diag_b64_src: str,   # data:image/... URL for the 2D panel
+    v3d_raw_html: str,       # 3D for panel a (2panel) / panel c (4panel)
+    diag_b64_src: str,       # 2D data-URI for panel b (2panel) / panel d (4panel)
     capsule_text: str,
     panel_w: int = 530,
-    panel_h: int = 500,
+    panel_h: int = 500,      # bottom row height (2panel) or panel c/d height (4panel)
+    layout: str = "2panel",  # "2panel" | "4panel"
+    # ── 4-panel extras ───────────────────────────────────────────────────────
+    plot_b64_src: str = "",   # score plot PNG data-URI  → panel a
+    v3d_b_raw_html: str = "", # 3D viewer (pose browser) → panel b
+    top_h: int = 280,         # height of top row (panels a & b)
 ) -> tuple:
     """
-    Build a self-contained HTML page (string) where:
-    - Panel a) = py3Dmol 3D viewer (inline, same document as canvas)
-    - Panel b) = 2D diagram as <img>
-    - ⬇ Save PNG / ⬇ Save SVG buttons compose both panels via HTML5 Canvas
-      and trigger a browser download — no Python roundtrip needed.
+    Build a self-contained HTML page containing the full figure.
+    One outer frame, panel labels inside their panels, Save buttons outside frame.
 
-    Returns (html_str, total_height_px).
+    2-panel:  [ a: 3D pocket | b: 2D diagram ]
+    4-panel:  [ a: score plot | b: 3D pose browser ]   ← top row (top_h)
+              [ c: 3D pocket  | d: 2D diagram      ]   ← bottom row (panel_h)
+
+    The ⬇ Save PNG/SVG buttons compose all panels via HTML5 Canvas + download.
+    Works because every 3D canvas is in the SAME document.
     """
     import re as _re2
 
     PAD, GAP = 16, 16
-    LBL_H   = 28    # panel label row
-    CAP_H   = 54    # capsule below b)
-    SAVE_H  = 52    # save-bar at top
+    LBL_H    = 28   # label row height
+    CAP_H    = 54   # capsule row below panel d/b
+    SAVE_H   = 52   # save-bar height above figure
+
     FW = PAD + panel_w + GAP + panel_w + PAD
-    FH = PAD + LBL_H + panel_h + CAP_H + PAD
+
+    if layout == "2panel":
+        FH     = PAD + LBL_H + panel_h + CAP_H + PAD
+    else:
+        FH     = PAD + LBL_H + top_h + GAP + LBL_H + panel_h + CAP_H + PAD
+
     TOTAL_H = SAVE_H + FH + 12
 
-    # ── Extract 3Dmol CDN <script src="..."> tag ──────────────────────────────
-    m_src = _re2.search(r'(<script\b[^>]*3[Dd]mol[^>]*></script>)', v3d_raw_html)
-    if not m_src:
-        m_src = _re2.search(r'(<script\b[^>]*3[Dd]mol[^>]*>)', v3d_raw_html)
-    cdn_tag = m_src.group(1) if m_src else ""
+    # ── Extract 3Dmol CDN script tag (take from whichever html is available) ─
+    def _extract_cdn(html):
+        m = _re2.search(r'(<script\b[^>]*3[Dd]mol[^>]*>(?:</script>)?)', html)
+        return m.group(1) if m else ""
 
-    # ── Extract <body> content (viewer div + setup script) ────────────────────
-    m_body = _re2.search(r'<body[^>]*>(.*?)</body>', v3d_raw_html, _re2.DOTALL)
-    body = m_body.group(1).strip() if m_body else v3d_raw_html
+    cdn_tag = _extract_cdn(v3d_raw_html) or _extract_cdn(v3d_b_raw_html)
+    if cdn_tag and not cdn_tag.endswith("</script>"):
+        cdn_tag += "</script>"
 
-    # Force the viewer div to fill its container
-    body = _re2.sub(r'height\s*:\s*\d+px', f'height:{panel_h}px', body, count=1)
-    body = _re2.sub(r'width\s*:\s*\d+px',  'width:100%',           body, count=1)
+    # ── Extract <body> content (viewer div + setup script) from each html ────
+    def _body(html, target_h):
+        m = _re2.search(r'<body[^>]*>(.*?)</body>', html, _re2.DOTALL)
+        b = m.group(1).strip() if m else html
+        # Override viewer height so it fills the panel
+        b = _re2.sub(r'(height\s*:\s*)\d+px', f'\\g<1>{target_h}px', b, count=1)
+        b = _re2.sub(r'(width\s*:\s*)\d+px',  '\\g<1>100%',           b, count=1)
+        return b
 
-    cap_js = capsule_text.replace("'", "\\'")
+    body_c = _body(v3d_raw_html,   panel_h)   # panel c (or panel a in 2panel)
+    body_b = _body(v3d_b_raw_html, top_h) if v3d_b_raw_html else ""
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-{cdn_tag}
-<style>
+    cap_js = capsule_text.replace("'", "\\'").replace('"', '\\"')
+
+    # ── Panel CSS (shared) ────────────────────────────────────────────────────
+    CSS = f"""
 *{{box-sizing:border-box;margin:0;padding:0;}}
 body{{background:white;font-family:Arial,sans-serif;overflow:hidden;}}
 #save-bar{{display:flex;gap:10px;align-items:center;padding:8px 8px 4px;}}
@@ -1407,40 +1423,72 @@ body{{background:white;font-family:Arial,sans-serif;overflow:hidden;}}
   font-family:'IBM Plex Mono',monospace;}}
 .sbtn:hover{{filter:brightness(1.15);}}
 #sstatus{{font-size:11px;color:#888;}}
-#fig{{display:flex;gap:{GAP}px;border:1.5px solid #c8c8c4;border-radius:8px;
-  padding:{PAD}px;background:white;margin:0 4px;width:{FW}px;}}
+#fig{{border:1.5px solid #c8c8c4;border-radius:8px;background:white;
+  margin:0 4px;padding:{PAD}px;width:{FW}px;}}
+.row{{display:flex;gap:{GAP}px;}}
 .col{{width:{panel_w}px;flex:0 0 {panel_w}px;}}
 .plbl{{font-size:18px;font-weight:700;color:#1e1e1c;margin-bottom:6px;line-height:1;}}
-.panel{{width:{panel_w}px;height:{panel_h}px;background:#fafaf8;border-radius:4px;overflow:hidden;position:relative;}}
-#panel-a canvas{{width:100%!important;height:100%!important;}}
-#panel-a>div[id]{{width:100%!important;height:{panel_h}px!important;}}
-#panel-b img{{width:100%;height:{panel_h}px;object-fit:contain;display:block;}}
+.panel{{width:{panel_w}px;background:#fafaf8;border-radius:4px;overflow:hidden;position:relative;}}
+.panel canvas{{width:100%!important;height:100%!important;}}
+.panel>div[id]{{width:100%!important;}}
+.panel img{{width:100%;object-fit:contain;display:block;}}
 .cap{{text-align:center;margin:10px 0 4px;}}
 .cap span{{display:inline-block;padding:7px 28px;border-radius:999px;
   background:#f0f0ec;border:1px solid #c4c4c0;font-size:14px;font-weight:700;color:#1e1e1c;}}
-</style>
-</head>
-<body>
-<div id="save-bar">
-  <button class="sbtn" onclick="doSave('png')">⬇ Save PNG</button>
-  <button class="sbtn" onclick="doSave('svg')">⬇ Save SVG</button>
-  <span id="sstatus"></span>
-</div>
-<div id="fig">
+"""
+
+    # ── Build panel markup ────────────────────────────────────────────────────
+    if layout == "2panel":
+        PANELS_HTML = f"""
+<div class="row">
   <div class="col">
     <p class="plbl">a)</p>
-    <div class="panel" id="panel-a">{body}</div>
+    <div class="panel" id="panel-a" style="height:{panel_h}px;">{body_c}</div>
   </div>
   <div class="col">
     <p class="plbl">b)</p>
-    <div class="panel" id="panel-b">
-      <img id="img2d" src="{diag_b64_src}" crossorigin="anonymous">
+    <div class="panel" id="panel-d" style="height:{panel_h}px;">
+      <img id="img-2d" src="{diag_b64_src}" crossorigin="anonymous">
     </div>
     <div class="cap"><span>{capsule_text}</span></div>
   </div>
+</div>"""
+
+    else:  # 4panel
+        plot_img = (f'<img id="img-plot" src="{plot_b64_src}">'
+                    if plot_b64_src else
+                    '<div style="display:flex;align-items:center;justify-content:center;'
+                    'height:100%;color:#aaa;font-size:13px;">Score plot unavailable</div>')
+        PANELS_HTML = f"""
+<div class="row" style="margin-bottom:{GAP}px;">
+  <div class="col">
+    <p class="plbl">a)</p>
+    <div class="panel" id="panel-a" style="height:{top_h}px;">{plot_img}</div>
+  </div>
+  <div class="col">
+    <p class="plbl">b)</p>
+    <div class="panel" id="panel-b" style="height:{top_h}px;">{body_b}</div>
+  </div>
 </div>
-<script>
-// Rounded-rect helper (Safari <16 doesn't support ctx.roundRect)
+<div class="row">
+  <div class="col">
+    <p class="plbl">c)</p>
+    <div class="panel" id="panel-c" style="height:{panel_h}px;">{body_c}</div>
+  </div>
+  <div class="col">
+    <p class="plbl">d)</p>
+    <div class="panel" id="panel-d" style="height:{panel_h}px;">
+      <img id="img-2d" src="{diag_b64_src}" crossorigin="anonymous">
+    </div>
+    <div class="cap"><span>{capsule_text}</span></div>
+  </div>
+</div>"""
+
+    # ── JavaScript ────────────────────────────────────────────────────────────
+    # compose() captures ALL panels and draws onto one HTML5 Canvas
+    IS_4PANEL = "true" if layout == "4panel" else "false"
+
+    JS = f"""
 function RR(g,x,y,w,h,r){{
   g.beginPath();g.moveTo(x+r,y);
   g.lineTo(x+w-r,y);g.quadraticCurveTo(x+w,y,x+w,y+r);
@@ -1448,110 +1496,172 @@ function RR(g,x,y,w,h,r){{
   g.lineTo(x+r,y+h);g.quadraticCurveTo(x,y+h,x,y+h-r);
   g.lineTo(x,y+r);g.quadraticCurveTo(x,y,x+r,y);g.closePath();
 }}
+function sleep(ms){{return new Promise(r=>setTimeout(r,ms));}}
 function st(m){{document.getElementById('sstatus').textContent=m;}}
 
+async function capture3d(sel){{
+  for(let i=0;i<30;i++){{
+    const c=document.querySelector(sel+' canvas');
+    if(c&&c.width>0){{
+      const img=new Image();
+      await new Promise(r=>{{img.onload=r;img.src=c.toDataURL('image/png');}});
+      return img;
+    }}
+    await sleep(100);
+  }}
+  return null;
+}}
+
+async function drawFit(g,img,x,y,w,h){{
+  if(!img||!img.naturalWidth) return;
+  const sc=Math.min(w/img.naturalWidth,h/img.naturalHeight);
+  const dw=img.naturalWidth*sc, dh=img.naturalHeight*sc;
+  try{{g.drawImage(img,x+(w-dw)/2,y+(h-dh)/2,dw,dh);}}
+  catch(e){{
+    const i2=new Image();i2.crossOrigin='anonymous';
+    await new Promise(r=>{{i2.onload=r;i2.onerror=r;i2.src=img.src;}});
+    if(i2.naturalWidth>0){{
+      const sc2=Math.min(w/i2.naturalWidth,h/i2.naturalHeight);
+      g.drawImage(i2,x+(w-sc2*i2.naturalWidth)/2,y+(h-sc2*i2.naturalHeight)/2,sc2*i2.naturalWidth,sc2*i2.naturalHeight);
+    }}
+  }}
+}}
+
 async function compose(){{
-  const PW={panel_w},PH={panel_h},P={PAD},G={GAP},LH={LBL_H};
-  const FW=P+PW+G+PW+P, FH=P+LH+PH+{CAP_H}+P;
-  const c=document.createElement('canvas');
-  c.width=FW; c.height=FH;
-  const g=c.getContext('2d');
+  const PW={panel_w},PH={panel_h},TH={top_h};
+  const P={PAD},G={GAP},LH={LBL_H},CAPH={CAP_H};
+  const FW=P+PW+G+PW+P;
+  const is4={IS_4PANEL};
+  const FH=is4 ? P+LH+TH+G+LH+PH+CAPH+P : P+LH+PH+CAPH+P;
 
-  // White background
+  const cv=document.createElement('canvas');
+  cv.width=FW; cv.height=FH;
+  const g=cv.getContext('2d');
+
   g.fillStyle='white'; g.fillRect(0,0,FW,FH);
-
-  // Outer border
   g.strokeStyle='#c8c8c4'; g.lineWidth=1.5;
   RR(g,2,2,FW-4,FH-4,8); g.stroke();
 
-  const PY=P+LH;
+  if(is4){{
+    // top row
+    const AX=P, AY=P+LH;
+    const BX=P+PW+G, BY=P+LH;
+    g.fillStyle='#fafaf8';
+    g.fillRect(AX,AY,PW,TH); g.fillRect(BX,BY,PW,TH);
+    g.fillStyle='#1e1e1c'; g.font='bold 18px Arial';
+    g.textAlign='left'; g.textBaseline='top';
+    g.fillText('a)',AX,P+4); g.fillText('b)',BX,P+4);
 
-  // Panel backgrounds
-  g.fillStyle='#fafaf8';
-  g.fillRect(P,PY,PW,PH);
-  g.fillRect(P+PW+G,PY,PW,PH);
+    // panel a: plot
+    const imgPlot=document.getElementById('img-plot');
+    if(imgPlot) await drawFit(g,imgPlot,AX,AY,PW,TH);
 
-  // Labels
-  g.fillStyle='#1e1e1c'; g.font='bold 18px Arial';
-  g.textAlign='left'; g.textBaseline='top';
-  g.fillText('a)',P,P+4); g.fillText('b)',P+PW+G,P+4);
+    // panel b: 3D pose browser
+    const imgB=await capture3d('#panel-b');
+    if(imgB) g.drawImage(imgB,BX,BY,PW,TH);
 
-  // ── Panel a: capture 3D WebGL canvas ──────────────────────────────────────
-  // Wait up to 3 s for 3Dmol to render (it may not be ready at call time)
-  let c3d=null;
-  for(let i=0;i<30;i++){{
-    c3d=document.querySelector('#panel-a canvas');
-    if(c3d && c3d.width>0) break;
-    await new Promise(r=>setTimeout(r,100));
+    // bottom row
+    const CX=P, CY=P+LH+TH+G+LH;
+    const DX=P+PW+G, DY=P+LH+TH+G+LH;
+    g.fillStyle='#fafaf8';
+    g.fillRect(CX,CY,PW,PH); g.fillRect(DX,DY,PW,PH);
+    g.fillStyle='#1e1e1c'; g.font='bold 18px Arial';
+    g.fillText('c)',CX,P+LH+TH+G+4); g.fillText('d)',DX,P+LH+TH+G+4);
+
+    // panel c: 3D binding pocket
+    const imgC=await capture3d('#panel-c');
+    if(imgC) g.drawImage(imgC,CX,CY,PW,PH);
+
+    // panel d: 2D diagram
+    const img2d=document.getElementById('img-2d');
+    if(img2d) await drawFit(g,img2d,DX,DY,PW,PH);
+
+    // capsule below d
+    g.font='bold 13px Arial';
+    const CAP='{cap_js}';
+    const cw=g.measureText(CAP).width+56;
+    const cx=DX+(PW-cw)/2, cy=DY+PH+26;
+    g.fillStyle='#f0f0ec';g.strokeStyle='#c4c4c0';g.lineWidth=1;
+    RR(g,cx,cy-14,cw,28,14);g.fill();g.stroke();
+    g.fillStyle='#1e1e1c';g.textAlign='center';g.textBaseline='middle';
+    g.fillText(CAP,cx+cw/2,cy);
+
+  }}else{{
+    // 2-panel
+    const AX=P, AY=P+LH;
+    const BX=P+PW+G, BY=P+LH;
+    g.fillStyle='#fafaf8';
+    g.fillRect(AX,AY,PW,PH); g.fillRect(BX,BY,PW,PH);
+    g.fillStyle='#1e1e1c'; g.font='bold 18px Arial';
+    g.textAlign='left'; g.textBaseline='top';
+    g.fillText('a)',AX,P+4); g.fillText('b)',BX,P+4);
+
+    // panel a: 3D pocket
+    const imgA=await capture3d('#panel-a');
+    if(imgA) g.drawImage(imgA,AX,AY,PW,PH);
+
+    // panel b: 2D diagram
+    const img2d=document.getElementById('img-2d');
+    if(img2d) await drawFit(g,img2d,BX,BY,PW,PH);
+
+    // capsule
+    g.font='bold 13px Arial';
+    const CAP='{cap_js}';
+    const cw=g.measureText(CAP).width+56;
+    const cx=BX+(PW-cw)/2, cy=BY+PH+26;
+    g.fillStyle='#f0f0ec';g.strokeStyle='#c4c4c0';g.lineWidth=1;
+    RR(g,cx,cy-14,cw,28,14);g.fill();g.stroke();
+    g.fillStyle='#1e1e1c';g.textAlign='center';g.textBaseline='middle';
+    g.fillText(CAP,cx+cw/2,cy);
   }}
-  if(c3d){{
-    try{{
-      const i=new Image();
-      await new Promise(r=>{{i.onload=r; i.src=c3d.toDataURL('image/png');}});
-      g.drawImage(i,P,PY,PW,PH);
-    }}catch(e){{st('3D: '+e);}}
-  }}
-
-  // ── Panel b: draw 2D diagram image ─────────────────────────────────────────
-  const im=document.getElementById('img2d');
-  const drawImg=async(img)=>{{
-    if(!img||!img.naturalWidth) return;
-    const sc=Math.min(PW/img.naturalWidth,PH/img.naturalHeight);
-    const dw=img.naturalWidth*sc, dh=img.naturalHeight*sc;
-    g.drawImage(img, P+PW+G+(PW-dw)/2, PY+(PH-dh)/2, dw, dh);
-  }};
-  if(im && im.complete && im.naturalWidth>0){{
-    try{{ await drawImg(im); }}
-    catch(e){{
-      // SVG may need re-load with crossOrigin
-      const i2=new Image(); i2.crossOrigin='anonymous';
-      await new Promise(r=>{{i2.onload=r;i2.onerror=r;i2.src=im.src;}});
-      try{{ await drawImg(i2); }}catch(_){{}}
-    }}
-  }}
-
-  // ── Capsule label below panel b ────────────────────────────────────────────
-  g.font='bold 13px Arial';
-  const CAP='{cap_js}';
-  const cw=g.measureText(CAP).width+56;
-  const cx=P+PW+G+(PW-cw)/2, cy=PY+PH+26;
-  g.fillStyle='#f0f0ec'; g.strokeStyle='#c4c4c0'; g.lineWidth=1;
-  RR(g,cx,cy-14,cw,28,14); g.fill(); g.stroke();
-  g.fillStyle='#1e1e1c'; g.textAlign='center'; g.textBaseline='middle';
-  g.fillText(CAP,cx+cw/2,cy);
-
-  return c;
+  return cv;
 }}
 
 async function doSave(type){{
   st('Composing…');
   try{{
-    const c=await compose();
+    const cv=await compose();
     if(type==='png'){{
       const a=document.createElement('a');
-      a.href=c.toDataURL('image/png');
+      a.href=cv.toDataURL('image/png');
       a.download='ready_to_use_figure.png';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
       st('✓ PNG saved');
     }}else{{
-      const b64=c.toDataURL('image/png').split(',')[1];
+      const b64=cv.toDataURL('image/png').split(',')[1];
       const svg='<svg xmlns="http://www.w3.org/2000/svg" '
                +'xmlns:xlink="http://www.w3.org/1999/xlink" '
-               +'width="'+c.width+'" height="'+c.height+'">'
+               +'width="'+cv.width+'" height="'+cv.height+'">'
                +'<image href="data:image/png;base64,'+b64+'" '
-               +'x="0" y="0" width="'+c.width+'" height="'+c.height+'"/>'
+               +'x="0" y="0" width="'+cv.width+'" height="'+cv.height+'"/>'
                +'</svg>';
       const blob=new Blob([svg],{{type:'image/svg+xml'}});
       const url=URL.createObjectURL(blob);
       const a=document.createElement('a');
-      a.href=url; a.download='ready_to_use_figure.svg';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      a.href=url;a.download='ready_to_use_figure.svg';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
       URL.revokeObjectURL(url);
       st('✓ SVG saved');
     }}
   }}catch(e){{st('Error: '+e);}}
 }}
-</script>
+"""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+{cdn_tag}
+<style>{CSS}</style>
+</head>
+<body>
+<div id="save-bar">
+  <button class="sbtn" onclick="doSave('png')">⬇ Save PNG</button>
+  <button class="sbtn" onclick="doSave('svg')">⬇ Save SVG</button>
+  <span id="sstatus"></span>
+</div>
+<div id="fig">{PANELS_HTML}</div>
+<script>{JS}</script>
 </body>
 </html>"""
 
@@ -1755,88 +1865,72 @@ def _ready_figure_section(
         components.html(_fig_html, height=_fig_h, scrolling=False)
 
     else:
-        # ── Batch 4-panel — top row (shorter) ────────────────────────────────
+        # ── Batch 4-panel — one unified HTML via _make_combined_figure_html ──
         TOP_H = 280
-        _panel_label_md = (
-            lambda ltr: st.markdown(
-                f'<p style="font-family:Arial,sans-serif;font-size:18px;font-weight:700;'
-                f'color:#1e1e1c;margin:0 0 4px 2px;line-height:1;">{ltr}</p>',
-                unsafe_allow_html=True,
-            )
+        BOT_H = 480
+
+        # Build panel b 3D viewer (pose browser + co-crystal)
+        _b_nm2  = st.session_state.get("rtf_b_lig_sel",
+                   (_browsable_rtf[0]["Name"] if _browsable_rtf else ""))
+        _b_pi2  = st.session_state.get("rtf_b_pose_sel", 1) - 1
+        _b_res2 = next((r for r in (_browsable_rtf or []) if r["Name"] == _b_nm2),
+                       (_browsable_rtf[0] if _browsable_rtf else None))
+        _b_mols2 = (
+            load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False)
+            if _b_res2 and _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", ""))
+            else []
         )
+        _b_pi2 = max(0, min(_b_pi2, len(_b_mols2) - 1)) if _b_mols2 else 0
 
-        FRAME_CSS = (
-            "background:white;border:1.5px solid #c8c8c4;border-radius:8px;"
-            "padding:16px 16px 12px;margin:6px 0 4px;"
-        )
-        st.markdown(f'<div style="{FRAME_CSS}">', unsafe_allow_html=True)
+        _v3d_b_html = ""
+        if _b_mols2:
+            try:
+                _vb = _py3d.view(width=PANEL_W, height=TOP_H)
+                _vb.setBackgroundColor("#ffffff")
+                _vbi = 0
+                if b_rec_fh and os.path.exists(b_rec_fh):
+                    _vb.addModel(open(b_rec_fh).read(), "pdb")
+                    _vb.setStyle({"model": _vbi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+                    _vbi += 1
+                _vbi = _add_heme_to_view(_vb, b_rec_fh, _vbi)
+                if b_cryst_pdb and os.path.exists(b_cryst_pdb):
+                    _vb.addModel(open(b_cryst_pdb).read(), "pdb")
+                    _vb.setStyle({"model": _vbi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.20}})
+                    _vbi += 1
+                _vb.addModel(_Chem_fig.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
+                _vb.setStyle({"model": _vbi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
+                _vb.zoomTo({"model": _vbi})
+                _v3d_b_html = _vb._make_html()
+            except Exception as _evb:
+                _v3d_b_html = ""
 
-        top_a, top_b = st.columns(2)
-        with top_a:
-            _panel_label_md("a)")
-            if _plot_fn and _plot_n > 0:
-                _fig_t, _ax_t = plt.subplots(figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
-                _plot_fn(_ax_t); _fig_t.tight_layout()
-                st.pyplot(_fig_t, use_container_width=True); plt.close(_fig_t)
-            else:
-                st.info("Run batch docking to see the score plot.")
+        # Score plot PNG for panel a
+        _plot_b64_src = ""
+        if _plot_fn and _plot_n > 0:
+            try:
+                _pfig, _pax = plt.subplots(figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
+                _plot_fn(_pax); _pfig.tight_layout()
+                _pbuf = io.BytesIO()
+                _pfig.savefig(_pbuf, format="png", dpi=150,
+                              bbox_inches="tight", facecolor=_pfig.get_facecolor())
+                _pbuf.seek(0)
+                _plot_b64_src = "data:image/png;base64," + base64.b64encode(_pbuf.getvalue()).decode()
+                plt.close(_pfig)
+            except Exception:
+                pass
 
-        with top_b:
-            _panel_label_md("b)")
-            # Selectors live in Figure Settings — just read the chosen values here
-            _b_nm2  = st.session_state.get("rtf_b_lig_sel",
-                       (_browsable_rtf[0]["Name"] if _browsable_rtf else ""))
-            _b_pi2  = st.session_state.get("rtf_b_pose_sel", 1) - 1
-            _b_res2 = next((r for r in (_browsable_rtf or []) if r["Name"] == _b_nm2),
-                           (_browsable_rtf[0] if _browsable_rtf else None))
-            _b_mols2 = (
-                load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False)
-                if _b_res2 and _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", ""))
-                else []
-            )
-            _b_pi2 = max(0, min(_b_pi2, len(_b_mols2) - 1)) if _b_mols2 else 0
-            if _b_mols2:
-                try:
-                    from rdkit import Chem as _Cb
-                    _vbr = _py3d.view(width="100%", height=TOP_H - 10)
-                    _vbr.setBackgroundColor("#ffffff")
-                    _bri = 0
-                    if b_rec_fh and os.path.exists(b_rec_fh):
-                        _vbr.addModel(open(b_rec_fh).read(), "pdb")
-                        _vbr.setStyle({"model": _bri}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
-                        _bri += 1
-                    _bri = _add_heme_to_view(_vbr, b_rec_fh, _bri)
-                    # Co-crystal ligand in pink/magenta (same as Pose Browser)
-                    if b_cryst_pdb and os.path.exists(b_cryst_pdb):
-                        _vbr.addModel(open(b_cryst_pdb).read(), "pdb")
-                        _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.20}})
-                        _bri += 1
-                    # Selected docked pose in cyan
-                    _vbr.addModel(_Cb.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
-                    _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                    _vbr.addSurface("SES", {"opacity": 0.15, "color": "lightblue"},
-                                    {"model": 0}, {"model": _bri})
-                    _vbr.zoomTo({"model": _bri})
-                    show3d(_vbr, height=TOP_H - 10)
-                except Exception as _bve:
-                    st.info(f"Viewer: {_bve}")
-            else:
-                st.info("Select a ligand in Figure Settings.")
-
-        st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
-
-        # ── Bottom row [c | d] via combined HTML ──────────────────────────────
-        _panel_label_md("c)  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; d)")
         _fig_html4, _fig_h4 = _make_combined_figure_html(
-            v3d_raw_html = _v3d_html,
-            diag_b64_src = _diag_b64_src,
-            capsule_text = _capsule,
-            panel_w      = PANEL_W,
-            panel_h      = 480,
+            v3d_raw_html  = _v3d_html,     # panel c: binding pocket
+            diag_b64_src  = _diag_b64_src, # panel d: 2D diagram
+            capsule_text  = _capsule,
+            panel_w       = PANEL_W,
+            panel_h       = BOT_H,
+            layout        = "4panel",
+            plot_b64_src  = _plot_b64_src,
+            v3d_b_raw_html= _v3d_b_html,
+            top_h         = TOP_H,
         )
         components.html(_fig_html4, height=_fig_h4, scrolling=False)
-
-        st.markdown('</div>', unsafe_allow_html=True)
 
 
 def _ai_prompt_section(
