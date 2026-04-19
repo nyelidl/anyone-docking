@@ -797,7 +797,25 @@ _IONIZABLE_SITE_DEF = [
     ("phosphonate",       "[PX4](=O)([OX2H1])[OX2H1,OX1-]",                    6.5,  "acid"),
     ("sulfonamide_NH",    "[SX4](=O)(=O)[NX3;H1]",                             10.1,  "acid"),
     ("imide_NH",          "[CX3](=O)[NX3;H1][CX3]=O",                           9.6,  "acid"),
+    # Chromone/flavone OH (pKa ~6.5) + its deprotonated form
+    ("chromone_oh",         "[OX2H1]c1ccc2oc(*)cc(=O)c2c1",                     6.5,  "acid"),
+    ("chromone_phenolate",  "[O-]c1ccc2oc(*)cc(=O)c2c1",                        6.5,  "acid"),
+    # Flavone/isoflavone A-ring OH (positions 5,6,7,8) — covers 7-OH pKa~6.9
+    # SMARTS: OH on benzene fused with pyranone (chromone core), any substitution
+    ("flavone_aring_oh",    "[OX2H1]c1ccc2c(c1)occc2=O",                        6.9,  "acid"),
+    ("flavone_aring_phen",  "[O-]c1ccc2c(c1)occc2=O",                           6.9,  "acid"),
+    # Catechol ortho-diol (pKa ~7.5 each OH) + deprotonated form
+    # Substituted catechol (flavonoid B-ring, pKa ~7.0) - has non-H substituent on ring
+    ("catechol_sub_oh",    "[OX2H1]c1cc([!#1;!H])ccc1[OX2H1]",                7.0,  "acid"),
+    ("catechol_sub_phen",  "[O-]c1cc([!#1;!H])ccc1[OX2H1]",                   7.0,  "acid"),
+    # Plain catechol (isolated, pKa ~9.2)
+    ("catechol_oh",        "[OX2H1]c1ccccc1[OX2H1]",                           9.2,  "acid"),
+    ("catechol_phenolate", "[O-]c1ccccc1[OX2H1]",                              9.2,  "acid"),
+    # Phenolate (deprotonated generic phenol) — before generic phenol so dedup works
+    ("phenolate",           "[O-]c",                                            10.0,  "acid"),
     ("phenol",            "c[OX2H1]",                                           10.0,  "acid"),
+    # Carboxylate (already-deprotonated COOH)
+    ("carboxylate",         "[CX3](=O)[O-]",                                     4.5,  "acid"),
     ("thiol_arom",        "c[SX2H1]",                                            6.5,  "acid"),
     ("thiol_aliph",       "[CX4][SX2H1]",                                       10.5,  "acid"),
     ("aniline",           "c[NX3;H1,H2;!$(N~[!#6])]",                           4.6,  "base"),
@@ -928,20 +946,54 @@ def _pubchem_pka_lookup(smiles: str) -> dict:
 
 
 def _find_ionizable_sites(mol) -> list:
-    """Return ionizable sites found in mol using heuristic SMARTS table."""
+    """
+    Return ionizable sites found in mol using heuristic SMARTS table.
+
+    Deduplication is by the IONIZABLE ATOM (the O/N/S that bears the H),
+    not by the full match frozenset.  This is critical so that more-specific
+    patterns listed earlier in _IONIZABLE_SITE_DEF (e.g. catechol_oh pKa=7.5,
+    chromone_oh pKa=6.5) claim the atom before the generic phenol (pKa=10.0)
+    can assign a wrong higher pKa to the same oxygen.
+    """
     from rdkit import Chem
     _compiled = _compile_smarts_table(
         [(lbl, sma, pka, stype) for lbl, sma, pka, stype in _IONIZABLE_SITE_DEF]
     )
     sites = []
-    seen = set()
+    seen_ionizable = set()   # set of atom indices already claimed as ionizable
+
     for lbl, pat, pka, stype in _compiled:
         for match in mol.GetSubstructMatches(pat):
-            k = frozenset(match)
-            if k not in seen:
-                seen.add(k)
-                sites.append({"label": lbl, "atom_indices": list(match),
-                               "heuristic_pka": pka, "site_type": stype})
+            # Identify the ionizable atom: the O/N/S in the match that bears H
+            # OR that carries a negative formal charge (already deprotonated)
+            ionizable_idx = None
+            for idx in match:
+                a = mol.GetAtomWithIdx(idx)
+                if a.GetAtomicNum() in (7, 8, 16) and (
+                    a.GetTotalNumHs() > 0 or a.GetFormalCharge() < 0
+                ):
+                    ionizable_idx = idx
+                    break
+            if ionizable_idx is None:
+                # fallback: any O/N/S atom in the match
+                for idx in match:
+                    a = mol.GetAtomWithIdx(idx)
+                    if a.GetAtomicNum() in (7, 8, 16):
+                        ionizable_idx = idx
+                        break
+                if ionizable_idx is None:
+                    ionizable_idx = match[0]
+
+            if ionizable_idx in seen_ionizable:
+                continue
+            seen_ionizable.add(ionizable_idx)
+            sites.append({
+                "label":        lbl,
+                "atom_indices": list(match),
+                "ionizable_idx": ionizable_idx,
+                "heuristic_pka": pka,
+                "site_type":    stype,
+            })
     return sites
 
 
@@ -953,29 +1005,42 @@ def _hh_fraction_charged(pka: float, ph: float, site_type: str) -> float:
 
 
 def _hh_match_score(pka: float, ph: float, site_type: str, actual_charge: int) -> float:
-    """Score how well an observed site charge matches HH prediction."""
+    """
+    Score how well an observed site charge matches HH prediction.
+
+    Uses f_charged-scaled rewards so that borderline cases (pKa ≈ pH) are
+    scored proportionally to how confident the prediction is, rather than
+    the dpH distance (which produced near-zero rewards for the important
+    borderline cases like flavonoid phenols at pH~pKa).
+
+    Reward/penalty magnitudes:
+        correct charged state :  f_charged × 1.8   (up to 1.2)
+        wrong neutral state    : -f_charged × 1.2   (up to -1.0)
+        correct neutral state  :  (1−f_charged) × 0.2   (up to ~0.1)
+        wrong charged state    : −(1−f_charged) × 1.5
+    """
     f_charged = _hh_fraction_charged(pka, ph, site_type)
-    dpH = abs(ph - pka)
+
     if site_type == "acid":
         expected_neg = f_charged > 0.5
-        if expected_neg and actual_charge < 0:
-            return min(1.2, dpH * 0.45)
-        elif expected_neg:
-            return -min(1.0, dpH * 0.35)
-        elif actual_charge >= 0:
-            return 0.1
-        else:
-            return -min(1.2, dpH * 0.40)
-    else:
+        if expected_neg and actual_charge < 0:           # correctly deprotonated
+            return min(1.2, f_charged * 1.8)
+        elif expected_neg and actual_charge >= 0:         # should be deprotonated, but neutral
+            return -min(1.0, f_charged * 1.2)
+        elif actual_charge >= 0:                          # correctly neutral
+            return (1.0 - f_charged) * 0.2
+        else:                                             # wrongly charged (deprotonated when shouldn't be)
+            return -(1.0 - f_charged) * 1.5
+    else:  # base
         expected_pos = f_charged > 0.5
-        if expected_pos and actual_charge > 0:
-            return min(1.2, dpH * 0.45)
-        elif expected_pos:
-            return -min(1.0, dpH * 0.35)
-        elif actual_charge <= 0:
-            return 0.1
-        else:
-            return -min(1.2, dpH * 0.40)
+        if expected_pos and actual_charge > 0:            # correctly protonated
+            return min(1.2, f_charged * 1.8)
+        elif expected_pos and actual_charge <= 0:         # should be protonated, but neutral
+            return -min(1.0, f_charged * 1.2)
+        elif actual_charge <= 0:                          # correctly neutral
+            return (1.0 - f_charged) * 0.2
+        else:                                             # wrongly charged
+            return -(1.0 - f_charged) * 1.5
 
 
 def _score_tautomer(smiles: str) -> float:
@@ -1133,6 +1198,70 @@ def protonate_pkanet(
         log.append(f"✓ Dimorphite-DL: {len(candidates)} protonation state(s)")
     except Exception as e:
         log.append(f"⚠ Dimorphite-DL skipped: {e}")
+
+    # ── C2. Fallback: explicit protonation-state generation from site table ─────
+    # Dimorphite uses generic pKa values and misses low-pKa phenols
+    # (flavonoid chromone/catechol OHs, pKa 6.5–7.0) and zwitterions.
+    #
+    # Strategy A: find the SINGLE most acidic site and deprotonate it only.
+    #             (More acidic sites are deprotonated first; at physiological pH
+    #              usually only the lowest-pKa acid site is deprotonated.)
+    # Strategy B: for molecules with BOTH a clear acid (pKa < pH) AND a clear
+    #             base (pKa > pH + 1.5), also generate the combined zwitterion.
+    try:
+        mol_chk = Chem.MolFromSmiles(canonical)
+        if mol_chk:
+            sites_chk = _find_ionizable_sites(mol_chk)
+            seen_c = set(candidates)
+
+            acid_sites = sorted(
+                [s for s in sites_chk
+                 if s["site_type"] == "acid"
+                 and s["heuristic_pka"] < ph
+                 and s.get("ionizable_idx") is not None
+                 and mol_chk.GetAtomWithIdx(s["ionizable_idx"]).GetTotalNumHs() > 0],
+                key=lambda s: s["heuristic_pka"]   # most acidic first
+            )
+
+            base_sites = [s for s in sites_chk
+                          if s["site_type"] == "base"
+                          and s["heuristic_pka"] > ph + 1.5
+                          and s.get("ionizable_idx") is not None
+                          and mol_chk.GetAtomWithIdx(s["ionizable_idx"]).GetFormalCharge() == 0]
+
+            # A: deprotonate only the single most acidic site
+            if acid_sites:
+                try:
+                    site = acid_sites[0]
+                    rw = Chem.RWMol(mol_chk)
+                    rw.GetAtomWithIdx(site["ionizable_idx"]).SetFormalCharge(-1)
+                    Chem.SanitizeMol(rw)
+                    dep_smi = Chem.MolToSmiles(rw, canonical=True)
+                    if dep_smi and dep_smi not in seen_c:
+                        seen_c.add(dep_smi)
+                        candidates.append(dep_smi)
+                        log.append(f"✓ Explicit deprotonation: {site['label']} "
+                                   f"(pKa={site['heuristic_pka']:.1f} < pH {ph:.1f})")
+                except Exception:
+                    pass
+
+            # B: zwitterion — deprotonate most acidic acid AND protonate most basic base
+            if acid_sites and base_sites:
+                try:
+                    rw2 = Chem.RWMol(mol_chk)
+                    rw2.GetAtomWithIdx(acid_sites[0]["ionizable_idx"]).SetFormalCharge(-1)
+                    rw2.GetAtomWithIdx(base_sites[0]["ionizable_idx"]).SetFormalCharge(+1)
+                    Chem.SanitizeMol(rw2)
+                    zwit_smi = Chem.MolToSmiles(rw2, canonical=True)
+                    if zwit_smi and zwit_smi not in seen_c:
+                        seen_c.add(zwit_smi)
+                        candidates.append(zwit_smi)
+                        log.append(f"✓ Zwitterion candidate generated")
+                except Exception:
+                    pass
+
+    except Exception as e:
+        log.append(f"⚠ Explicit protonation step skipped: {e}")
 
     # ── D. Tautomer expansion (up to max_tautomers per protonation state) ─────
     all_states = []
