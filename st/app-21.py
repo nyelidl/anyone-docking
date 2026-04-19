@@ -1866,7 +1866,7 @@ def _ready_figure_section(
 
     else:
         # ── Batch 4-panel — one unified HTML via _make_combined_figure_html ──
-        TOP_H = 280
+        TOP_H = 320
         BOT_H = 480
 
         # Build panel b 3D viewer (pose browser + co-crystal)
