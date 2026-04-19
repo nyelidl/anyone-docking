@@ -981,17 +981,36 @@ def _2d_svg_bytes(acd_svg, acd_ihtml, rdk_svg, pv_svg, pv_png,
     """
     Return (svg_bytes_or_None, png_bytes_or_None) for the currently selected
     2D diagram source, for use in the figure export.
+
+    For ACD interactive HTML: the raw SVG is extracted and the title pill
+    (top capsule rect+text) is stripped so it doesn't duplicate the
+    summary capsule that _build_figure_svg adds below the diagram.
     """
     import base64, re
+
+    def _strip_title_pill_from_svg(svg_text: str) -> str:
+        """Remove the <rect rx='22' fill='#f2f2f2'/> + following <text> title pill."""
+        return re.sub(
+            r'<rect\s[^>]*rx="22"[^>]*fill="#f2f2f2"[^>]*/>\s*'
+            r'<text\s[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
+            '',
+            svg_text,
+            count=1,
+            flags=re.DOTALL,
+        )
+
     if diag_source == "acd":
         if acd_svg:
             raw = acd_svg if isinstance(acd_svg, bytes) else acd_svg.encode()
-            return raw, None
+            # acd_svg is the static SVG — strip title pill too
+            cleaned = _strip_title_pill_from_svg(raw.decode("utf-8", errors="replace"))
+            return cleaned.encode(), None
         if acd_ihtml:
-            # Extract SVG element from the interactive HTML
+            # Extract SVG element from the interactive HTML then strip title pill
             m = re.search(r'(<svg\b.*?</svg>)', acd_ihtml, re.DOTALL)
             if m:
-                return m.group(1).encode(), None
+                cleaned = _strip_title_pill_from_svg(m.group(1))
+                return cleaned.encode(), None
         return None, None
     elif diag_source == "rdkit":
         if rdk_svg:
@@ -1086,36 +1105,36 @@ def _build_figure_svg(
         )
 
     def _3d_placeholder(px, py, pw, ph, label):
+        # Clean empty panel — no instructional text.
+        # User composites the 3D screenshot separately.
         return (
             f'<rect x="{px}" y="{py}" width="{pw}" height="{ph}"'
-            f' fill="#f8f8f5" stroke="#d0d0cc" stroke-width="1" rx="6"/>'
-            f'<text x="{px+pw/2:.0f}" y="{py+ph/2-10:.0f}" text-anchor="middle"'
-            f' font-family="Arial,sans-serif" font-size="14" fill="#888882">'
-            f'🔬 3D Binding Pocket View</text>'
-            f'<text x="{px+pw/2:.0f}" y="{py+ph/2+12:.0f}" text-anchor="middle"'
-            f' font-family="Arial,sans-serif" font-size="11" fill="#aaa">'
-            f'(screenshot the interactive panel above)</text>'
+            f' fill="#f7f7f5" stroke="#d8d8d4" stroke-width="1" rx="6"/>'
         )
 
     def _embed_2d(svg_b, png_b, px, py, pw, ph):
-        """Embed 2D diagram SVG (inline) or PNG (base64) into the figure SVG."""
+        """
+        Embed 2D diagram into the figure SVG, vertically shifted down so the
+        content sits more in the vertical centre of the allocated space
+        (avoids the diagram being pushed hard to the top of the panel).
+        """
+        # Extra top offset to push diagram toward vertical centre
+        V_OFFSET = 30
         if svg_b:
             raw = svg_b.decode("utf-8", errors="replace") if isinstance(svg_b, bytes) else svg_b
-            # Strip xml declaration and embed as foreignObject or image
             raw = raw.strip()
             if raw.startswith("<?xml"):
                 raw = raw[raw.index("<svg"):]
-            # Embed via <image> using base64 data URI
             b64 = base64.b64encode(raw.encode()).decode()
             return (
-                f'<image x="{px}" y="{py}" width="{pw}" height="{ph}"'
+                f'<image x="{px}" y="{py + V_OFFSET}" width="{pw}" height="{ph - V_OFFSET}"'
                 f' href="data:image/svg+xml;base64,{b64}"'
                 f' preserveAspectRatio="xMidYMid meet"/>'
             )
         elif png_b:
             b64 = base64.b64encode(png_b).decode()
             return (
-                f'<image x="{px}" y="{py}" width="{pw}" height="{ph}"'
+                f'<image x="{px}" y="{py + V_OFFSET}" width="{pw}" height="{ph - V_OFFSET}"'
                 f' href="data:image/png;base64,{b64}"'
                 f' preserveAspectRatio="xMidYMid meet"/>'
             )
@@ -1128,7 +1147,7 @@ def _build_figure_svg(
 
     if layout == "2panel":
         SVG_W = W * 2
-        SVG_H = H_panel + 80  # extra for capsule + legend
+        SVG_H = H_panel + 60   # capsule only — ACD SVG has own legend
         pad = 20
         pw = W - pad * 2
 
@@ -1136,20 +1155,22 @@ def _build_figure_svg(
             f'<svg width="{SVG_W}" height="{SVG_H}" viewBox="0 0 {SVG_W} {SVG_H}"'
             f' xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
             '<rect width="100%" height="100%" fill="white"/>',
-            # Panel a — 3D placeholder
+            # outer frame border
+            f'<rect x="4" y="4" width="{SVG_W-8}" height="{SVG_H-8}"'
+            f' fill="none" stroke="#c8c8c4" stroke-width="1.5" rx="8"/>',
+            # Panel a — clean empty panel (user adds 3D screenshot)
             _panel_label(pad, 28, "a)"),
             _3d_placeholder(pad, 36, pw, H_panel - 36, "a"),
-            # Panel b — 2D diagram
+            # Panel b — 2D diagram (capsule below, no extra legend since ACD has own)
             _panel_label(W + pad, 28, "b)"),
-            _embed_2d(diag_svg_bytes, diag_png_bytes, W + pad, 36, pw, H_panel - 80),
-            _capsule_svg(W + W / 2, H_panel - 30, capsule_text, W),
-            _legend_svg(W + W / 2, H_panel + 12, LEGEND_ITEMS),
+            _embed_2d(diag_svg_bytes, diag_png_bytes, W + pad, 36, pw, H_panel - 36),
+            _capsule_svg(W + W / 2, H_panel + 20, capsule_text, W),
             '</svg>',
         ]
 
     else:  # 4panel
         TOP_H    = 320
-        BOT_H    = H_panel + 80
+        BOT_H    = H_panel + 60
         SVG_W    = W * 2
         SVG_H    = TOP_H + BOT_H + 16
         pad      = 20
@@ -1168,6 +1189,9 @@ def _build_figure_svg(
             f'<svg width="{SVG_W}" height="{SVG_H}" viewBox="0 0 {SVG_W} {SVG_H}"'
             f' xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">',
             '<rect width="100%" height="100%" fill="white"/>',
+            # outer frame border
+            f'<rect x="4" y="4" width="{SVG_W-8}" height="{SVG_H-8}"'
+            f' fill="none" stroke="#c8c8c4" stroke-width="1.5" rx="8"/>',
             # Top row
             _panel_label(pad, 24, "a)"),
             _embed_2d(None, plot_png, pad, 32, pw, TOP_H - 36) if plot_png else
@@ -1179,9 +1203,8 @@ def _build_figure_svg(
             _3d_placeholder(pad, TOP_H + 16 + 16, pw, BOT_H - 80, "c"),
             _panel_label(W + pad, TOP_H + 16 + 8, "d)"),
             _embed_2d(diag_svg_bytes, diag_png_bytes,
-                      W + pad, TOP_H + 16 + 16, pw, BOT_H - 100),
-            _capsule_svg(W + W / 2, TOP_H + 16 + BOT_H - 60, capsule_text, W),
-            _legend_svg(W + W / 2, TOP_H + 16 + BOT_H - 22, LEGEND_ITEMS),
+                      W + pad, TOP_H + 16 + 16, pw, BOT_H - 80),
+            _capsule_svg(W + W / 2, TOP_H + 16 + BOT_H - 20, capsule_text, W),
             '</svg>',
         ]
 
