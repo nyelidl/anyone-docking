@@ -1306,362 +1306,6 @@ def _render_2d_panel_b(
     )
 
 
-def _make_figure_html(
-    rec_fh: str,
-    mol,
-    cutoff: float,
-    show_labels: bool,
-    show_surface: bool,
-    acd_svg, acd_ihtml,
-    rdk_svg,
-    pv_svg, pv_png,
-    diag_source: str,
-    capsule_text: str,
-    layout: str = "2panel",   # "2panel" | "4panel"
-    plot_png_bytes=None,
-    b_browsable=None,
-    b_sel_nm: str = "",
-    b_mols=None,
-    b_pose_i: int = 0,
-    b_rec_fh: str = "",
-) -> str:
-    """
-    Build a self-contained HTML string that renders a TRUE two-panel (or
-    four-panel) artwork canvas at fixed pixel dimensions.
-
-    Key layout decisions:
-    • Each panel sits inside a fixed-width .col wrapper with explicit `width:Npx`
-      (NOT flex-grow), so the columns always sit side-by-side even inside a
-      narrow parent iframe.
-    • Interactive content (3D viewer, ACD dragable SVG) is isolated in nested
-      <iframe src="data:text/html;base64,…"> so its scripts don't clash with
-      sibling panels' scripts.
-    • Static content (RDKit SVG, PoseView PNG) uses <img> with object-fit:
-      contain so it fills and centres inside its panel.
-
-    Layout 2-panel:  [ a: 3D pocket | b: 2D diagram + capsule + legend ]
-    Layout 4-panel:  top  [ a: plot | b: pose viewer ]   (shorter)
-                     bot  [ c: 3D pocket | d: 2D + caps + leg ]  (taller)
-    """
-    import base64, re
-    from rdkit import Chem
-
-    # ── Canvas geometry (FIXED, does not depend on viewport) ──────────────────
-    CANVAS_W   = 1100
-    PAD        = 16
-    GAP        = 16
-
-    PANEL_W    = (CANVAS_W - PAD * 2 - GAP) // 2     # 526 px each
-
-    if layout == "2panel":
-        PANEL_H        = 500
-        PANEL_H_2D     = 500
-        CANVAS_H       = PAD + 28 + PANEL_H + 90 + PAD   # label + panel + caps+legend
-    else:
-        TOP_PANEL_H    = 260
-        BOT_PANEL_H    = 440
-        PANEL_H        = BOT_PANEL_H
-        PANEL_H_2D     = BOT_PANEL_H
-        CANVAS_H       = PAD + 28 + TOP_PANEL_H + GAP + 28 + BOT_PANEL_H + 90 + PAD
-
-    # ── Helper: wrap any HTML fragment in a full HTML page + base64 iframe ────
-    def _iframe_wrap(inner_html: str, bg: str = "white") -> str:
-        page = (
-            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
-            f'<style>html,body{{margin:0;padding:0;background:{bg};'
-            f'width:100%;height:100%;overflow:hidden;}}</style></head>'
-            f'<body>{inner_html}</body></html>'
-        )
-        b64 = base64.b64encode(page.encode("utf-8")).decode()
-        return (f'<iframe src="data:text/html;base64,{b64}" '
-                f'style="width:100%;height:100%;border:0;display:block;" '
-                f'frameborder="0" scrolling="no"></iframe>')
-
-    # ── Build 3D panel (panel a / panel c) — real py3Dmol in isolated iframe ──
-    import py3Dmol
-    _3d_pocket_html = ""
-    try:
-        v3d = py3Dmol.view(width=PANEL_W, height=PANEL_H)
-        v3d.setBackgroundColor("#ffffff")
-        mi = 0
-        if rec_fh and os.path.exists(rec_fh):
-            v3d.addModel(open(rec_fh).read(), "pdb")
-            v3d.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
-            if show_surface:
-                v3d.addSurface(py3Dmol.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
-            mi += 1
-        mi = _add_heme_to_view(v3d, rec_fh, mi)
-        # NO co-crystal ligand in the figure panel
-        v3d.addModel(Chem.MolToMolBlock(mol), "mol")
-        _lig_m = mi
-        v3d.setStyle({"model": _lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
-        if rec_fh and os.path.exists(rec_fh):
-            _ir = get_interacting_residues(rec_fh, mol, cutoff=cutoff)
-            for _rb in _ir:
-                _has_chain = bool(_rb["chain"] and _rb["chain"].strip())
-                _sel = {"model": 0, "resi": _rb["resi"]}
-                if _has_chain:
-                    _sel["chain"] = _rb["chain"]
-                v3d.setStyle(_sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
-                if show_labels:
-                    _lbl_chain = _rb["chain"] if _has_chain else ""
-                    v3d.addLabel(
-                        f"{_rb['resn']}{_rb['resi']}{_lbl_chain}",
-                        {"fontSize": 10, "fontColor": "yellow",
-                         "backgroundColor": "black", "backgroundOpacity": 0.6,
-                         "inFront": True, "showBackground": True},
-                        _sel,
-                    )
-        v3d.zoomTo({"model": _lig_m})
-        # _make_html() returns a FULL HTML page (with 3Dmol <script src>).
-        # We iframe it AS-IS via base64, so the scripts run in an isolated doc.
-        raw3d = v3d._make_html()
-        b3d = base64.b64encode(raw3d.encode("utf-8")).decode()
-        _3d_pocket_html = (
-            f'<iframe src="data:text/html;base64,{b3d}" '
-            f'style="width:100%;height:100%;border:0;display:block;" '
-            f'frameborder="0" scrolling="no"></iframe>'
-        )
-    except Exception as _e3:
-        _3d_pocket_html = (
-            f'<div style="display:flex;align-items:center;justify-content:center;'
-            f'height:100%;color:#888;font-family:Arial,sans-serif;font-size:13px;">'
-            f'3D viewer: {_e3}</div>'
-        )
-
-    # ── Build 2D panel content (panel b / panel d) ────────────────────────────
-    _2d_content = ""
-    if diag_source == "acd" and acd_ihtml:
-        # Strip toolbar + title pill, then iframe-isolate so drag script works
-        _clean = _strip_acd_toolbar(acd_ihtml)
-        # Make the SVG fill its iframe
-        _clean = re.sub(
-            r'<svg([^>]*?)style="[^"]*"',
-            r'<svg\1style="width:100%;height:100%;display:block;"',
-            _clean, count=1,
-        )
-        _clean = re.sub(
-            r'<svg(?![^>]*style=)([^>]*?)>',
-            r'<svg\1 style="width:100%;height:100%;display:block;">',
-            _clean, count=1,
-        )
-        _2d_content = _iframe_wrap(_clean)
-    elif diag_source == "acd" and acd_svg:
-        s = acd_svg.decode() if isinstance(acd_svg, bytes) else acd_svg
-        b64 = base64.b64encode(s.encode()).decode()
-        _2d_content = (
-            f'<img src="data:image/svg+xml;base64,{b64}" '
-            f'style="width:100%;height:100%;object-fit:contain;display:block;">'
-        )
-    elif diag_source == "rdkit" and rdk_svg:
-        s = rdk_svg.decode() if isinstance(rdk_svg, bytes) else rdk_svg
-        b64 = base64.b64encode(s.encode()).decode()
-        _2d_content = (
-            f'<img src="data:image/svg+xml;base64,{b64}" '
-            f'style="width:100%;height:100%;object-fit:contain;display:block;">'
-        )
-    elif diag_source == "poseview" and pv_png:
-        b64 = base64.b64encode(pv_png).decode()
-        _2d_content = (
-            f'<img src="data:image/png;base64,{b64}" '
-            f'style="width:100%;height:100%;object-fit:contain;display:block;">'
-        )
-    elif diag_source == "poseview" and pv_svg:
-        s = pv_svg.decode() if isinstance(pv_svg, bytes) else pv_svg
-        b64 = base64.b64encode(s.encode()).decode()
-        _2d_content = (
-            f'<img src="data:image/svg+xml;base64,{b64}" '
-            f'style="width:100%;height:100%;object-fit:contain;display:block;">'
-        )
-    else:
-        _2d_content = (
-            '<div style="display:flex;align-items:center;justify-content:center;'
-            'height:100%;color:#aaa;font-family:Arial,sans-serif;font-size:13px;">'
-            'Generate a 2D diagram first (tab above)</div>'
-        )
-
-    # ── Capsule + legend (below 2D panel only) ────────────────────────────────
-    _cap_html = (
-        f'<div style="text-align:center;margin:10px 0 4px;">'
-        f'<span style="display:inline-block;padding:7px 28px;border-radius:999px;'
-        f'background:#f0f0ec;border:1px solid #c4c4c0;font-size:14px;'
-        f'font-weight:700;color:#1e1e1c;letter-spacing:0.01em;'
-        f'font-family:Arial,sans-serif;">'
-        f'{capsule_text}</span></div>'
-    )
-    LEGEND_ITEMS = [
-        ("#a0c8ff", "#2287ff", None,      "Hydrophobic"),
-        ("#80dd80", "#1a7a1a", "5 3",     "H-bond"),
-        ("#f0a0ff", "#e200e8", "5 3",     "π-π stacking"),
-        ("#ffe090", "#cc8800", "3 2",     "Metal"),
-        ("#ffb0d0", "#cc2277", "5 2",     "Halogen bond"),
-        ("#c4a0ff", "#6633aa", "4 2 1 2", "H···Halogen"),
-    ]
-    _leg_parts = []
-    for fill, stroke, dash, label in LEGEND_ITEMS:
-        circ = (f'<span style="display:inline-block;width:13px;height:13px;'
-                f'border-radius:50%;background:{fill};border:1.5px solid {stroke};'
-                f'vertical-align:middle;margin-right:3px;"></span>')
-        dash_el = (f'<span style="display:inline-block;width:16px;height:2px;'
-                   f'border-top:2px dashed {stroke};vertical-align:middle;margin:0 3px;"></span>'
-                   if dash else "")
-        _leg_parts.append(
-            f'<span style="margin:0 5px 2px 0;display:inline-flex;align-items:center;'
-            f'font-size:11px;color:#555;font-family:Arial,sans-serif;">'
-            f'{circ}{dash_el}{label}</span>'
-        )
-    _leg_html = ('<div style="text-align:center;line-height:1.7;">'
-                 + "".join(_leg_parts) + '</div>')
-
-    # ── 4-panel top row content (plot + pose browser) ─────────────────────────
-    _plot_html = ""
-    _browser_html = ""
-    if layout == "4panel":
-        if plot_png_bytes:
-            b64 = base64.b64encode(plot_png_bytes).decode()
-            _plot_html = (f'<img src="data:image/png;base64,{b64}" '
-                          f'style="width:100%;height:100%;object-fit:contain;display:block;">')
-        else:
-            _plot_html = ('<div style="display:flex;align-items:center;justify-content:center;'
-                          'height:100%;color:#aaa;font-family:Arial,sans-serif;font-size:12px;">'
-                          'Score plot — run batch docking</div>')
-
-        # Mini 3D pose viewer for panel b
-        if b_browsable and b_mols:
-            try:
-                import py3Dmol as _p3b
-                from rdkit import Chem as _Cb
-                _sc = b_mols[b_pose_i] if b_pose_i < len(b_mols) else None
-                _vb = _p3b.view(width=PANEL_W, height=TOP_PANEL_H)
-                _vb.setBackgroundColor("#ffffff")
-                _bi = 0
-                if b_rec_fh and os.path.exists(b_rec_fh):
-                    _vb.addModel(open(b_rec_fh).read(), "pdb")
-                    _vb.setStyle({"model": _bi}, {"cartoon": {"color": "spectrum", "opacity": 0.6}})
-                    _bi += 1
-                _bi = _add_heme_to_view(_vb, b_rec_fh, _bi)
-                if _sc is not None:
-                    _vb.addModel(_Cb.MolToMolBlock(_sc), "mol")
-                    _vb.setStyle({"model": _bi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
-                    _vb.zoomTo({"model": _bi})
-                raw_b = _vb._make_html()
-                b_b64 = base64.b64encode(raw_b.encode("utf-8")).decode()
-                _browser_html = (
-                    f'<iframe src="data:text/html;base64,{b_b64}" '
-                    f'style="width:100%;height:100%;border:0;display:block;" '
-                    f'frameborder="0" scrolling="no"></iframe>'
-                )
-            except Exception as _be:
-                _browser_html = (f'<div style="display:flex;align-items:center;justify-content:center;'
-                                 f'height:100%;color:#888;font-family:Arial,sans-serif;font-size:13px;">'
-                                 f'Pose viewer: {_be}</div>')
-        else:
-            _browser_html = ('<div style="display:flex;align-items:center;justify-content:center;'
-                             'height:100%;color:#aaa;font-family:Arial,sans-serif;font-size:12px;">'
-                             'Pose Browser</div>')
-
-    # ── CSS with EXPLICIT-WIDTH columns (not flex-grow) ───────────────────────
-    #    This is the critical fix: .col has width:PANEL_W px so the two columns
-    #    always sit side-by-side regardless of parent width.
-    CSS = f"""
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    html, body {{
-        background: #ffffff;
-        font-family: Arial, sans-serif;
-        overflow-x: auto;
-    }}
-    body {{ padding: 8px 0; display: flex; justify-content: center; }}
-    #canvas {{
-        width: {CANVAS_W}px;
-        min-width: {CANVAS_W}px;
-        max-width: {CANVAS_W}px;
-        background: white;
-        border: 1.5px solid #c8c8c4;
-        border-radius: 8px;
-        padding: {PAD}px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.06);
-    }}
-    .row {{
-        display: flex;
-        gap: {GAP}px;
-        align-items: flex-start;
-        width: 100%;
-    }}
-    .col {{
-        width: {PANEL_W}px;
-        min-width: {PANEL_W}px;
-        max-width: {PANEL_W}px;
-        flex: 0 0 {PANEL_W}px;
-    }}
-    .plabel {{
-        font-family: Arial, sans-serif;
-        font-size: 18px;
-        font-weight: 700;
-        color: #1e1e1c;
-        margin: 0 0 6px 2px;
-        line-height: 1;
-    }}
-    .panel {{
-        width: {PANEL_W}px;
-        background: #fafaf8;
-        border: 1px solid #ececea;
-        border-radius: 4px;
-        overflow: hidden;
-        position: relative;
-    }}
-    """
-
-    # ── Compose final HTML ────────────────────────────────────────────────────
-    if layout == "2panel":
-        html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
-<div id="canvas">
-  <div class="row">
-    <div class="col">
-      <p class="plabel">a)</p>
-      <div class="panel" style="height:{PANEL_H}px;">{_3d_pocket_html}</div>
-    </div>
-    <div class="col">
-      <p class="plabel">b)</p>
-      <div class="panel" style="height:{PANEL_H_2D}px;">{_2d_content}</div>
-      {_cap_html}
-      {_leg_html}
-    </div>
-  </div>
-</div>
-</body></html>"""
-    else:  # 4panel
-        html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
-<div id="canvas">
-  <div class="row" style="margin-bottom:{GAP}px;">
-    <div class="col">
-      <p class="plabel">a)</p>
-      <div class="panel" style="height:{TOP_PANEL_H}px;">{_plot_html}</div>
-    </div>
-    <div class="col">
-      <p class="plabel">b)</p>
-      <div class="panel" style="height:{TOP_PANEL_H}px;">{_browser_html}</div>
-    </div>
-  </div>
-  <div class="row">
-    <div class="col">
-      <p class="plabel">c)</p>
-      <div class="panel" style="height:{BOT_PANEL_H}px;">{_3d_pocket_html}</div>
-    </div>
-    <div class="col">
-      <p class="plabel">d)</p>
-      <div class="panel" style="height:{PANEL_H_2D}px;">{_2d_content}</div>
-      {_cap_html}
-      {_leg_html}
-    </div>
-  </div>
-</div>
-</body></html>"""
-
-    return html
-
-
 def _ready_figure_section(
     mode: str,           # "single" | "batch"
     # ── single dock state ──────────────────────────────────────────
@@ -1769,46 +1413,214 @@ def _ready_figure_section(
         st.info("Select a pose to render the figure.")
         return
 
-    # ── Score plot PNG for 4-panel export ─────────────────────────────────────
-    _plot_png = None
-    if _4panel and _plot_fn and _plot_n > 0:
-        _pfig, _pax = plt.subplots(figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
-        _plot_fn(_pax)
-        _pfig.tight_layout()
-        _pbuf = io.BytesIO()
-        _pfig.savefig(_pbuf, format="png", dpi=150, bbox_inches="tight",
-                      facecolor=_pfig.get_facecolor())
-        _pbuf.seek(0)
-        _plot_png = _pbuf.getvalue()
-        plt.close(_pfig)
-
-    _layout_key = "4panel" if _4panel else "2panel"
+    # ── Panel label helper ────────────────────────────────────────────────────
+    def _panel_label(letter: str):
+        st.markdown(
+            f'<p style="font-family:Arial,sans-serif;font-size:18px;font-weight:700;'
+            f'color:#1e1e1c;margin:0 0 4px 2px;line-height:1;">{letter}</p>',
+            unsafe_allow_html=True,
+        )
 
     # ═════════════════════════════════════════════════════════════════════════
-    #  FIXED ARTWORK CANVAS — rendered as a single components.html() block
-    #  Width is locked at 1100 px; height adapts to layout.
+    #  OUTER FRAME — opened with st.markdown, closed after all panels.
+    #  This is the visible rectangular border that defines the artwork boundary.
+    #  Streamlit columns and components.html() render INSIDE this framed div.
     # ═════════════════════════════════════════════════════════════════════════
-    _canvas_h = 680 if _layout_key == "2panel" else 860
-    _fig_html = _make_figure_html(
-        rec_fh=_rec, mol=_mol, cutoff=_cutoff,
-        show_labels=_show_labels, show_surface=_show_surf,
-        acd_svg=_a_svg, acd_ihtml=_a_ihtml,
-        rdk_svg=_r_svg,
-        pv_svg=_pv_svg_, pv_png=_pv_png_,
-        diag_source=_src_key,
-        capsule_text=_capsule,
-        layout=_layout_key,
-        plot_png_bytes=_plot_png,
-        b_browsable=_browsable_rtf,
-        b_sel_nm=b_sel_nm,
-        b_mols=_b_mols if mode == "batch" else None,
-        b_pose_i=b_pose_i,
-        b_rec_fh=b_rec_fh,
+    FRAME_CSS = (
+        "background:white;"
+        "border:1.5px solid #c8c8c4;"
+        "border-radius:8px;"
+        "padding:16px 16px 12px;"
+        "margin:6px 0 4px;"
+        "box-shadow:0 1px 4px rgba(0,0,0,0.06);"
     )
-    components.html(_fig_html, height=_canvas_h + 40, scrolling=False)
+    st.markdown(f'<div style="{FRAME_CSS}">', unsafe_allow_html=True)
+
+    if not _4panel:
+        # ── [a | b] ──────────────────────────────────────────────────────────
+        col_a, col_b = st.columns(2)
+        with col_a:
+            _panel_label("a)")
+            # ── Inline 3D rendering — no helper wrapper so errors surface ────
+            import py3Dmol as _py3d
+            from rdkit import Chem as _Chem_fig
+            try:
+                _v3d = _py3d.view(width="100%", height=500)
+                _v3d.setBackgroundColor(_viewer_bg())
+                _mi3 = 0
+                if _rec and os.path.exists(_rec):
+                    _v3d.addModel(open(_rec).read(), "pdb")
+                    _v3d.setStyle({"model": _mi3}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+                    if _show_surf:
+                        _v3d.addSurface(_py3d.SAS, {"opacity": 0.55, "color": "white"}, {"model": _mi3})
+                    _mi3 += 1
+                _mi3 = _add_heme_to_view(_v3d, _rec, _mi3)
+                # NO co-crystal ligand in figure panel
+                _v3d.addModel(_Chem_fig.MolToMolBlock(_mol), "mol")
+                _lig_m3 = _mi3
+                _v3d.setStyle({"model": _lig_m3}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
+                if _rec and os.path.exists(_rec):
+                    _ir3 = get_interacting_residues(_rec, _mol, cutoff=_cutoff)
+                    for _rb3 in _ir3:
+                        _hc3 = bool(_rb3["chain"] and _rb3["chain"].strip())
+                        _sel3 = {"model": 0, "resi": _rb3["resi"]}
+                        if _hc3:
+                            _sel3["chain"] = _rb3["chain"]
+                        _v3d.setStyle(_sel3, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
+                        if _show_labels:
+                            _lbl3 = _rb3["chain"] if _hc3 else ""
+                            _v3d.addLabel(
+                                f"{_rb3['resn']}{_rb3['resi']}{_lbl3}",
+                                {"fontSize": 11, "fontColor": "yellow",
+                                 "backgroundColor": "black", "backgroundOpacity": 0.65,
+                                 "inFront": True, "showBackground": True},
+                                _sel3,
+                            )
+                _v3d.zoomTo({"model": _lig_m3})
+                show3d(_v3d, height=500)
+            except Exception as _e3d:
+                st.info(f"3D viewer error: {_e3d}")
+
+        with col_b:
+            _panel_label("b)")
+            _render_2d_panel_b(
+                acd_svg=_a_svg, acd_ihtml=_a_ihtml,
+                rdk_svg=_r_svg,
+                pv_svg=_pv_svg_, pv_png=_pv_png_,
+                diag_source=_src_key,
+                capsule_text=_capsule,
+                height=500,
+                key_prefix=f"rtf_{mode}",
+            )
+
+    else:
+        # ── Top row [a | b] — shorter ─────────────────────────────────────────
+        TOP_H = 280
+        top_a, top_b = st.columns(2)
+        with top_a:
+            _panel_label("a)")
+            if _plot_fn and _plot_n > 0:
+                _fig_t, _ax_t = plt.subplots(figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
+                _plot_fn(_ax_t)
+                _fig_t.tight_layout()
+                st.pyplot(_fig_t, use_container_width=True)
+                plt.close(_fig_t)
+            else:
+                st.info("Run batch docking to see the score plot.")
+
+        with top_b:
+            _panel_label("b)")
+            if _browsable_rtf:
+                _b_nm2 = st.selectbox(
+                    "Ligand",
+                    [r["Name"] for r in _browsable_rtf],
+                    index=(
+                        [r["Name"] for r in _browsable_rtf].index(b_sel_nm)
+                        if b_sel_nm in [r["Name"] for r in _browsable_rtf] else 0
+                    ),
+                    key="rtf_b_lig_sel",
+                )
+                _b_res2  = next((r for r in _browsable_rtf if r["Name"] == _b_nm2), _browsable_rtf[0])
+                _b_mols2 = (
+                    load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False)
+                    if _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", "")) else []
+                )
+                if _b_mols2:
+                    _b_pi2 = st.slider("Pose", 1, len(_b_mols2), 1, key="rtf_b_pose_sel") - 1
+                    _b_sc2 = (
+                        (_b_res2.get("pose_scores") or [])[_b_pi2]
+                        if _b_pi2 < len(_b_res2.get("pose_scores") or [])
+                        else _b_res2.get("Top Score")
+                    )
+                    _b_score_kind = "success" if (_b_sc2 and _b_sc2 < -8) else "warn"
+                    _b_score_pill = f" {_pill(f'{_b_sc2:.2f} kcal/mol', _b_score_kind)}" if _b_sc2 else ""
+                    st.markdown(
+                        f"{_pill(f'Pose {_b_pi2+1}/{len(_b_mols2)}')}" + _b_score_pill,
+                        unsafe_allow_html=True,
+                    )
+                    try:
+                        import py3Dmol as _p3d2
+                        from rdkit import Chem as _Chem_br
+                        _vbr = _p3d2.view(width="100%", height=TOP_H - 60)
+                        _vbr.setBackgroundColor(_viewer_bg())
+                        _bri = 0
+                        if b_rec_fh and os.path.exists(b_rec_fh):
+                            _vbr.addModel(open(b_rec_fh).read(), "pdb")
+                            _vbr.setStyle({"model": _bri}, {"cartoon": {"color": "spectrum", "opacity": 0.6}})
+                            _bri += 1
+                        _bri = _add_heme_to_view(_vbr, b_rec_fh, _bri)
+                        _vbr.addModel(_Chem_br.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
+                        _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
+                        _vbr.zoomTo({"model": _bri})
+                        show3d(_vbr, height=TOP_H - 60)
+                    except Exception as _bve:
+                        st.info(f"Viewer: {_bve}")
+                else:
+                    st.info("No poses for this ligand.")
+            else:
+                st.info("No batch results yet.")
+
+        st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+
+        # ── Bottom row [c | d] — taller ───────────────────────────────────────
+        BOT_H = 480
+        bot_c, bot_d = st.columns(2)
+        with bot_c:
+            _panel_label("c)")
+            import py3Dmol as _py3d4
+            from rdkit import Chem as _Chem_fig4
+            try:
+                _v4 = _py3d4.view(width="100%", height=BOT_H)
+                _v4.setBackgroundColor(_viewer_bg())
+                _mi4 = 0
+                if _rec and os.path.exists(_rec):
+                    _v4.addModel(open(_rec).read(), "pdb")
+                    _v4.setStyle({"model": _mi4}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+                    if _show_surf:
+                        _v4.addSurface(_py3d4.SAS, {"opacity": 0.55, "color": "white"}, {"model": _mi4})
+                    _mi4 += 1
+                _mi4 = _add_heme_to_view(_v4, _rec, _mi4)
+                _v4.addModel(_Chem_fig4.MolToMolBlock(_mol), "mol")
+                _lig_m4 = _mi4
+                _v4.setStyle({"model": _lig_m4}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
+                if _rec and os.path.exists(_rec):
+                    _ir4 = get_interacting_residues(_rec, _mol, cutoff=_cutoff)
+                    for _rb4 in _ir4:
+                        _hc4 = bool(_rb4["chain"] and _rb4["chain"].strip())
+                        _sel4 = {"model": 0, "resi": _rb4["resi"]}
+                        if _hc4:
+                            _sel4["chain"] = _rb4["chain"]
+                        _v4.setStyle(_sel4, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
+                        if _show_labels:
+                            _lbl4 = _rb4["chain"] if _hc4 else ""
+                            _v4.addLabel(
+                                f"{_rb4['resn']}{_rb4['resi']}{_lbl4}",
+                                {"fontSize": 11, "fontColor": "yellow",
+                                 "backgroundColor": "black", "backgroundOpacity": 0.65,
+                                 "inFront": True, "showBackground": True},
+                                _sel4,
+                            )
+                _v4.zoomTo({"model": _lig_m4})
+                show3d(_v4, height=BOT_H)
+            except Exception as _e4:
+                st.info(f"3D viewer error: {_e4}")
+        with bot_d:
+            _panel_label("d)")
+            _render_2d_panel_b(
+                acd_svg=_a_svg, acd_ihtml=_a_ihtml,
+                rdk_svg=_r_svg,
+                pv_svg=_pv_svg_, pv_png=_pv_png_,
+                diag_source=_src_key,
+                capsule_text=_capsule,
+                height=BOT_H,
+                key_prefix="rtf_batch4d",
+            )
+
+    # close outer frame
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # ═════════════════════════════════════════════════════════════════════════
-    #  EXPORT BUTTONS — outside artwork canvas
+    #  EXPORT BUTTONS — outside the frame
     # ═════════════════════════════════════════════════════════════════════════
     st.markdown(
         '<p style="font-size:12px;color:#888;margin:6px 0 4px;">'
@@ -1816,18 +1628,25 @@ def _ready_figure_section(
         '3D panel requires browser screenshot)</p>',
         unsafe_allow_html=True,
     )
-
-    # Build the composed SVG (vector 2D + frame)
     _diag_svg_b, _diag_png_b = _2d_svg_bytes(
         _a_svg, _a_ihtml, _r_svg, _pv_svg_, _pv_png_, _src_key
     )
+    _layout_key = "4panel" if _4panel else "2panel"
+    _plot_mpl = None
+    if _4panel and _plot_fn and _plot_n > 0:
+        _plot_mpl_fig, _plot_mpl_ax = plt.subplots(figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
+        _plot_fn(_plot_mpl_ax)
+        _plot_mpl_fig.tight_layout()
+        _plot_mpl = _plot_mpl_fig
     _export_svg = _build_figure_svg(
         diag_svg_bytes=_diag_svg_b,
         diag_png_bytes=_diag_png_b,
         capsule_text=_capsule,
-        plot_fig=None,       # plot already embedded as PNG in _make_figure_html
+        plot_fig=_plot_mpl,
         layout=_layout_key,
     )
+    if _plot_mpl is not None:
+        plt.close(_plot_mpl)
 
     _ecol1, _ecol2 = st.columns(2)
     with _ecol1:
@@ -3579,14 +3398,13 @@ with tab_basic:
                 fig.patch.set_facecolor(_cc["bg"]); ax.set_facecolor(_cc["bg_sub"])
                 cols = ["#3fb950" if v == df["Affinity (kcal/mol)"].min() else "#58a6ff" for v in df["Affinity (kcal/mol)"]]
                 ax.bar(df["Pose"].astype(str), df["Affinity (kcal/mol)"], color=cols, edgecolor=_cc["border"], linewidth=0.6)
-                ax.invert_yaxis()
                 _ref_score_plot = st.session_state.get("confirmed_ref_score") or st.session_state.get("redock_score")
                 if _ref_score_plot is not None:
                     _ref_nm = st.session_state.get("confirmed_ref_name") or "co-crystal ref"
                     ax.axhline(_ref_score_plot, color="#f85149", linewidth=1.8, linestyle="--", label=f"{_ref_nm}: {_ref_score_plot:.2f}")
                     ax.legend(facecolor=_cc["legend_bg"], edgecolor=_cc["border"], labelcolor=_cc["text"], fontsize=8)
                 ax.set_xlabel("Pose", color=_cc["muted"], fontsize=9)
-                ax.set_ylabel("Affinity (kcal/mol)", color=_cc["muted"], fontsize=9)
+                ax.set_ylabel("Vina score (kcal/mol)", color=_cc["muted"], fontsize=9)
                 ax.tick_params(colors=_cc["muted"], labelsize=8)
                 for sp in ax.spines.values(): sp.set_edgecolor(_cc["border"])
                 fig.tight_layout()
@@ -3846,25 +3664,6 @@ with tab_basic:
                 except Exception:
                     pass
 
-            # ── Ready-to-use Figure ───────────────────────────────────────
-            _ready_figure_section(
-                mode            = "single",
-                rec_fh          = st.session_state.get("receptor_fh", ""),
-                sel_mol         = sel_mol,
-                pose_idx        = pose_idx,
-                lig_name        = st.session_state.get("ligand_name", ""),
-                binding_energy  = (
-                    float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
-                    if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0 else None
-                ),
-                cryst_pdb       = _cryst_pdb_pv,
-                acd_svg         = st.session_state.get("pv_image_svg_new"),
-                acd_ihtml       = st.session_state.get("pv_image_svg_ihtml"),
-                rdk_svg         = st.session_state.get("pv_image_svg_rdk"),
-                pv_svg          = st.session_state.get("pv_image_svg"),
-                pv_png          = st.session_state.get("pv_image_png"),
-            )
-
             _poseview_ui(
                 rec_key             = "receptor_fh",
                 pose_sdf_path       = sp_pv,
@@ -3891,6 +3690,25 @@ with tab_basic:
                 ref_lig_smiles = ((st.session_state.get("redock_result", {}).get("prot_smiles") or st.session_state.get("redock_result", {}).get("SMILES", "")) if st.session_state.get("redock_result") else ""),
                 ref_lig_energy = (st.session_state.get("redock_result", {}).get("Top Score") if st.session_state.get("redock_result") else None),
                 rmsd_crystal   = _rmsd_pv,
+            )
+
+            # ── Ready-to-use Figure (after 2D diagrams) ───────────────────
+            _ready_figure_section(
+                mode            = "single",
+                rec_fh          = st.session_state.get("receptor_fh", ""),
+                sel_mol         = sel_mol,
+                pose_idx        = pose_idx,
+                lig_name        = st.session_state.get("ligand_name", ""),
+                binding_energy  = (
+                    float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
+                    if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0 else None
+                ),
+                cryst_pdb       = _cryst_pdb_pv,
+                acd_svg         = st.session_state.get("pv_image_svg_new"),
+                acd_ihtml       = st.session_state.get("pv_image_svg_ihtml"),
+                rdk_svg         = st.session_state.get("pv_image_svg_rdk"),
+                pv_svg          = st.session_state.get("pv_image_svg"),
+                pv_png          = st.session_state.get("pv_image_png"),
             )
 
     st.markdown('</div>', unsafe_allow_html=True)
