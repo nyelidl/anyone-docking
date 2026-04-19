@@ -1351,6 +1351,213 @@ def _render_2d_panel_b(
     )
 
 
+def _make_combined_figure_html(
+    v3d_raw_html: str,   # full output of v3d._make_html()
+    diag_b64_src: str,   # data:image/... URL for the 2D panel
+    capsule_text: str,
+    panel_w: int = 530,
+    panel_h: int = 500,
+) -> tuple:
+    """
+    Build a self-contained HTML page (string) where:
+    - Panel a) = py3Dmol 3D viewer (inline, same document as canvas)
+    - Panel b) = 2D diagram as <img>
+    - ⬇ Save PNG / ⬇ Save SVG buttons compose both panels via HTML5 Canvas
+      and trigger a browser download — no Python roundtrip needed.
+
+    Returns (html_str, total_height_px).
+    """
+    import re as _re2
+
+    PAD, GAP = 16, 16
+    LBL_H   = 28    # panel label row
+    CAP_H   = 54    # capsule below b)
+    SAVE_H  = 52    # save-bar at top
+    FW = PAD + panel_w + GAP + panel_w + PAD
+    FH = PAD + LBL_H + panel_h + CAP_H + PAD
+    TOTAL_H = SAVE_H + FH + 12
+
+    # ── Extract 3Dmol CDN <script src="..."> tag ──────────────────────────────
+    m_src = _re2.search(r'(<script\b[^>]*3[Dd]mol[^>]*></script>)', v3d_raw_html)
+    if not m_src:
+        m_src = _re2.search(r'(<script\b[^>]*3[Dd]mol[^>]*>)', v3d_raw_html)
+    cdn_tag = m_src.group(1) if m_src else ""
+
+    # ── Extract <body> content (viewer div + setup script) ────────────────────
+    m_body = _re2.search(r'<body[^>]*>(.*?)</body>', v3d_raw_html, _re2.DOTALL)
+    body = m_body.group(1).strip() if m_body else v3d_raw_html
+
+    # Force the viewer div to fill its container
+    body = _re2.sub(r'height\s*:\s*\d+px', f'height:{panel_h}px', body, count=1)
+    body = _re2.sub(r'width\s*:\s*\d+px',  'width:100%',           body, count=1)
+
+    cap_js = capsule_text.replace("'", "\\'")
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+{cdn_tag}
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{background:white;font-family:Arial,sans-serif;overflow:hidden;}}
+#save-bar{{display:flex;gap:10px;align-items:center;padding:8px 8px 4px;}}
+.sbtn{{background:#1a7f37;color:white;border:none;border-radius:6px;
+  padding:7px 26px;font-size:13px;font-weight:600;cursor:pointer;
+  font-family:'IBM Plex Mono',monospace;}}
+.sbtn:hover{{filter:brightness(1.15);}}
+#sstatus{{font-size:11px;color:#888;}}
+#fig{{display:flex;gap:{GAP}px;border:1.5px solid #c8c8c4;border-radius:8px;
+  padding:{PAD}px;background:white;margin:0 4px;width:{FW}px;}}
+.col{{width:{panel_w}px;flex:0 0 {panel_w}px;}}
+.plbl{{font-size:18px;font-weight:700;color:#1e1e1c;margin-bottom:6px;line-height:1;}}
+.panel{{width:{panel_w}px;height:{panel_h}px;background:#fafaf8;border-radius:4px;overflow:hidden;position:relative;}}
+#panel-a canvas{{width:100%!important;height:100%!important;}}
+#panel-a>div[id]{{width:100%!important;height:{panel_h}px!important;}}
+#panel-b img{{width:100%;height:{panel_h}px;object-fit:contain;display:block;}}
+.cap{{text-align:center;margin:10px 0 4px;}}
+.cap span{{display:inline-block;padding:7px 28px;border-radius:999px;
+  background:#f0f0ec;border:1px solid #c4c4c0;font-size:14px;font-weight:700;color:#1e1e1c;}}
+</style>
+</head>
+<body>
+<div id="save-bar">
+  <button class="sbtn" onclick="doSave('png')">⬇ Save PNG</button>
+  <button class="sbtn" onclick="doSave('svg')">⬇ Save SVG</button>
+  <span id="sstatus"></span>
+</div>
+<div id="fig">
+  <div class="col">
+    <p class="plbl">a)</p>
+    <div class="panel" id="panel-a">{body}</div>
+  </div>
+  <div class="col">
+    <p class="plbl">b)</p>
+    <div class="panel" id="panel-b">
+      <img id="img2d" src="{diag_b64_src}" crossorigin="anonymous">
+    </div>
+    <div class="cap"><span>{capsule_text}</span></div>
+  </div>
+</div>
+<script>
+// Rounded-rect helper (Safari <16 doesn't support ctx.roundRect)
+function RR(g,x,y,w,h,r){{
+  g.beginPath();g.moveTo(x+r,y);
+  g.lineTo(x+w-r,y);g.quadraticCurveTo(x+w,y,x+w,y+r);
+  g.lineTo(x+w,y+h-r);g.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  g.lineTo(x+r,y+h);g.quadraticCurveTo(x,y+h,x,y+h-r);
+  g.lineTo(x,y+r);g.quadraticCurveTo(x,y,x+r,y);g.closePath();
+}}
+function st(m){{document.getElementById('sstatus').textContent=m;}}
+
+async function compose(){{
+  const PW={panel_w},PH={panel_h},P={PAD},G={GAP},LH={LBL_H};
+  const FW=P+PW+G+PW+P, FH=P+LH+PH+{CAP_H}+P;
+  const c=document.createElement('canvas');
+  c.width=FW; c.height=FH;
+  const g=c.getContext('2d');
+
+  // White background
+  g.fillStyle='white'; g.fillRect(0,0,FW,FH);
+
+  // Outer border
+  g.strokeStyle='#c8c8c4'; g.lineWidth=1.5;
+  RR(g,2,2,FW-4,FH-4,8); g.stroke();
+
+  const PY=P+LH;
+
+  // Panel backgrounds
+  g.fillStyle='#fafaf8';
+  g.fillRect(P,PY,PW,PH);
+  g.fillRect(P+PW+G,PY,PW,PH);
+
+  // Labels
+  g.fillStyle='#1e1e1c'; g.font='bold 18px Arial';
+  g.textAlign='left'; g.textBaseline='top';
+  g.fillText('a)',P,P+4); g.fillText('b)',P+PW+G,P+4);
+
+  // ── Panel a: capture 3D WebGL canvas ──────────────────────────────────────
+  // Wait up to 3 s for 3Dmol to render (it may not be ready at call time)
+  let c3d=null;
+  for(let i=0;i<30;i++){{
+    c3d=document.querySelector('#panel-a canvas');
+    if(c3d && c3d.width>0) break;
+    await new Promise(r=>setTimeout(r,100));
+  }}
+  if(c3d){{
+    try{{
+      const i=new Image();
+      await new Promise(r=>{{i.onload=r; i.src=c3d.toDataURL('image/png');}});
+      g.drawImage(i,P,PY,PW,PH);
+    }}catch(e){{st('3D: '+e);}}
+  }}
+
+  // ── Panel b: draw 2D diagram image ─────────────────────────────────────────
+  const im=document.getElementById('img2d');
+  const drawImg=async(img)=>{{
+    if(!img||!img.naturalWidth) return;
+    const sc=Math.min(PW/img.naturalWidth,PH/img.naturalHeight);
+    const dw=img.naturalWidth*sc, dh=img.naturalHeight*sc;
+    g.drawImage(img, P+PW+G+(PW-dw)/2, PY+(PH-dh)/2, dw, dh);
+  }};
+  if(im && im.complete && im.naturalWidth>0){{
+    try{{ await drawImg(im); }}
+    catch(e){{
+      // SVG may need re-load with crossOrigin
+      const i2=new Image(); i2.crossOrigin='anonymous';
+      await new Promise(r=>{{i2.onload=r;i2.onerror=r;i2.src=im.src;}});
+      try{{ await drawImg(i2); }}catch(_){{}}
+    }}
+  }}
+
+  // ── Capsule label below panel b ────────────────────────────────────────────
+  g.font='bold 13px Arial';
+  const CAP='{cap_js}';
+  const cw=g.measureText(CAP).width+56;
+  const cx=P+PW+G+(PW-cw)/2, cy=PY+PH+26;
+  g.fillStyle='#f0f0ec'; g.strokeStyle='#c4c4c0'; g.lineWidth=1;
+  RR(g,cx,cy-14,cw,28,14); g.fill(); g.stroke();
+  g.fillStyle='#1e1e1c'; g.textAlign='center'; g.textBaseline='middle';
+  g.fillText(CAP,cx+cw/2,cy);
+
+  return c;
+}}
+
+async function doSave(type){{
+  st('Composing…');
+  try{{
+    const c=await compose();
+    if(type==='png'){{
+      const a=document.createElement('a');
+      a.href=c.toDataURL('image/png');
+      a.download='ready_to_use_figure.png';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      st('✓ PNG saved');
+    }}else{{
+      const b64=c.toDataURL('image/png').split(',')[1];
+      const svg='<svg xmlns="http://www.w3.org/2000/svg" '
+               +'xmlns:xlink="http://www.w3.org/1999/xlink" '
+               +'width="'+c.width+'" height="'+c.height+'">'
+               +'<image href="data:image/png;base64,'+b64+'" '
+               +'x="0" y="0" width="'+c.width+'" height="'+c.height+'"/>'
+               +'</svg>';
+      const blob=new Blob([svg],{{type:'image/svg+xml'}});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url; a.download='ready_to_use_figure.svg';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      st('✓ SVG saved');
+    }}
+  }}catch(e){{st('Error: '+e);}}
+}}
+</script>
+</body>
+</html>"""
+
+    return html, TOTAL_H
+
+
 def _ready_figure_section(
     mode: str,           # "single" | "batch"
     # ── single dock state ──────────────────────────────────────────
@@ -1368,7 +1575,7 @@ def _ready_figure_section(
     b_sel_res=None,
     b_mols=None,
     b_pose_i: int = 0,
-    b_plot_draw_fn=None,   # callable(ax) — reuses existing _draw_plot
+    b_plot_draw_fn=None,
     b_plot_n: int = 0,
     b_rec_fh: str = "",
     b_cryst_pdb: str = "",
@@ -1381,22 +1588,24 @@ def _ready_figure_section(
     """
     Ready-to-use Figure section.
 
-    Renders a FIXED-SIZE artwork canvas (1100 px wide) via components.html()
-    so the layout is completely independent of browser window width.
+    For the [a | b] layout, the entire figure is rendered in ONE
+    components.html() call so the ⬇ Save buttons live in the SAME document
+    as the py3Dmol canvas.  JavaScript composes both panels on an HTML5
+    Canvas and triggers a browser download — no Python roundtrip, no upload.
 
-    Single mode: [a: 3D pocket | b: 2D diagram + capsule + legend]
-    Batch mode:  [a: plot | b: pose browser] (shorter top row)
-                 [c: 3D pocket | d: 2D diagram + capsule + legend] (taller bottom row)
-
-    All controls are OUTSIDE the canvas. Export buttons produce a composed SVG
-    (2D panel as vector, 3D panel as label) and PNG via cairosvg.
+    Flow: click Save PNG/SVG
+      → wait for 3Dmol render (up to 3 s)
+      → canvas.toDataURL() captures panel a)
+      → drawImage() places panel b) alongside
+      → capsule + border drawn
+      → a.click() triggers browser download
     """
     import base64, io
     st.markdown("---")
     st.markdown("### 📊 Ready-to-use Figure")
 
     # ═════════════════════════════════════════════════════════════════════════
-    #  CONTROLS  — all outside the artwork canvas
+    #  CONTROLS — all outside the figure canvas
     # ═════════════════════════════════════════════════════════════════════════
     with st.expander("⚙️ Figure settings", expanded=True):
         _src = st.radio(
@@ -1425,33 +1634,6 @@ def _ready_figure_section(
             _show_labels = st.checkbox("Residue labels", value=True, key=f"rtf_lbl_{mode}")
         with _ctl3:
             _show_surf = st.checkbox("Protein surface", value=False, key=f"rtf_surf_{mode}")
-
-        # ── Panel a) capture upload ───────────────────────────────────────────
-        st.markdown("---")
-        st.markdown(
-            "**Panel a) — 3D snapshot for export**  \n"
-            "Click **📸 Capture** inside the 3D panel → a PNG downloads automatically.  \n"
-            "Then upload it here to include it in the exported SVG/PNG:"
-        )
-        _cap_key = f"_rtf_a_png_{mode}"
-        _cap_upload = st.file_uploader(
-            "Upload 3D snapshot",
-            type=["png", "jpg", "jpeg"],
-            key=f"rtf_a_upload_{mode}",
-            label_visibility="collapsed",
-        )
-        if _cap_upload is not None:
-            st.session_state[_cap_key] = _cap_upload.read()
-            st.success("✓ 3D snapshot stored — will be used in next export.")
-        _has_a_png = bool(st.session_state.get(_cap_key))
-        if _has_a_png:
-            _c1, _c2 = st.columns([3, 1])
-            with _c1:
-                st.caption("✓ 3D snapshot ready for export.")
-            with _c2:
-                if st.button("✕ Clear", key=f"rtf_a_clear_{mode}"):
-                    st.session_state[_cap_key] = None
-                    st.rerun()
 
     # ── Resolve data ──────────────────────────────────────────────────────────
     if mode == "single":
@@ -1485,172 +1667,132 @@ def _ready_figure_section(
         st.info("Select a pose to render the figure.")
         return
 
-    # ── Panel label helper ────────────────────────────────────────────────────
-    def _panel_label(letter: str):
-        st.markdown(
-            f'<p style="font-family:Arial,sans-serif;font-size:18px;font-weight:700;'
-            f'color:#1e1e1c;margin:0 0 4px 2px;line-height:1;">{letter}</p>',
-            unsafe_allow_html=True,
-        )
+    # ── Build 3D viewer HTML ──────────────────────────────────────────────────
+    import py3Dmol as _py3d
+    from rdkit import Chem as _Chem_fig
 
-    # ═════════════════════════════════════════════════════════════════════════
-    #  OUTER FRAME — opened with st.markdown, closed after all panels.
-    #  This is the visible rectangular border that defines the artwork boundary.
-    #  Streamlit columns and components.html() render INSIDE this framed div.
-    # ═════════════════════════════════════════════════════════════════════════
-    FRAME_CSS = (
-        "background:white;"
-        "border:1.5px solid #c8c8c4;"
-        "border-radius:8px;"
-        "padding:16px 16px 12px;"
-        "margin:6px 0 4px;"
-        "box-shadow:0 1px 4px rgba(0,0,0,0.06);"
+    PANEL_W, PANEL_H = 530, 500
+
+    def _build_v3d(rec, mol, cutoff, show_labels, show_surf):
+        v = _py3d.view(width=PANEL_W, height=PANEL_H)
+        v.setBackgroundColor("#ffffff")
+        mi = 0
+        if rec and os.path.exists(rec):
+            v.addModel(open(rec).read(), "pdb")
+            v.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+            if show_surf:
+                v.addSurface(_py3d.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
+            mi += 1
+        mi = _add_heme_to_view(v, rec, mi)
+        v.addModel(_Chem_fig.MolToMolBlock(mol), "mol")
+        lig_m = mi
+        v.setStyle({"model": lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
+        if rec and os.path.exists(rec):
+            for rb in get_interacting_residues(rec, mol, cutoff=cutoff):
+                hc  = bool(rb["chain"] and rb["chain"].strip())
+                sel = {"model": 0, "resi": rb["resi"]}
+                if hc:
+                    sel["chain"] = rb["chain"]
+                v.setStyle(sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
+                if show_labels:
+                    v.addLabel(
+                        f"{rb['resn']}{rb['resi']}{rb['chain'] if hc else ''}",
+                        {"fontSize": 11, "fontColor": "yellow",
+                         "backgroundColor": "black", "backgroundOpacity": 0.65,
+                         "inFront": True, "showBackground": True},
+                        sel,
+                    )
+        v.zoomTo({"model": lig_m})
+        return v._make_html()
+
+    try:
+        _v3d_html = _build_v3d(_rec, _mol, _cutoff, _show_labels, _show_surf)
+    except Exception as _e3:
+        st.error(f"3D viewer error: {_e3}")
+        return
+
+    # ── Build 2D data-URI (panel b) ───────────────────────────────────────────
+    _diag_svg_b, _diag_png_b = _2d_svg_bytes(
+        _a_svg, _a_ihtml, _r_svg, _pv_svg_, _pv_png_, _src_key
     )
-    st.markdown(f'<div style="{FRAME_CSS}">', unsafe_allow_html=True)
+    if _diag_svg_b:
+        _diag_b64_src = "data:image/svg+xml;base64," + base64.b64encode(_diag_svg_b).decode()
+    elif _diag_png_b:
+        _diag_b64_src = "data:image/png;base64," + base64.b64encode(_diag_png_b).decode()
+    else:
+        _diag_b64_src = ""
 
+    # ═════════════════════════════════════════════════════════════════════════
+    #  RENDER:  single [a | b]  or  batch 4-panel
+    #  Both use _make_combined_figure_html() which puts everything in one
+    #  components.html() call so the JS save buttons can access the canvas.
+    # ═════════════════════════════════════════════════════════════════════════
     if not _4panel:
-        # ── [a | b] ──────────────────────────────────────────────────────────
-        col_a, col_b = st.columns(2)
-        with col_a:
-            _panel_label("a)")
-            # ── Inline 3D rendering — no helper wrapper so errors surface ────
-            import py3Dmol as _py3d
-            from rdkit import Chem as _Chem_fig
-            try:
-                _v3d = _py3d.view(width="100%", height=500)
-                _v3d.setBackgroundColor(_viewer_bg())
-                _mi3 = 0
-                if _rec and os.path.exists(_rec):
-                    _v3d.addModel(open(_rec).read(), "pdb")
-                    _v3d.setStyle({"model": _mi3}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
-                    if _show_surf:
-                        _v3d.addSurface(_py3d.SAS, {"opacity": 0.55, "color": "white"}, {"model": _mi3})
-                    _mi3 += 1
-                _mi3 = _add_heme_to_view(_v3d, _rec, _mi3)
-                # NO co-crystal ligand in figure panel
-                _v3d.addModel(_Chem_fig.MolToMolBlock(_mol), "mol")
-                _lig_m3 = _mi3
-                _v3d.setStyle({"model": _lig_m3}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
-                if _rec and os.path.exists(_rec):
-                    _ir3 = get_interacting_residues(_rec, _mol, cutoff=_cutoff)
-                    for _rb3 in _ir3:
-                        _hc3 = bool(_rb3["chain"] and _rb3["chain"].strip())
-                        _sel3 = {"model": 0, "resi": _rb3["resi"]}
-                        if _hc3:
-                            _sel3["chain"] = _rb3["chain"]
-                        _v3d.setStyle(_sel3, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
-                        if _show_labels:
-                            _lbl3 = _rb3["chain"] if _hc3 else ""
-                            _v3d.addLabel(
-                                f"{_rb3['resn']}{_rb3['resi']}{_lbl3}",
-                                {"fontSize": 11, "fontColor": "yellow",
-                                 "backgroundColor": "black", "backgroundOpacity": 0.65,
-                                 "inFront": True, "showBackground": True},
-                                _sel3,
-                            )
-                _v3d.zoomTo({"model": _lig_m3})
-                # Inject 📸 Capture button INSIDE the py3Dmol HTML so the button
-                # and the WebGL canvas share the same document — no cross-origin issues.
-                _raw3d = _v3d._make_html()
-                _CAP_INJECT = """
-<style>
-#rtf-cap-btn{position:fixed;bottom:10px;right:10px;z-index:9999;
-  background:#1a7f37;color:white;border:none;border-radius:6px;
-  padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;
-  font-family:'IBM Plex Mono',monospace;box-shadow:0 1px 4px rgba(0,0,0,.3);}
-#rtf-cap-btn:hover{filter:brightness(1.15);}
-#rtf-cap-st{position:fixed;bottom:13px;right:130px;z-index:9999;
-  font-size:11px;color:#aaa;}
-</style>
-<button id="rtf-cap-btn" onclick="(function(){
-  var c=document.querySelector('canvas');
-  if(!c){document.getElementById('rtf-cap-st').textContent='⚠ not found';return;}
-  var a=document.createElement('a');
-  a.href=c.toDataURL('image/png');
-  a.download='3d_panel_a.png';
-  document.body.appendChild(a);a.click();document.body.removeChild(a);
-  document.getElementById('rtf-cap-st').textContent='✓ downloading…';
-})()">📸 Capture</button>
-<span id="rtf-cap-st"></span>"""
-                _raw3d = _raw3d.replace("</body>", _CAP_INJECT + "\n</body>")
-                import re as _re3d
-                _raw3d = _re3d.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', _raw3d)
-                components.html(_raw3d, height=500, scrolling=False)
-            except Exception as _e3d:
-                st.info(f"3D viewer error: {_e3d}")
-
-        with col_b:
-            _panel_label("b)")
-            _render_2d_panel_b(
-                acd_svg=_a_svg, acd_ihtml=_a_ihtml,
-                rdk_svg=_r_svg,
-                pv_svg=_pv_svg_, pv_png=_pv_png_,
-                diag_source=_src_key,
-                capsule_text=_capsule,
-                height=500,
-                key_prefix=f"rtf_{mode}",
-            )
+        _fig_html, _fig_h = _make_combined_figure_html(
+            v3d_raw_html = _v3d_html,
+            diag_b64_src = _diag_b64_src,
+            capsule_text = _capsule,
+            panel_w      = PANEL_W,
+            panel_h      = PANEL_H,
+        )
+        components.html(_fig_html, height=_fig_h, scrolling=False)
 
     else:
-        # ── Top row [a | b] — shorter ─────────────────────────────────────────
+        # ── Batch 4-panel — top row (shorter) ────────────────────────────────
         TOP_H = 280
+        _panel_label_md = (
+            lambda ltr: st.markdown(
+                f'<p style="font-family:Arial,sans-serif;font-size:18px;font-weight:700;'
+                f'color:#1e1e1c;margin:0 0 4px 2px;line-height:1;">{ltr}</p>',
+                unsafe_allow_html=True,
+            )
+        )
+
+        FRAME_CSS = (
+            "background:white;border:1.5px solid #c8c8c4;border-radius:8px;"
+            "padding:16px 16px 12px;margin:6px 0 4px;"
+        )
+        st.markdown(f'<div style="{FRAME_CSS}">', unsafe_allow_html=True)
+
         top_a, top_b = st.columns(2)
         with top_a:
-            _panel_label("a)")
+            _panel_label_md("a)")
             if _plot_fn and _plot_n > 0:
                 _fig_t, _ax_t = plt.subplots(figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
-                _plot_fn(_ax_t)
-                _fig_t.tight_layout()
-                st.pyplot(_fig_t, use_container_width=True)
-                plt.close(_fig_t)
+                _plot_fn(_ax_t); _fig_t.tight_layout()
+                st.pyplot(_fig_t, use_container_width=True); plt.close(_fig_t)
             else:
                 st.info("Run batch docking to see the score plot.")
 
         with top_b:
-            _panel_label("b)")
+            _panel_label_md("b)")
             if _browsable_rtf:
                 _b_nm2 = st.selectbox(
-                    "Ligand",
-                    [r["Name"] for r in _browsable_rtf],
-                    index=(
-                        [r["Name"] for r in _browsable_rtf].index(b_sel_nm)
-                        if b_sel_nm in [r["Name"] for r in _browsable_rtf] else 0
-                    ),
+                    "Ligand", [r["Name"] for r in _browsable_rtf],
+                    index=([r["Name"] for r in _browsable_rtf].index(b_sel_nm)
+                           if b_sel_nm in [r["Name"] for r in _browsable_rtf] else 0),
                     key="rtf_b_lig_sel",
                 )
-                _b_res2  = next((r for r in _browsable_rtf if r["Name"] == _b_nm2), _browsable_rtf[0])
+                _b_res2 = next((r for r in _browsable_rtf if r["Name"] == _b_nm2), _browsable_rtf[0])
                 _b_mols2 = (
                     load_mols_from_sdf(_b_res2["out_sdf"], sanitize=False)
                     if _b_res2.get("out_sdf") and os.path.exists(_b_res2.get("out_sdf", "")) else []
                 )
                 if _b_mols2:
                     _b_pi2 = st.slider("Pose", 1, len(_b_mols2), 1, key="rtf_b_pose_sel") - 1
-                    _b_sc2 = (
-                        (_b_res2.get("pose_scores") or [])[_b_pi2]
-                        if _b_pi2 < len(_b_res2.get("pose_scores") or [])
-                        else _b_res2.get("Top Score")
-                    )
-                    _b_score_kind = "success" if (_b_sc2 and _b_sc2 < -8) else "warn"
-                    _b_score_pill = f" {_pill(f'{_b_sc2:.2f} kcal/mol', _b_score_kind)}" if _b_sc2 else ""
-                    st.markdown(
-                        f"{_pill(f'Pose {_b_pi2+1}/{len(_b_mols2)}')}" + _b_score_pill,
-                        unsafe_allow_html=True,
-                    )
                     try:
-                        import py3Dmol as _p3d2
-                        from rdkit import Chem as _Chem_br
-                        _vbr = _p3d2.view(width="100%", height=TOP_H - 60)
-                        _vbr.setBackgroundColor(_viewer_bg())
-                        _bri = 0
+                        import py3Dmol as _p3d2; from rdkit import Chem as _Cb
+                        _vbr = _p3d2.view(width="100%", height=TOP_H - 50)
+                        _vbr.setBackgroundColor(_viewer_bg()); _bri = 0
                         if b_rec_fh and os.path.exists(b_rec_fh):
                             _vbr.addModel(open(b_rec_fh).read(), "pdb")
                             _vbr.setStyle({"model": _bri}, {"cartoon": {"color": "spectrum", "opacity": 0.6}})
                             _bri += 1
                         _bri = _add_heme_to_view(_vbr, b_rec_fh, _bri)
-                        _vbr.addModel(_Chem_br.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
+                        _vbr.addModel(_Cb.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
                         _vbr.setStyle({"model": _bri}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                         _vbr.zoomTo({"model": _bri})
-                        show3d(_vbr, height=TOP_H - 60)
+                        show3d(_vbr, height=TOP_H - 50)
                     except Exception as _bve:
                         st.info(f"Viewer: {_bve}")
                 else:
@@ -1660,146 +1802,18 @@ def _ready_figure_section(
 
         st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
 
-        # ── Bottom row [c | d] — taller ───────────────────────────────────────
-        BOT_H = 480
-        bot_c, bot_d = st.columns(2)
-        with bot_c:
-            _panel_label("c)")
-            import py3Dmol as _py3d4
-            from rdkit import Chem as _Chem_fig4
-            try:
-                _v4 = _py3d4.view(width="100%", height=BOT_H)
-                _v4.setBackgroundColor(_viewer_bg())
-                _mi4 = 0
-                if _rec and os.path.exists(_rec):
-                    _v4.addModel(open(_rec).read(), "pdb")
-                    _v4.setStyle({"model": _mi4}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
-                    if _show_surf:
-                        _v4.addSurface(_py3d4.SAS, {"opacity": 0.55, "color": "white"}, {"model": _mi4})
-                    _mi4 += 1
-                _mi4 = _add_heme_to_view(_v4, _rec, _mi4)
-                _v4.addModel(_Chem_fig4.MolToMolBlock(_mol), "mol")
-                _lig_m4 = _mi4
-                _v4.setStyle({"model": _lig_m4}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
-                if _rec and os.path.exists(_rec):
-                    _ir4 = get_interacting_residues(_rec, _mol, cutoff=_cutoff)
-                    for _rb4 in _ir4:
-                        _hc4 = bool(_rb4["chain"] and _rb4["chain"].strip())
-                        _sel4 = {"model": 0, "resi": _rb4["resi"]}
-                        if _hc4:
-                            _sel4["chain"] = _rb4["chain"]
-                        _v4.setStyle(_sel4, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
-                        if _show_labels:
-                            _lbl4 = _rb4["chain"] if _hc4 else ""
-                            _v4.addLabel(
-                                f"{_rb4['resn']}{_rb4['resi']}{_lbl4}",
-                                {"fontSize": 11, "fontColor": "yellow",
-                                 "backgroundColor": "black", "backgroundOpacity": 0.65,
-                                 "inFront": True, "showBackground": True},
-                                _sel4,
-                            )
-                _v4.zoomTo({"model": _lig_m4})
-                _raw4 = _v4._make_html()
-                _CAP4 = """
-<style>
-#rtf-cap-btn4{position:fixed;bottom:10px;right:10px;z-index:9999;
-  background:#1a7f37;color:white;border:none;border-radius:6px;
-  padding:5px 14px;font-size:12px;font-weight:600;cursor:pointer;
-  font-family:'IBM Plex Mono',monospace;box-shadow:0 1px 4px rgba(0,0,0,.3);}
-#rtf-cap-btn4:hover{filter:brightness(1.15);}
-#rtf-cap-st4{position:fixed;bottom:13px;right:130px;z-index:9999;
-  font-size:11px;color:#aaa;}
-</style>
-<button id="rtf-cap-btn4" onclick="(function(){
-  var c=document.querySelector('canvas');
-  if(!c){document.getElementById('rtf-cap-st4').textContent='⚠ not found';return;}
-  var a=document.createElement('a');
-  a.href=c.toDataURL('image/png');
-  a.download='3d_panel_c.png';
-  document.body.appendChild(a);a.click();document.body.removeChild(a);
-  document.getElementById('rtf-cap-st4').textContent='✓ downloading…';
-})()">📸 Capture</button>
-<span id="rtf-cap-st4"></span>"""
-                _raw4 = _raw4.replace("</body>", _CAP4 + "\n</body>")
-                import re as _re4
-                _raw4 = _re4.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', _raw4)
-                components.html(_raw4, height=BOT_H, scrolling=False)
-            except Exception as _e4:
-                st.info(f"3D viewer error: {_e4}")
-        with bot_d:
-            _panel_label("d)")
-            _render_2d_panel_b(
-                acd_svg=_a_svg, acd_ihtml=_a_ihtml,
-                rdk_svg=_r_svg,
-                pv_svg=_pv_svg_, pv_png=_pv_png_,
-                diag_source=_src_key,
-                capsule_text=_capsule,
-                height=BOT_H,
-                key_prefix="rtf_batch4d",
-            )
-
-    # close outer frame
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ═════════════════════════════════════════════════════════════════════════
-    #  EXPORT BUTTONS — outside the frame
-    # ═════════════════════════════════════════════════════════════════════════
-    st.markdown(
-        '<p style="font-size:12px;color:#888;margin:6px 0 4px;">'
-        '⬇ Export full figure (2D diagram panel exported as vector SVG; '
-        '3D panel requires browser screenshot)</p>',
-        unsafe_allow_html=True,
-    )
-    _diag_svg_b, _diag_png_b = _2d_svg_bytes(
-        _a_svg, _a_ihtml, _r_svg, _pv_svg_, _pv_png_, _src_key
-    )
-    _layout_key = "4panel" if _4panel else "2panel"
-    _plot_mpl = None
-    if _4panel and _plot_fn and _plot_n > 0:
-        _plot_mpl_fig, _plot_mpl_ax = plt.subplots(figsize=(max(4, _plot_n * 0.55 + 1.2), 2.8))
-        _plot_fn(_plot_mpl_ax)
-        _plot_mpl_fig.tight_layout()
-        _plot_mpl = _plot_mpl_fig
-    _export_svg = _build_figure_svg(
-        diag_svg_bytes=_diag_svg_b,
-        diag_png_bytes=_diag_png_b,
-        capsule_text=_capsule,
-        plot_fig=_plot_mpl,
-        layout=_layout_key,
-        panel_a_png=st.session_state.get(f"_rtf_a_png_{mode}"),
-    )
-    if _plot_mpl is not None:
-        plt.close(_plot_mpl)
-
-    _ecol1, _ecol2 = st.columns(2)
-    with _ecol1:
-        st.download_button(
-            "⬇ Save SVG",
-            data=_export_svg,
-            file_name="ready_to_use_figure.svg",
-            mime="image/svg+xml",
-            key=f"rtf_dl_svg_{mode}",
-            type="primary",
-            width="stretch",
+        # ── Bottom row [c | d] via combined HTML ──────────────────────────────
+        _panel_label_md("c)  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; d)")
+        _fig_html4, _fig_h4 = _make_combined_figure_html(
+            v3d_raw_html = _v3d_html,
+            diag_b64_src = _diag_b64_src,
+            capsule_text = _capsule,
+            panel_w      = PANEL_W,
+            panel_h      = 480,
         )
-    with _ecol2:
-        try:
-            import cairosvg as _cs
-            _export_png = _cs.svg2png(bytestring=_export_svg, scale=2, background_color="white")
-        except Exception:
-            _export_png = None
-        if _export_png:
-            st.download_button(
-                "⬇ Save PNG",
-                data=_export_png,
-                file_name="ready_to_use_figure.png",
-                mime="image/png",
-                key=f"rtf_dl_png_{mode}",
-                type="primary",
-                width="stretch",
-            )
-        else:
-            st.caption("PNG export requires cairosvg — SVG available above.")
+        components.html(_fig_html4, height=_fig_h4, scrolling=False)
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 def _ai_prompt_section(
