@@ -802,7 +802,8 @@ _IONIZABLE_SITE_DEF = [
     ("thiol_aliph",       "[CX4][SX2H1]",                                       10.5,  "acid"),
     ("aniline",           "c[NX3;H1,H2;!$(N~[!#6])]",                           4.6,  "base"),
     ("pyridine_like",     "[$([nX2]1:[c,n]:c:[c,n]:c1),$([nX2]:c:n)]",          5.2,  "base"),
-    ("aliphatic_amine",   "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH])]",      9.5,  "base"),
+    # !$(Nc) explicitly excludes anilines (N attached to aromatic carbon)
+    ("aliphatic_amine",   "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);!$(Nc)]", 9.5,  "base"),
     ("aliphatic_amine_t", "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6])]",   9.0,  "base"),
     ("amidine",           "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                   12.4,  "base"),
     ("guanidine",         "[NX3][CX3](=[NX2])[NX3]",                           13.0,  "base"),
@@ -820,6 +821,10 @@ _CHEM_PENALTY_DEF = [
     ("iminol_general",   -3.5, "[NX2]=[CX3][OX2H1]"),
     ("amide_N_deproton", -5.0, "[$([NX3-]C=O),$([NX3-]c=O)]"),
     ("enol_simple",      -1.2, "[CX3](=[CX3])[OX2H1]"),
+    # Penalise exo-imine tautomers of aromatic-amine systems (e.g. quinazoline-NH2
+    # → imine form).  The correct amine tautomer has NX3;H1 on an aromatic carbon;
+    # the wrong imine form has NX2= on the same carbon.
+    ("exo_imine_arom",   -2.5, "[NX2;!r]=[cX3]"),
 ]
 
 # In-memory pKaNET cache: InChIKey → {pka_values, confidence, source}
