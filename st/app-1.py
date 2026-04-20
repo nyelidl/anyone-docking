@@ -3336,29 +3336,6 @@ with tab_basic:
     _prot_mode_key = _prot_mode_map[prot_mode]
 
     _use_pubchem = True
-    if _prot_mode_key == "pkanet":
-        _use_pubchem = st.checkbox(
-            "Query PubChem for experimental pKa (cached, ~1s per new compound)",
-            value=True, key="use_pubchem",
-            help="Looks up experimental dissociation constants on PubChem by InChIKey. "
-                 "Results are cached in memory so repeated runs are instant. "
-                 "Uncheck for faster batch docking of novel/proprietary compounds."
-        )
-        _pk1, _pk2 = st.columns(2)
-        with _pk1:
-            st.slider("Max tautomers", 2, 16, 8, 2, key="pkanet_max_tau",
-                      help="Tautomers explored per protonation state. "
-                           "Standalone pKaNET Cloud+ default is 8.")
-        with _pk2:
-            st.slider("pH window (±)", 0.2, 2.0, 1.0, 0.1, key="pkanet_ph_win",
-                      help="Dimorphite-DL enumerates states within pH ± window. "
-                           "Standalone pKaNET Cloud+ default is ±1.0.")
-        if _use_pubchem:
-            st.caption(
-                "💡 PubChem is queried once per unique compound (InChIKey cache). "
-                "Novel or proprietary structures not in PubChem fall back gracefully "
-                "to heuristic SMARTS pKa table."
-            )
     # ─────────────────────────────────────────────────────────────────────────
 
     if not st.session_state.receptor_done:
@@ -4047,18 +4024,6 @@ with tab_batch:
             "🔬 Neutral (add H only)":       "neutral",
         }
         _b_use_pubchem = True
-        if b_prot_mode == "🧪 pKaNET Cloud (recommended)":
-            _b_use_pubchem = st.checkbox(
-                "Query PubChem for experimental pKa (cached per compound)",
-                value=True, key="b_use_pubchem",
-            )
-            _bpk1, _bpk2 = st.columns(2)
-            with _bpk1:
-                st.slider("Max tautomers", 2, 16, 8, 2, key="b_pkanet_max_tau",
-                          help="Tautomers per protonation state. Standalone default: 8.")
-            with _bpk2:
-                st.slider("pH window (±)", 0.2, 2.0, 1.0, 0.1, key="b_pkanet_ph_win",
-                          help="Dimorphite enumeration window. Standalone default: ±1.0.")
 
     with col_b2:
         st.markdown("**Redocking validation**")
