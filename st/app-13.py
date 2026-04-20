@@ -4009,17 +4009,19 @@ with tab_batch:
         )
         if b_input_mode == "SMILES list (text)":
             st.text_area("One `SMILES [name]` per line",
-                value=("C1=CC(=CC=C1C2=CC(=O)C3=C(C=C(C=C3O2)O)O)O Apigenin\n"
-                       "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)O Baicalein\n"
-                       "CC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)O Osimertinib\n"
-                       "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)O)O Luteolin\n"
-                       "CC(C)OC1=C(C=C2C(=C1)N=CN2)NC3=CC=CC(=C3)C#C Gefitinib\n"
-                       "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)OC)O Kaempferol\n"
-                       "CCOC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)F Lapatinib\n"
+                value=("O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12 Apigenin\n"
+                       "O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12 Baicalein\n"
+                       "O=c1cc(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12 Luteolin\n"
+                       "O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12 Kaempferol\n"
+                       "COc1cc2c(cc1NC(=O)/C=C/CN(C)C)ncnc2Nc1ccc(F)c(Cl)c1 Osimertinib\n"
+                       "COc1cc2c(cc1OCCCN1CCOCC1)ncnc2Nc1ccc(F)c(Cl)c1 Gefitinib\n"
+                       "CS(=O)(=O)CCNCc1ccc(-c2ccc3ncnc(Nc4ccc(OCc5cccc(F)c5)c(Cl)c4)c3c2)o1 Lapatinib\n"
                        "CC1=CC=C(C=C1)NC2=NC=NC3=C2C=C(C=C3)Cl Afatinib\n"
                        "C1=CC=C(C=C1)C2=CC(=O)C3=C(O2)C=C(C(=C3O)OC)O Galangin\n"
-                       "CC1=C(C=C(C=C1)NC2=NC=NC3=C2C=CC=C3)OC Imatinib"),
-                height=200, key="b_smiles_text")
+                       "CC1=C(C=C(C=C1)NC2=NC=NC3=C2C=CC=C3)OC Imatinib"
+                       ),
+
+                height=300, key="b_smiles_text")
         elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
         else:
