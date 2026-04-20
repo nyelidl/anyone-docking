@@ -3315,26 +3315,7 @@ with tab_basic:
     ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
     # ── Protonation mode ──────────────────────────────────────────────────────
-    prot_mode = st.radio(
-        "Protonation mode",
-        ["⚡ Fast (Dimorphite-DL)", "🧪 pKaNET Cloud (recommended)", "🔬 Neutral (add H only)"],
-        index=1,
-        horizontal=True, key="prot_mode",
-        help=(
-            "**Fast**: Dimorphite-DL SMARTS rules, ~1–3 s. "
-            "**pKaNET Cloud**: Dimorphite + PubChem pKa lookup + "
-            "Henderson–Hasselbalch microstate ranking (Hengphasatporn et al. 2026), "
-            "~2–5 s (cached after first run). "
-            "**Neutral**: no ionization — adds all H in neutral form, ~0.5 s."
-        ),
-    )
-    _prot_mode_map = {
-        "⚡ Fast (Dimorphite-DL)":          "dimorphite",
-        "🧪 pKaNET Cloud (recommended)":    "pkanet",
-        "🔬 Neutral (add H only)":          "neutral",
-    }
-    _prot_mode_key = _prot_mode_map[prot_mode]
-
+    _prot_mode_key = "pkanet"
     _use_pubchem = True
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -3347,10 +3328,7 @@ with tab_basic:
         lig_name = lig_name_in.strip() or "LIG"
         with st.spinner("Preparing ligand…"):
             _mode = st.session_state.get("lig_input_mode", "SMILES string")
-            _prot_mode_key  = st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)")
-            _prot_mode_key  = {"⚡ Fast (Dimorphite-DL)": "dimorphite",
-                                "🧪 pKaNET Cloud (recommended)": "pkanet",
-                                "🔬 Neutral (add H only)": "neutral"}.get(_prot_mode_key, "dimorphite")
+            _prot_mode_key  = "pkanet"
             _use_pubchem    = st.session_state.get("use_pubchem", True)
             _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
@@ -4011,18 +3989,6 @@ with tab_batch:
                 horizontal=True, key="b_struct_prot",
             )
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
-
-        b_prot_mode = st.radio(
-            "Protonation mode",
-            ["⚡ Fast (Dimorphite-DL)", "🧪 pKaNET Cloud (recommended)", "🔬 Neutral (add H only)"],
-            index=1,
-            horizontal=True, key="b_prot_mode",
-        )
-        _b_prot_mode_map = {
-            "⚡ Fast (Dimorphite-DL)":       "dimorphite",
-            "🧪 pKaNET Cloud (recommended)": "pkanet",
-            "🔬 Neutral (add H only)":       "neutral",
-        }
         _b_use_pubchem = True
 
     with col_b2:
@@ -4045,9 +4011,7 @@ with tab_batch:
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
-        _b_prot_mode  = _b_prot_mode_map.get(
-            st.session_state.get("b_prot_mode", "⚡ Fast (Dimorphite-DL)"), "dimorphite"
-        )
+        _b_prot_mode  = "pkanet"
         _b_use_pubchem  = st.session_state.get("b_use_pubchem", True)
         _b_pkanet_max_tau = st.session_state.get("b_pkanet_max_tau", 8)
         _b_pkanet_ph_win  = st.session_state.get("b_pkanet_ph_win", 1.0)
