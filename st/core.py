@@ -781,200 +781,86 @@ def prepare_receptor(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+"""
+pKaNET Cloud replacement for ACD core.py
+=========================================
+Drop-in replacement for the entire pKaNET Cloud section.
+
+WHAT CHANGED vs the old ACD pKaNET code
+-----------------------------------------
+1. _find_flavone_A_ring_phenols
+     • FIX 1  — peri chelation for 5-OH now detected via C5–C4a–C4=O path
+                 (old code required direct bond C5–C4=O which never exists)
+     • FIX 2  — isolated A-ring phenol pKa 8.0 → 7.0
+                 (apigenin/chrysin 7-OH measured pKa ≈ 6.9–7.2)
+     • FIX 3  — flavonol 3-OH pKa 9.0 (direct bond, NOT chelated)
+     • FIX 4  — pyrogallol-center pKa 8.5; catechol-pair pKa 7.0
+
+2. _find_ionizable_sites
+     • Now uses a claimed_atoms set so flavone A-ring sites block generic
+       SMARTS from double-counting the same oxygen atoms.
+
+3. hh_ph_match_score  (replaces _hh_match_score)
+     • Uses dpH-scaled reward/penalty with a "decisive" multiplier
+       matching the real pKaNET Cloud formula exactly.
+
+4. score_tautomer_plausibility  (replaces _score_tautomer)
+     • Adds aromaticity-ring-loss penalty (W_AROM_RING_LOST = 8.0 per ring)
+     • Adds phenol→keto flip penalty (W_PHENOL_TO_KETO_FLIP = 6.0)
+     • Adds phenol-preservation bonus (W_PHENOL_PRESERVED_BONUS = 0.5)
+     • All computed against ref_mol (the input molecule)
+
+5. score_microstate_full  (replaces _score_microstate)
+     • s_aromaticity_loss component added
+     • s_improbable_neutral component added
+     • s_multicharge_penalty component added
+     • s_zwitterion fixed to match real formula
+
+6. _manual_deprotonate_site  (NEW)
+     • Manually set formal charge on a specific ionizable site atom.
+
+7. _supplement_dimorphite  (NEW)
+     • For any ionizable site that Dimorphite missed, force-generate the
+       deprotonated/protonated variant and add it to the candidate pool.
+
+8. generate_ranked_microstates  (replaces protonate_pkanet)
+     • Full pipeline matching real pKaNET Cloud notebook order:
+       standardize → pubchem → tautomers → dimorphite → supplement →
+       score_microstate_full → rank → return rank-1 SMILES + charge
+
+PUBLIC API (unchanged for ACD app.py compatibility):
+  protonate_pkanet(smiles, ph, use_pubchem, max_tautomers, ph_window)
+    → (best_smiles, charge, log_list)
+"""
+
 # ══════════════════════════════════════════════════════════════════════════════
-#  PKANET CLOUD — ionizable site table + HH scoring helpers
-#  Ported from pKaNET_Cloud notebook (Hengphasatporn et al. 2026)
-#
-#  Root-cause analysis of charges shown wrong in ACD batch mode (2026-04):
-#
-#  CAUSE A — Wrong default mode (app.py):
-#    The app defaulted to "⚡ Fast (Dimorphite-DL)".  Dimorphite knows about
-#    catechol / pyrogallol (→ Baicalein -1 ✓, Luteolin -1 ✓) but treats
-#    isolated chromone-activated phenols as generic phenol (pKa ~10) and
-#    returns neutral → Apigenin 0 ✗, Kaempferol 0 ✗, Galangin 0 ✗.
-#    Fix: change default to "pKaNET Cloud" in app.py.
-#
-#  CAUSE B — prepare_ligand dimorphite path has no post-correction:
-#    Even when dimorphite mode is explicitly selected, `max_variants=1` and
-#    there is no pKa-based check after Dimorphite.
-#    Fix: call _apply_ionizable_site_correction() after Dimorphite.
-#
-#  CAUSE C — Gefitinib +1 ✗ (should be 0):
-#    The generic `aliphatic_amine_t` (pKa 9.0) claimed morpholine N
-#    (actual pKa ~4.9) → scored as protonated at pH 7.4.
-#    Fix: add morpholine_N (pKa 4.9) before aliphatic_amine_t AND exclude
-#    the morpholine motif from aliphatic_amine_t.
-#
-#  CAUSE D — Afatinib 0 ✗, Imatinib 0 ✗:
-#    Wrong input SMILES (truncated structures) in app.py default text area.
-#    Fix: update SMILES in app.py (see README at bottom of this file).
-#
-#  Flavonoid pKa fixes (Fixes 1–4 from previous session, unchanged):
-#    FIX 1 — Peri chelation for 5-OH (C5–C4a–C4=O path)
-#    FIX 2 — Isolated A-ring phenol pKa 8.0 → 7.0
-#    FIX 3 — Flavonol 3-OH pKa 9.0 (direct bond, not chelated)
-#    FIX 4 — Pyrogallol-center 6.3 → 8.5; catechol-pair 7.8 → 7.0
+#  WEIGHTS  (matching real pKaNET Cloud constants)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Ionizable site SMARTS table: (label, SMARTS, heuristic_pKa, site_type)
-#
-# ORDERING MATTERS: first-match-wins per ionizable atom.
-# Flavonoid A-ring OHs are absent here — handled by _find_flavone_A_ring_phenols().
-_IONIZABLE_SITE_DEF = [
-    # ── Strong acids ──────────────────────────────────────────────────────────
-    ("sulfonic_acid",      "[SX4](=O)(=O)[OX2H1]",                             1.0,  "acid"),
-    ("phosphoric_mono",    "[PX4](=O)([OX2H1])([OX2H1])[OX2H1]",              2.1,  "acid"),
-    ("carboxylic_acid",    "[CX3](=O)[OX2H1]",                                 4.5,  "acid"),
-    ("tetrazole",          "c1nn[nH]n1",                                        4.9,  "acid"),
-    ("imidazole_acid",     "c1cn[nH]c1",                                        6.0,  "acid"),
-    ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                 5.5,  "acid"),
-    ("phosphonate",        "[PX4](=O)([OX2H1])[OX2H1,OX1-]",                  6.5,  "acid"),
-    ("sulfonamide_NH",     "[SX4](=O)(=O)[NX3;H1]",                           10.1,  "acid"),
-    ("imide_NH",           "[CX3](=O)[NX3;H1][CX3]=O",                         9.6,  "acid"),
-    ("acylhydrazone_NH",   "[CX3](=O)[NX3;H1][NX2]=[CX3]",                   10.5,  "acid"),
-    ("hydrazide_NH",       "[CX3](=O)[NX3;H1][NX3;H2]",                       10.5,  "acid"),
-    ("urea_NH",            "[NX3;H1][CX3](=O)[NX3;H1,H2]",                    13.0,  "acid"),
-    ("amide_NH",           "[CX3](=O)[NX3;H1,H2;!$([N]~N)]",                  15.0,  "acid"),
-    # ── Acidified phenols (specific before generic) ───────────────────────────
-    ("phenol_diacyl",      "[OX2H1][c;R]1[c;R][c;R](=O)[c;R][c;R][c;R]1=O",   3.5,  "acid"),
-    ("phenol_ortho_CO",    "[OX2H1][c;R]:[c;R][CX3;R](=O)",                    7.8,  "acid"),
-    ("catechol_OH",        "[OX2H1][c;R]:[c;R][OX2H1]",                        9.4,  "acid"),
-    ("phenol_EWG",         "[OX2H1][c;R]:[c;R][$([NX3](=O)=O),$([CX3]=O),"
-                           "$(C#N),$([SX4](=O)(=O))]",                         7.2,  "acid"),
-    ("phenol",             "c[OX2H1]",                                         10.0,  "acid"),
-    # ── Thiols ────────────────────────────────────────────────────────────────
-    ("thiol_arom",         "c[SX2H1]",                                          6.5,  "acid"),
-    ("thiol_aliph",        "[CX4][SX2H1]",                                     10.5,  "acid"),
-    # ── Bases ─────────────────────────────────────────────────────────────────
-    ("aniline",            "c[NX3;H1,H2;!$(N~[!#6])]",                         4.6,  "base"),
-    ("pyridine_like",      "[$([nX2]1:[c,n]:c:[c,n]:c1),$([nX2]:c:n)]",        5.2,  "base"),
-    # FIX 5 — morpholine/thiomorpholine N must come BEFORE aliphatic_amine_t.
-    # Gefitinib morpholine N: pKa ~4.9 → neutral at pH 7.4.
-    # Old code matched aliphatic_amine_t (pKa 9.0) → wrongly scored as +1.
-    ("morpholine_N",       "[NX3;H0;R;$(N1CC[O,S]CC1)]",                       4.9,  "base"),
-    # piperazine NH (drug-substituted, one H): pKa ~8.1 → protonated at pH 7.4
-    ("piperazine_NH",      "[NX3;H1;R;$(N1CCNCC1)]",                           8.1,  "base"),
-    # piperazine N-sub (tertiary, substituted): pKa ~3–4, negligible
-    ("piperazine_N_sub",   "[NX3;H0;R;$(N1CCNCC1)]",                           3.5,  "base"),
-    ("aliphatic_amine",    "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);"
-                           "!$(Nc)]",                                           9.5,  "base"),
-    # FIX 5 (continued): exclude morpholine/thiomorpholine AND piperazine from
-    # generic tertiary amine so they are never given pKa 9.0.
-    ("aliphatic_amine_t",  "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);"
-                           "!$([N;R]1CC[O,S]CC1);!$([N;R]1CCNCC1)]",          9.0,  "base"),
-    ("amidine",            "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                 12.4,  "base"),
-    ("guanidine",          "[NX3][CX3](=[NX2])[NX3]",                         13.0,  "base"),
-]
+W_AROM_RING_LOST          = 8.0
+W_PHENOL_TO_KETO_FLIP     = 6.0
+W_PYROGALLOL_TRIKETO      = 6.0
+W_CATECHOL_DIKETO         = 4.0
+W_PHENOL_PRESERVED_BONUS  = 0.5
 
-_CHEM_BONUS_DEF = [
-    ("amide",            +2.5, "[CX3](=O)[NX3;H1,H2]"),
-    ("lactam",           +2.5, "[C;R](=O)[N;R]"),
-    ("urea_NH",          +1.5, "[NX3;H1][CX3](=O)[NX3;H1,H2]"),
-    ("aromatic_ring",    +0.3, "c1ccccc1"),
-]
-_CHEM_PENALTY_DEF = [
-    ("lactim_ring",      -4.0, "[C;R](=[NX2])[OX2H1]"),
-    ("iminol_general",   -3.5, "[NX2]=[CX3][OX2H1]"),
-    ("amide_N_deproton", -5.0, "[$([NX3-]C=O),$([NX3-]c=O)]"),
-    ("enol_simple",      -1.2, "[CX3](=[CX3])[OX2H1]"),
-    ("exo_imine_arom",   -2.5, "[NX2;!r]=[cX3]"),
-]
+TAUTOMER_PLAUSIBILITY_CUTOFF = 3.0
+AMBIGUITY_SCORE_GAP          = 0.5
+BORDERLINE_PKA_WINDOW        = 1.0
 
-_PKANET_CACHE: dict = {}
-import re as _re
-_PKA_PATTERNS = [
-    _re.compile(r"pK[aA][\w\s\(\)]*?=\s*([+-]?\d+(?:\.\d+)?)", _re.IGNORECASE),
-    _re.compile(r"([+-]?\d+(?:\.\d+)?)\s*\((?:pK[aA]|acid dissociation)[^)]*\)", _re.IGNORECASE),
-]
+# ══════════════════════════════════════════════════════════════════════════════
+#  CHROMONE SYSTEM DETECTION  (shared by A-ring detector)
+# ══════════════════════════════════════════════════════════════════════════════
 
-
-def _compile_smarts_table(defs):
+def _detect_chromone_system(mol):
+    """Return set of atom indices belonging to fused chromen-4-one systems."""
     from rdkit import Chem
-    compiled = []
-    for row in defs:
-        lbl, *rest = row
-        sma = rest[0] if isinstance(rest[0], str) else rest[-1]
-        extra = rest[1:]
-        pat = Chem.MolFromSmarts(sma)
-        if pat is not None:
-            compiled.append((lbl, pat) + tuple(extra))
-    return compiled
-
-
-def _pubchem_pka_lookup(smiles: str) -> dict:
-    """Fetch experimental pKa from PubChem. Cached by InChIKey."""
-    from rdkit import Chem
-    import time as _time
-    result = {"available": False, "pka_values": [], "confidence": "low", "source": "pubchem"}
-    try:
-        import requests as _req
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return result
-        ik = Chem.MolToInchiKey(mol)
-        if not ik:
-            return result
-        if ik in _PKANET_CACHE:
-            return _PKANET_CACHE[ik]
-
-        _time.sleep(0.25)
-        r = _req.get(
-            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{ik}/cids/JSON",
-            timeout=8)
-        if r.status_code != 200:
-            _PKANET_CACHE[ik] = result; return result
-        cid = r.json()["IdentifierList"]["CID"][0]
-
-        _time.sleep(0.25)
-        r2 = _req.get(
-            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound/{cid}/JSON"
-            f"?heading=Dissociation+Constants", timeout=10)
-        if r2.status_code != 200:
-            _PKANET_CACHE[ik] = result; return result
-
-        texts = []
-        def _collect(sec):
-            if "dissociation" in sec.get("TOCHeading", "").lower():
-                for info in sec.get("Information", []):
-                    for swm in info.get("Value", {}).get("StringWithMarkup", []):
-                        s = swm.get("String", "").strip()
-                        if s: texts.append(s)
-            for sub in sec.get("Section", []): _collect(sub)
-        for sec in r2.json().get("Record", {}).get("Section", []): _collect(sec)
-
-        vals = []
-        for text in texts:
-            for pat in _PKA_PATTERNS:
-                for m in pat.finditer(text):
-                    try:
-                        v = float(m.group(1))
-                        if -5.0 <= v <= 20.0 and not any(abs(v - e) < 0.05 for e in vals):
-                            vals.append(v)
-                    except ValueError:
-                        pass
-
-        confidence = "high" if len(vals) == 1 else ("medium" if vals else "low")
-        result = {"available": bool(vals), "pka_values": vals,
-                  "confidence": confidence, "source": "pubchem"}
-        _PKANET_CACHE[ik] = result
-        return result
-    except Exception:
-        return result
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Flavonoid A-ring detection (Fixes 1–4)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _detect_chromone_system(mol) -> set:
-    """Return atom indices of the fused chromone (γ-pyrone + benzene) system."""
     ring_info = mol.GetRingInfo()
     rings = [set(r) for r in ring_info.AtomRings() if len(r) == 6]
     if not rings:
         return set()
 
-    def _has_exo_carbonyl(idx):
-        atom = mol.GetAtomWithIdx(idx)
+    def _has_exo_carbonyl(atom_idx):
+        atom = mol.GetAtomWithIdx(atom_idx)
         if atom.GetSymbol() != "C":
             return False
         for bond in atom.GetBonds():
@@ -988,11 +874,13 @@ def _detect_chromone_system(mol) -> set:
                 return True
         return False
 
-    pyrone_rings = [
-        ring for ring in rings
-        if sum(1 for i in ring if mol.GetAtomWithIdx(i).GetSymbol() == "O") == 1
-        and any(_has_exo_carbonyl(i) for i in ring)
-    ]
+    pyrone_rings = []
+    for ring in rings:
+        ring_os  = [i for i in ring if mol.GetAtomWithIdx(i).GetSymbol() == "O"]
+        ring_cos = [i for i in ring if _has_exo_carbonyl(i)]
+        if len(ring_os) == 1 and len(ring_cos) >= 1:
+            pyrone_rings.append(ring)
+
     if not pyrone_rings:
         return set()
 
@@ -1005,287 +893,716 @@ def _detect_chromone_system(mol) -> set:
     return system
 
 
-def _find_flavone_A_ring_phenols(mol) -> list:
-    """
-    Position-aware pKa assignment for chromone A-ring phenolic OHs.
+# ══════════════════════════════════════════════════════════════════════════════
+#  FIX 1-4 : FLAVONOID A-RING PHENOL DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
 
-    Classification map (after all four fixes):
-      ortho_to_carbonyl + direct_bond=True  → 3-OH flavonol  pKa  9.0
-      ortho_to_carbonyl + direct_bond=False → 5-OH chelated  pKa 11.0
-      ortho_to_ring_O                       → 8-OH           pKa  8.5
-      n_ortho_phenols >= 2                  → 6-OH pyrogallol pKa  8.5
-      n_ortho_phenols == 1                  → 7-OH catechol   pKa  7.0
-      else                                  → isolated OH     pKa  7.0
+def _find_flavone_A_ring_phenols(mol):
+    """
+    Return ionizable-site dicts for phenolic OHs on the chromone A-ring,
+    with position-aware pKa assignments (Fixes 1-4).
+
+    Classification:
+      carbonyl_direct=True   → flavone_3OH_flavonol  pKa  9.0
+      carbonyl_direct=False  → flavone_5OH_chelated  pKa 11.0
+      ortho_to_ring_O        → flavone_8OH_orthoO    pKa  8.5
+      n_ortho_phenols >= 2   → flavone_6OH_pyrogallol pKa  8.5
+      n_ortho_phenols == 1   → flavone_catechol_pair  pKa  7.0
+      else                   → flavone_isolated       pKa  7.0
     """
     chromone_atoms = _detect_chromone_system(mol)
     if not chromone_atoms:
         return []
 
-    ring_carbonyl_idx = ring_oxygen_idx = None
+    ring_carbonyl_idx = None
+    ring_oxygen_idx   = None
+
     for idx in chromone_atoms:
         atom = mol.GetAtomWithIdx(idx)
         if atom.GetSymbol() == "C":
             for bond in atom.GetBonds():
                 other = bond.GetOtherAtom(atom)
-                if (other.GetSymbol() == "O" and not other.IsInRing()
+                if (other.GetSymbol() == "O"
+                        and not other.IsInRing()
                         and bond.GetBondTypeAsDouble() in (2.0, 1.5)
-                        and other.GetTotalNumHs() == 0 and other.GetDegree() == 1):
+                        and other.GetTotalNumHs() == 0
+                        and other.GetDegree() == 1):
                     ring_carbonyl_idx = idx
                     break
         elif atom.GetSymbol() == "O" and atom.IsInRing():
             ring_oxygen_idx = idx
 
-    def _nbrs(idx):
+    def _chromone_nbrs(idx):
         return [n.GetIdx() for n in mol.GetAtomWithIdx(idx).GetNeighbors()
                 if n.GetIdx() in chromone_atoms]
 
-    def _has_OH(c_idx):
+    def _has_phenolic_OH(c_idx):
         for bond in mol.GetAtomWithIdx(c_idx).GetBonds():
-            o = bond.GetOtherAtom(mol.GetAtomWithIdx(c_idx))
-            if (o.GetSymbol() == "O" and o.GetTotalNumHs() >= 1
-                    and o.GetDegree() == 1 and bond.GetBondTypeAsDouble() == 1.0
-                    and not o.IsInRing()):
+            other = bond.GetOtherAtom(mol.GetAtomWithIdx(c_idx))
+            if (other.GetSymbol() == "O"
+                    and other.GetTotalNumHs() >= 1
+                    and other.GetDegree() == 1
+                    and bond.GetBondTypeAsDouble() == 1.0
+                    and not other.IsInRing()):
                 return True
         return False
 
+    # Collect all C–OH pairs where C is aromatic and in chromone system
     candidates = []
     for atom in mol.GetAtoms():
         c_idx = atom.GetIdx()
-        if (c_idx not in chromone_atoms or atom.GetSymbol() != "C"
-                or not atom.GetIsAromatic() or c_idx == ring_carbonyl_idx):
+        if c_idx not in chromone_atoms:
+            continue
+        if atom.GetSymbol() != "C" or not atom.GetIsAromatic():
+            continue
+        if c_idx == ring_carbonyl_idx:
             continue
         for bond in atom.GetBonds():
-            o = bond.GetOtherAtom(atom)
-            if (o.GetSymbol() == "O" and o.GetTotalNumHs() >= 1
-                    and o.GetDegree() == 1 and bond.GetBondTypeAsDouble() == 1.0
-                    and not o.IsInRing()):
-                candidates.append((c_idx, o.GetIdx()))
+            other = bond.GetOtherAtom(atom)
+            if (other.GetSymbol() == "O"
+                    and other.GetTotalNumHs() >= 1
+                    and other.GetDegree() == 1
+                    and bond.GetBondTypeAsDouble() == 1.0
+                    and not other.IsInRing()):
+                candidates.append((c_idx, other.GetIdx()))
                 break
 
     sites = []
     for c_idx, o_idx in candidates:
-        cn = _nbrs(c_idx)
-        oc = [n for n in cn if mol.GetAtomWithIdx(n).GetSymbol() == "C"]
+        chromone_nbrs = _chromone_nbrs(c_idx)
+        ortho_carbons = [n for n in chromone_nbrs
+                         if mol.GetAtomWithIdx(n).GetSymbol() == "C"]
 
-        # FIX 1 + FIX 3: direct bond vs peri path to C4=O
-        ortho_to_carb = direct_bond = False
+        # ── FIX 1 + FIX 3: direct bond vs peri path to C4=O ─────────────────
+        ortho_to_carbonyl = False
+        carbonyl_direct   = False
         if ring_carbonyl_idx is not None:
-            if ring_carbonyl_idx in cn:
-                ortho_to_carb = direct_bond = True    # flavonol 3-OH
+            if ring_carbonyl_idx in chromone_nbrs:
+                # C directly bonded to C4 → flavonol 3-OH (FIX 3)
+                ortho_to_carbonyl = True
+                carbonyl_direct   = True
             else:
-                for nb in cn:                          # flavone 5-OH (peri)
+                # Peri path: C–C4a–C4=O → flavone 5-OH (FIX 1)
+                for nb in chromone_nbrs:
                     if any(n.GetIdx() == ring_carbonyl_idx
                            for n in mol.GetAtomWithIdx(nb).GetNeighbors()):
-                        ortho_to_carb = True; break
+                        ortho_to_carbonyl = True
+                        carbonyl_direct   = False
+                        break
 
-        ortho_to_O = ring_oxygen_idx is not None and ring_oxygen_idx in cn
-        n_op = sum(1 for n in oc if _has_OH(n))
+        ortho_to_ring_O = (ring_oxygen_idx is not None
+                           and ring_oxygen_idx in chromone_nbrs)
+        n_ortho_phenols = sum(1 for n in ortho_carbons if _has_phenolic_OH(n))
 
-        if ortho_to_carb:
-            label, pka = ("flavone_3OH_flavonol", 9.0) if direct_bond \
-                          else ("flavone_5OH_chelated", 11.0)
-        elif ortho_to_O:
+        # ── Classification (Fixes 1-4) ────────────────────────────────────────
+        if ortho_to_carbonyl:
+            if carbonyl_direct:
+                label, pka = "flavone_3OH_flavonol", 9.0   # FIX 3
+            else:
+                label, pka = "flavone_5OH_chelated", 11.0  # FIX 1
+        elif ortho_to_ring_O:
             label, pka = "flavone_8OH_ortho_pyranO", 8.5
-        elif n_op >= 2:
-            label, pka = "flavone_6OH_pyrogallol_center", 8.5   # FIX 4a
-        elif n_op == 1:
-            label, pka = "flavone_phenol_catechol_pair", 7.0    # FIX 4b
+        elif n_ortho_phenols >= 2:
+            label, pka = "flavone_6OH_pyrogallol_center", 8.5  # FIX 4a
+        elif n_ortho_phenols == 1:
+            label, pka = "flavone_phenol_catechol_pair", 7.0   # FIX 4b
         else:
-            label, pka = "flavone_phenol_isolated", 7.0          # FIX 2
+            label, pka = "flavone_phenol_isolated", 7.0         # FIX 2
 
-        sites.append({"label": label, "atom_indices": [o_idx, c_idx],
-                      "ionizable_idx": o_idx, "heuristic_pka": pka,
-                      "site_type": "acid"})
+        sites.append({
+            "label":         label,
+            "atom_indices":  [o_idx, c_idx],
+            "ionizable_idx": o_idx,
+            "heuristic_pka": pka,
+            "site_type":     "acid",
+        })
 
     if sites:
         detail = ", ".join(
             f"{s['label'].replace('flavone_','')}(pKa={s['heuristic_pka']})"
-            for s in sites)
+            for s in sites
+        )
         print(f"    🌸  Detected {len(sites)} flavonoid A-ring phenol(s): {detail}")
 
     return sites
 
 
-def _find_ionizable_sites(mol) -> list:
+# ══════════════════════════════════════════════════════════════════════════════
+#  IONIZABLE SITE DETECTION  (with claimed_atoms to prevent double-counting)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Ionizable site SMARTS table — ordering matters: first-match-wins per atom
+_IONIZABLE_SITE_DEF = [
+    ("sulfonic_acid",      "[SX4](=O)(=O)[OX2H1]",                             1.0,  "acid"),
+    ("phosphoric_mono",    "[PX4](=O)([OX2H1])([OX2H1])[OX2H1]",              2.1,  "acid"),
+    ("carboxylic_acid",    "[CX3](=O)[OX2H1]",                                 4.5,  "acid"),
+    ("tetrazole",          "c1nn[nH]n1",                                        4.9,  "acid"),
+    ("imidazole_acid",     "c1cn[nH]c1",                                        6.0,  "acid"),
+    ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                 5.5,  "acid"),
+    ("phosphonate",        "[PX4](=O)([OX2H1])[OX2H1,OX1-]",                  6.5,  "acid"),
+    ("sulfonamide_NH",     "[SX4](=O)(=O)[NX3;H1]",                           10.1,  "acid"),
+    ("imide_NH",           "[CX3](=O)[NX3;H1][CX3]=O",                         9.6,  "acid"),
+    ("acylhydrazone_NH",   "[CX3](=O)[NX3;H1][NX2]=[CX3]",                   10.5,  "acid"),
+    ("hydrazide_NH",       "[CX3](=O)[NX3;H1][NX3;H2]",                       10.5,  "acid"),
+    ("urea_NH",            "[NX3;H1][CX3](=O)[NX3;H1,H2]",                    13.0,  "acid"),
+    ("amide_NH",           "[CX3](=O)[NX3;H1,H2;!$([N]~N)]",                  15.0,  "acid"),
+    ("phenol_diacyl",      "[OX2H1][c;R]1[c;R][c;R](=O)[c;R][c;R][c;R]1=O",   3.5,  "acid"),
+    ("phenol_ortho_CO",    "[OX2H1][c;R]:[c;R][CX3;R](=O)",                    7.8,  "acid"),
+    ("catechol_OH",        "[OX2H1][c;R]:[c;R][OX2H1]",                        9.4,  "acid"),
+    ("phenol_EWG",         "[OX2H1][c;R]:[c;R][$([NX3](=O)=O),$([CX3]=O),"
+                           "$(C#N),$([SX4](=O)(=O))]",                         7.2,  "acid"),
+    ("phenol",             "c[OX2H1]",                                         10.0,  "acid"),
+    ("thiol_arom",         "c[SX2H1]",                                          6.5,  "acid"),
+    ("thiol_aliph",        "[CX4][SX2H1]",                                     10.5,  "acid"),
+    ("aniline",            "c[NX3;H1,H2;!$(N~[!#6])]",                         4.6,  "base"),
+    ("pyridine_like",      "[$([nX2]1:[c,n]:c:[c,n]:c1),$([nX2]:c:n)]",        5.2,  "base"),
+    ("morpholine_N",       "[NX3;H0;R;$(N1CC[O,S]CC1)]",                       4.9,  "base"),
+    ("piperazine_NH",      "[NX3;H1;R;$(N1CCNCC1)]",                           8.1,  "base"),
+    ("piperazine_N_sub",   "[NX3;H0;R;$(N1CCNCC1)]",                           3.5,  "base"),
+    ("aliphatic_amine",    "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);"
+                           "!$(Nc)]",                                           9.5,  "base"),
+    ("aliphatic_amine_t",  "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);"
+                           "!$([N;R]1CC[O,S]CC1);!$([N;R]1CCNCC1)]",          9.0,  "base"),
+    ("amidine",            "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                 12.4,  "base"),
+    ("guanidine",          "[NX3][CX3](=[NX2])[NX3]",                         13.0,  "base"),
+]
+
+def _compile_ionizable_sites():
+    from rdkit import Chem
+    compiled = []
+    for lbl, sma, pka, stype in _IONIZABLE_SITE_DEF:
+        pat = Chem.MolFromSmarts(sma)
+        if pat is not None:
+            compiled.append((lbl, pat, pka, stype))
+    return compiled
+
+_IONIZABLE_SITES_COMPILED = _compile_ionizable_sites()
+
+
+def _find_ionizable_sites(mol):
     """
-    Return ionizable sites in mol.
+    Return all ionizable sites in mol.
 
-    Pass 1: flavonoid A-ring phenols (claimed atoms block Pass 2).
-    Pass 2: SMARTS table (first-match-wins per ionizable atom).
+    Pass 1: flavonoid A-ring phenols (atoms claimed → block Pass 2).
+    Pass 2: SMARTS table, first-match-wins per ionizable atom.
     """
-    _compiled = _compile_smarts_table(
-        [(lbl, sma, pka, stype) for lbl, sma, pka, stype in _IONIZABLE_SITE_DEF])
+    sites        = []
+    seen_ion     = set()   # ionizable_idx already assigned
+    claimed_atoms = set()  # all atom indices owned by Pass 1
 
-    sites = []
-    seen_ion = set()
-    claimed  = set()
-
+    # Pass 1 — flavone A-ring (highest priority)
     for site in _find_flavone_A_ring_phenols(mol):
-        if site["ionizable_idx"] in seen_ion:
+        ion_idx = site["ionizable_idx"]
+        if ion_idx in seen_ion:
             continue
-        seen_ion.add(site["ionizable_idx"])
-        claimed.update(site["atom_indices"])
+        seen_ion.add(ion_idx)
+        claimed_atoms.update(site["atom_indices"])
         sites.append(site)
 
-    for lbl, pat, pka, stype in _compiled:
+    # Pass 2 — generic SMARTS table
+    for lbl, pat, pka, stype in _IONIZABLE_SITES_COMPILED:
         for match in mol.GetSubstructMatches(pat):
-            if any(a in claimed for a in match):
+            # Skip if any atom in this match was claimed by Pass 1
+            if any(a in claimed_atoms for a in match):
                 continue
+            # Find the ionizable atom (N, O, S with H or formal charge)
             ion_idx = None
             for idx in match:
                 a = mol.GetAtomWithIdx(idx)
                 if a.GetAtomicNum() in (7, 8, 16) and (
                         a.GetTotalNumHs() > 0 or a.GetFormalCharge() < 0):
-                    ion_idx = idx; break
+                    ion_idx = idx
+                    break
             if ion_idx is None:
                 for idx in match:
                     a = mol.GetAtomWithIdx(idx)
                     if a.GetAtomicNum() in (7, 8, 16):
-                        ion_idx = idx; break
+                        ion_idx = idx
+                        break
             if ion_idx is None:
                 ion_idx = match[0]
             if ion_idx in seen_ion:
                 continue
             seen_ion.add(ion_idx)
-            sites.append({"label": lbl, "atom_indices": list(match),
-                          "ionizable_idx": ion_idx, "heuristic_pka": pka,
-                          "site_type": stype})
+            sites.append({
+                "label":         lbl,
+                "atom_indices":  list(match),
+                "ionizable_idx": ion_idx,
+                "heuristic_pka": pka,
+                "site_type":     stype,
+            })
     return sites
 
 
-def _hh_fraction_charged(pka: float, ph: float, site_type: str) -> float:
+# ══════════════════════════════════════════════════════════════════════════════
+#  HENDERSON-HASSELBALCH SCORING  (matching real pKaNET formula)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _hh_fraction_charged(pka, ph, site_type):
     if site_type == "acid":
         return 1.0 / (1.0 + 10.0 ** (pka - ph))
     return 1.0 / (1.0 + 10.0 ** (ph - pka))
 
 
-def _hh_match_score(pka: float, ph: float, site_type: str, actual_charge: int) -> float:
-    f = _hh_fraction_charged(pka, ph, site_type)
+def hh_ph_match_score(pka, ph, site_type, actual_charge):
+    """
+    Real pKaNET Cloud HH scoring formula.
+    Uses dpH-scaled reward/penalty with decisive multiplier.
+    """
+    f_charged = _hh_fraction_charged(pka, ph, site_type)
+    dpH       = abs(ph - pka)
+    decisive  = (f_charged >= 0.65) or (f_charged <= 0.35)
+    rwd_mul   = 1.6 if decisive else 1.0
+    pen_mul   = 1.6 if decisive else 1.0
+
     if site_type == "acid":
-        if f > 0.5 and actual_charge < 0:  return  min(1.2, f * 1.8)
-        elif f > 0.5:                       return -min(1.0, f * 1.2)
-        elif actual_charge >= 0:            return  (1.0 - f) * 0.2
-        else:                               return -(1.0 - f) * 1.5
+        expected_neg = f_charged > 0.5
+        if expected_neg and actual_charge < 0:
+            return  min(1.5, dpH * 0.55 * rwd_mul) + 0.15
+        elif expected_neg:
+            return -min(1.5, dpH * 0.45 * pen_mul) - 0.15
+        elif actual_charge >= 0:
+            return  0.15
+        else:
+            return -min(1.5, dpH * 0.45 * pen_mul) - 0.15
     else:
-        if f > 0.5 and actual_charge > 0:  return  min(1.2, f * 1.8)
-        elif f > 0.5:                      return -min(1.0, f * 1.2)
-        elif actual_charge <= 0:           return  (1.0 - f) * 0.2
-        else:                              return -(1.0 - f) * 1.5
+        expected_pos = f_charged > 0.5
+        if expected_pos and actual_charge > 0:
+            return  min(1.5, dpH * 0.55 * rwd_mul) + 0.15
+        elif expected_pos:
+            return -min(1.5, dpH * 0.45 * pen_mul) - 0.15
+        elif actual_charge <= 0:
+            return  0.15
+        else:
+            return -min(1.5, dpH * 0.45 * pen_mul) - 0.15
 
 
-def _score_tautomer(smiles: str) -> float:
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAUTOMER PLAUSIBILITY SCORING  (with aromaticity guards)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_CHEM_BONUS_DEF = [
+    ("amide",            +2.5, "[CX3](=O)[NX3;H1,H2]"),
+    ("lactam",           +2.5, "[C;R](=O)[N;R]"),
+    ("urea_NH",          +1.5, "[NX3;H1][CX3](=O)[NX3;H1,H2]"),
+    ("thioamide",        +1.0, "[CX3](=S)[NX3;H1,H2]"),
+    ("aromatic_ring",    +0.3, "c1ccccc1"),
+    ("phenol_preserved", W_PHENOL_PRESERVED_BONUS, "c[OX2H1]"),
+]
+_CHEM_PENALTY_DEF = [
+    ("lactim_ring",      -4.0, "[C;R](=[NX2])[OX2H1]"),
+    ("iminol_general",   -3.5, "[NX2]=[CX3][OX2H1]"),
+    ("amide_N_deproton", -5.0, "[$([NX3-]C=O),$([NX3-]c=O)]"),
+    ("enol_simple",      -1.2, "[CX3](=[CX3])[OX2H1]"),
+    ("exo_imine_arom",   -2.5, "[NX2;!r]=[cX3]"),
+    ("pyrogallol_triketo", -W_PYROGALLOL_TRIKETO,
+        "[#6;!a;R]1(=O)[#6;!a;R](=O)[#6;!a;R](=O)[#6;R][#6;R][#6;R]1"),
+    ("catechol_diketo",    -W_CATECHOL_DIKETO,
+        "[#6;!a;R]1(=O)[#6;!a;R](=O)[#6;R][#6;R][#6;R][#6;R]1"),
+]
+
+def _compile_chem_rules():
+    from rdkit import Chem
+    rules = []
+    for lbl, wt, sma in _CHEM_BONUS_DEF + _CHEM_PENALTY_DEF:
+        pat = Chem.MolFromSmarts(sma)
+        if pat is not None:
+            rules.append((lbl, wt, pat))
+    return rules
+
+_CHEM_RULES = _compile_chem_rules()
+
+
+def _n_aromatic_rings(mol):
+    if mol is None:
+        return 0
+    try:
+        from rdkit.Chem import rdMolDescriptors
+        return int(rdMolDescriptors.CalcNumAromaticRings(mol))
+    except Exception:
+        return 0
+
+
+def _count_phenolic_OH(mol):
+    if mol is None:
+        return 0
+    from rdkit import Chem
+    patt = Chem.MolFromSmarts("c[OX2H1]")
+    if patt is None:
+        return 0
+    return len(mol.GetSubstructMatches(patt))
+
+
+def score_tautomer_plausibility(smiles, ref_mol=None):
+    """
+    Score a tautomer for chemical plausibility.
+    Includes aromaticity-ring-loss penalty and phenol→keto flip penalty
+    vs the reference (input) molecule. Matches real pKaNET Cloud.
+    """
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return -999.0
+
     total = 0.0
-    for _, wt, sma in _CHEM_BONUS_DEF + _CHEM_PENALTY_DEF:
-        pat = Chem.MolFromSmarts(sma)
-        if pat and mol.HasSubstructMatch(pat):
-            total += wt
+    for lbl, wt, pat in _CHEM_RULES:
+        n = len(mol.GetSubstructMatches(pat))
+        if n:
+            total += wt * n
+
+    if ref_mol is not None:
+        # Penalty for losing aromatic rings vs input
+        rings_lost = max(0, _n_aromatic_rings(ref_mol) - _n_aromatic_rings(mol))
+        if rings_lost > 0:
+            total += -W_AROM_RING_LOST * rings_lost
+
+        # Penalty for flipping phenolic OH to ring ketone
+        phenols_lost = max(0, _count_phenolic_OH(ref_mol) - _count_phenolic_OH(mol))
+        if phenols_lost > 0:
+            total += -W_PHENOL_TO_KETO_FLIP * phenols_lost
+
     return total
 
 
-def _score_microstate(smiles: str, ph: float, taut_score: float,
-                       pubchem: dict) -> float:
+# ══════════════════════════════════════════════════════════════════════════════
+#  MICROSTATE SCORING  (full 8-component formula from real pKaNET Cloud)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def score_microstate_full(
+    microstate_smiles,
+    taut_plausibility,
+    ion_sites,
+    pubchem_result,
+    target_ph,
+    ref_mol=None,
+):
+    """
+    Full 8-component microstate score matching real pKaNET Cloud:
+      s1  amide-N deprotonation safety penalty
+      s2  aromaticity loss penalty vs ref_mol
+      s3  tautomer plausibility (weighted)
+      s4  HH pH-consistency for each ionizable site
+      s5  PubChem evidence bonus
+      s6  zwitterion consistency
+      s7  improbable neutral penalty
+      s8  multicharge penalty
+    """
     from rdkit import Chem
-    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.MolFromSmiles(microstate_smiles)
     if mol is None:
         return -1e9
+
     fc_map = {a.GetIdx(): int(a.GetFormalCharge()) for a in mol.GetAtoms()}
-    net = sum(fc_map.values())
+    net   = sum(fc_map.values())
     n_pos = sum(1 for v in fc_map.values() if v > 0)
     n_neg = sum(1 for v in fc_map.values() if v < 0)
 
-    pat_bad = Chem.MolFromSmarts("[$([NX3-]C=O),$([NX3-]c=O)]")
-    s1 = -5.0 * len(mol.GetSubstructMatches(pat_bad)) if pat_bad else 0.0
-    s2 = 0.65 * taut_score
+    # s1: amide-N deprotonation safety
+    pat_amide_neg = Chem.MolFromSmarts("[$([NX3-]C=O),$([NX3-]c=O)]")
+    n_amide_neg   = len(mol.GetSubstructMatches(pat_amide_neg)) if pat_amide_neg else 0
+    s1 = -5.0 * n_amide_neg
 
-    sites = _find_ionizable_sites(mol)
-    s3 = 0.0
-    for site in sites:
-        pka = site["heuristic_pka"]
-        if pubchem.get("available") and pubchem.get("confidence") in ("high","medium"):
-            pc_vals = pubchem.get("pka_values", [])
+    # s2: aromaticity loss vs input molecule
+    s2 = 0.0
+    if ref_mol is not None:
+        rings_lost = max(0, _n_aromatic_rings(ref_mol) - _n_aromatic_rings(mol))
+        if rings_lost > 0:
+            s2 = -W_AROM_RING_LOST * rings_lost
+
+    # s3: tautomer plausibility
+    s3 = 0.65 * taut_plausibility
+
+    # s4: HH pH-consistency for each ionizable site
+    s4 = 0.0
+    for site in ion_sites:
+        pka  = site["heuristic_pka"]
+        # Use PubChem pKa if high/medium confidence — pick closest to heuristic
+        if (pubchem_result.get("available")
+                and pubchem_result.get("confidence") in ("high", "medium")):
+            pc_vals = pubchem_result.get("pka_values", [])
             if pc_vals:
                 pka = min(pc_vals, key=lambda v: abs(v - pka))
-        sc = sum(fc_map.get(i, 0) for i in site["atom_indices"])
-        s3 += _hh_match_score(pka, ph, site["site_type"], sc)
+        site_charge = sum(fc_map.get(i, 0) for i in site["atom_indices"])
+        s4 += hh_ph_match_score(pka, target_ph, site["site_type"], site_charge)
 
-    s4 = 0.0
-    if pubchem.get("available"):
-        w = {"high":1.0,"medium":0.6,"low":0.2}.get(pubchem.get("confidence","low"),0.2)
-        for pv in pubchem.get("pka_values", []):
-            exp = -1 if _hh_fraction_charged(pv, ph, "acid") > 0.5 else 0
-            s4 += 0.25 * w if net == exp else -0.15 * w
-        s4 = max(-0.4, min(0.5, s4))
+    # s5: PubChem evidence bonus
+    s5 = 0.0
+    if pubchem_result.get("available"):
+        pc_weight = {"high": 1.0, "medium": 0.6, "low": 0.2}.get(
+            pubchem_result.get("confidence", "low"), 0.2)
+        for pka_val in pubchem_result.get("pka_values", []):
+            exp = -1 if _hh_fraction_charged(pka_val, target_ph, "acid") > 0.5 else 0
+            s5 += 0.25 * pc_weight if net == exp else -0.15 * pc_weight
+        s5 = max(-0.4, min(0.5, s5))
 
-    has_acid = any(s["site_type"]=="acid" and (ph-s["heuristic_pka"])>1.0 for s in sites)
-    has_base = any(s["site_type"]=="base" and (s["heuristic_pka"]-ph)>1.0 for s in sites)
+    # s6: zwitterion consistency
+    has_acid = any(s["site_type"] == "acid"
+                   and (target_ph - s["heuristic_pka"]) > 1.0 for s in ion_sites)
+    has_base = any(s["site_type"] == "base"
+                   and (s["heuristic_pka"] - target_ph) > 1.0 for s in ion_sites)
     is_zw = (n_pos > 0 and n_neg > 0 and net == 0)
-    s5 = (0.8 if (has_acid and has_base) else -0.6) if is_zw else 0.0
+    if is_zw:
+        s6 = 0.8 if (has_acid and has_base) else -0.6
+    else:
+        s6 = -0.4 if (has_acid and has_base and net == 0 and n_pos == 0) else 0.0
 
-    return s1 + s2 + s3 + s4 + s5
+    # s7: improbable neutral penalty
+    strong_acid   = [s for s in ion_sites if s["site_type"] == "acid"
+                     and (target_ph - s["heuristic_pka"]) > 2.0]
+    strong_base   = [s for s in ion_sites if s["site_type"] == "base"
+                     and (s["heuristic_pka"] - target_ph) > 2.0]
+    probable_acid = [s for s in ion_sites if s["site_type"] == "acid"
+                     and 0.0 < (target_ph - s["heuristic_pka"]) <= 2.0]
+    probable_base = [s for s in ion_sites if s["site_type"] == "base"
+                     and 0.0 < (s["heuristic_pka"] - target_ph) <= 2.0]
+    s7 = 0.0
+    if strong_acid  and net >= 0 and n_neg == 0:
+        s7 -= 0.5 * len(strong_acid)
+    if strong_base  and net <= 0 and n_pos == 0:
+        s7 -= 0.5 * len(strong_base)
+    if probable_acid and net >= 0 and n_neg == 0:
+        s7 -= 0.35 * len(probable_acid)
+    if probable_base and net <= 0 and n_pos == 0:
+        s7 -= 0.35 * len(probable_base)
+
+    # s8: multicharge penalty
+    s8 = -0.12 * max(0, n_pos + n_neg - 2)
+
+    return s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  _apply_ionizable_site_correction  ← NEW KEY FUNCTION (Cause B fix)
-#
-#  Called after Dimorphite-DL returns a protonation state.
-#  Uses _find_ionizable_sites (which has all 5 fixes) to check whether
-#  any ionizable site with pKa < pH is still protonated.  If so, it
-#  deprotonates that site and returns the corrected SMILES.
-#
-#  This makes the "dimorphite" mode just as accurate as "pkanet" mode
-#  for flavonoids and other sites Dimorphite's internal table misses.
-# ─────────────────────────────────────────────────────────────────────────────
-def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
-                                      ph: float, log: list) -> str:
+# ══════════════════════════════════════════════════════════════════════════════
+#  MANUAL DEPROTONATION  (for sites Dimorphite misses)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _manual_deprotonate_site(smiles, site):
     """
-    Post-Dimorphite correction: if any acid site with pKa < pH is still
-    protonated, deprotonate it and return the corrected SMILES.
-
-    Works on the CURRENT (post-Dimorphite) SMILES so it respects any
-    states Dimorphite already set correctly (e.g. carboxylic acids).
-
-    Returns current_smiles unchanged if no correction is needed.
+    Manually apply ionization to a specific site atom.
+    Returns new SMILES or None on failure.
     """
     from rdkit import Chem
-    mol = Chem.MolFromSmiles(current_smiles)
+    mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        return current_smiles
+        return None
 
-    fc_map = {a.GetIdx(): int(a.GetFormalCharge()) for a in mol.GetAtoms()}
-    sites  = _find_ionizable_sites(mol)
+    rw = Chem.RWMol(mol)
+    target_idx = None
 
-    # Find the most acidic site that SHOULD be deprotonated but ISN'T
-    missed = sorted(
-        [s for s in sites
-         if s["site_type"] == "acid"
-         and s["heuristic_pka"] < ph
-         and s.get("ionizable_idx") is not None
-         and mol.GetAtomWithIdx(s["ionizable_idx"]).GetTotalNumHs() > 0
-         and fc_map.get(s["ionizable_idx"], 0) >= 0],
-        key=lambda s: s["heuristic_pka"]
-    )
-    if not missed:
-        return current_smiles
+    for idx in site["atom_indices"]:
+        if idx >= rw.GetNumAtoms():
+            continue
+        atom = rw.GetAtomWithIdx(idx)
+        sym, nh = atom.GetSymbol(), atom.GetTotalNumHs()
+        if site["site_type"] == "acid":
+            if sym in ("O", "S") and nh >= 1:
+                target_idx = idx
+                break
+            if sym == "N" and nh >= 1 and target_idx is None:
+                target_idx = idx
+        else:
+            if sym == "N" and atom.GetFormalCharge() == 0:
+                target_idx = idx
+                break
 
-    site = missed[0]
+    if target_idx is None:
+        return None
+
     try:
-        rw = Chem.RWMol(mol)
-        rw.GetAtomWithIdx(site["ionizable_idx"]).SetFormalCharge(-1)
-        Chem.SanitizeMol(rw)
-        corrected = Chem.MolToSmiles(rw, canonical=True)
-        log.append(
-            f"✓ pKa site correction: deprotonated {site['label']} "
-            f"(pKa={site['heuristic_pka']:.1f} < pH {ph:.1f})"
-        )
-        return corrected
-    except Exception as e:
-        log.append(f"⚠ Site correction failed ({site['label']}): {e}")
-        return current_smiles
+        atom = rw.GetAtomWithIdx(target_idx)
+        if site["site_type"] == "acid":
+            atom.SetFormalCharge(-1)
+            atom.SetNumExplicitHs(0)
+            atom.SetNoImplicit(False)
+        else:
+            atom.SetFormalCharge(+1)
+            atom.SetNumExplicitHs(atom.GetTotalNumHs() + 1)
+            atom.SetNoImplicit(False)
+        new_mol = rw.GetMol()
+        Chem.SanitizeMol(new_mol)
+        return Chem.MolToSmiles(new_mol, isomericSmiles=True, canonical=True)
+    except Exception:
+        return None
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DIMORPHITE SUPPLEMENT  (force-generate missed ionization states)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, target_ph):
+    """
+    For any ionizable site Dimorphite missed, manually generate the
+    ionized variant and add to the candidate pool.
+    This is critical for flavonoid A-ring OHs which Dimorphite's internal
+    SMARTS table often does not cover.
+    """
+    supplemented = list(dimorphite_results)
+    existing = set(dimorphite_results)
+
+    for site in ion_sites:
+        pka   = site.get("heuristic_pka", 10.0)
+        stype = site.get("site_type", "acid")
+        # Only supplement if pH is on the ionized side
+        if stype == "acid"  and (target_ph - pka) < -1.5:
+            continue
+        if stype == "base"  and (pka - target_ph) < -1.5:
+            continue
+        new_smi = _manual_deprotonate_site(tautomer_smiles, site)
+        if new_smi and new_smi not in existing:
+            supplemented.append(new_smi)
+            existing.add(new_smi)
+
+    return supplemented
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  FULL PIPELINE  —  generate_ranked_microstates
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_ranked_microstates(
+    base_smiles,
+    target_ph=7.4,
+    ph_window=1.0,
+    max_tautomers=8,
+    top_n=5,
+    pubchem_result=None,
+):
+    """
+    Full pKaNET Cloud microstate ranking pipeline:
+      A. Standardize
+      B. Enumerate tautomers + plausibility score (with aromaticity guard)
+      C. Dimorphite-DL enumeration in pH window
+      D. Supplement missed ionizable sites
+      E. score_microstate_full for each candidate
+      F. Sort descending → return top_n
+
+    Returns (top_list, ambiguous, all_microstates)
+    Each item in top_list has keys: microstate_smiles, net_charge, selection_score
+    """
+    from rdkit import Chem
+    from rdkit.Chem.MolStandardize import rdMolStandardize
+
+    if pubchem_result is None:
+        pubchem_result = {}
+
+    ref_mol = Chem.MolFromSmiles(base_smiles)
+
+    # ── A. Tautomer enumeration ───────────────────────────────────────────────
+    enum    = rdMolStandardize.TautomerEnumerator()
+    seen_t  = set()
+    tautomers = []
+
+    input_canon = Chem.MolToSmiles(ref_mol, isomericSmiles=True, canonical=True)
+    seen_t.add(input_canon)
+    sc0 = score_tautomer_plausibility(input_canon, ref_mol=ref_mol)
+    tautomers.append({"smiles": input_canon, "score": sc0})
+
+    for tmol in enum.Enumerate(ref_mol):
+        smi = Chem.MolToSmiles(tmol, isomericSmiles=True, canonical=True)
+        if smi in seen_t:
+            continue
+        seen_t.add(smi)
+        sc = score_tautomer_plausibility(smi, ref_mol=ref_mol)
+        tautomers.append({"smiles": smi, "score": sc})
+
+    tautomers = sorted(tautomers, key=lambda x: -x["score"])[:max_tautomers]
+
+    # Discard implausible tautomers
+    best_t = tautomers[0]["score"]
+    eff_cutoff = TAUTOMER_PLAUSIBILITY_CUTOFF
+    kept_tautomers = [t for t in tautomers if t["score"] >= best_t - eff_cutoff]
+    if not kept_tautomers:
+        kept_tautomers = [tautomers[0]]
+
+    # ── B. Ionizable sites (from input molecule) ──────────────────────────────
+    ion_sites = _find_ionizable_sites(ref_mol) if ref_mol else []
+
+    # ── C+D. Dimorphite enumeration + supplement ──────────────────────────────
+    ph_lo = max(0.0,  target_ph - ph_window / 2)
+    ph_hi = min(14.0, target_ph + ph_window / 2)
+
+    all_micro = []
+    seen_smi  = set()
+
+    for taut in kept_tautomers:
+        # Dimorphite-DL
+        raw_states = [taut["smiles"]]
+        try:
+            from dimorphite_dl import protonate_smiles as _dim
+            _raw = None
+            for kw in [
+                {"ph_min": ph_lo, "ph_max": ph_hi, "max_variants": 32},
+                {"min_ph": ph_lo, "max_ph": ph_hi, "max_variants": 32},
+            ]:
+                try:
+                    _raw = _dim(taut["smiles"], **kw)
+                    break
+                except TypeError:
+                    continue
+            if _raw:
+                seen_d = {taut["smiles"]}
+                for s in (_raw if isinstance(_raw, list) else [_raw]):
+                    c = Chem.MolToSmiles(Chem.MolFromSmiles(s), canonical=True) if s and Chem.MolFromSmiles(s) else None
+                    if c and c not in seen_d:
+                        seen_d.add(c)
+                        raw_states.append(c)
+        except Exception:
+            pass
+
+        # Supplement for sites Dimorphite missed (key for flavonoids)
+        microstates = _supplement_dimorphite(
+            taut["smiles"], raw_states, ion_sites, target_ph
+        )
+
+        for smi in microstates:
+            if smi in seen_smi:
+                continue
+            mol_check = Chem.MolFromSmiles(smi)
+            if mol_check is None:
+                continue
+            seen_smi.add(smi)
+
+            sc = score_microstate_full(
+                microstate_smiles  = smi,
+                taut_plausibility  = taut["score"],
+                ion_sites          = ion_sites,
+                pubchem_result     = pubchem_result,
+                target_ph          = target_ph,
+                ref_mol            = ref_mol,
+            )
+            net = int(Chem.GetFormalCharge(mol_check))
+            all_micro.append({
+                "microstate_smiles": smi,
+                "tautomer_smiles":   taut["smiles"],
+                "tautomer_score":    taut["score"],
+                "selection_score":   float(sc),
+                "net_charge":        net,
+            })
+
+    if not all_micro:
+        return [], False, []
+
+    all_micro.sort(key=lambda x: (
+        -x["selection_score"],
+        abs(x["net_charge"]),
+        x["microstate_smiles"],
+    ))
+
+    best_sc = all_micro[0]["selection_score"]
+    for i, row in enumerate(all_micro, 1):
+        row["microstate_rank"]  = i
+        row["delta_from_best"]  = round(best_sc - row["selection_score"], 3)
+
+    top       = all_micro[:max(1, top_n)]
+    ambiguous = (len(top) > 1 and top[1]["delta_from_best"] <= AMBIGUITY_SCORE_GAP)
+
+    return top, ambiguous, all_micro
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PUBLIC API  —  protonate_pkanet
+#  Drop-in replacement for the same function in ACD core.py.
+#  Signature and return value are identical.
+# ══════════════════════════════════════════════════════════════════════════════
 
 def protonate_pkanet(
     smiles: str,
@@ -1295,15 +1612,9 @@ def protonate_pkanet(
     ph_window: float = 1.0,
 ) -> tuple:
     """
-    pKaNET Cloud protonation pipeline (Hengphasatporn et al. 2026).
+    pKaNET Cloud protonation — drop-in replacement for ACD core.py.
 
-    A. RDKit standardize
-    B. PubChem pKa lookup (optional, cached)
-    C. Dimorphite-DL enumeration (ph ± ph_window)
-    C2. _apply_ionizable_site_correction on each Dimorphite variant
-    D. Tautomer expansion
-    E. HH microstate ranking
-    Returns (best_smiles, charge, log_list).
+    Returns (best_smiles, charge, log_list)
     """
     from rdkit import Chem
     from rdkit.Chem.MolStandardize import rdMolStandardize
@@ -1311,155 +1622,113 @@ def protonate_pkanet(
     log = []
     canonical = smiles.strip()
 
-    # A. Standardize
+    # ── Standardize ───────────────────────────────────────────────────────────
     try:
         mol = Chem.MolFromSmiles(canonical)
         if mol:
             mol = rdMolStandardize.LargestFragmentChooser().choose(mol)
-            try: mol = rdMolStandardize.Normalizer().normalize(mol)
-            except Exception: pass
+            try:
+                mol = rdMolStandardize.Normalizer().normalize(mol)
+            except Exception:
+                pass
             canonical = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
             log.append("✓ RDKit standardized")
     except Exception as e:
         log.append(f"⚠ Standardization skipped: {e}")
 
-    # B. PubChem
+    # ── PubChem lookup ────────────────────────────────────────────────────────
     pubchem = {"available": False, "pka_values": [], "confidence": "low"}
     if use_pubchem:
         try:
-            pubchem = _pubchem_pka_lookup(canonical)
-            if pubchem["available"]:
-                log.append(f"✓ PubChem pKa: {pubchem['pka_values']} "
-                           f"(conf: {pubchem['confidence']})")
-            else:
-                log.append("ℹ PubChem: no data — heuristic table")
+            import time, re as _re2
+            import requests as _rq
+
+            _PKA_PATS = [
+                _re2.compile(r"pK[aA][\w\s\(\)]*?=\s*([+-]?\d+(?:\.\d+)?)", _re2.IGNORECASE),
+                _re2.compile(r"([+-]?\d+(?:\.\d+)?)\s*\((?:pK[aA]|acid dissociation)[^)]*\)", _re2.IGNORECASE),
+            ]
+
+            _mol_pc = Chem.MolFromSmiles(canonical)
+            ik = Chem.MolToInchiKey(_mol_pc) if _mol_pc else None
+            if ik:
+                time.sleep(0.25)
+                r1 = _rq.get(
+                    f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{ik}/cids/JSON",
+                    timeout=8)
+                if r1.status_code == 200:
+                    cid = r1.json()["IdentifierList"]["CID"][0]
+                    time.sleep(0.25)
+                    r2 = _rq.get(
+                        f"https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound/{cid}/JSON"
+                        "?heading=Dissociation+Constants", timeout=10)
+                    if r2.status_code == 200:
+                        texts = []
+                        def _collect(sec):
+                            if "dissociation" in sec.get("TOCHeading", "").lower():
+                                for info in sec.get("Information", []):
+                                    for swm in info.get("Value", {}).get("StringWithMarkup", []):
+                                        s = swm.get("String", "").strip()
+                                        if s:
+                                            texts.append(s)
+                            for sub in sec.get("Section", []):
+                                _collect(sub)
+                        for sec in r2.json().get("Record", {}).get("Section", []):
+                            _collect(sec)
+
+                        vals = []
+                        for text in texts:
+                            for pat in _PKA_PATS:
+                                for m in pat.finditer(text):
+                                    try:
+                                        v = float(m.group(1))
+                                        if -5.0 <= v <= 20.0 and not any(abs(v - e) < 0.05 for e in vals):
+                                            vals.append(v)
+                                    except ValueError:
+                                        pass
+
+                        if vals:
+                            confidence = "high" if len(vals) == 1 else "medium"
+                            pubchem = {"available": True, "pka_values": vals,
+                                       "confidence": confidence}
+                            log.append(f"✓ PubChem pKa: {vals} (conf: {confidence})")
+                        else:
+                            log.append("ℹ PubChem: no pKa data found")
         except Exception as e:
             log.append(f"⚠ PubChem failed: {e}")
 
-    # C. Dimorphite-DL
-    _mol_ref = Chem.MolFromSmiles(canonical)
-    _has_acid = bool(_mol_ref and any(
-        s["site_type"] == "acid" for s in _find_ionizable_sites(_mol_ref)))
-
-    candidates = [canonical]
+    # ── Ranked microstates ─────────────────────────────────────────────────────
     try:
-        from dimorphite_dl import protonate_smiles as _dim
-        raw = None
-        for kw in [
-            {"ph_min": ph - ph_window, "ph_max": ph + ph_window, "max_variants": 16},
-            {"min_ph": ph - ph_window, "max_ph": ph + ph_window, "max_variants": 16},
-        ]:
-            try: raw = _dim(canonical, **kw); break
-            except TypeError: continue
-        if raw:
-            seen = {canonical}
-            for s in (raw if isinstance(raw, list) else [raw]):
-                mol_s = Chem.MolFromSmiles(s) if s else None
-                if mol_s is None: continue
-                c = Chem.MolToSmiles(mol_s, canonical=True)
-                if not c or c in seen: continue
-                if Chem.GetFormalCharge(mol_s) < 0 and not _has_acid: continue
-                seen.add(c); candidates.append(c)
-        log.append(f"✓ Dimorphite-DL: {len(candidates)} state(s)")
-    except Exception as e:
-        log.append(f"⚠ Dimorphite-DL skipped: {e}")
-
-    # C2. Apply ionizable-site correction to each Dimorphite variant
-    # This is the key step that fixes flavonoid A-ring OHs missed by Dimorphite
-    corrected_candidates = []
-    seen_corrected = set()
-    for smi in candidates:
-        c = _apply_ionizable_site_correction(canonical, smi, ph, log)
-        if c not in seen_corrected:
-            seen_corrected.add(c)
-            corrected_candidates.append(c)
-        if smi not in seen_corrected:
-            seen_corrected.add(smi)
-            corrected_candidates.append(smi)
-
-    # Also add the explicitly deprotonated original (belt-and-suspenders)
-    mol_chk = Chem.MolFromSmiles(canonical)
-    if mol_chk:
-        sites_chk = _find_ionizable_sites(mol_chk)
-        acid_sites = sorted(
-            [s for s in sites_chk
-             if s["site_type"] == "acid" and s["heuristic_pka"] < ph
-             and s.get("ionizable_idx") is not None
-             and mol_chk.GetAtomWithIdx(s["ionizable_idx"]).GetTotalNumHs() > 0],
-            key=lambda s: s["heuristic_pka"]
+        top, ambiguous, all_micro = generate_ranked_microstates(
+            canonical,
+            target_ph      = ph,
+            ph_window      = ph_window,
+            max_tautomers  = max_tautomers,
+            top_n          = 5,
+            pubchem_result = pubchem,
         )
-        base_sites = [s for s in sites_chk
-                      if s["site_type"] == "base" and s["heuristic_pka"] > ph + 1.5
-                      and s.get("ionizable_idx") is not None
-                      and mol_chk.GetAtomWithIdx(s["ionizable_idx"]).GetFormalCharge() == 0]
+        log.append(f"✓ Evaluated {len(all_micro)} microstates — "
+                   f"best score: {top[0]['selection_score']:.2f}")
+        if ambiguous:
+            log.append("⚠ Ambiguous top state (score gap ≤ 0.5)")
 
-        if acid_sites:
-            try:
-                rw = Chem.RWMol(mol_chk)
-                rw.GetAtomWithIdx(acid_sites[0]["ionizable_idx"]).SetFormalCharge(-1)
-                Chem.SanitizeMol(rw)
-                dep = Chem.MolToSmiles(rw, canonical=True)
-                if dep and dep not in seen_corrected:
-                    seen_corrected.add(dep)
-                    corrected_candidates.append(dep)
-                    log.append(f"✓ Explicit deprot: {acid_sites[0]['label']} "
-                               f"(pKa={acid_sites[0]['heuristic_pka']:.1f})")
-            except Exception: pass
+        best_smi = top[0]["microstate_smiles"]
+        charge   = top[0]["net_charge"]
 
-        if acid_sites and base_sites:
-            try:
-                rw2 = Chem.RWMol(mol_chk)
-                rw2.GetAtomWithIdx(acid_sites[0]["ionizable_idx"]).SetFormalCharge(-1)
-                rw2.GetAtomWithIdx(base_sites[0]["ionizable_idx"]).SetFormalCharge(+1)
-                Chem.SanitizeMol(rw2)
-                zw = Chem.MolToSmiles(rw2, canonical=True)
-                if zw and zw not in seen_corrected:
-                    seen_corrected.add(zw)
-                    corrected_candidates.append(zw)
-                    log.append("✓ Zwitterion candidate generated")
-            except Exception: pass
-
-    all_candidates = corrected_candidates
-
-    # D. Tautomer expansion
-    all_states = []
-    try:
-        from rdkit.Chem.MolStandardize import rdMolStandardize as _rms
-        te = _rms.TautomerEnumerator()
-        te.SetMaxTautomers(max_tautomers)
-        seen_all = set()
-        for base_smi in all_candidates:
-            base_mol = Chem.MolFromSmiles(base_smi)
-            if base_mol is None:
-                all_states.append(base_smi); continue
-            try:
-                for t in te.Enumerate(base_mol):
-                    ts = Chem.MolToSmiles(t, canonical=True)
-                    if ts not in seen_all:
-                        seen_all.add(ts); all_states.append(ts)
-            except Exception:
-                if base_smi not in seen_all:
-                    seen_all.add(base_smi); all_states.append(base_smi)
-        log.append(f"✓ Tautomers: {len(all_states)} states to rank")
     except Exception as e:
-        log.append(f"⚠ Tautomer expansion skipped: {e}")
-        all_states = all_candidates
+        log.append(f"⚠ Microstate ranking failed ({e}) — using Dimorphite fallback")
+        # Fallback: original Dimorphite-only path
+        best_smi = canonical
+        try:
+            from dimorphite_dl import protonate_smiles as _dim
+            vs = _dim(canonical, ph_min=ph - 0.5, ph_max=ph + 0.5, max_variants=1)
+            if vs:
+                best_smi = vs[0] if isinstance(vs, list) else vs
+        except Exception:
+            pass
+        mol_fb = Chem.MolFromSmiles(best_smi)
+        charge  = int(Chem.GetFormalCharge(mol_fb)) if mol_fb else 0
 
-    # E. Rank
-    try:
-        scored = [((_score_tautomer(s), _score_microstate(s, ph, _score_tautomer(s), pubchem)), s)
-                  for s in all_states if Chem.MolFromSmiles(s) is not None]
-        scored = [(_score_microstate(s, ph, _score_tautomer(s), pubchem), s)
-                  for s in all_states if Chem.MolFromSmiles(s) is not None]
-        scored.sort(reverse=True)
-        best_smi = scored[0][1]
-        log.append(f"✓ Ranked {len(scored)} states — best: {scored[0][0]:.2f}")
-    except Exception as e:
-        log.append(f"⚠ Ranking failed ({e}) — using first candidate")
-        best_smi = all_candidates[0]
-
-    mol_best = Chem.MolFromSmiles(best_smi)
-    charge = int(Chem.GetFormalCharge(mol_best)) if mol_best else 0
+    log.append(f"✓ Formal charge: {charge:+d}")
     return best_smi, charge, log
 
 # ══════════════════════════════════════════════════════════════════════════════
