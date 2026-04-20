@@ -3318,6 +3318,7 @@ with tab_basic:
     prot_mode = st.radio(
         "Protonation mode",
         ["⚡ Fast (Dimorphite-DL)", "🧪 pKaNET Cloud (recommended)", "🔬 Neutral (add H only)"],
+        index=1
         horizontal=True, key="prot_mode",
         help=(
             "**Fast**: Dimorphite-DL SMARTS rules, ~1–3 s. "
@@ -4037,6 +4038,7 @@ with tab_batch:
         b_prot_mode = st.radio(
             "Protonation mode",
             ["⚡ Fast (Dimorphite-DL)", "🧪 pKaNET Cloud (recommended)", "🔬 Neutral (add H only)"],
+            index=1
             horizontal=True, key="b_prot_mode",
         )
         _b_prot_mode_map = {
