@@ -3679,60 +3679,61 @@ with tab_basic:
 
     lig_input_mode = st.radio(
         "Input mode",
-        ["SMILES string", "Upload structure (.pdb/.mol2)", "Draw structure (Ketcher)"],
+        ["PubChem / SMILES", "Upload structure (.pdb/.mol2)", "Draw structure (Ketcher)"],
         horizontal=True, key="lig_input_mode",
     )
 
+    if st.session_state.get("lig_input_mode") == "SMILES string":
+        st.session_state["lig_input_mode"] = "PubChem / SMILES"
+
     smiles_in = ""
-    if lig_input_mode == "SMILES string":
-        # ── Compound search widget ────────────────────────────────────────
-        with st.expander("🔍 Search compound by name (PubChem)", expanded=False):
-            _sq_col, _sb_col = st.columns([5, 1])
-            with _sq_col:
-                _sq = st.text_input(
-                    "Compound name",
-                    placeholder="e.g. erlotinib, apigenin, caffeine…",
-                    key="compound_search_query",
-                    label_visibility="collapsed",
+    if lig_input_mode == "PubChem / SMILES":
+        st.markdown("#### 🔍 Search compound from PubChem")
+        _sq_col, _sb_col = st.columns([5, 1])
+        with _sq_col:
+            _sq = st.text_input(
+                "Compound name",
+                placeholder="e.g. erlotinib, apigenin, caffeine…",
+                key="compound_search_query",
+            )
+        with _sb_col:
+            st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
+            _sb = st.button("Search", key="compound_search_btn", type="secondary")
+
+        if _sb and _sq.strip():
+            with st.spinner(f"Searching PubChem for '{_sq}'…"):
+                _sr = _search_compound_pubchem(_sq.strip())
+                st.session_state["compound_search_result"] = _sr
+
+        _sr = st.session_state.get("compound_search_result")
+        if _sr and _sr.get("found"):
+            _ic, _imgc = st.columns([3, 1])
+            with _ic:
+                st.markdown(
+                    f"**{_sr['iupac']}**  \n"
+                    f"`{_sr['formula']}` · {_sr['mw']:.2f} g/mol · "
+                    f"[PubChem CID {_sr['cid']}]({_sr['url']})"
                 )
-            with _sb_col:
-                _sb = st.button("Search", key="compound_search_btn", type="secondary")
+                st.code(_sr["smiles"], language=None)
+            with _imgc:
+                st.image(_sr["img_url"], width=140)
+            if st.button("✓ Use this SMILES", key="use_pubchem_smiles", type="primary"):
+                _picked_name = ((_sr["iupac"] or _sq)[:8].replace(" ", "_").upper()) or "LIG"
+                st.session_state["smiles_from_pubchem"] = _sr["smiles"]
+                st.session_state["lig_name_from_pubchem"] = _picked_name
+                st.session_state["smiles_in"] = _sr["smiles"]
+                st.session_state["lig_name_in"] = _picked_name
+                st.rerun()
+        elif _sr and not _sr.get("found"):
+            st.error(f"Not found: {_sr.get('error', 'Unknown error')}")
 
-            if _sb and _sq.strip():
-                with st.spinner(f"Searching PubChem for '{_sq}'…"):
-                    _sr = _search_compound_pubchem(_sq.strip())
-                    st.session_state["compound_search_result"] = _sr
-
-            _sr = st.session_state.get("compound_search_result")
-            if _sr and _sr.get("found"):
-                _ic, _imgc = st.columns([3, 1])
-                with _ic:
-                    st.markdown(
-                        f"**{_sr['iupac']}**  \n"
-                        f"`{_sr['formula']}` · {_sr['mw']:.2f} g/mol · "
-                        f"[PubChem CID {_sr['cid']}]({_sr['url']})"
-                    )
-                    st.code(_sr["smiles"], language=None)
-                with _imgc:
-                    st.image(_sr["img_url"], width=140)
-                if st.button("✓ Use this SMILES", key="use_pubchem_smiles", type="primary"):
-                    st.session_state["smiles_from_pubchem"] = _sr["smiles"]
-                    st.session_state["lig_name_from_pubchem"] = (
-                        (_sr["iupac"] or _sq)[:8].replace(" ", "_").upper()
-                    )
-                    st.session_state.pop("compound_search_result", None)
-                    st.rerun()
-            elif _sr and not _sr.get("found"):
-                st.error(f"Not found: {_sr.get('error', 'Unknown error')}")
-
-        # ── SMILES input (pre-populated from PubChem search if used) ─────
-        _default_smi = st.session_state.get(
-            "smiles_from_pubchem",
-            "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
-        )
+        if "smiles_in" not in st.session_state:
+            st.session_state["smiles_in"] = st.session_state.get(
+                "smiles_from_pubchem",
+                "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
+            )
         smiles_in = st.text_input(
             "SMILES string",
-            value=_default_smi,
             key="smiles_in",
         )
     elif lig_input_mode == "Upload structure (.pdb/.mol2)":
@@ -3758,8 +3759,9 @@ with tab_basic:
             st.error("❌ `streamlit-ketcher` not installed")
             smiles_in = ""
 
-    _default_ligname = st.session_state.get("lig_name_from_pubchem", "ELR")
-    lig_name_in = st.text_input("Output name", value=_default_ligname, key="lig_name_in")
+    if "lig_name_in" not in st.session_state:
+        st.session_state["lig_name_in"] = st.session_state.get("lig_name_from_pubchem", "ELR")
+    lig_name_in = st.text_input("Output name", key="lig_name_in")
     ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
     # ── Protonation mode ──────────────────────────────────────────────────────
