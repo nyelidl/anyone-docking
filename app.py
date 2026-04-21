@@ -3686,7 +3686,7 @@ margin:0;font-weight:700;padding-top:29px;">nyone can dock, everyone can do!</h1
 
 st.markdown(
     "Molecular docking powered by **AutoDock Vina 1.2.7,** "
-    "**RDKit**."
+    "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown("**Basic** — single ligand. **Batch** — multiple ligands.")
 st.markdown("**☁️ Cloud-ready | 📱 Mobile-compatible**")
@@ -3768,7 +3768,8 @@ with tab_basic:
             _ic, _imgc = st.columns([3, 1])
             with _ic:
                 st.markdown(
-                    f"**{_sr['iupac']}**  \n"
+                    f"**{_sr['iupac']}**  \
+"
                     f"`{_sr['formula']}` · {_sr['mw']:.2f} g/mol · "
                     f"[PubChem CID {_sr['cid']}]({_sr['url']})"
                 )
@@ -3815,32 +3816,11 @@ with tab_basic:
         st.session_state["lig_name_in"] = st.session_state.get("lig_name_from_pubchem", "ELR")
     lig_name_in = st.text_input("Output name", key="lig_name_in")
     ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
+    st.caption("Default ligand preparation uses Dimorphite-DL at the target pH, then reports the RDKit formal charge of the final SMILES.")
 
-    # ── Protonation settings ──────────────────────────────────────────────────
-    if "prot_mode" not in st.session_state:
-        st.session_state["prot_mode"] = "⚡ Fast (Dimorphite-DL)"
-    if "use_pubchem" not in st.session_state:
-        st.session_state["use_pubchem"] = False
-
-    _prot_ui_col1, _prot_ui_col2 = st.columns([2, 1])
-    with _prot_ui_col1:
-        st.radio(
-            "Protonation mode",
-            [
-                "⚡ Fast (Dimorphite-DL)",
-                "🔬 Neutral (add H only)",
-            ],
-            key="prot_mode",
-            horizontal=True,
-        )
-    with _prot_ui_col2:
-        st.checkbox(
-            "Use PubChem standardization",
-            key="use_pubchem",
-            help="Enable this only if you want the ligand identity or standard form to be cross-checked with PubChem before protonation.",
-        )
-
-    st.caption("If the ligand protonation looks wrong, switch protonation mode or turn off PubChem standardization.")
+    # ── Protonation mode ──────────────────────────────────────────────────────
+    _prot_mode_key = "dimorphite"
+    _use_pubchem = False
     # ─────────────────────────────────────────────────────────────────────────
 
     if not st.session_state.receptor_done:
@@ -3851,15 +3831,11 @@ with tab_basic:
     ):
         lig_name = lig_name_in.strip() or "LIG"
         with st.spinner("Preparing ligand…"):
-            _mode = st.session_state.get("lig_input_mode", "PubChem / SMILES")
-            _prot_mode_key = {
-                "⚡ Fast (Dimorphite-DL)": "dimorphite",
-                "⚡ Fast (Dimorphite-DL)": "pkanet",
-                "🔬 Neutral (add H only)": "neutral",
-            }.get(st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)"), "dimorphite")
-            _use_pubchem    = st.session_state.get("use_pubchem", False)
-            _pkanet_max_tau = int(st.session_state.get("pkanet_max_tau", 8))
-            _pkanet_ph_win  = float(st.session_state.get("pkanet_ph_win", 1.0))
+            _mode = st.session_state.get("lig_input_mode", "SMILES string")
+            _prot_mode_key  = "dimorphite"
+            _use_pubchem    = False
+            _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
+            _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
 
             if "Upload" in _mode:
                 _sfobj = st.session_state.get("lig_struct_file")
@@ -3878,25 +3854,34 @@ with tab_basic:
                     except Exception as e:
                         st.error(f"❌ Could not read structure: {e}"); st.stop()
                     result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
-                                            mode=_prot_mode_key, use_pubchem=_use_pubchem)
+                                            mode=_prot_mode_key, use_pubchem=_use_pubchem,
+                                            max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
                     st.error("No molecule drawn in Ketcher."); st.stop()
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
-                                        mode=_prot_mode_key, use_pubchem=_use_pubchem)
+                                        mode=_prot_mode_key, use_pubchem=_use_pubchem,
+                                        max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
             else:
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
-                                        mode=_prot_mode_key, use_pubchem=_use_pubchem)
+                                        mode=_prot_mode_key, use_pubchem=_use_pubchem,
+                                        max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
 
         if result["success"]:
             st.session_state.update({
-                "ligand_pdbqt": result["pdbqt"],
-                "ligand_sdf":   result["sdf"],
-                "ligand_name":  lig_name,
-                "prot_smiles":  result["prot_smiles"],
-                "ligand_done":  True,
-                "ligand_log":   "\n".join(result["log"]),
+                "ligand_pdbqt":        result["pdbqt"],
+                "ligand_sdf":          result["sdf"],
+                "ligand_name":         lig_name,
+                "input_smiles_final":  result.get("input_smiles", smiles_in),
+                "prot_smiles":         result["prot_smiles"],
+                "ligand_charge":       result.get("net_charge", result.get("charge")),
+                "ligand_charge_method": result.get("charge_method", "rdkit_formal_charge"),
+                "ligand_charged_atoms": result.get("charged_atoms", []),
+                "ligand_is_zwitterion": result.get("is_zwitterion", False),
+                "ligand_prep_mode":    result.get("protonation_mode", _prot_mode_key),
+                "ligand_done":         True,
+                "ligand_log":          "\n".join(result["log"]),
             })
         else:
             st.error(f"❌ Ligand preparation failed: {result['error']}")
@@ -3904,10 +3889,6 @@ with tab_basic:
             st.session_state.ligand_log  = "\n".join(result["log"])
 
     if st.session_state.ligand_done:
-        st.caption(
-            f"Prepared ligand mode: {st.session_state.get('prot_mode', '⚡ Fast (Dimorphite-DL)')} | "
-            f"PubChem standardization: {'on' if st.session_state.get('use_pubchem', False) else 'off'}"
-        )
         import py3Dmol
         from rdkit import Chem
         from rdkit.Chem import AllChem, Draw
@@ -3915,6 +3896,18 @@ with tab_basic:
         st.markdown(
             f"{_pill('Ligand ready', 'success')} {_pill(st.session_state.ligand_name)}",
             unsafe_allow_html=True,
+        )
+        _charged_atoms_rows = st.session_state.get("ligand_charged_atoms", [])
+        _charged_atoms_txt = ", ".join(
+            f"{r['symbol']}{r['atom_idx']}({int(r['formal_charge']):+d})" for r in _charged_atoms_rows
+        ) if _charged_atoms_rows else "none"
+        st.markdown(
+            f"**Preparation mode:** `{st.session_state.get('ligand_prep_mode', 'dimorphite')}`  \n"
+            f"**Input SMILES:** `{st.session_state.get('input_smiles_final', '')}`  \n"
+            f"**Final SMILES used for docking:** `{st.session_state.prot_smiles}`  \n"
+            f"**Net formal charge:** `{int(st.session_state.get('ligand_charge', 0)):+d}`  \n"
+            f"**Charged atoms:** `{_charged_atoms_txt}`  \n"
+            f"**Zwitterion:** `{'YES' if st.session_state.get('ligand_is_zwitterion') else 'NO'}`"
         )
         with st.expander("📋 Preparation log", expanded=False):
             st.markdown(
@@ -4005,14 +3998,14 @@ with tab_basic:
             ph_val = st.session_state.get("ph_in", 7.4)
             _rd_prot_mode = st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)")
             _rd_prot_mode = {"⚡ Fast (Dimorphite-DL)": "dimorphite",
-                              "⚡ Fast (Dimorphite-DL)": "pkanet",
                               "🔬 Neutral (add H only)": "neutral"}.get(_rd_prot_mode, "dimorphite")
-            _rd_use_pubchem = st.session_state.get("use_pubchem", True)
+            _rd_use_pubchem = False
             _rd_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _rd_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
                 rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, ph_val, WORKDIR,
-                                         mode=_rd_prot_mode, use_pubchem=_rd_use_pubchem)
+                                         mode=_rd_prot_mode, use_pubchem=_rd_use_pubchem,
+                                         max_tautomers=_rd_max_tau, ph_window=_rd_ph_win)
                 if rd_prep["success"]:
                     rd_dock = run_vina(
                         st.session_state.receptor_pdbqt, rd_prep["pdbqt"],
@@ -4529,7 +4522,7 @@ with tab_batch:
                 horizontal=True, key="b_struct_prot",
             )
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
-        _b_use_pubchem = True
+        _b_use_pubchem = False
 
     with col_b2:
         st.markdown("**Redocking validation**")
@@ -4552,7 +4545,9 @@ with tab_batch:
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
         _b_prot_mode  = "dimorphite"
-        _b_use_pubchem  = st.session_state.get("b_use_pubchem", True)
+        _b_use_pubchem  = False
+        _b_pkanet_max_tau = st.session_state.get("b_pkanet_max_tau", 8)
+        _b_pkanet_ph_win  = st.session_state.get("b_pkanet_ph_win", 1.0)
 
         smiles_pairs = []
         struct_file_pairs = []
@@ -4598,7 +4593,8 @@ with tab_batch:
             rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
                 rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR,
-                                         mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
+                                         mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
+                                         max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
                 if rd_prep["success"]:
                     rd_dock = run_vina(rec_pdbqt, rd_prep["pdbqt"], config,
                         VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm)
@@ -4649,10 +4645,12 @@ with tab_batch:
                         results.append({"Name": name, "SMILES": "", "Charge": None, "Top Score": None, "Status": f"PREP FAILED: {e}"})
                         all_logs.append(f"[{name}] PREP ERROR: {e}"); continue
                     prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR,
-                                          mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
+                                          mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
+                                          max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
             else:
                 prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR,
-                                      mode=_b_prot_mode, use_pubchem=_b_use_pubchem)
+                                      mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
+                                      max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
 
             if not prep["success"]:
                 results.append({"Name": name, "SMILES": smi, "Charge": None, "Top Score": None, "Status": f"PREP FAILED: {prep['error']}"})
