@@ -3754,28 +3754,29 @@ with tab_basic:
             with st.spinner(f"Searching PubChem for '{_sq}'…"):
                 _sr = _search_compound_pubchem(_sq.strip())
                 st.session_state["compound_search_result"] = _sr
+                if _sr.get("found") and (_sr.get("smiles") or "").strip():
+                    _picked_name = ((_sr["iupac"] or _sq)[:8].replace(" ", "_").upper()) or "LIG"
+                    st.session_state["smiles_from_pubchem"] = _sr["smiles"]
+                    st.session_state["lig_name_from_pubchem"] = _picked_name
+                    st.session_state["smiles_in"] = _sr["smiles"]
+                    st.session_state["lig_name_in"] = _picked_name
+                elif _sr.get("found"):
+                    st.session_state.pop("smiles_from_pubchem", None)
 
         _sr = st.session_state.get("compound_search_result")
         if _sr and _sr.get("found"):
             _ic, _imgc = st.columns([3, 1])
             with _ic:
                 st.markdown(
-                    f"**{_sr['iupac']}**  \n"
+                    f"**{_sr['iupac']}**  
+"
                     f"`{_sr['formula']}` · {_sr['mw']:.2f} g/mol · "
                     f"[PubChem CID {_sr['cid']}]({_sr['url']})"
                 )
-                st.code(_sr["smiles"] or "SMILES not returned by PubChem for this entry", language=None)
             with _imgc:
                 st.image(_sr["img_url"], width=140)
             if not (_sr.get("smiles") or "").strip():
                 st.warning("This PubChem result did not return a usable SMILES string.")
-            elif st.button("✓ Use this SMILES", key="use_pubchem_smiles", type="primary"):
-                _picked_name = ((_sr["iupac"] or _sq)[:8].replace(" ", "_").upper()) or "LIG"
-                st.session_state["smiles_from_pubchem"] = _sr["smiles"]
-                st.session_state["lig_name_from_pubchem"] = _picked_name
-                st.session_state["smiles_in"] = _sr["smiles"]
-                st.session_state["lig_name_in"] = _picked_name
-                st.rerun()
         elif _sr and not _sr.get("found"):
             st.error(f"Not found: {_sr.get('error', 'Unknown error')}")
 
