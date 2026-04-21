@@ -1406,7 +1406,7 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
 def protonate_pkanet(
     smiles: str,
     ph: float,
-    use_pubchem: bool = True,
+    use_pubchem: bool = False,
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> tuple:
@@ -1505,6 +1505,38 @@ def _meeko_to_pdbqt(mol, out_path: str):
         f.write(pdbqt_str)
 
 
+def _ligand_charge_summary(smiles: str) -> dict:
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Bad SMILES: {smiles[:60]}")
+    net = n_pos = n_neg = 0
+    rows = []
+    for atom in mol.GetAtoms():
+        fc = int(atom.GetFormalCharge())
+        net += fc
+        if fc > 0:
+            n_pos += 1
+        elif fc < 0:
+            n_neg += 1
+        if fc != 0:
+            rows.append({
+                "atom_idx": atom.GetIdx(),
+                "symbol": atom.GetSymbol(),
+                "formal_charge": fc,
+            })
+    return {
+        "net_charge": int(net),
+        "charged_atoms": rows,
+        "is_zwitterion": bool(n_pos > 0 and n_neg > 0 and net == 0),
+    }
+
+def _charged_atoms_text(rows: list) -> str:
+    if not rows:
+        return "none"
+    return ", ".join(f"{r['symbol']}{r['atom_idx']}({r['formal_charge']:+d})" for r in rows)
+
+
 def prepare_ligand(
     smiles: str,
     name: str,
@@ -1520,7 +1552,6 @@ def prepare_ligand(
 
     mode: "neutral"    — add all H, no ionization
           "dimorphite" — Dimorphite-DL + FIX 12 site correction (default)
-          "pkanet"     — full pKaNET Cloud pipeline (FIX 11)
 
     FIX 12: dimorphite path now calls _apply_ionizable_site_correction which
     uses the fixed _find_ionizable_sites (FIX 5) and A-ring pKas (Fixes 1-4).
@@ -1586,8 +1617,10 @@ def prepare_ligand(
         if mol is None:
             raise ValueError(f"RDKit could not parse protonated SMILES: {prot[:60]}")
 
-        charge = Chem.GetFormalCharge(mol)
+        charge_info = _ligand_charge_summary(prot)
+        charge = charge_info["net_charge"]
         log.append(f"✓ Formal charge: {charge:+d}")
+        log.append(f"✓ Charged atoms: {_charged_atoms_text(charge_info['charged_atoms'])}")
 
         # ── 3D conformer + minimization ───────────────────────────────────────
         mol = Chem.AddHs(mol)
@@ -1613,12 +1646,19 @@ def prepare_ligand(
         log.append("✓ PDBQT written (Meeko)")
 
         return {
-            "success":     True,
-            "pdbqt":       out_pdbqt,
-            "sdf":         out_sdf,
-            "prot_smiles": prot,
-            "charge":      charge,
-            "log":         log,
+            "success":           True,
+            "pdbqt":             out_pdbqt,
+            "sdf":               out_sdf,
+            "input_smiles":      raw,
+            "prepared_smiles":   prot,
+            "prot_smiles":       prot,
+            "charge":            charge,
+            "net_charge":        charge,
+            "charge_method":     "rdkit_formal_charge",
+            "charged_atoms":     charge_info["charged_atoms"],
+            "is_zwitterion":     charge_info["is_zwitterion"],
+            "protonation_mode":  mode,
+            "log":               log,
         }
 
     except Exception as e:
