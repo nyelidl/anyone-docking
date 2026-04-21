@@ -4,28 +4,6 @@ core.py — Pure computation layer for Anyone Can Dock.
 No Streamlit imports. All functions return plain dicts / tuples.
 Safe to import in Colab notebooks, pytest, or any UI framework.
 
-Fixes vs previous version:
-  - load_mols_from_sdf: suppress RDKit kekulize noise, fallback sanitize loop
-  - fix_sdf_bond_orders: AddHs with addCoords=True preserves docked pose coords
-  - convert_sdf_to_v2000: removed --gen3d flag (was destroying docked pose)
-  - call_poseview_v1: posts receptor PDB directly to /api/v2/poseview/
-  - warm_poseview_cache: now a no-op (MoleculeHandler pre-upload removed)
-  - call_poseview2_ref: retry + full-response logging
-  - Heme: _AROM_ATOMS / _AROM_ATOM_NAMES extended for porphyrin pi-detection
-  - Heme: hydrophobic detection extended to heme residue names
-  - pKaNET: full replacement matching real pKaNET Cloud notebook pipeline
-    FIX 1  — peri chelation for 5-OH (C5-C4a-C4=O path)
-    FIX 2  — isolated A-ring phenol pKa 8.0 -> 7.0
-    FIX 3  — flavonol 3-OH pKa 9.0 (direct bond, not chelated)
-    FIX 4  — pyrogallol-center 8.5; catechol-pair 7.0
-    FIX 5  — claimed_atoms blocks SMARTS from overwriting A-ring OHs
-    FIX 6  — hh_match_score uses dpH-scaled formula
-    FIX 7  — score_tautomer has aromaticity-loss penalty vs ref_mol
-    FIX 8  — score_microstate has all 8 components
-    FIX 9  — _manual_deprotonate_site added
-    FIX 10 — _supplement_dimorphite added
-    FIX 11 — _generate_ranked_microstates replaces inner loop
-    FIX 12 — prepare_ligand dimorphite path calls site correction
 """
 
 import os
@@ -1406,7 +1384,7 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
 def protonate_pkanet(
     smiles: str,
     ph: float,
-    use_pubchem: bool = True,
+    use_pubchem: bool = False,
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> tuple:
@@ -1505,27 +1483,59 @@ def _meeko_to_pdbqt(mol, out_path: str):
         f.write(pdbqt_str)
 
 
+def _ligand_charge_summary(smiles: str) -> dict:
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Bad SMILES: {smiles[:60]}")
+    net = n_pos = n_neg = 0
+    rows = []
+    for atom in mol.GetAtoms():
+        fc = int(atom.GetFormalCharge())
+        net += fc
+        if fc > 0:
+            n_pos += 1
+        elif fc < 0:
+            n_neg += 1
+        if fc != 0:
+            rows.append({
+                "atom_idx": atom.GetIdx(),
+                "symbol": atom.GetSymbol(),
+                "formal_charge": fc,
+            })
+    return {
+        "net_charge": int(net),
+        "charged_atoms": rows,
+        "is_zwitterion": bool(n_pos > 0 and n_neg > 0 and net == 0),
+    }
+
+def _charged_atoms_text(rows: list) -> str:
+    if not rows:
+        return "none"
+    return ", ".join(f"{r['symbol']}{r['atom_idx']}({r['formal_charge']:+d})" for r in rows)
+
+
 def prepare_ligand(
     smiles: str,
     name: str,
     ph: float,
     wdir,
     mode: str = "dimorphite",
-    use_pubchem: bool = True,
+    use_pubchem: bool = False,
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> dict:
     """
-    Protonate ligand -> 3D conformer (ETKDGv3) -> MMFF/UFF -> PDBQT + SDF.
+    Ligand preparation aligned to the simpler, stable version the user preferred.
 
-    mode: "neutral"    — add all H, no ionization
-          "dimorphite" — Dimorphite-DL + FIX 12 site correction (default)
-          "pkanet"     — full pKaNET Cloud pipeline (FIX 11)
+    Behavior:
+      - neutral    : keep the input connectivity/charge state, add H only
+      - dimorphite : protonate with Dimorphite-DL at target pH using the first returned state
+      - pkanet     : accepted for compatibility, but currently falls back to the same
+                     simple Dimorphite-based preparation used in the preferred version
 
-    FIX 12: dimorphite path now calls _apply_ionizable_site_correction which
-    uses the fixed _find_ionizable_sites (FIX 5) and A-ring pKas (Fixes 1-4).
-    This ensures flavonoids (apigenin, baicalein, luteolin, kaempferol, galangin)
-    get charge=-1 at pH 7.4 even in the default dimorphite mode.
+    Charge reporting is always based on RDKit formal charge of the final SMILES
+    actually used for 3D building and docking.
     """
     _rdkit_six_patch()
     from rdkit import Chem
@@ -1538,58 +1548,39 @@ def prepare_ligand(
 
     try:
         raw = smiles.strip()
+        prot = raw
+        actual_mode = mode or "dimorphite"
 
-        # ── Protonation ───────────────────────────────────────────────────────
-        if mode == "neutral":
+        if actual_mode == "neutral":
             mol_check = Chem.MolFromSmiles(raw)
             if mol_check is None:
                 raise ValueError(f"RDKit could not parse SMILES: {raw[:60]}")
-            from rdkit.Chem.MolStandardize import rdMolStandardize
-            try:
-                mol_check = rdMolStandardize.Uncharger().uncharge(mol_check)
-                raw = Chem.MolToSmiles(mol_check, isomericSmiles=True, canonical=True)
-            except Exception:
-                pass
-            prot = raw
-            log.append("✓ Neutral form (all H added, no ionization)")
-
-        elif mode == "pkanet":
-            prot, _, pkanet_log = protonate_pkanet(
-                raw, ph,
-                use_pubchem   = use_pubchem,
-                max_tautomers = max_tautomers,
-                ph_window     = ph_window,
-            )
-            log.extend(pkanet_log)
-
+            prot = Chem.MolToSmiles(mol_check, isomericSmiles=True, canonical=True)
+            log.append("✓ Neutral mode (keep input charge state)")
         else:
-            # Default: Dimorphite-DL + site correction (FIX 12)
-            prot = raw
             try:
                 from dimorphite_dl import protonate_smiles
-                vs = protonate_smiles(
-                    prot,
-                    ph_min=ph - ph_window / 2,
-                    ph_max=ph + ph_window / 2,
-                    max_variants=1,
-                )
+                vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
                 if vs:
                     prot = vs[0] if isinstance(vs, list) else vs
                     log.append(f"✓ Dimorphite-DL pH {ph:.1f}")
+                else:
+                    log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
             except Exception as e:
                 log.append(f"⚠ Dimorphite-DL skipped: {e}")
-
-            # FIX 12: correct any site with pKa < pH still protonated
-            prot = _apply_ionizable_site_correction(raw, prot, ph, log)
+            if actual_mode == "pkanet":
+                log.append("ℹ pKaNET mode is mapped to the simplified ligand-preparation workflow in this version")
+                actual_mode = "dimorphite"
 
         mol = Chem.MolFromSmiles(prot)
         if mol is None:
-            raise ValueError(f"RDKit could not parse protonated SMILES: {prot[:60]}")
+            raise ValueError(f"RDKit could not parse SMILES: {prot[:60]}")
 
-        charge = Chem.GetFormalCharge(mol)
+        charge_info = _ligand_charge_summary(prot)
+        charge = int(charge_info["net_charge"])
         log.append(f"✓ Formal charge: {charge:+d}")
+        log.append(f"✓ Charged atoms: {_charged_atoms_text(charge_info['charged_atoms'])}")
 
-        # ── 3D conformer + minimization ───────────────────────────────────────
         mol = Chem.AddHs(mol)
         try:
             params = AllChem.ETKDGv3()
@@ -1609,22 +1600,38 @@ def prepare_ligand(
         with Chem.SDWriter(out_sdf) as w:
             w.write(mol)
 
-        _meeko_to_pdbqt(mol, out_pdbqt)
-        log.append("✓ PDBQT written (Meeko)")
+        try:
+            _meeko_to_pdbqt(mol, out_pdbqt)
+            log.append("✓ PDBQT written (Meeko)")
+        except Exception as e_meeko:
+            log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
+            subprocess.run(
+                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
+                shell=True, timeout=30,
+            )
+            if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
+                raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
+            log.append("✓ PDBQT written (OpenBabel fallback)")
 
         return {
-            "success":     True,
-            "pdbqt":       out_pdbqt,
-            "sdf":         out_sdf,
-            "prot_smiles": prot,
-            "charge":      charge,
-            "log":         log,
+            "success":           True,
+            "pdbqt":             out_pdbqt,
+            "sdf":               out_sdf,
+            "input_smiles":      raw,
+            "prepared_smiles":   prot,
+            "prot_smiles":       prot,
+            "charge":            charge,
+            "net_charge":        charge,
+            "charge_method":     "rdkit_formal_charge",
+            "charged_atoms":     charge_info["charged_atoms"],
+            "is_zwitterion":     charge_info["is_zwitterion"],
+            "protonation_mode":  actual_mode,
+            "log":               log,
         }
 
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
-
 
 def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
     """
