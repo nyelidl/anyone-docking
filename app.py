@@ -105,6 +105,19 @@ def _search_compound_pubchem(name: str) -> dict:
     try:
         import requests as _req
         from urllib.parse import quote as _quote
+
+        def _pick_smiles(prop_dict):
+            for k in (
+                "IsomericSMILES",
+                "CanonicalSMILES",
+                "ConnectivitySMILES",
+                "SMILES",
+            ):
+                v = prop_dict.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            return ""
+
         r = _req.get(
             f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
             f"{_quote(name)}/cids/JSON",
@@ -112,26 +125,63 @@ def _search_compound_pubchem(name: str) -> dict:
         )
         if r.status_code != 200:
             return {"found": False, "error": f"'{name}' not found in PubChem"}
+
         cid = r.json()["IdentifierList"]["CID"][0]
-        r2 = _req.get(
-            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/"
-            f"IUPACName,MolecularFormula,MolecularWeight,IsomericSMILES,CanonicalSMILES/JSON",
-            timeout=8,
-        )
-        if r2.status_code != 200:
-            return {"found": False, "error": "Could not fetch properties"}
-        p = r2.json()["PropertyTable"]["Properties"][0]
+
+        p = {}
+        for _prop_block in [
+            "IUPACName,MolecularFormula,MolecularWeight,IsomericSMILES,CanonicalSMILES,ConnectivitySMILES",
+            "IUPACName,MolecularFormula,MolecularWeight,CanonicalSMILES,ConnectivitySMILES",
+            "IUPACName,MolecularFormula,MolecularWeight,ConnectivitySMILES",
+        ]:
+            r2 = _req.get(
+                f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/{_prop_block}/JSON",
+                timeout=8,
+            )
+            if r2.status_code == 200:
+                _props = r2.json().get("PropertyTable", {}).get("Properties", [])
+                if _props:
+                    p = _props[0]
+                    if _pick_smiles(p):
+                        break
+
+        smiles = _pick_smiles(p)
+
+        if not smiles:
+            try:
+                r3 = _req.get(
+                    f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/JSON",
+                    timeout=8,
+                )
+                if r3.status_code == 200:
+                    pc = r3.json().get("PC_Compounds", [{}])[0]
+                    props = pc.get("props", [])
+                    for prop in props:
+                        urn = prop.get("urn", {})
+                        label = str(urn.get("label", "")).lower()
+                        name2 = str(urn.get("name", "")).lower()
+                        if "smiles" in label or "smiles" in name2:
+                            value = prop.get("value", {})
+                            cand = value.get("sval") or value.get("string") or ""
+                            if cand:
+                                smiles = cand.strip()
+                                break
+            except Exception:
+                pass
+
         return {
-            "found":    True,
-            "cid":      cid,
-            "smiles":   p.get("IsomericSMILES") or p.get("CanonicalSMILES", ""),
-            "canonical": p.get("CanonicalSMILES", ""),
-            "iupac":    p.get("IUPACName", name),
-            "formula":  p.get("MolecularFormula", ""),
-            "mw":       float(p.get("MolecularWeight", 0)),
-            "img_url":  (f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/"
-                        f"{cid}/PNG?record_type=2d&image_size=200x200"),
-            "url":      f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
+            "found": True,
+            "cid": cid,
+            "smiles": smiles,
+            "canonical": p.get("CanonicalSMILES", "") or smiles,
+            "iupac": p.get("IUPACName", name),
+            "formula": p.get("MolecularFormula", ""),
+            "mw": float(p.get("MolecularWeight", 0) or 0),
+            "img_url": (
+                f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/"
+                f"{cid}/PNG?record_type=2d&image_size=200x200"
+            ),
+            "url": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
         }
     except Exception as e:
         return {"found": False, "error": str(e)}
@@ -3714,10 +3764,12 @@ with tab_basic:
                     f"`{_sr['formula']}` · {_sr['mw']:.2f} g/mol · "
                     f"[PubChem CID {_sr['cid']}]({_sr['url']})"
                 )
-                st.code(_sr["smiles"], language=None)
+                st.code(_sr["smiles"] or "SMILES not returned by PubChem for this entry", language=None)
             with _imgc:
                 st.image(_sr["img_url"], width=140)
-            if st.button("✓ Use this SMILES", key="use_pubchem_smiles", type="primary"):
+            if not (_sr.get("smiles") or "").strip():
+                st.warning("This PubChem result did not return a usable SMILES string.")
+            elif st.button("✓ Use this SMILES", key="use_pubchem_smiles", type="primary"):
                 _picked_name = ((_sr["iupac"] or _sq)[:8].replace(" ", "_").upper()) or "LIG"
                 st.session_state["smiles_from_pubchem"] = _sr["smiles"]
                 st.session_state["lig_name_from_pubchem"] = _picked_name
