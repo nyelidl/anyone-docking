@@ -4,28 +4,6 @@ core.py — Pure computation layer for Anyone Can Dock.
 No Streamlit imports. All functions return plain dicts / tuples.
 Safe to import in Colab notebooks, pytest, or any UI framework.
 
-Fixes vs previous version:
-  - load_mols_from_sdf: suppress RDKit kekulize noise, fallback sanitize loop
-  - fix_sdf_bond_orders: AddHs with addCoords=True preserves docked pose coords
-  - convert_sdf_to_v2000: removed --gen3d flag (was destroying docked pose)
-  - call_poseview_v1: posts receptor PDB directly to /api/v2/poseview/
-  - warm_poseview_cache: now a no-op (MoleculeHandler pre-upload removed)
-  - call_poseview2_ref: retry + full-response logging
-  - Heme: _AROM_ATOMS / _AROM_ATOM_NAMES extended for porphyrin pi-detection
-  - Heme: hydrophobic detection extended to heme residue names
-  - pKaNET: full replacement matching real pKaNET Cloud notebook pipeline
-    FIX 1  — peri chelation for 5-OH (C5-C4a-C4=O path)
-    FIX 2  — isolated A-ring phenol pKa 8.0 -> 7.0
-    FIX 3  — flavonol 3-OH pKa 9.0 (direct bond, not chelated)
-    FIX 4  — pyrogallol-center 8.5; catechol-pair 7.0
-    FIX 5  — claimed_atoms blocks SMARTS from overwriting A-ring OHs
-    FIX 6  — hh_match_score uses dpH-scaled formula
-    FIX 7  — score_tautomer has aromaticity-loss penalty vs ref_mol
-    FIX 8  — score_microstate has all 8 components
-    FIX 9  — _manual_deprotonate_site added
-    FIX 10 — _supplement_dimorphite added
-    FIX 11 — _generate_ranked_microstates replaces inner loop
-    FIX 12 — prepare_ligand dimorphite path calls site correction
 """
 
 import os
@@ -1537,13 +1515,106 @@ def _charged_atoms_text(rows: list) -> str:
     return ", ".join(f"{r['symbol']}{r['atom_idx']}({r['formal_charge']:+d})" for r in rows)
 
 
+
+
+def _expected_net_charge_from_sites(smiles: str, ph: float) -> int:
+    """Estimate the expected net formal charge from heuristic ionizable sites.
+    This is used only to choose among Dimorphite-generated candidates.
+    """
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return 0
+    exp_net = 0
+    seen = set()
+    for site in _find_ionizable_sites(mol):
+        key = tuple(sorted(site.get("atom_indices", [])))
+        if key in seen:
+            continue
+        seen.add(key)
+        pka = float(site.get("heuristic_pka", 7.0))
+        frac = _hh_fraction_charged(pka, ph, site.get("site_type", "acid"))
+        if site.get("site_type") == "acid":
+            if frac > 0.5:
+                exp_net -= 1
+        else:
+            if frac > 0.5:
+                exp_net += 1
+    return int(exp_net)
+
+
+def _select_dimorphite_state(raw_smiles: str, ph: float, ph_window: float, log: list) -> str:
+    """
+    Enumerate Dimorphite states, then pick the candidate whose formal charge
+    best matches heuristic site expectations while preserving aromaticity.
+    This avoids over-deprotonation for polyphenols such as baicalein.
+    """
+    from rdkit import Chem
+    raw_mol = Chem.MolFromSmiles(raw_smiles)
+    if raw_mol is None:
+        return raw_smiles
+
+    target_charge = _expected_net_charge_from_sites(raw_smiles, ph)
+    raw_arom = _n_aromatic_rings(raw_mol)
+
+    candidates = []
+    seen = set()
+
+    def _add_candidate(smi: str, source: str):
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            return
+        can = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
+        if can in seen:
+            return
+        seen.add(can)
+        info = _ligand_charge_summary(can)
+        arom_loss = max(0, raw_arom - _n_aromatic_rings(mol))
+        candidates.append({
+            "smiles": can,
+            "source": source,
+            "net_charge": info["net_charge"],
+            "arom_loss": arom_loss,
+        })
+
+    _add_candidate(raw_smiles, "input")
+
+    try:
+        from dimorphite_dl import protonate_smiles
+        vs = protonate_smiles(
+            raw_smiles,
+            ph_min=ph - ph_window / 2,
+            ph_max=ph + ph_window / 2,
+            max_variants=16,
+        )
+        if vs:
+            for v in (vs if isinstance(vs, list) else [vs]):
+                _add_candidate(v, "dimorphite")
+            log.append(f"✓ Dimorphite-DL enumerated {len(candidates)-1} candidate state(s)")
+    except Exception as e:
+        log.append(f"⚠ Dimorphite-DL skipped: {e}")
+
+    if not candidates:
+        return raw_smiles
+
+    best = min(
+        candidates,
+        key=lambda c: (abs(c["net_charge"] - target_charge), c["arom_loss"], abs(c["net_charge"]), c["smiles"])
+    )
+    log.append(f"✓ Expected net charge at pH {ph:.1f}: {target_charge:+d}")
+    log.append(
+        "✓ Selected protonation state: "
+        f"{best['net_charge']:+d} from {best['source']} "
+        f"(Δcharge={abs(best['net_charge']-target_charge)}, aromatic_loss={best['arom_loss']})"
+    )
+    return best["smiles"]
 def prepare_ligand(
     smiles: str,
     name: str,
     ph: float,
     wdir,
     mode: str = "dimorphite",
-    use_pubchem: bool = True,
+    use_pubchem: bool = False,
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> dict:
@@ -1594,24 +1665,9 @@ def prepare_ligand(
             log.extend(pkanet_log)
 
         else:
-            # Default: Dimorphite-DL + site correction (FIX 12)
-            prot = raw
-            try:
-                from dimorphite_dl import protonate_smiles
-                vs = protonate_smiles(
-                    prot,
-                    ph_min=ph - ph_window / 2,
-                    ph_max=ph + ph_window / 2,
-                    max_variants=1,
-                )
-                if vs:
-                    prot = vs[0] if isinstance(vs, list) else vs
-                    log.append(f"✓ Dimorphite-DL pH {ph:.1f}")
-            except Exception as e:
-                log.append(f"⚠ Dimorphite-DL skipped: {e}")
-
-            # FIX 12: correct any site with pKa < pH still protonated
-            prot = _apply_ionizable_site_correction(raw, prot, ph, log)
+            # Default: Dimorphite-DL candidates -> choose state closest to
+            # heuristic expected charge while preserving aromaticity.
+            prot = _select_dimorphite_state(raw, ph, ph_window, log)
 
         mol = Chem.MolFromSmiles(prot)
         if mol is None:
