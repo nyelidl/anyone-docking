@@ -3293,90 +3293,90 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             horizontal=True, key=pfx + "src_mode",
         )
         if src == "Download from RCSB":
-            st.markdown("#### 🔎 Search protein / target in RCSB")
-            _qs_col, _qb_col = st.columns([5, 1])
-            with _qs_col:
-                _rcsb_query = st.text_input(
-                    "Search protein / keyword",
-                    value=st.session_state.get(pfx + "rcsb_query", ""),
-                    placeholder="e.g. EGFR kinase, HIV protease, acetylcholinesterase…",
-                    key=pfx + "rcsb_query",
-                )
-            with _qb_col:
-                st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
-                _search_clicked = st.button("Search", key=pfx + "rcsb_search_btn", type="secondary")
-
-            _pref_col1, _pref_col2 = st.columns([1, 1.1])
-            with _pref_col1:
-                _prefer_complete = st.checkbox(
-                    "Prefer no missing residues",
-                    value=True,
-                    key=pfx + "rcsb_prefer_complete",
-                )
-            with _pref_col2:
-                _sort_best_res = st.checkbox(
-                    "Sort by best resolution",
-                    value=True,
-                    key=pfx + "rcsb_sort_best_res",
-                )
-
-            if _search_clicked and _rcsb_query.strip():
-                with st.spinner(f"Searching RCSB for '{_rcsb_query}'…"):
-                    _hits = _search_protein_rcsb(_rcsb_query.strip(), top_n=12)
-                    if _prefer_complete:
-                        _hits = sorted(
-                            _hits,
-                            key=lambda x: (
-                                0 if x.get("no_missing_residues") is True else (1 if x.get("no_missing_residues") is None else 2),
-                                x.get("resolution") if isinstance(x.get("resolution"), (int, float)) else 999.0,
-                                x.get("pdb_id", ""),
-                            ),
-                        )
-                    elif _sort_best_res:
-                        _hits = sorted(
-                            _hits,
-                            key=lambda x: (
-                                x.get("resolution") if isinstance(x.get("resolution"), (int, float)) else 999.0,
-                                x.get("pdb_id", ""),
-                            ),
-                        )
-                    st.session_state[pfx + "rcsb_hits"] = _hits
-
-            _hits = st.session_state.get(pfx + "rcsb_hits", [])
-            if _hits:
-                def _fmt_hit(h):
-                    _res = f"{h['resolution']:.2f} Å" if isinstance(h.get("resolution"), (int, float)) else "n/a"
-                    _miss = (
-                        "complete"
-                        if h.get("no_missing_residues") is True
-                        else ("missing?" if h.get("no_missing_residues") is None else "has missing")
+            with st.expander("🔎 Search protein / target in RCSB", expanded=False):
+                _qs_col, _qb_col = st.columns([5, 1])
+                with _qs_col:
+                    _rcsb_query = st.text_input(
+                        "Search protein / keyword",
+                        value=st.session_state.get(pfx + "rcsb_query", ""),
+                        placeholder="e.g. EGFR kinase, HIV protease, acetylcholinesterase…",
+                        key=pfx + "rcsb_query",
                     )
-                    _name = h.get("protein_name") or h.get("title") or ""
-                    return f"{h['pdb_id']}  |  {_res}  |  {_miss}  |  {_name[:90]}"
+                with _qb_col:
+                    st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
+                    _search_clicked = st.button("Search", key=pfx + "rcsb_search_btn", type="secondary")
 
-                _labels = [_fmt_hit(h) for h in _hits]
-                _sel = st.selectbox(
-                    "RCSB matches",
-                    options=list(range(len(_hits))),
-                    format_func=lambda i: _labels[i],
-                    key=pfx + "rcsb_hit_idx",
-                )
-                _picked = _hits[_sel]
-                _meta_res = f"{_picked['resolution']:.2f} Å" if isinstance(_picked.get("resolution"), (int, float)) else "n/a"
-                _meta_missing = (
-                    "No missing residues"
-                    if _picked.get("no_missing_residues") is True
-                    else ("Missing residues unknown" if _picked.get("no_missing_residues") is None else "Has missing residues")
-                )
-                st.caption(
-                    f"**{_picked['pdb_id']}** · {_meta_res} · {_picked.get('method') or 'method n/a'} · {_meta_missing}"
-                )
-                if _picked.get("title"):
-                    st.caption(_picked["title"])
-                if st.button("Use selected PDB ID", key=pfx + "use_selected_pdb", type="primary"):
-                    st.session_state[pfx + "pdb_id"] = _picked["pdb_id"]
-                    st.session_state[pfx + "pdb_token"] = _picked["pdb_id"]
-                    st.rerun()
+                _pref_col1, _pref_col2 = st.columns([1, 1.1])
+                with _pref_col1:
+                    _prefer_complete = st.checkbox(
+                        "Prefer no missing residues",
+                        value=True,
+                        key=pfx + "rcsb_prefer_complete",
+                    )
+                with _pref_col2:
+                    _sort_best_res = st.checkbox(
+                        "Sort by best resolution",
+                        value=True,
+                        key=pfx + "rcsb_sort_best_res",
+                    )
+
+                if _search_clicked and _rcsb_query.strip():
+                    with st.spinner(f"Searching RCSB for '{_rcsb_query}'…"):
+                        _hits = _search_protein_rcsb(_rcsb_query.strip(), top_n=12)
+                        if _prefer_complete:
+                            _hits = sorted(
+                                _hits,
+                                key=lambda x: (
+                                    0 if x.get("no_missing_residues") is True else (1 if x.get("no_missing_residues") is None else 2),
+                                    x.get("resolution") if isinstance(x.get("resolution"), (int, float)) else 999.0,
+                                    x.get("pdb_id", ""),
+                                ),
+                            )
+                        elif _sort_best_res:
+                            _hits = sorted(
+                                _hits,
+                                key=lambda x: (
+                                    x.get("resolution") if isinstance(x.get("resolution"), (int, float)) else 999.0,
+                                    x.get("pdb_id", ""),
+                                ),
+                            )
+                        st.session_state[pfx + "rcsb_hits"] = _hits
+
+                _hits = st.session_state.get(pfx + "rcsb_hits", [])
+                if _hits:
+                    def _fmt_hit(h):
+                        _res = f"{h['resolution']:.2f} Å" if isinstance(h.get("resolution"), (int, float)) else "n/a"
+                        _miss = (
+                            "complete"
+                            if h.get("no_missing_residues") is True
+                            else ("missing?" if h.get("no_missing_residues") is None else "has missing")
+                        )
+                        _name = h.get("protein_name") or h.get("title") or ""
+                        return f"{h['pdb_id']}  |  {_res}  |  {_miss}  |  {_name[:90]}"
+
+                    _labels = [_fmt_hit(h) for h in _hits]
+                    _sel = st.selectbox(
+                        "RCSB matches",
+                        options=list(range(len(_hits))),
+                        format_func=lambda i: _labels[i],
+                        key=pfx + "rcsb_hit_idx",
+                    )
+                    _picked = _hits[_sel]
+                    _meta_res = f"{_picked['resolution']:.2f} Å" if isinstance(_picked.get("resolution"), (int, float)) else "n/a"
+                    _meta_missing = (
+                        "No missing residues"
+                        if _picked.get("no_missing_residues") is True
+                        else ("Missing residues unknown" if _picked.get("no_missing_residues") is None else "Has missing residues")
+                    )
+                    st.caption(
+                        f"**{_picked['pdb_id']}** · {_meta_res} · {_picked.get('method') or 'method n/a'} · {_meta_missing}"
+                    )
+                    if _picked.get("title"):
+                        st.caption(_picked["title"])
+                    if st.button("Use selected PDB ID", key=pfx + "use_selected_pdb", type="primary"):
+                        st.session_state[pfx + "pdb_id"] = _picked["pdb_id"]
+                        st.session_state[pfx + "pdb_token"] = _picked["pdb_id"]
+                        st.rerun()
 
             _id_col, _fmt_col = st.columns([1.5, 1])
             with _id_col:
