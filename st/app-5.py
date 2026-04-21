@@ -95,6 +95,458 @@ st.set_page_config(
 
 import json as _json
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  COMPOUND SEARCH — PubChem
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _search_compound_pubchem(name: str) -> dict:
+    """Search PubChem by compound name → smiles, formula, mw, cid, url."""
+    try:
+        import requests as _req
+        from urllib.parse import quote as _quote
+
+        def _pick_smiles(prop_dict):
+            for k in (
+                "IsomericSMILES",
+                "CanonicalSMILES",
+                "ConnectivitySMILES",
+                "SMILES",
+            ):
+                v = prop_dict.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            return ""
+
+        r = _req.get(
+            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
+            f"{_quote(name)}/cids/JSON",
+            timeout=8,
+        )
+        if r.status_code != 200:
+            return {"found": False, "error": f"'{name}' not found in PubChem"}
+
+        cid = r.json()["IdentifierList"]["CID"][0]
+
+        p = {}
+        for _prop_block in [
+            "IUPACName,MolecularFormula,MolecularWeight,IsomericSMILES,CanonicalSMILES,ConnectivitySMILES",
+            "IUPACName,MolecularFormula,MolecularWeight,CanonicalSMILES,ConnectivitySMILES",
+            "IUPACName,MolecularFormula,MolecularWeight,ConnectivitySMILES",
+        ]:
+            r2 = _req.get(
+                f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/{_prop_block}/JSON",
+                timeout=8,
+            )
+            if r2.status_code == 200:
+                _props = r2.json().get("PropertyTable", {}).get("Properties", [])
+                if _props:
+                    p = _props[0]
+                    if _pick_smiles(p):
+                        break
+
+        smiles = _pick_smiles(p)
+
+        if not smiles:
+            try:
+                r3 = _req.get(
+                    f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/JSON",
+                    timeout=8,
+                )
+                if r3.status_code == 200:
+                    pc = r3.json().get("PC_Compounds", [{}])[0]
+                    props = pc.get("props", [])
+                    for prop in props:
+                        urn = prop.get("urn", {})
+                        label = str(urn.get("label", "")).lower()
+                        name2 = str(urn.get("name", "")).lower()
+                        if "smiles" in label or "smiles" in name2:
+                            value = prop.get("value", {})
+                            cand = value.get("sval") or value.get("string") or ""
+                            if cand:
+                                smiles = cand.strip()
+                                break
+            except Exception:
+                pass
+
+        return {
+            "found": True,
+            "cid": cid,
+            "smiles": smiles,
+            "canonical": p.get("CanonicalSMILES", "") or smiles,
+            "iupac": p.get("IUPACName", name),
+            "formula": p.get("MolecularFormula", ""),
+            "mw": float(p.get("MolecularWeight", 0) or 0),
+            "img_url": (
+                f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/"
+                f"{cid}/PNG?record_type=2d&image_size=200x200"
+            ),
+            "url": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
+        }
+    except Exception as e:
+        return {"found": False, "error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ADME PROPERTIES — RDKit local calculation
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _calc_adme_properties(smiles: str) -> dict:
+    """Calculate ADME properties with RDKit (no API, always works offline)."""
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import Descriptors, rdMolDescriptors, QED
+        from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
+
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return {"error": "Invalid SMILES"}
+
+        mw      = round(Descriptors.MolWt(mol), 2)
+        logp    = round(Descriptors.MolLogP(mol), 2)
+        hbd     = rdMolDescriptors.CalcNumHBD(mol)
+        hba     = rdMolDescriptors.CalcNumHBA(mol)
+        tpsa    = round(rdMolDescriptors.CalcTPSA(mol), 2)
+        rotb    = rdMolDescriptors.CalcNumRotatableBonds(mol)
+        rings   = rdMolDescriptors.CalcNumRings(mol)
+        arom    = rdMolDescriptors.CalcNumAromaticRings(mol)
+        heavy   = mol.GetNumHeavyAtoms()
+        qed_val = round(QED.qed(mol), 3)
+        fsp3    = round(rdMolDescriptors.CalcFractionCSP3(mol), 3)
+        mw_ex   = round(Descriptors.ExactMolWt(mol), 4)
+
+        lip_viol    = sum([mw > 500, logp > 5, hbd > 5, hba > 10])
+        lip_pass    = lip_viol <= 1
+        veber_pass  = (rotb <= 10 and tpsa <= 140)
+        egan_pass   = (logp <= 5.88 and tpsa <= 131.6)
+        muegge_pass = (
+            200 <= mw <= 600 and -2 <= logp <= 5 and tpsa <= 150
+            and rings <= 7 and heavy <= 30 and rotb <= 15
+            and hbd <= 5 and hba <= 10
+        )
+        bio_score = round(sum([lip_pass, veber_pass, egan_pass, muegge_pass]) / 4.0, 2)
+
+        gi = ("High" if (tpsa <= 131.6 and logp <= 5.88)
+              else "Low" if (tpsa > 200 or logp > 7) else "Medium")
+
+        bbb_pts = (
+            (1 if 1 <= logp <= 3 else 0) + (1 if tpsa <= 90 else 0)
+            + (1 if mw <= 450 else 0) + (1 if hbd <= 3 else 0)
+            + (1 if rings <= 4 else 0)
+        )
+        bbb = "Penetrant" if bbb_pts >= 4 else ("Possible" if bbb_pts >= 2 else "Non-penetrant")
+        pgp = "Likely" if (mw > 400 and (hba > 4 or rotb > 10)) else "Unlikely"
+
+        _CYP = {
+            "CYP1A2":  "[$([nH]1cncc1),$([n+]1cnccc1),$([NH]c1ccc2ccccc2n1)]",
+            "CYP2C9":  "[$([SX4](=O)(=O)),$([c;R1]1ccc(cc1)[NX3]),$([CX3](=O)[NX3;H1]c)]",
+            "CYP2C19": "[$([nX2]1cccc1),$([NX3;H1][CX3]=O),$([OX2][CX3]=O)]",
+            "CYP2D6":  "[$([NX3;H1,H2]Cc1ccccc1),$([NX3]c1ccc[nH]1),$([nH]1cncc1)]",
+            "CYP3A4":  "[$([#6]1~[#6]~[#6]~[#6]~[#6]~[#6]~[#6]~[#6]~1),$([CX3](=O)[OX2H0])]",
+        }
+        cyp_flags = {}
+        for cn, sma in _CYP.items():
+            try:
+                pat = Chem.MolFromSmarts(sma)
+                cyp_flags[cn] = bool(pat and mol.HasSubstructMatch(pat))
+            except Exception:
+                cyp_flags[cn] = False
+
+        alerts_pains, alerts_brenk = [], []
+        try:
+            pp = FilterCatalogParams()
+            pp.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS_A)
+            pp.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS_B)
+            pp.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS_C)
+            for e in FilterCatalog(pp).GetMatches(mol):
+                alerts_pains.append(e.GetDescription())
+        except Exception:
+            pass
+        try:
+            bp = FilterCatalogParams()
+            bp.AddCatalog(FilterCatalogParams.FilterCatalogs.BRENK)
+            for e in FilterCatalog(bp).GetMatches(mol):
+                alerts_brenk.append(e.GetDescription())
+        except Exception:
+            pass
+
+        return {
+            "mw": mw, "logp": logp, "hbd": hbd, "hba": hba,
+            "tpsa": tpsa, "rotb": rotb, "rings": rings,
+            "arom_rings": arom, "heavy_atoms": heavy,
+            "qed": qed_val, "fsp3": fsp3, "mw_exact": mw_ex,
+            "lipinski_violations": lip_viol, "lipinski_pass": lip_pass,
+            "veber_pass": veber_pass, "egan_pass": egan_pass,
+            "muegge_pass": muegge_pass, "bioavailability_score": bio_score,
+            "gi_absorption": gi, "bbb": bbb, "pgp_substrate": pgp,
+            "cyp_flags": cyp_flags,
+            "pains_alerts": alerts_pains,
+            "brenk_alerts": alerts_brenk,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ADME SECTION UI
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _adme_section(
+    smiles: str,
+    lig_name: str,
+    binding_energy=None,
+    pdb_id: str = "",
+    key_suffix: str = "adme",
+):
+    """Full ADME predictions panel: metrics, rules, ADME estimates, alerts + AI prompt."""
+    st.markdown("---")
+    st.markdown("### 🧪 ADME Predictions")
+
+    if not smiles or not smiles.strip():
+        st.info("No SMILES available — prepare a ligand first.")
+        return
+
+    _col_btn, _col_hint = st.columns([2, 5])
+    with _col_btn:
+        _clicked = st.button(
+            "🧪 Calculate ADME", key=f"btn_adme_{key_suffix}", type="primary"
+        )
+    with _col_hint:
+        st.caption(
+            "Calculated locally via **RDKit** — MW, LogP, TPSA, HBD/HBA, "
+            "Lipinski/Veber/Egan/Muegge rules, GI absorption, BBB, "
+            "CYP flags, PAINS/BRENK alerts."
+        )
+
+    if _clicked:
+        with st.spinner("Calculating ADME properties…"):
+            st.session_state[f"adme_props_{key_suffix}"] = _calc_adme_properties(smiles)
+
+    props = st.session_state.get(f"adme_props_{key_suffix}")
+    if props is None:
+        return
+    if "error" in props:
+        st.error(f"ADME calculation error: {props['error']}")
+        return
+
+    # ── Metric card helper ────────────────────────────────────────────────
+    def _mc(label, value, unit="", status=None):
+        _T = {
+            "pass": ("#DAFBE1", "#1A7F37"),
+            "warn": ("#FFF8C5", "#9A6700"),
+            "fail": ("#FFEBE9", "#CF222E"),
+            None:   ("var(--bg-card)", "var(--text-muted)"),
+        }
+        bg, clr = _T.get(status, _T[None])
+        icon = {"pass": "✓ ", "warn": "⚠ ", "fail": "✗ ", None: ""}.get(status, "")
+        return (
+            f'<div style="background:{bg};border:1.5px solid {clr};border-radius:8px;'
+            f'padding:12px 8px;text-align:center;min-height:70px;">'
+            f'<div style="font-size:11px;color:{clr};margin-bottom:3px;font-weight:600;">'
+            f'{label}</div>'
+            f'<div style="font-size:19px;font-weight:700;color:{clr};">'
+            f'{icon}{value}<span style="font-size:10px;font-weight:400;"> {unit}</span>'
+            f'</div></div>'
+        )
+
+    # ── Row 1: core Lipinski props ────────────────────────────────────────
+    st.markdown("#### Physicochemical Properties")
+    _cols1 = st.columns(6)
+    for col, (lbl, val, unit, st_) in zip(_cols1, [
+        ("MW",        props["mw"],    "g/mol",
+         "pass" if props["mw"] <= 500 else ("warn" if props["mw"] <= 600 else "fail")),
+        ("LogP",      props["logp"],  "",
+         "pass" if -1 <= props["logp"] <= 3 else ("warn" if props["logp"] <= 5 else "fail")),
+        ("TPSA",      props["tpsa"],  "Å²",
+         "pass" if props["tpsa"] <= 90 else ("warn" if props["tpsa"] <= 140 else "fail")),
+        ("HBD",       props["hbd"],   "",
+         "pass" if props["hbd"] <= 3 else ("warn" if props["hbd"] <= 5 else "fail")),
+        ("HBA",       props["hba"],   "",
+         "pass" if props["hba"] <= 7 else ("warn" if props["hba"] <= 10 else "fail")),
+        ("Rot Bonds", props["rotb"],  "",
+         "pass" if props["rotb"] <= 7 else ("warn" if props["rotb"] <= 10 else "fail")),
+    ]):
+        col.markdown(_mc(lbl, val, unit, st_), unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Row 2: additional descriptors ────────────────────────────────────
+    _cols2 = st.columns(6)
+    for col, (lbl, val, unit, st_) in zip(_cols2, [
+        ("QED",        props["qed"],         "",
+         "pass" if props["qed"] >= 0.5 else ("warn" if props["qed"] >= 0.3 else "fail")),
+        ("Fsp³",       props["fsp3"],         "",
+         "pass" if props["fsp3"] >= 0.25 else "warn"),
+        ("Arom Rings", props["arom_rings"],   "", None),
+        ("Heavy Atoms", props["heavy_atoms"], "", None),
+        ("Rings",      props["rings"],         "", None),
+        ("Exact MW",   props["mw_exact"],      "Da", None),
+    ]):
+        col.markdown(_mc(lbl, val, unit, st_), unsafe_allow_html=True)
+
+    # ── Drug-likeness badges ──────────────────────────────────────────────
+    st.markdown("#### Drug-Likeness Rules")
+
+    def _badge(name, passed, note=""):
+        clr  = "#1A7F37" if passed else "#CF222E"
+        bg   = "#DAFBE1" if passed else "#FFEBE9"
+        icon = "✓" if passed else "✗"
+        return (
+            f'<span style="display:inline-flex;align-items:center;gap:5px;'
+            f'background:{bg};color:{clr};border:1.5px solid {clr};'
+            f'border-radius:20px;padding:5px 14px;font-size:13px;font-weight:700;margin:3px;">'
+            f'{icon} {name}'
+            + (f'<span style="font-size:11px;font-weight:400;opacity:0.85;"> {note}</span>'
+               if note else "")
+            + '</span>'
+        )
+
+    _bio = int(props["bioavailability_score"] * 100)
+    _bclr = "#1A7F37" if _bio >= 75 else ("#9A6700" if _bio >= 50 else "#CF222E")
+    _badges_html = (
+        _badge("Lipinski RO5", props["lipinski_pass"],
+               f"({props['lipinski_violations']} viol.)")
+        + _badge("Veber",   props["veber_pass"])
+        + _badge("Egan",    props["egan_pass"])
+        + _badge("Muegge",  props["muegge_pass"])
+        + f'<span style="display:inline-flex;align-items:center;background:var(--bg-card);'
+          f'color:{_bclr};border:1.5px solid {_bclr};border-radius:20px;padding:5px 14px;'
+          f'font-size:13px;font-weight:700;margin:3px;">Bioavail. {_bio}%</span>'
+    )
+    st.markdown(
+        f'<div style="margin:8px 0 4px;">{_badges_html}</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Lipinski RO5: MW ≤ 500, LogP ≤ 5, HBD ≤ 5, HBA ≤ 10  ·  "
+        "Veber: RotB ≤ 10 & TPSA ≤ 140  ·  Egan: LogP ≤ 5.88 & TPSA ≤ 131.6"
+    )
+
+    # ── Predicted ADME ────────────────────────────────────────────────────
+    st.markdown("#### Predicted ADME (rule-based estimates)")
+    _pa, _pb, _pc = st.columns(3)
+    for col, lbl, val, clr_map in [
+        (_pa, "GI Absorption",  props["gi_absorption"],
+         {"High": "#1A7F37", "Medium": "#9A6700", "Low": "#CF222E"}),
+        (_pb, "BBB Penetration", props["bbb"],
+         {"Penetrant": "#1A7F37", "Possible": "#9A6700", "Non-penetrant": "#CF222E"}),
+        (_pc, "P-gp Substrate", props["pgp_substrate"],
+         {"Unlikely": "#1A7F37", "Likely": "#9A6700"}),
+    ]:
+        _clr = clr_map.get(val, "#888")
+        col.markdown(
+            f'<div style="background:var(--bg-card);border:1.5px solid {_clr};'
+            f'border-radius:8px;padding:14px;text-align:center;">'
+            f'<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;'
+            f'font-weight:600;">{lbl}</div>'
+            f'<div style="font-size:17px;font-weight:700;color:{_clr};">{val}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── CYP flags ─────────────────────────────────────────────────────────
+    st.markdown("#### CYP Inhibition Flags")
+    _cyp_html = "".join(
+        f'<span style="display:inline-flex;flex-direction:column;align-items:center;'
+        f'background:{"#FFF8C5" if hit else "#DAFBE1"};'
+        f'color:{"#9A6700" if hit else "#1A7F37"};'
+        f'border:1.5px solid {"#9A6700" if hit else "#1A7F37"};'
+        f'border-radius:8px;padding:8px 14px;font-size:12px;margin:3px;min-width:80px;">'
+        f'<b>{cn}</b>'
+        f'<span style="font-size:11px;">{"⚠ Possible" if hit else "✓ Unlikely"}</span>'
+        f'</span>'
+        for cn, hit in props["cyp_flags"].items()
+    )
+    st.markdown(
+        f'<div style="display:flex;flex-wrap:wrap;gap:2px;margin:6px 0;">{_cyp_html}</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Structural SMARTS flags only — screening purpose, not quantitative.")
+
+    # ── Structural alerts ─────────────────────────────────────────────────
+    st.markdown("#### Structural Alerts")
+    _np = len(props["pains_alerts"])
+    _nb = len(props["brenk_alerts"])
+    if _np == 0 and _nb == 0:
+        st.success("✓ No PAINS or BRENK structural alerts detected")
+    else:
+        if _np:
+            st.warning(
+                f"**PAINS — {_np} alert(s):** "
+                + "  ·  ".join(sorted(set(props["pains_alerts"])))
+            )
+        if _nb:
+            _shown = sorted(set(props["brenk_alerts"]))[:5]
+            st.warning(
+                f"**BRENK — {_nb} alert(s):** "
+                + "  ·  ".join(_shown)
+                + (f" (+{_nb - 5} more)" if _nb > 5 else "")
+            )
+        st.caption(
+            "PAINS = pan-assay interference (may cause false positives).  "
+            "BRENK = reactive / unstable substructures."
+        )
+
+    # ── AI prompt ─────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🤖 Get AI Interpretation of ADME Results")
+    st.caption(
+        "Copy the prompt below and paste it into **Claude**, **GPT-4o**, or **Gemini** "
+        "for a plain-English interpretation of your compound's drug-like properties."
+    )
+
+    _estr     = f"{binding_energy:.2f} kcal/mol" if binding_energy is not None else "not calculated"
+    _pdb_disp = pdb_id.upper() if pdb_id else "[PDB ID]"
+    _cyp_txt  = "\n".join(
+        f"    {k}: {'Possible inhibitor' if v else 'Unlikely inhibitor'}"
+        for k, v in props["cyp_flags"].items()
+    )
+    _pains_txt = ", ".join(sorted(set(props["pains_alerts"]))) or "None"
+    _brenk_txt = ", ".join(sorted(set(props["brenk_alerts"]))[:3]) or "None"
+    if _nb > 3:
+        _brenk_txt += f" (+{_nb - 3} more)"
+
+    _prompt = (
+        f"I have docked a small molecule into a protein and calculated its ADME properties.\n"
+        f"Please help me interpret the results in plain language.\n\n"
+        f"Compound: {lig_name}\n"
+        f"Target (PDB): {_pdb_disp}\n"
+        f"Predicted binding energy (AutoDock Vina): {_estr}\n\n"
+        f"══ PHYSICOCHEMICAL PROPERTIES ══\n"
+        f"  MW:        {props['mw']} g/mol\n"
+        f"  LogP:      {props['logp']}\n"
+        f"  HBD:       {props['hbd']}\n"
+        f"  HBA:       {props['hba']}\n"
+        f"  TPSA:      {props['tpsa']} Å²\n"
+        f"  Rot bonds: {props['rotb']}\n"
+        f"  QED score: {props['qed']}  (0–1; higher = more drug-like)\n"
+        f"  Fsp³:      {props['fsp3']}  (>0.25 preferred)\n\n"
+        f"══ DRUG-LIKENESS RULES ══\n"
+        f"  Lipinski RO5:  {'PASS' if props['lipinski_pass'] else 'FAIL'} ({props['lipinski_violations']} violation(s))\n"
+        f"  Veber:         {'PASS' if props['veber_pass'] else 'FAIL'}\n"
+        f"  Egan:          {'PASS' if props['egan_pass'] else 'FAIL'}\n"
+        f"  Muegge:        {'PASS' if props['muegge_pass'] else 'FAIL'}\n"
+        f"  Bioavailability score: {int(props['bioavailability_score']*100)}%\n\n"
+        f"══ PREDICTED ADME ══\n"
+        f"  GI absorption:   {props['gi_absorption']}\n"
+        f"  BBB penetration: {props['bbb']}\n"
+        f"  P-gp substrate:  {props['pgp_substrate']}\n\n"
+        f"══ CYP INHIBITION FLAGS ══\n{_cyp_txt}\n\n"
+        f"══ STRUCTURAL ALERTS ══\n"
+        f"  PAINS ({_np}): {_pains_txt}\n"
+        f"  BRENK ({_nb}): {_brenk_txt}\n\n"
+        f"Please explain:\n"
+        f"1. What do these properties tell me about absorption and distribution in the body?\n"
+        f"2. Is this compound drug-like? What are its main strengths and liabilities?\n"
+        f"3. Should I be concerned about the CYP flags or structural alerts?\n"
+        f"4. Combining the binding energy ({_estr}) with these ADME properties,\n"
+        f"   how promising is this as a starting point, and what would you prioritise improving?\n\n"
+        f"Finally, write a 3–4 sentence 'Ready-to-use summary:' for a lab report,\n"
+        f"mentioning both potency and ADME profile."
+    )
+    st.code(_prompt, language=None)
+
+
 def _render_interactive_diagram(data: dict, height: int = 800) -> str:
     W       = data["W"]
     H       = data["H"]
@@ -3277,15 +3729,63 @@ with tab_basic:
 
     lig_input_mode = st.radio(
         "Input mode",
-        ["SMILES string", "Upload structure (.pdb/.mol2)", "Draw structure (Ketcher)"],
+        ["PubChem / SMILES", "Upload structure (.pdb/.mol2)", "Draw structure (Ketcher)"],
         horizontal=True, key="lig_input_mode",
     )
 
+    if st.session_state.get("lig_input_mode") == "SMILES string":
+        st.session_state["lig_input_mode"] = "PubChem / SMILES"
+
     smiles_in = ""
-    if lig_input_mode == "SMILES string":
+    if lig_input_mode == "PubChem / SMILES":
+        st.markdown("#### 🔍 Search compound from PubChem")
+        _sq_col, _sb_col = st.columns([5, 1])
+        with _sq_col:
+            _sq = st.text_input(
+                "Compound name",
+                placeholder="e.g. erlotinib, apigenin, caffeine…",
+                key="compound_search_query",
+            )
+        with _sb_col:
+            st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
+            _sb = st.button("Search", key="compound_search_btn", type="secondary")
+
+        if _sb and _sq.strip():
+            with st.spinner(f"Searching PubChem for '{_sq}'…"):
+                _sr = _search_compound_pubchem(_sq.strip())
+                st.session_state["compound_search_result"] = _sr
+                if _sr.get("found") and (_sr.get("smiles") or "").strip():
+                    _picked_name = ((_sr["iupac"] or _sq)[:8].replace(" ", "_").upper()) or "LIG"
+                    st.session_state["smiles_from_pubchem"] = _sr["smiles"]
+                    st.session_state["lig_name_from_pubchem"] = _picked_name
+                    st.session_state["smiles_in"] = _sr["smiles"]
+                    st.session_state["lig_name_in"] = _picked_name
+                elif _sr.get("found"):
+                    st.session_state.pop("smiles_from_pubchem", None)
+
+        _sr = st.session_state.get("compound_search_result")
+        if _sr and _sr.get("found"):
+            _ic, _imgc = st.columns([3, 1])
+            with _ic:
+                st.markdown(
+                    f"**{_sr['iupac']}**  \n"
+                    f"`{_sr['formula']}` · {_sr['mw']:.2f} g/mol · "
+                    f"[PubChem CID {_sr['cid']}]({_sr['url']})"
+                )
+            with _imgc:
+                st.image(_sr["img_url"], width=140)
+            if not (_sr.get("smiles") or "").strip():
+                st.warning("This PubChem result did not return a usable SMILES string.")
+        elif _sr and not _sr.get("found"):
+            st.error(f"Not found: {_sr.get('error', 'Unknown error')}")
+
+        if "smiles_in" not in st.session_state:
+            st.session_state["smiles_in"] = st.session_state.get(
+                "smiles_from_pubchem",
+                "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
+            )
         smiles_in = st.text_input(
             "SMILES string",
-            value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC",
             key="smiles_in",
         )
     elif lig_input_mode == "Upload structure (.pdb/.mol2)":
@@ -3311,7 +3811,9 @@ with tab_basic:
             st.error("❌ `streamlit-ketcher` not installed")
             smiles_in = ""
 
-    lig_name_in = st.text_input("Output name", value="ELR", key="lig_name_in")
+    if "lig_name_in" not in st.session_state:
+        st.session_state["lig_name_in"] = st.session_state.get("lig_name_from_pubchem", "ELR")
+    lig_name_in = st.text_input("Output name", key="lig_name_in")
     ph_in       = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="ph_in")
 
     # ── Protonation mode ──────────────────────────────────────────────────────
@@ -3917,6 +4419,18 @@ with tab_basic:
                 ref_lig_smiles = ((st.session_state.get("redock_result", {}).get("prot_smiles") or st.session_state.get("redock_result", {}).get("SMILES", "")) if st.session_state.get("redock_result") else ""),
                 ref_lig_energy = (st.session_state.get("redock_result", {}).get("Top Score") if st.session_state.get("redock_result") else None),
                 rmsd_crystal   = _rmsd_pv,
+            )
+
+            # ── ADME Predictions ──────────────────────────────────────────
+            _adme_section(
+                smiles         = st.session_state.get("prot_smiles", ""),
+                lig_name       = st.session_state.get("ligand_name", ""),
+                binding_energy = (
+                    float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
+                    if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0 else None
+                ),
+                pdb_id         = st.session_state.get("pdb_token", ""),
+                key_suffix     = f"basic_p{pose_idx}",
             )
 
             # ── Ready-to-use Figure (after 2D diagrams) ───────────────────
