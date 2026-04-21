@@ -3768,8 +3768,7 @@ with tab_basic:
             _ic, _imgc = st.columns([3, 1])
             with _ic:
                 st.markdown(
-                    f"**{_sr['iupac']}**  
-"
+                    f"**{_sr['iupac']}**  \n"
                     f"`{_sr['formula']}` · {_sr['mw']:.2f} g/mol · "
                     f"[PubChem CID {_sr['cid']}]({_sr['url']})"
                 )
