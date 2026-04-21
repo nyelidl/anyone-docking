@@ -246,8 +246,16 @@ def _search_protein_rcsb(query: str, top_n: int = 12) -> list[dict]:
 
     out = []
     for hit in hits:
-        pdb_id = str(hit.get("identifier", "")).upper()
+        # RCSB may return each hit as a dict like {"identifier": "1ABC", ...}
+        # or, in some cases, as a bare identifier/string-like object.
+        if isinstance(hit, dict):
+            pdb_id = str(hit.get("identifier", "") or hit.get("entry_id", "")).strip().upper()
+        else:
+            pdb_id = str(hit).strip().upper()
         if not pdb_id:
+            continue
+        # Skip malformed values such as full dict repr strings.
+        if any(ch in pdb_id for ch in "{}[]:, "):
             continue
 
         title = ""
