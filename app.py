@@ -1132,6 +1132,8 @@ _DEFAULTS = dict(
     cocrystal_ligand_id="",
     ligand_pdbqt=None, ligand_sdf=None, ligand_name="LIG",
     prot_smiles=None, ligand_done=False, ligand_log="",
+    input_smiles_final="", ligand_charge=0, ligand_charge_method="rdkit_formal_charge",
+    ligand_charged_atoms=None, ligand_is_zwitterion=False, ligand_prep_mode="dimorphite",
     output_pdbqt=None, output_sdf=None, output_pv_sdf=None, dock_base=None,
     docking_done=False, docking_log="", score_df=None, pose_mols=None,
     redock_done=False, redock_score=None, redock_result=None,
@@ -3830,6 +3832,15 @@ with tab_basic:
         disabled=not st.session_state.receptor_done,
     ):
         lig_name = lig_name_in.strip() or "LIG"
+        # Reset ligand-state summary fields so stale values from a previous run are not shown.
+        st.session_state.update({
+            "input_smiles_final": "",
+            "ligand_charge": 0,
+            "ligand_charge_method": "rdkit_formal_charge",
+            "ligand_charged_atoms": [],
+            "ligand_is_zwitterion": False,
+            "ligand_prep_mode": st.session_state.get("ligand_state_mode", "dimorphite"),
+        })
         with st.spinner("Preparing ligand…"):
             _mode = st.session_state.get("lig_input_mode", "SMILES string")
             _prot_mode_key  = "dimorphite"
