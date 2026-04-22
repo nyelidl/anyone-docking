@@ -73,21 +73,12 @@ except ImportError:
         "IHP", "TTP", "CTP", "UTP",
         "COA", "SAM", "SAH",
         "EPE", "MES", "TRS", "ACT", "ACY",
-        "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
     }
 
 try:
     from core import HEME_RESNAMES as _HEME_RESNAMES
 except ImportError:
     _HEME_RESNAMES = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
-
-try:
-    from core import METAL_RESNAMES as _METAL_RESNAMES
-except ImportError:
-    _METAL_RESNAMES = {
-        "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K", "HO",
-        "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
-    }
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
@@ -1331,10 +1322,24 @@ def show3d(view, height=480):
     except ImportError:
         raw  = view._make_html()
         resp = _re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', raw)
-        components.html(
-            f'<div style="width:100%;overflow:hidden">{resp}</div>',
-            height=height, scrolling=False,
-        )
+
+        # Streamlit deprecated st.components.v1.html.
+        # Prefer st.iframe when available, then st.html, and keep the old
+        # components.html only as a last-resort fallback.
+        try:
+            import base64
+            _html_doc = f'<div style="width:100%;overflow:hidden">{resp}</div>'
+            _b64 = base64.b64encode(_html_doc.encode("utf-8")).decode("ascii")
+            _src = "data:text/html;base64," + _b64
+            st.iframe(_src, height=height, scrolling=False)
+        except Exception:
+            try:
+                st.html(f'<div style="width:100%;overflow:hidden">{resp}</div>')
+            except Exception:
+                components.html(
+                    f'<div style="width:100%;overflow:hidden">{resp}</div>',
+                    height=height, scrolling=False,
+                )
 
 def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
     try:
@@ -3953,7 +3958,7 @@ st.markdown(
     "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown("**Basic** — single ligand. **Batch** — multiple ligands.")
-st.markdown("**☁️ Cloud-ready | 📱 Mobile-compatible**")
+st.markdown("**☁️ Run on your local machine | 🌐 web-based interface**")
 
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
