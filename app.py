@@ -28,6 +28,7 @@ from core import (
     fix_sdf_bond_orders,
     load_mols_from_sdf,
     write_single_pose,
+    write_single_pose_pdb,
     get_interacting_residues,
     calc_rmsd_heavy,
     call_poseview_v1,
@@ -72,12 +73,21 @@ except ImportError:
         "IHP", "TTP", "CTP", "UTP",
         "COA", "SAM", "SAH",
         "EPE", "MES", "TRS", "ACT", "ACY",
+        "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
     }
 
 try:
     from core import HEME_RESNAMES as _HEME_RESNAMES
 except ImportError:
     _HEME_RESNAMES = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
+
+try:
+    from core import METAL_RESNAMES as _METAL_RESNAMES
+except ImportError:
+    _METAL_RESNAMES = {
+        "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K", "HO",
+        "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
+    }
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
@@ -1359,6 +1369,26 @@ def _add_heme_to_view(view, rec_fh, model_idx):
                 "backgroundColor": "black", "backgroundOpacity": 0.5,
                 "inFront": True, "showBackground": True,
             }, {"model": model_idx})
+            model_idx += 1
+    return model_idx
+
+
+def _add_ions_to_view(view, rec_fh, model_idx):
+    """
+    Add ion/metal atoms from rec_fh as spheres to an existing py3Dmol view.
+    Returns updated model_idx (incremented if ions were added).
+    """
+    if rec_fh and os.path.exists(rec_fh):
+        _ion_lines = [
+            l for l in open(rec_fh)
+            if l[:6].strip() in ("ATOM", "HETATM")
+            and l[17:20].strip().upper() in _METAL_RESNAMES
+        ]
+        if _ion_lines:
+            view.addModel("".join(_ion_lines) + "END\n", "pdb")
+            view.setStyle({"model": model_idx}, {
+                "sphere": {"radius": 0.7, "colorscheme": "yellowCarbon"}
+            })
             model_idx += 1
     return model_idx
 
@@ -3127,7 +3157,7 @@ def _poseview_ui(
         with st.expander("⬇ Download files for manual PoseView upload", expanded=False):
             _rec_path = st.session_state.get(rec_key, "")
             _pfx3     = rec_key.replace("receptor_fh", "")
-            _dl_c1, _dl_c2 = st.columns(2)
+            _dl_c1, _dl_c2, _dl_c3 = st.columns(3)
             with _dl_c1:
                 if _rec_path and os.path.exists(_rec_path):
                     st.download_button(
@@ -3143,6 +3173,22 @@ def _poseview_ui(
                         mime="chemical/x-mdl-sdfile",
                         key=btn_key + "_pv_dl_sdf", width='stretch',
                     )
+            with _dl_c3:
+                if os.path.exists(pose_sdf_path):
+                    try:
+                        _pv_mols_dl = load_mols_from_sdf(pose_sdf_path)
+                        _pv_mol_dl = _pv_mols_dl[0] if _pv_mols_dl else None
+                        if _pv_mol_dl is not None:
+                            _pv_pdb_path = str(Path(pose_sdf_path).with_suffix(".pdb"))
+                            write_single_pose_pdb(_pv_mol_dl, _pv_pdb_path)
+                            st.download_button(
+                                "⬇ docked_pose.pdb", data=open(_pv_pdb_path, "rb"),
+                                file_name=f"pose_{pose_idx+1}_docked.pdb",
+                                mime="chemical/x-pdb",
+                                key=btn_key + "_pv_dl_pdb", width='stretch',
+                            )
+                    except Exception:
+                        pass
 
         if _run:
             _rec = st.session_state.get(rec_key, "")
@@ -4463,9 +4509,14 @@ with tab_basic:
                     st.markdown("**Download**")
                     _rd_safe = _redock_result.get("ref_name", "redock")
                     _sp_rd   = str(WORKDIR / f"redock_pose{_rd_pose_i+1}.sdf")
+                    _sp_rd_pdb = str(WORKDIR / f"redock_pose{_rd_pose_i+1}.pdb")
                     write_single_pose(_rd_mols[_rd_pose_i], _sp_rd)
+                    write_single_pose_pdb(_rd_mols[_rd_pose_i], _sp_rd_pdb)
                     st.download_button(f"⬇ Ref pose {_rd_pose_i+1} (.sdf)", open(_sp_rd, "rb"),
                         file_name=f"redock_{_rd_safe}_pose{_rd_pose_i+1}.sdf", key="dl_rd_pose", width='stretch')
+                    st.download_button(f"⬇ Ref pose {_rd_pose_i+1} (.pdb)", open(_sp_rd_pdb, "rb"),
+                        file_name=f"redock_{_rd_safe}_pose{_rd_pose_i+1}.pdb",
+                        mime="chemical/x-pdb", key="dl_rd_pose_pdb", width='stretch')
                     if _redock_result.get("out_pdbqt") and os.path.exists(_redock_result["out_pdbqt"]):
                         st.download_button("⬇ All ref poses (.pdbqt)", open(_redock_result["out_pdbqt"], "rb"),
                             file_name=f"redock_{_rd_safe}_out.pdbqt", key="dl_rd_pdbqt", width='stretch')
@@ -4489,6 +4540,7 @@ with tab_basic:
                 mai += 1
             # ── Heme ──────────────────────────────────────────────────────
             mai = _add_heme_to_view(va, st.session_state.get("receptor_fh"), mai)
+            mai = _add_ions_to_view(va, st.session_state.get("receptor_fh"), mai)
             # ─────────────────────────────────────────────────────────────
             va.addModelsAsFrames(sdf_txt)
             va.setStyle({"model": mai}, {"stick": {"colorscheme": "greenCarbon", "radius": 0.25}})
@@ -4547,9 +4599,14 @@ with tab_basic:
             with cdl:
                 st.markdown("**Download**")
                 sp_raw = str(WORKDIR / f"pose_{pose_idx+1}_raw.sdf")
+                sp_raw_pdb = str(WORKDIR / f"pose_{pose_idx+1}.pdb")
                 write_single_pose(sel_mol, sp_raw)
+                write_single_pose_pdb(sel_mol, sp_raw_pdb)
                 st.download_button(f"⬇ Pose {pose_idx+1} (.sdf)", open(sp_raw, "rb"),
                     file_name=f"pose_{pose_idx+1}.sdf", key=f"dl_p_{pose_idx}", width='stretch')
+                st.download_button(f"⬇ Pose {pose_idx+1} (.pdb)", open(sp_raw_pdb, "rb"),
+                    file_name=f"pose_{pose_idx+1}.pdb", mime="chemical/x-pdb",
+                    key=f"dl_p_pdb_{pose_idx}", width='stretch')
                 st.download_button("⬇ All poses (.pdbqt)", open(st.session_state.output_pdbqt, "rb"),
                     file_name=f"{st.session_state.dock_base}_out.pdbqt", key="dl_pdbqt", width='stretch')
                 if df is not None:
@@ -5030,9 +5087,14 @@ with tab_batch:
                     st.markdown("**Download**")
                     safe_nm = sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
                     sp3 = str(BATCH_WORKDIR / f"{safe_nm}_pose{b_pose_i+1}.sdf")
+                    sp3_pdb = str(BATCH_WORKDIR / f"{safe_nm}_pose{b_pose_i+1}.pdb")
                     write_single_pose(b_mols[b_pose_i], sp3)
+                    write_single_pose_pdb(b_mols[b_pose_i], sp3_pdb)
                     st.download_button(f"⬇ Pose {b_pose_i+1} (.sdf)", open(sp3, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf", key="b_dl_pose", width='stretch')
+                    st.download_button(f"⬇ Pose {b_pose_i+1} (.pdb)", open(sp3_pdb, "rb"),
+                        file_name=f"{safe_nm}_pose{b_pose_i+1}.pdb", mime="chemical/x-pdb",
+                        key="b_dl_pose_pdb", width='stretch')
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
                         st.download_button("⬇ All poses (.pdbqt)", open(sel_res["out_pdbqt"], "rb"),
                             file_name=f"{safe_nm}_out.pdbqt", key="b_dl_pdbqt", width='stretch')
