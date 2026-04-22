@@ -363,6 +363,22 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
             raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
         log.append("✓ PDBQT conversion complete")
+
+        # Keep ions/metals in receptor.pdb for display/reference only.
+        # This is done AFTER PDBQT generation so the docking PDBQT still follows
+        # the dedicated reinjection logic below.
+        if metal_lines and os.path.exists(rec_fh):
+            try:
+                rec_lines = open(rec_fh).readlines()
+                rec_lines = [l for l in rec_lines if l.strip() != "END"]
+                rec_lines.extend(metal_lines)
+                rec_lines.append("END\n")
+                with open(rec_fh, "w") as f:
+                    f.writelines(rec_lines)
+                log.append(f"✓ Re-added {len(metal_lines)} ion/metal atom(s) to receptor.pdb for display/reference")
+            except Exception as e:
+                log.append(f"⚠ Could not re-add ions/metals to receptor.pdb: {e}")
+
         if metal_lines:
             pdbqt_lines = open(rec_pdbqt).readlines()
             pdbqt_lines = [l for l in pdbqt_lines if l.strip() != "END"]
