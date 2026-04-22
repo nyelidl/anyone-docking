@@ -19,16 +19,20 @@ from pathlib import Path
 # ══════════════════════════════════════════════════════════════════════════════
 
 METAL_RESNAMES = {
-    "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K",
+    "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K", "HO",
+    "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
 }
 METAL_CHARGES = {
     "MG": 2.0, "ZN": 2.0, "CA": 2.0, "MN": 2.0, "FE": 3.0,
-    "CU": 2.0, "CO": 2.0, "NI": 2.0, "CD": 2.0, "HG": 2.0,
+    "CU": 2.0, "CO": 2.0, "NI": 2.0, "CD": 2.0, "HG": 2.0, "HO": 3.0,
+    "LA": 3.0, "CE": 3.0, "PR": 3.0, "ND": 3.0, "PM": 3.0, "SM": 3.0,
+    "EU": 3.0, "GD": 3.0, "TB": 3.0, "DY": 3.0, "ER": 3.0, "TM": 3.0,
+    "YB": 3.0, "LU": 3.0,
     "NA": 1.0, "K":  1.0,
 }
 
 EXCLUDE_IONS = set(
-    "HOH,WAT,DOD,SOL,NA,CL,K,CA,MG,ZN,MN,FE,CU,CO,NI,CD,HG".split(",")
+    "HOH,WAT,DOD,SOL,NA,CL,K,CA,MG,ZN,MN,FE,CU,CO,NI,CD,HG,HO,LA,CE,PR,ND,PM,SM,EU,GD,TB,DY,ER,TM,YB,LU".split(",")
 )
 GLYCAN_NAMES = {
     "NAG", "BMA", "MAN", "FUC", "GAL", "GLC", "SIA", "NGA",
@@ -44,6 +48,7 @@ COFACTOR_NAMES = {
     "IHP", "TTP", "CTP", "UTP",
     "COA", "SAM", "SAH",
     "EPE", "MES", "TRS", "ACT", "ACY",
+    "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
 }
 
 HEME_RESNAMES = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
@@ -362,9 +367,14 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
             pdbqt_lines = open(rec_pdbqt).readlines()
             pdbqt_lines = [l for l in pdbqt_lines if l.strip() != "END"]
             injected = 0
+            skipped_exotic = 0
+            _no_reinject = {"HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU"}
             for ml in metal_lines:
                 try:
                     resname = ml[17:20].strip().upper()
+                    if resname in _no_reinject:
+                        skipped_exotic += 1
+                        continue
                     serial  = int(ml[6:11])
                     name    = ml[12:16].strip()
                     chain   = ml[21] if len(ml) > 21 else "A"
@@ -386,7 +396,13 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
             pdbqt_lines.append("END\n")
             with open(rec_pdbqt, "w") as f:
                 f.writelines(pdbqt_lines)
-            log.append(f"✅ Re-injected {injected} metal atom(s) into PDBQT")
+            if injected:
+                log.append(f"✅ Re-injected {injected} metal atom(s) into PDBQT")
+            if skipped_exotic:
+                log.append(
+                    f"ℹ Skipped re-injection of {skipped_exotic} Ho/lanthanide ion(s) into docking PDBQT; "
+                    f"kept only in source/display PDB"
+                )
         log.append("✓ Receptor PDBQT ready")
         return {"success": True, "rec_fh": rec_fh, "rec_pdbqt": rec_pdbqt, "log": log}
     except Exception as e:
@@ -1973,6 +1989,11 @@ def write_single_pose(mol, path: str) -> None:
     from rdkit import Chem
     with Chem.SDWriter(path) as w:
         w.write(mol)
+
+
+def write_single_pose_pdb(mol, path: str) -> None:
+    from rdkit import Chem
+    Chem.MolToPDBFile(mol, path)
 
 
 def convert_sdf_to_v2000(sdf_path: str) -> str:
