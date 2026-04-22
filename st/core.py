@@ -3317,10 +3317,7 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
         ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
         if ix.get("ring_atom_indices"):
             ix["ring_atom_indices"] = [m3to2d.get(i, i) for i in ix["ring_atom_indices"]]
-    pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
-    ded = _deduplicate_interactions(raw)
-    ded.sort(key=lambda x: (pm.get(x["itype"], 99), x["distance"]))
-    ded = ded[:max_residues]
+    ded = _select_interactions_for_2d(raw, max_residues=max_residues)
     cx, cy = W // 2, H // 2
     sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
     pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
@@ -3448,10 +3445,7 @@ def draw_interactions_rdkit_classic(
         raw = []
     for ix in raw:
         ix["lig_atom_idx"] = idx3d_to_2d.get(ix.get("lig_atom_idx", 0), 0)
-    pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
-    deduped = _deduplicate_interactions(raw)
-    deduped.sort(key=lambda x: (pm.get(x["itype"], 99), x["distance"]))
-    deduped = deduped[:max_residues]
+    deduped = _select_interactions_for_2d(raw, max_residues=max_residues)
     if not deduped:
         d2d = Draw.MolDraw2DSVG(W, H)
         d2d.DrawMolecule(mol2d, legend=title or "No interactions found")
@@ -3503,6 +3497,30 @@ def draw_interactions_rdkit(lig_mol, receptor_pdb: str, smiles: str,
     with Chem.SDWriter(tmp.name) as w: w.write(lig_mol)
     return draw_interaction_diagram(receptor_pdb=receptor_pdb,pose_sdf=tmp.name,
         smiles=smiles,title=title,cutoff=cutoff,size=(800,759),max_residues=max_residues)
+
+
+
+def _select_interactions_for_2d(raw, max_residues: int):
+    """
+    Select interactions for 2D diagrams while preserving all metal interactions.
+    This prevents ions/metals (Cu, Zn, heme Fe, lanthanides, etc.) from being
+    dropped when many other contacts are present.
+    """
+    pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    ded = _deduplicate_interactions(raw)
+    ded.sort(key=lambda x: (pm.get(x.get("itype", ""), 99), x.get("distance", 999.0)))
+
+    metals = [x for x in ded if x.get("itype") == "metal"]
+    others = [x for x in ded if x.get("itype") != "metal"]
+
+    selected = list(metals)
+    remaining = max(0, int(max_residues) - len(selected))
+    if remaining > 0:
+        selected.extend(others[:remaining])
+
+    # stable final ordering by priority + distance
+    selected.sort(key=lambda x: (pm.get(x.get("itype", ""), 99), x.get("distance", 999.0)))
+    return selected
 
 
 def _svg_stamp(svg_text:str,title:str,w:int,h:int)->str:
