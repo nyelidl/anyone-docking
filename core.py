@@ -1942,25 +1942,35 @@ def get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5) ->
     try:
         import numpy as np
         from prody import parsePDB
-        conf    = lig_mol.GetConformer()
+        conf = lig_mol.GetConformer()
         lig_xyz = np.array([
             [conf.GetAtomPosition(i).x,
              conf.GetAtomPosition(i).y,
              conf.GetAtomPosition(i).z]
             for i in range(lig_mol.GetNumAtoms())
         ])
-        rec      = parsePDB(receptor_pdb)
-        r_xyz    = rec.getCoords()
-        chains   = rec.getChids()
-        resids   = rec.getResnums()
+        rec = parsePDB(receptor_pdb)
+        r_xyz = rec.getCoords()
+        chains = rec.getChids()
+        resids = rec.getResnums()
         resnames = rec.getResnames()
+        metals = globals().get("METAL_RESNAMES", set())
         seen = {}
         for j in range(len(r_xyz)):
-            if np.linalg.norm(lig_xyz - r_xyz[j], axis=1).min() <= cutoff:
-                key = (str(chains[j]), int(resids[j]))
-                if key not in seen:
-                    seen[key] = str(resnames[j])
-        return [{"chain": k[0], "resi": k[1], "resn": v} for k, v in seen.items()]
+            dmin = float(np.linalg.norm(lig_xyz - r_xyz[j], axis=1).min())
+            if dmin <= cutoff:
+                key = (str(chains[j]), int(resids[j]), str(resnames[j]).upper())
+                if key not in seen or dmin < seen[key]["dist"]:
+                    seen[key] = {
+                        "chain": key[0],
+                        "resi": key[1],
+                        "resn": key[2],
+                        "dist": dmin,
+                        "is_metal": key[2] in metals,
+                    }
+        out = list(seen.values())
+        out.sort(key=lambda x: (0 if x["is_metal"] else 1, x["dist"], x["chain"], x["resi"]))
+        return [{"chain": x["chain"], "resi": x["resi"], "resn": x["resn"], "dist": x["dist"], "is_metal": x["is_metal"]} for x in out]
     except Exception:
         return []
 
@@ -3205,9 +3215,9 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
             # BUG FIX #3: fall back to 0, not i (i may exceed 2D atom count)
             ix["ring_atom_indices"] = [m3to2d.get(i, 0) for i in ix["ring_atom_indices"]]
     ded = _select_interactions_for_2d(raw, max_residues=max_residues)
-    if not ded:
+    if len(ded) < 2:
         try:
-            raw_fb = _fallback_contacts_for_2d(mol3d, receptor_pdb, cutoff=max(cutoff, 5.2), max_residues=max_residues)
+            raw_fb = _fallback_contacts_for_2d(mol3d, receptor_pdb, cutoff=max(cutoff, 6.0), max_residues=max_residues)
         except Exception:
             raw_fb = []
         for ix in raw_fb:
@@ -3215,6 +3225,32 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
             if ix.get("ring_atom_indices"):
                 ix["ring_atom_indices"] = [m3to2d.get(i, 0) for i in ix["ring_atom_indices"]]
         ded = _select_interactions_for_2d(raw_fb, max_residues=max_residues)
+    if len(ded) < 2:
+        try:
+            near = get_interacting_residues(receptor_pdb, mol3d, cutoff=max(cutoff, 3.8))
+        except Exception:
+            near = []
+        for rb in near:
+            if any((p.get("resn"), p.get("resi"), p.get("chain")) == (rb.get("resn"), rb.get("resi"), rb.get("chain")) for p in ded):
+                continue
+            lig_idx = 0
+            try:
+                conf = mol3d.GetConformer()
+                pts = []
+                for i in range(mol3d.GetNumAtoms()):
+                    p = conf.GetAtomPosition(i)
+                    pts.append([p.x, p.y, p.z])
+                import numpy as np
+                lig_idx = int(np.argmin([np.linalg.norm(np.array(x)) for x in pts])) if pts else 0
+            except Exception:
+                lig_idx = 0
+            ded.append({
+                "resn": rb.get("resn", "UNK"), "resi": int(rb.get("resi", 0)), "chain": rb.get("chain", ""),
+                "itype": "metal" if rb.get("is_metal") else "hydrophobic",
+                "lig_atom_idx": lig_idx,
+            })
+            if len(ded) >= max_residues:
+                break
     cx, cy = W // 2, H // 2
     sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
     pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
@@ -3445,7 +3481,7 @@ def _fallback_contacts_for_2d(lig_mol_3d, receptor_pdb: str, cutoff: float = 4.8
         key = (ch, ri, rn)
         grouped.setdefault(key, []).append(j)
 
-    out = []
+    all_hits = []
     metal_names = HEME_RESNAMES | METAL_RESNAMES
     for (ch, ri, rn), idxs in grouped.items():
         sub = rc[idxs]
@@ -3453,8 +3489,6 @@ def _fallback_contacts_for_2d(lig_mol_3d, receptor_pdb: str, cutoff: float = 4.8
         dmat = np.linalg.norm(diff, axis=2)
         i_lig, i_res = np.unravel_index(np.argmin(dmat), dmat.shape)
         dmin = float(dmat[i_lig, i_res])
-        if dmin > cutoff:
-            continue
 
         atom_idx = idxs[int(i_res)]
         atom_name = str(ran[atom_idx]).strip().upper()
@@ -3467,15 +3501,24 @@ def _fallback_contacts_for_2d(lig_mol_3d, receptor_pdb: str, cutoff: float = 4.8
         else:
             itype = 'hydrophobic'
 
-        out.append(dict(
+        hit = dict(
             resname=rn, chain=ch, resid=ri,
             itype=itype, distance=round(dmin, 1),
             lig_atom_idx=int(i_lig), prot_el=elem,
             is_donor=False, ring_atom_indices=None,
-        ))
+        )
+        all_hits.append(hit)
 
     priority = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    out = [x for x in all_hits if float(x.get('distance', 999.0)) <= float(cutoff)]
     out.sort(key=lambda x: (priority.get(x.get('itype', ''), 99), x.get('distance', 999.0)))
+
+    # Hard fallback: if nothing passes the cutoff, still show the nearest residues.
+    # This prevents a completely blank 2D panel when the strict detector misses all contacts.
+    if not out:
+        all_hits.sort(key=lambda x: (priority.get(x.get('itype', ''), 99), x.get('distance', 999.0)))
+        out = all_hits
+
     return out[:max_residues]
 
 def _select_interactions_for_2d(raw, max_residues: int):
