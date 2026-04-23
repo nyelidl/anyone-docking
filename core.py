@@ -364,9 +364,6 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
             raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
         log.append("✓ PDBQT conversion complete")
 
-        # Keep ions/metals in receptor.pdb for display/reference only.
-        # This is done AFTER PDBQT generation so the docking PDBQT still follows
-        # the dedicated reinjection logic below.
         if metal_lines and os.path.exists(rec_fh):
             try:
                 rec_lines = open(rec_fh).readlines()
@@ -613,9 +610,7 @@ def prepare_receptor(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PKANET CLOUD — ionizable site table + HH scoring helpers
-#  Ported from pKaNET Cloud notebook (Hengphasatporn et al. 2026)
-#  Full replacement with all 12 fixes — see file header for details.
+#  PKANET CLOUD
 # ══════════════════════════════════════════════════════════════════════════════
 
 _PKANET_CACHE: dict = {}
@@ -624,7 +619,6 @@ _PKA_PATTERNS = [
     _re.compile(r"([+-]?\d+(?:\.\d+)?)\s*\((?:pK[aA]|acid dissociation)[^)]*\)", _re.IGNORECASE),
 ]
 
-# Weights matching real pKaNET Cloud notebook
 _W_AROM_RING_LOST         = 8.0
 _W_PHENOL_TO_KETO_FLIP    = 6.0
 _W_PYROGALLOL_TRIKETO     = 6.0
@@ -633,10 +627,8 @@ _W_PHENOL_PRESERVED_BONUS = 0.5
 _TAUTOMER_PLAUSIBILITY_CUTOFF = 3.0
 _AMBIGUITY_SCORE_GAP          = 0.5
 
-# ── Chromone system detection ─────────────────────────────────────────────────
 
 def _detect_chromone_system(mol):
-    """Return atom indices of the fused chromen-4-one system."""
     from rdkit import Chem
     ring_info = mol.GetRingInfo()
     rings = [set(r) for r in ring_info.AtomRings() if len(r) == 6]
@@ -675,20 +667,7 @@ def _detect_chromone_system(mol):
     return system
 
 
-# ── FIX 1-4: Flavonoid A-ring phenol detection ───────────────────────────────
-
 def _find_flavone_A_ring_phenols(mol):
-    """
-    Position-aware pKa assignment for chromone A-ring phenolic OHs.
-
-    Classification (Fixes 1-4):
-      carbonyl_direct=True   -> flavone_3OH_flavonol   pKa  9.0  (FIX 3)
-      carbonyl_direct=False  -> flavone_5OH_chelated   pKa 11.0  (FIX 1)
-      ortho_to_ring_O        -> flavone_8OH            pKa  8.5
-      n_ortho_phenols >= 2   -> flavone_6OH_pyrogallol pKa  8.5  (FIX 4a)
-      n_ortho_phenols == 1   -> flavone_catechol_pair  pKa  7.0  (FIX 4b)
-      else                   -> flavone_isolated       pKa  7.0  (FIX 2)
-    """
     chromone_atoms = _detect_chromone_system(mol)
     if not chromone_atoms:
         return []
@@ -751,16 +730,13 @@ def _find_flavone_A_ring_phenols(mol):
         ortho_carbons = [n for n in chromone_nbrs
                          if mol.GetAtomWithIdx(n).GetSymbol() == "C"]
 
-        # FIX 1 + FIX 3: direct bond vs peri path to C4=O
         ortho_to_carbonyl = False
         carbonyl_direct   = False
         if ring_carbonyl_idx is not None:
             if ring_carbonyl_idx in chromone_nbrs:
-                # Direct bond C3-C4=O -> flavonol 3-OH (FIX 3)
                 ortho_to_carbonyl = True
                 carbonyl_direct   = True
             else:
-                # Peri path C5-C4a-C4=O -> flavone 5-OH (FIX 1)
                 for nb in chromone_nbrs:
                     if any(n.GetIdx() == ring_carbonyl_idx
                            for n in mol.GetAtomWithIdx(nb).GetNeighbors()):
@@ -774,17 +750,17 @@ def _find_flavone_A_ring_phenols(mol):
 
         if ortho_to_carbonyl:
             if carbonyl_direct:
-                label, pka = "flavone_3OH_flavonol", 9.0    # FIX 3
+                label, pka = "flavone_3OH_flavonol", 9.0
             else:
-                label, pka = "flavone_5OH_chelated", 11.0   # FIX 1
+                label, pka = "flavone_5OH_chelated", 11.0
         elif ortho_to_ring_O:
             label, pka = "flavone_8OH_ortho_pyranO", 8.5
         elif n_ortho_phenols >= 2:
-            label, pka = "flavone_6OH_pyrogallol_center", 8.5  # FIX 4a
+            label, pka = "flavone_6OH_pyrogallol_center", 8.5
         elif n_ortho_phenols == 1:
-            label, pka = "flavone_phenol_catechol_pair", 7.0   # FIX 4b
+            label, pka = "flavone_phenol_catechol_pair", 7.0
         else:
-            label, pka = "flavone_phenol_isolated", 7.0         # FIX 2
+            label, pka = "flavone_phenol_isolated", 7.0
 
         sites.append({
             "label":         label,
@@ -803,8 +779,6 @@ def _find_flavone_A_ring_phenols(mol):
 
     return sites
 
-
-# ── Ionizable site SMARTS table ───────────────────────────────────────────────
 
 _IONIZABLE_SITE_DEF = [
     ("sulfonic_acid",      "[SX4](=O)(=O)[OX2H1]",                             1.0,  "acid"),
@@ -854,20 +828,11 @@ def _compile_ionizable_sites():
 _IONIZABLE_SITES_COMPILED = _compile_ionizable_sites()
 
 
-# ── FIX 5: find_ionizable_sites with claimed_atoms ───────────────────────────
-
 def _find_ionizable_sites(mol):
-    """
-    FIX 5: claimed_atoms prevents SMARTS pass from overwriting A-ring OHs.
-
-    Pass 1: flavonoid A-ring phenols (claim atoms -> block Pass 2).
-    Pass 2: SMARTS table, first-match-wins per ionizable atom.
-    """
     sites         = []
     seen_ion      = set()
     claimed_atoms = set()
 
-    # Pass 1 — flavone A-ring (highest priority)
     for site in _find_flavone_A_ring_phenols(mol):
         ion_idx = site["ionizable_idx"]
         if ion_idx in seen_ion:
@@ -876,7 +841,6 @@ def _find_ionizable_sites(mol):
         claimed_atoms.update(site["atom_indices"])
         sites.append(site)
 
-    # Pass 2 — generic SMARTS table
     for lbl, pat, pka, stype in _IONIZABLE_SITES_COMPILED:
         for match in mol.GetSubstructMatches(pat):
             if any(a in claimed_atoms for a in match):
@@ -909,8 +873,6 @@ def _find_ionizable_sites(mol):
     return sites
 
 
-# ── FIX 6: HH scoring with dpH-scaled formula ────────────────────────────────
-
 def _hh_fraction_charged(pka, ph, site_type):
     if site_type == "acid":
         return 1.0 / (1.0 + 10.0 ** (pka - ph))
@@ -918,7 +880,6 @@ def _hh_fraction_charged(pka, ph, site_type):
 
 
 def _hh_match_score(pka, ph, site_type, actual_charge):
-    """FIX 6: Real pKaNET Cloud formula — dpH-scaled with decisive multiplier."""
     f_charged = _hh_fraction_charged(pka, ph, site_type)
     dpH       = abs(ph - pka)
     decisive  = (f_charged >= 0.65) or (f_charged <= 0.35)
@@ -945,8 +906,6 @@ def _hh_match_score(pka, ph, site_type, actual_charge):
         else:
             return -min(1.5, dpH * 0.45 * pen_mul) - 0.15
 
-
-# ── FIX 7: Tautomer plausibility with aromaticity guards ─────────────────────
 
 _CHEM_BONUS_DEF = [
     ("amide",            +2.5, "[CX3](=O)[NX3;H1,H2]"),
@@ -1002,7 +961,6 @@ def _count_phenolic_OH(mol):
 
 
 def _score_tautomer(smiles, ref_mol=None):
-    """FIX 7: Aromaticity-loss and phenol-flip penalties vs ref_mol."""
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -1022,20 +980,7 @@ def _score_tautomer(smiles, ref_mol=None):
     return total
 
 
-# ── FIX 8: Full 8-component microstate scoring ───────────────────────────────
-
 def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
-    """
-    FIX 8: Full 8-component scoring matching real pKaNET Cloud:
-      s1 amide-N deprotonation safety
-      s2 aromaticity loss vs ref_mol
-      s3 tautomer plausibility (weighted)
-      s4 HH pH-consistency per ionizable site
-      s5 PubChem evidence bonus
-      s6 zwitterion consistency
-      s7 improbable neutral penalty
-      s8 multicharge penalty
-    """
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -1047,21 +992,17 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
     n_pos     = sum(1 for v in fc_map.values() if v > 0)
     n_neg     = sum(1 for v in fc_map.values() if v < 0)
 
-    # s1: amide-N deprotonation safety
     pat_bad = Chem.MolFromSmarts("[$([NX3-]C=O),$([NX3-]c=O)]")
     s1 = -5.0 * len(mol.GetSubstructMatches(pat_bad)) if pat_bad else 0.0
 
-    # s2: aromaticity loss vs ref_mol
     s2 = 0.0
     if ref_mol is not None:
         rings_lost = max(0, _n_aromatic_rings(ref_mol) - _n_aromatic_rings(mol))
         if rings_lost > 0:
             s2 = -_W_AROM_RING_LOST * rings_lost
 
-    # s3: tautomer plausibility
     s3 = 0.65 * taut_score
 
-    # s4: HH pH-consistency for each ionizable site
     s4 = 0.0
     for site in ion_sites:
         pka = site["heuristic_pka"]
@@ -1072,7 +1013,6 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
         site_charge = sum(fc_map.get(i, 0) for i in site["atom_indices"])
         s4 += _hh_match_score(pka, ph, site["site_type"], site_charge)
 
-    # s5: PubChem evidence bonus
     s5 = 0.0
     if pubchem.get("available"):
         w = {"high": 1.0, "medium": 0.6, "low": 0.2}.get(
@@ -1082,7 +1022,6 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
             s5 += 0.25 * w if net == exp else -0.15 * w
         s5 = max(-0.4, min(0.5, s5))
 
-    # s6: zwitterion consistency
     has_acid = any(s["site_type"] == "acid"
                    and (ph - s["heuristic_pka"]) > 1.0 for s in ion_sites)
     has_base = any(s["site_type"] == "base"
@@ -1093,7 +1032,6 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
     else:
         s6 = -0.4 if (has_acid and has_base and net == 0 and n_pos == 0) else 0.0
 
-    # s7: improbable neutral penalty
     strong_acid   = [s for s in ion_sites if s["site_type"] == "acid"
                      and (ph - s["heuristic_pka"]) > 2.0]
     strong_base   = [s for s in ion_sites if s["site_type"] == "base"
@@ -1112,16 +1050,12 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
     if probable_base and net <= 0 and n_pos == 0:
         s7 -= 0.35 * len(probable_base)
 
-    # s8: multicharge penalty
     s8 = -0.12 * max(0, n_pos + n_neg - 2)
 
     return s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8
 
 
-# ── FIX 9: Manual deprotonation ──────────────────────────────────────────────
-
 def _manual_deprotonate_site(smiles, site):
-    """FIX 9: Manually ionize a specific site. Returns new SMILES or None."""
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -1160,14 +1094,7 @@ def _manual_deprotonate_site(smiles, site):
         return None
 
 
-# ── FIX 10: Supplement Dimorphite with missed ionizable sites ─────────────────
-
 def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, target_ph):
-    """
-    FIX 10: For each ionizable site Dimorphite missed, force-generate
-    the ionized variant. Critical for flavonoid A-ring OHs which
-    Dimorphite's internal SMARTS table does not cover.
-    """
     supplemented = list(dimorphite_results)
     existing     = set(dimorphite_results)
     for site in ion_sites:
@@ -1183,8 +1110,6 @@ def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, targe
             existing.add(new_smi)
     return supplemented
 
-
-# ── PubChem lookup ────────────────────────────────────────────────────────────
 
 def _pubchem_pka_lookup(smiles: str) -> dict:
     from rdkit import Chem
@@ -1242,8 +1167,6 @@ def _pubchem_pka_lookup(smiles: str) -> dict:
         return result
 
 
-# ── FIX 11: generate_ranked_microstates (full pipeline) ──────────────────────
-
 def _generate_ranked_microstates(
     base_smiles,
     target_ph=7.4,
@@ -1251,11 +1174,6 @@ def _generate_ranked_microstates(
     max_tautomers=8,
     pubchem=None,
 ):
-    """
-    FIX 11: Full pKaNET Cloud microstate ranking pipeline.
-    Returns list of dicts sorted by selection_score descending.
-    Each dict: microstate_smiles, net_charge, selection_score
-    """
     from rdkit import Chem
     from rdkit.Chem.MolStandardize import rdMolStandardize
 
@@ -1266,7 +1184,6 @@ def _generate_ranked_microstates(
     if ref_mol is None:
         return []
 
-    # Tautomer enumeration with aromaticity guard (FIX 7)
     enum   = rdMolStandardize.TautomerEnumerator()
     seen_t = set()
     tautomers = []
@@ -1296,7 +1213,6 @@ def _generate_ranked_microstates(
     if not kept:
         kept = [tautomers[0]]
 
-    # Ionizable sites from input molecule (FIX 5 — claimed_atoms)
     ion_sites = _find_ionizable_sites(ref_mol)
 
     ph_lo = max(0.0,  target_ph - ph_window / 2)
@@ -1306,7 +1222,6 @@ def _generate_ranked_microstates(
     seen_smi  = set()
 
     for taut in kept:
-        # Dimorphite-DL enumeration
         raw_states = [taut["smiles"]]
         try:
             from dimorphite_dl import protonate_smiles as _dim
@@ -1335,7 +1250,6 @@ def _generate_ranked_microstates(
         except Exception:
             pass
 
-        # FIX 10: supplement for sites Dimorphite missed
         microstates = _supplement_dimorphite(
             taut["smiles"], raw_states, ion_sites, target_ph
         )
@@ -1365,16 +1279,8 @@ def _generate_ranked_microstates(
     return all_micro
 
 
-# ── FIX 12: _apply_ionizable_site_correction (uses fixed site detection) ─────
-
 def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
                                       ph: float, log: list) -> str:
-    """
-    FIX 12: Post-Dimorphite correction using the FIXED _find_ionizable_sites.
-    Deprotonates any acid site with pKa < pH still protonated in current_smiles.
-    Now works for flavonoids because _find_ionizable_sites uses claimed_atoms
-    (FIX 5) and correct A-ring pKas (Fixes 1-4).
-    """
     from rdkit import Chem
     mol = Chem.MolFromSmiles(current_smiles)
     if mol is None:
@@ -1411,8 +1317,6 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
         return current_smiles
 
 
-# ── protonate_pkanet: public API (unchanged signature) ───────────────────────
-
 def protonate_pkanet(
     smiles: str,
     ph: float,
@@ -1420,17 +1324,12 @@ def protonate_pkanet(
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> tuple:
-    """
-    pKaNET Cloud protonation pipeline (Hengphasatporn et al. 2026).
-    Returns (best_smiles, charge, log_list).
-    """
     from rdkit import Chem
     from rdkit.Chem.MolStandardize import rdMolStandardize
 
     log       = []
     canonical = smiles.strip()
 
-    # Standardize
     try:
         mol = Chem.MolFromSmiles(canonical)
         if mol:
@@ -1444,7 +1343,6 @@ def protonate_pkanet(
     except Exception as e:
         log.append(f"⚠ Standardization skipped: {e}")
 
-    # PubChem lookup
     pubchem = {"available": False, "pka_values": [], "confidence": "low"}
     if use_pubchem:
         try:
@@ -1457,7 +1355,6 @@ def protonate_pkanet(
         except Exception as e:
             log.append(f"⚠ PubChem failed: {e}")
 
-    # Ranked microstates
     try:
         all_micro = _generate_ranked_microstates(
             canonical,
@@ -1501,7 +1398,6 @@ def protonate_pkanet(
 
 
 def _meeko_to_pdbqt(mol, out_path: str):
-    """Convert an RDKit mol to PDBQT via Meeko."""
     from meeko import MoleculePreparation
     prep = MoleculePreparation()
     try:
@@ -1557,18 +1453,6 @@ def prepare_ligand(
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> dict:
-    """
-    Ligand preparation aligned to the simpler, stable version the user preferred.
-
-    Behavior:
-      - neutral    : keep the input connectivity/charge state, add H only
-      - dimorphite : protonate with Dimorphite-DL at target pH using the first returned state
-      - pkanet     : accepted for compatibility, but currently falls back to the same
-                     simple Dimorphite-based preparation used in the preferred version
-
-    Charge reporting is always based on RDKit formal charge of the final SMILES
-    actually used for 3D building and docking.
-    """
     _rdkit_six_patch()
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -1666,11 +1550,6 @@ def prepare_ligand(
         return {"success": False, "error": str(e), "log": log}
 
 def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
-    """
-    Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
-    WITHOUT protonation — use the molecule exactly as provided.
-    Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
-    """
     _rdkit_six_patch()
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -1797,7 +1676,6 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
 
 
 def smiles_from_file(file_path: str, wdir) -> str:
-    """Extract SMILES from SDF / MOL2 / PDB. Raises ValueError on failure."""
     wdir = Path(wdir)
     ext  = Path(file_path).suffix.lower()
     if ext == ".sdf":
@@ -2414,7 +2292,6 @@ def diagnose_poseview() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def svg_to_png(svg_bytes: bytes):
-    """Convert SVG bytes -> PNG bytes via cairosvg. Returns None if unavailable."""
     try:
         import cairosvg
         return cairosvg.svg2png(bytestring=svg_bytes, scale=2, background_color="white")
@@ -2423,7 +2300,6 @@ def svg_to_png(svg_bytes: bytes):
 
 
 def stamp_png(png_bytes: bytes, text: str) -> bytes:
-    """Burn a centred label pill into the bottom of a PNG."""
     try:
         from PIL import Image, ImageDraw, ImageFont
         import io as _io
@@ -2466,7 +2342,6 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CUSTOM 2D INTERACTION DIAGRAM
-#  (unchanged from original — full implementation below)
 # ══════════════════════════════════════════════════════════════════════════════
 
 import math as _math
@@ -2578,9 +2453,9 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
     rel = rec.getElements()
     conf = lig_mol_3d.GetConformer()
     nl   = lig_mol_3d.GetNumAtoms()
-    lxyz = np.array([[conf.GetAtomPosition(i).x,
-                      conf.GetAtomPosition(i).y,
-                      conf.GetAtomPosition(i).z] for i in range(nl)], dtype=float)
+    lxyz = np.array([[conf.getAtomPosition(i).x,
+                      conf.getAtomPosition(i).y,
+                      conf.getAtomPosition(i).z] for i in range(nl)], dtype=float)
     latom = [lig_mol_3d.GetAtomWithIdx(i) for i in range(nl)]
     lel   = [a.GetSymbol().upper() for a in latom]
     lchg  = [a.GetFormalCharge() for a in latom]
@@ -3189,20 +3064,17 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
     parts.append(f'<rect width="{W}" height="{H}" fill="white"/>')
     if title:
         esc=title.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-        tw=len(esc)*14.5+48; tw=max(tw,240); tw=min(tw,W-40)
-        px=(W-tw)/2; ph=46; pr=ph/2
-        parts.append(f'<rect x="{px:.1f}" y="14" width="{tw:.0f}" height="{ph}" rx="{pr:.1f}" ry="{pr:.1f}" fill="#f2f2f2" stroke="none"/>')
+        tw=min(len(esc)*14.5+48,W-40); tw=max(tw,240); px=(W-tw)/2; ph=46; pr=23
+        parts.append(f'<rect x="{px:.1f}" y="14" width="{tw:.0f}" height="{ph}" rx="{pr}" ry="{pr}" fill="#f2f2f2" stroke="none"/>')
         parts.append(f'<text x="{W/2:.1f}" y="37" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="24.93" font-weight="700" fill="#1a1a1a">{esc}</text>')
     for p in placements:
-        itype=p["itype"]; bx,by=p["bx"],p["by"]
-        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
-        bg=_RES_CIRCLE.get(itype,dict(fill="#cccccc",opacity=0.2))
-        parts.append(f'<circle cx="{cbx:.1f}" cy="{cby:.1f}" r="24.55" fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
+        bx,by=max(50,min(p["bx"],W-50)),max(70,min(p["by"],H-65))
+        bg=_RES_CIRCLE.get(p["itype"],dict(fill="#cccccc",opacity=0.2))
+        parts.append(f'<circle cx="{bx:.1f}" cy="{by:.1f}" r="24.55" fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
     for p in placements:
         itype=p["itype"]
         if itype=="hydrophobic": continue
-        bx,by=p["bx"],p["by"]
-        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
+        bx,by=max(50,min(p["bx"],W-50)),max(70,min(p["by"],H-65))
         if itype in ("pi_pi","cation_pi") and p.get("ring_atom_indices"):
             lx,ly=_ring_centroid_2d(p["ring_atom_indices"],svg_coords)
             if lx is None:
@@ -3213,64 +3085,69 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
         dash_attr=' stroke-dasharray="5 3"'
         dash_attr_hbx=' stroke-dasharray="4 2 1 2"'
         if itype in ("pi_pi","cation_pi"):
-            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{cbx:.2f}" y2="{cby:.2f}" stroke="{clr}" stroke-width="1.6"{dash_attr} opacity="0.85"/>')
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{bx:.2f}" y2="{by:.2f}" stroke="{clr}" stroke-width="1.6"{dash_attr} opacity="0.85"/>')
         elif itype in ("hbond","hbond_to_halogen"):
             da=dash_attr if itype=="hbond" else dash_attr_hbx
-            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{cbx:.2f}" y2="{cby:.2f}" stroke="{clr}" stroke-width="1.6"{da} opacity="0.85"/>')
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{bx:.2f}" y2="{by:.2f}" stroke="{clr}" stroke-width="1.6"{da} opacity="0.85"/>')
             if p.get("distance") is not None:
-                t_along=0.40; bx_l=lx+(cbx-lx)*t_along; by_l=ly+(cby-ly)*t_along
-                dx_l=cbx-lx; dy_l=cby-ly; _len=_math.sqrt(dx_l*dx_l+dy_l*dy_l)+1e-9
-                px_l=-dy_l/_len*14; py_l=dx_l/_len*14; mx2=bx_l+px_l*14; my2=by_l+py_l*14
+                t_along=0.40; bx_l=lx+(bx-lx)*t_along; by_l=ly+(by-ly)*t_along
+                dx_l=bx-lx; dy_l=by-ly; _len=_math.sqrt(dx_l*dx_l+dy_l*dy_l)+1e-9
+                px_l=-dy_l/_len*14; py_l=dx_l/_len*14
+                # BUG FIX #1: perpendicular offset applied once (was multiplied by 14 again)
+                mx2=bx_l+px_l; my2=by_l+py_l
                 ds=f"{p['distance']}\u00c5"; tw2=len(ds)*7+8
                 parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}" width="{tw2:.0f}" height="17" rx="4" fill="white" stroke="{clr}" stroke-width="0.5"/>')
                 parts.append(f'<text x="{mx2:.1f}" y="{my2:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="{clr}">{ds}</text>')
         else:
             da={"ionic":"6 2 2 2","metal":"3 2","halogen":"5 2"}.get(itype,"5 3")
-            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{cbx:.2f}" y2="{cby:.2f}" stroke="{clr}" stroke-width="1.8" stroke-dasharray="{da}" opacity="0.85"/>')
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{bx:.2f}" y2="{by:.2f}" stroke="{clr}" stroke-width="1.8" stroke-dasharray="{da}" opacity="0.85"/>')
             if p.get("distance") is not None:
-                t_along=0.40; bx_l=lx+(cbx-lx)*t_along; by_l=ly+(cby-ly)*t_along
-                dx_l=cbx-lx; dy_l=cby-ly; _len=_math.sqrt(dx_l*dx_l+dy_l*dy_l)+1e-9
-                px_l=-dy_l/_len*14; py_l=dx_l/_len*14; mx2=bx_l+px_l*14; my2=by_l+py_l*14
+                t_along=0.40; bx_l=lx+(bx-lx)*t_along; by_l=ly+(by-ly)*t_along
+                dx_l=bx-lx; dy_l=by-ly; _len=_math.sqrt(dx_l*dx_l+dy_l*dy_l)+1e-9
+                px_l=-dy_l/_len*14; py_l=dx_l/_len*14
+                # BUG FIX #1: perpendicular offset applied once (was multiplied by 14 again)
+                mx2=bx_l+px_l; my2=by_l+py_l
                 ds=f"{p['distance']}\u00c5"; tw2=len(ds)*7+8
                 parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}" width="{tw2:.0f}" height="17" rx="4" fill="white" stroke="{clr}" stroke-width="0.5"/>')
                 parts.append(f'<text x="{mx2:.1f}" y="{my2:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="{clr}">{ds}</text>')
     parts.append(_render_ligand_svg(mol2d, svg_coords))
     for p in placements:
-        itype=p["itype"]; bx,by=p["bx"],p["by"]
-        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
+        bx,by=max(50,min(p["bx"],W-50)),max(70,min(p["by"],H-65))
         rn=p["resname"]; ri=p["resid"]; ch=p.get("chain","")
         _NO_NUM = HEME_RESNAMES | METAL_RESNAMES
         lbl = rn.upper() if rn.upper() in _NO_NUM else f"{rn.upper()} {ri}{ch}"
-        lbl_clr=_LBL_CLR.get(itype,"#333")
-        parts.append(f'<text x="{cbx:.1f}" y="{cby:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14.29" font-weight="700" fill="{lbl_clr}">{lbl}</text>')
+        lbl_clr=_LBL_CLR.get(p["itype"],"#333")
+        parts.append(f'<text x="{bx:.1f}" y="{by:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14.29" font-weight="700" fill="{lbl_clr}">{lbl}</text>')
     _LEG_ORDER=["hydrophobic","hbond","pi_pi","cation_pi","hbond_to_halogen","ionic","metal","halogen"]
     _LEG_LABEL={"hydrophobic":"Hydrophobic","hbond":"Hydrogen bond","hbond_to_halogen":"H\u00b7\u00b7\u00b7Halogen","pi_pi":"\u03c0-\u03c0 stacking","cation_pi":"Cation-\u03c0","ionic":"Ionic","metal":"Metal","halogen":"Halogen bond"}
     active=[t for t in _LEG_ORDER if any(p["itype"]==t for p in placements)]
     if active:
         ly0=H-52
+        # BUG FIX #2: use cursor += _entry_w(t) — no stray +6 drift per entry
+        CIRC_R=9.54; LINE_W=28; LINE_GAP=4; TEXT_GAP=6; ENTRY_PAD=20
         def _entry_w(t):
-            txt=_LEG_LABEL.get(t,t)
-            return 9.54*2+(4+28 if t!="hydrophobic" else 0)+6+len(txt)*9.5+20
-        total_w=sum(_entry_w(t) for t in active); total_w=min(total_w,W-40)
+            lbl_w=len(_LEG_LABEL.get(t,t))*9.5
+            line_part=(LINE_GAP+LINE_W) if t!="hydrophobic" else 0
+            return CIRC_R*2+line_part+TEXT_GAP+lbl_w+ENTRY_PAD
+        total_w=min(sum(_entry_w(t) for t in active),W-40)
         lx0=(W-total_w)/2
         parts.append(f'<rect x="{lx0-8:.0f}" y="{ly0-5}" width="{total_w+16:.0f}" height="44" fill="white" stroke="#e0e0e0" stroke-width="0.8" rx="6"/>')
-        for k,it in enumerate(active):
+        cursor=lx0
+        for it in active:
             bg=_RES_CIRCLE.get(it,dict(fill="#ccc",opacity=0.2))
             clr=_LINE_CLR.get(it,bg["fill"])
             lbl=_LEG_LABEL.get(it,it)
-            text_w=len(lbl)*9.5+6
-            glyph_w=9.54*2+(4+28 if it!="hydrophobic" else 0)
-            entry_w=glyph_w+6+text_w
-            circ_cx=lx0+sum(
-                (9.54*2+(4+28 if active[kk]!="hydrophobic" else 0)+6+len(_LEG_LABEL.get(active[kk],active[kk]))*9.5+6+20)
-                for kk in range(k)
-            )+9.54
-            parts.append(f'<circle cx="{circ_cx:.1f}" cy="{ly0+10}" r="9.54" fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
-            line_x1=circ_cx+9.54+4; line_x2=line_x1+28
+            circ_cx=cursor+CIRC_R; circ_cy=ly0+10
+            parts.append(f'<circle cx="{circ_cx:.1f}" cy="{circ_cy}" r="{CIRC_R}" fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
             if it!="hydrophobic":
-                parts.append(f'<line x1="{line_x1:.1f}" y1="{ly0+10}" x2="{line_x2:.1f}" y2="{ly0+10}" stroke="{clr}" stroke-width="2" stroke-dasharray="5 3" opacity="0.85"/>')
-            text_x=(line_x2 if it!="hydrophobic" else circ_cx+9.54)+6
-            parts.append(f'<text x="{text_x:.1f}" y="{ly0+10}" text-anchor="start" dominant-baseline="central" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#555">{lbl}</text>')
+                line_x1=circ_cx+CIRC_R+LINE_GAP; line_x2=line_x1+LINE_W
+                dash={"hbond":"5 3","hbond_to_halogen":"4 2 1 2","pi_pi":"5 3","cation_pi":"5 3","ionic":"6 2 2 2","metal":"3 2","halogen":"5 2"}.get(it,"5 3")
+                parts.append(f'<line x1="{line_x1:.1f}" y1="{circ_cy}" x2="{line_x2:.1f}" y2="{circ_cy}" stroke="{clr}" stroke-width="2" stroke-dasharray="{dash}" opacity="0.85"/>')
+                text_x=line_x2+TEXT_GAP
+            else:
+                text_x=circ_cx+CIRC_R+TEXT_GAP
+            parts.append(f'<text x="{text_x:.1f}" y="{circ_cy}" text-anchor="start" dominant-baseline="central" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#555">{lbl}</text>')
+            cursor+=_entry_w(it)
     parts.append('</svg>')
     return "\n".join(parts)
 
@@ -3316,7 +3193,8 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
     for ix in raw:
         ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
         if ix.get("ring_atom_indices"):
-            ix["ring_atom_indices"] = [m3to2d.get(i, i) for i in ix["ring_atom_indices"]]
+            # BUG FIX #3: fall back to 0, not i (i may exceed 2D atom count)
+            ix["ring_atom_indices"] = [m3to2d.get(i, 0) for i in ix["ring_atom_indices"]]
     ded = _select_interactions_for_2d(raw, max_residues=max_residues)
     cx, cy = W // 2, H // 2
     sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
@@ -3501,10 +3379,6 @@ def draw_interactions_rdkit(lig_mol, receptor_pdb: str, smiles: str,
 
 
 def _select_interactions_for_2d(raw, max_residues: int):
-    """
-    Preserve metal interactions first for 2D diagrams so ions/metals are not
-    easily dropped when many contacts are present.
-    """
     pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
     ded = _deduplicate_interactions(raw)
     ded.sort(key=lambda x: (pm.get(x.get("itype", ""), 99), x.get("distance", 999.0)))
@@ -3564,6 +3438,5 @@ def draw_interaction_diagram_interactive(
             "lx":      round(lx, 2), "ly": round(ly, 2),
             "bx":      round(p["bx"], 2), "by": round(p["by"], 2),
         })
-    # Return minimal interactive HTML (full version in app.py _render_interactive_diagram)
     return json.dumps({"placements": residues_js, "W": W, "H": H,
                        "ligand_svg": lig_svg, "title": title})
