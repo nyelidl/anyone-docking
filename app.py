@@ -689,16 +689,32 @@ def _adme_section(
     st.code(_prompt, language=None)
 
 
-def _render_interactive_diagram(data: dict, height: int = 800) -> str:
-    W       = data["W"]
-    H       = data["H"]
-    title   = data["title"]
+def _render_interactive_diagram(data: dict, height: int = 800, key_prefix: str = "acd") -> str:
+    import html as _html_mod
+    import uuid as _uuid
+
+    W = data["W"]
+    H = data["H"]
+    title = data["title"]
     lig_svg = data["ligand_svg"]
     placements = data["placements"]
 
-    title_esc = title.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+    uid = f"{key_prefix}_{_uuid.uuid4().hex[:8]}"
+    wrap_id = f"iac-wrap-{uid}"
+    toolbar_id = f"iac-toolbar-{uid}"
+    svg_id = f"iac-svg-{uid}"
+    lines_id = f"iac-lines-{uid}"
+    ligand_id = f"iac-ligand-{uid}"
+    residues_id = f"iac-residues-{uid}"
+    legend_id = f"iac-legend-{uid}"
+    reset_btn_id = f"iac-reset-{uid}"
+    svg_btn_id = f"iac-export-svg-{uid}"
+    png_btn_id = f"iac-export-png-{uid}"
+    dpi_id = f"iac-dpi-{uid}"
 
-    tw = min(len(title) * 14 + 48, W - 40)
+    title_svg = _html_mod.escape(title, quote=False)
+
+    tw = min(max(len(title) * 14 + 48, 120), W - 40)
     pill_x = (W - tw) / 2
 
     TYPE_CFG = {
@@ -732,131 +748,194 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
 
     LEG_Y = H - 45
     leg_entry_w = 115
-    leg_total = len(legend_items) * leg_entry_w
+    leg_total = max(len(legend_items) * leg_entry_w, 1)
     leg_x0 = (W - leg_total) / 2
     leg_parts = [
-        f'<rect x="{leg_x0-8:.0f}" y="{LEG_Y-5}" width="{leg_total+16:.0f}" height="40"'
-        f' fill="white" stroke="#e0e0e0" stroke-width="0.8" rx="6"/>'
+        f'<rect x="{leg_x0-8:.0f}" y="{LEG_Y-5}" width="{leg_total+16:.0f}" height="40" fill="white" stroke="#e0e0e0" stroke-width="0.8" rx="6"/>'
     ]
     for k, li in enumerate(legend_items):
         ix = leg_x0 + k * leg_entry_w + 14
         leg_parts.append(
-            f'<circle cx="{ix:.0f}" cy="{LEG_Y+12}" r="8"'
-            f' fill="{li["fill"]}" opacity="0.5" stroke="{li["stroke"]}" stroke-width="1"/>'
+            f'<circle cx="{ix:.0f}" cy="{LEG_Y+12}" r="8" fill="{li["fill"]}" opacity="0.5" stroke="{li["stroke"]}" stroke-width="1"/>'
         )
         if li["lineclr"]:
             leg_parts.append(
-                f'<line x1="{ix+10:.0f}" y1="{LEG_Y+12}" x2="{ix+26:.0f}" y2="{LEG_Y+12}"'
-                f' stroke="{li["lineclr"]}" stroke-width="1.8" stroke-dasharray="{li["dash"]}"/>'
+                f'<line x1="{ix+10:.0f}" y1="{LEG_Y+12}" x2="{ix+26:.0f}" y2="{LEG_Y+12}" stroke="{li["lineclr"]}" stroke-width="1.8" stroke-dasharray="{li["dash"]}"/>'
             )
             leg_parts.append(
-                f'<text x="{ix+30:.0f}" y="{LEG_Y+12}" dominant-baseline="central"'
-                f' font-family="Arial,sans-serif" font-size="12" font-weight="700"'
-                f' fill="#555">{li["label"]}</text>'
+                f'<text x="{ix+30:.0f}" y="{LEG_Y+12}" dominant-baseline="central" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#555">{li["label"]}</text>'
             )
         else:
             leg_parts.append(
-                f'<text x="{ix+12:.0f}" y="{LEG_Y+12}" dominant-baseline="central"'
-                f' font-family="Arial,sans-serif" font-size="12" font-weight="700"'
-                f' fill="#555">{li["label"]}</text>'
+                f'<text x="{ix+12:.0f}" y="{LEG_Y+12}" dominant-baseline="central" font-family="Arial,sans-serif" font-size="12" font-weight="700" fill="#555">{li["label"]}</text>'
             )
     legend_svg = "\n".join(leg_parts)
 
     placements_json = _json.dumps(placements)
-    type_cfg_json   = _json.dumps(TYPE_CFG)
+    type_cfg_json = _json.dumps(TYPE_CFG)
 
     html = f"""
-<div style="font-family:Arial,sans-serif;background:white;border-radius:8px;
-            border:1px solid #e0e0e0;overflow:hidden;">
-  <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;
-              border-bottom:1px solid #eee;flex-wrap:wrap;background:#fafafa;">
+<div id="{wrap_id}" style="font-family:Arial,sans-serif;background:white;border-radius:8px;border:1px solid #e0e0e0;overflow:hidden;">
+  <div id="{toolbar_id}" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #eee;flex-wrap:wrap;background:#fafafa;">
     <span style="font-size:12px;color:#555;flex:1;">
       🧬 <strong>Interactive mode</strong> — drag any residue label to reposition it
     </span>
-    <button onclick="resetLayout()"
-      style="font-size:12px;padding:4px 10px;border:1px solid #ccc;
-             border-radius:4px;background:#f8f8f8;cursor:pointer;">
-      ↺ Reset
-    </button>
-    <button onclick="exportSVG()"
-      style="font-size:12px;padding:4px 10px;border:1px solid #ccc;
-             border-radius:4px;background:#f8f8f8;cursor:pointer;">
-      ⬇ SVG
-    </button>
-    <button onclick="exportPNG()"
-      style="font-size:12px;padding:4px 10px;border:1px solid #4a90d9;
-             border-radius:4px;background:#e8f4ff;color:#1a5fa8;cursor:pointer;font-weight:700;">
-      ⬇ PNG
-    </button>
-    <select id="iac-dpi"
-      style="font-size:12px;padding:4px 6px;border:1px solid #ccc;
-             border-radius:4px;background:#fff;cursor:pointer;"
-      title="PNG export resolution">
+    <button id="{reset_btn_id}" style="font-size:12px;padding:4px 10px;border:1px solid #ccc;border-radius:4px;background:#f8f8f8;cursor:pointer;">↺ Reset</button>
+    <button id="{svg_btn_id}" style="font-size:12px;padding:4px 10px;border:1px solid #ccc;border-radius:4px;background:#f8f8f8;cursor:pointer;">⬇ SVG</button>
+    <button id="{png_btn_id}" style="font-size:12px;padding:4px 10px;border:1px solid #4a90d9;border-radius:4px;background:#e8f4ff;color:#1a5fa8;cursor:pointer;font-weight:700;">⬇ PNG</button>
+    <select id="{dpi_id}" style="font-size:12px;padding:4px 6px;border:1px solid #ccc;border-radius:4px;background:#fff;cursor:pointer;" title="PNG export resolution">
       <option value="1">Screen (1×)</option>
       <option value="2" selected>150 dpi (2×)</option>
       <option value="3">300 dpi (3×)</option>
       <option value="4">600 dpi (4×)</option>
     </select>
   </div>
-  <svg id="iac-svg" viewBox="0 0 {W} {H}"
-       style="width:100%;display:block;cursor:default;user-select:none;">
+  <svg id="{svg_id}" viewBox="0 0 {W} {H}" style="width:100%;display:block;cursor:default;user-select:none;">
     <rect width="{W}" height="{H}" fill="white"/>
-    <rect x="{pill_x:.1f}" y="12" width="{tw:.0f}" height="44"
-          rx="22" ry="22" fill="#f2f2f2" stroke="none"/>
-    <text x="{W/2:.1f}" y="34" text-anchor="middle" dominant-baseline="central"
-          font-family="Arial,sans-serif" font-size="20" font-weight="700"
-          fill="#1a1a1a">{title}</text>
-    <g id="iac-lines"></g>
-    <g id="iac-ligand" transform="translate(0,0)"
-       style="cursor:move;" title="Drag to reposition ligand">{lig_svg}</g>
-    <g id="iac-residues"></g>
-    <g id="iac-legend">{legend_svg}</g>
+    <rect x="{pill_x:.1f}" y="12" width="{tw:.0f}" height="44" rx="22" ry="22" fill="#f2f2f2" stroke="none"/>
+    <text x="{W/2:.1f}" y="34" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="20" font-weight="700" fill="#1a1a1a">{title_svg}</text>
+    <g id="{lines_id}"></g>
+    <g id="{ligand_id}" transform="translate(0,0)" style="cursor:move;" title="Drag to reposition ligand">{lig_svg}</g>
+    <g id="{residues_id}"></g>
+    <g id="{legend_id}">{legend_svg}</g>
   </svg>
 </div>
 
 <script>
 (function() {{
   const PLACEMENTS = {placements_json};
-  const TYPE_CFG   = {type_cfg_json};
+  const TYPE_CFG = {type_cfg_json};
 
-  const svg      = document.getElementById("iac-svg");
-  const linesG   = document.getElementById("iac-lines");
-  const residuesG= document.getElementById("iac-residues");
+  const svg = document.getElementById({svg_id!r});
+  const linesG = document.getElementById({lines_id!r});
+  const residuesG = document.getElementById({residues_id!r});
+  const ligG = document.getElementById({ligand_id!r});
+  const dpiSel = document.getElementById({dpi_id!r});
+  const resetBtn = document.getElementById({reset_btn_id!r});
+  const exportSvgBtn = document.getElementById({svg_btn_id!r});
+  const exportPngBtn = document.getElementById({png_btn_id!r});
+
+  if (!svg || !linesG || !residuesG || !ligG) return;
 
   const pos = {{}};
-  PLACEMENTS.forEach(p => {{ pos[p.id] = {{ x: p.bx, y: p.by }}; }});
-
   const els = {{}};
+  const placementsById = {{}};
+  PLACEMENTS.forEach(p => {{
+    placementsById[p.id] = p;
+    pos[p.id] = {{ x: p.bx, y: p.by }};
+  }});
+
+  let ligOffset = {{ x: 0, y: 0 }};
 
   function SVG(tag, attrs) {{
     const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, v);
+    for (const [k, v] of Object.entries(attrs || {{}})) el.setAttribute(k, v);
     return el;
   }}
 
   function toSVGCoords(clientX, clientY) {{
     const rect = svg.getBoundingClientRect();
-    const vb   = svg.viewBox.baseVal;
+    const vb = svg.viewBox.baseVal;
     return {{
-      x: (clientX - rect.left) * (vb.width  / rect.width)  + vb.x,
-      y: (clientY - rect.top)  * (vb.height / rect.height) + vb.y,
+      x: (clientX - rect.left) * (vb.width / rect.width) + vb.x,
+      y: (clientY - rect.top) * (vb.height / rect.height) + vb.y,
     }};
+  }}
+
+  function updateElement(id) {{
+    const p = placementsById[id];
+    if (!p) return;
+    const cfg = TYPE_CFG[p.itype] || TYPE_CFG["hbond"];
+    const cache = els[id];
+    if (!cache) return;
+
+    const x = pos[id].x;
+    const y = pos[id].y;
+    const lx2 = p.lx + ligOffset.x;
+    const ly2 = p.ly + ligOffset.y;
+
+    if (cache.line) {{
+      cache.line.setAttribute("x1", lx2);
+      cache.line.setAttribute("y1", ly2);
+      cache.line.setAttribute("x2", x);
+      cache.line.setAttribute("y2", y);
+    }}
+    if (cache.circ) {{
+      cache.circ.setAttribute("cx", x);
+      cache.circ.setAttribute("cy", y);
+    }}
+    if (cache.txt) {{
+      cache.txt.setAttribute("x", x);
+      cache.txt.setAttribute("y", y);
+    }}
+    if (cache.distRect && cache.distTxt) {{
+      const t = 0.4;
+      const mx = lx2 + (x - lx2) * t;
+      const my = ly2 + (y - ly2) * t;
+      const dx = x - lx2;
+      const dy = y - ly2;
+      const len = Math.sqrt(dx * dx + dy * dy) + 0.001;
+      const px = -dy / len * 14;
+      const py = dx / len * 14;
+      const tx = mx + px;
+      const ty = my + py;
+      const tw2 = cache.tw2;
+      cache.distRect.setAttribute("x", tx - tw2 / 2);
+      cache.distRect.setAttribute("y", ty - 8);
+      cache.distTxt.setAttribute("x", tx);
+      cache.distTxt.setAttribute("y", ty);
+      cache.distTxt.setAttribute("fill", cfg.lineclr || cfg.stroke);
+      cache.distRect.setAttribute("stroke", cfg.lineclr || cfg.stroke);
+    }}
+  }}
+
+  function makeDraggable(el, id) {{
+    let dragging = false;
+    let startMouse = null;
+    let startPos = null;
+
+    function onStart(clientX, clientY) {{
+      dragging = true;
+      startMouse = toSVGCoords(clientX, clientY);
+      startPos = {{ ...pos[id] }};
+      el.style.cursor = "grabbing";
+    }}
+    function onMove(clientX, clientY) {{
+      if (!dragging) return;
+      const cur = toSVGCoords(clientX, clientY);
+      pos[id].x = startPos.x + cur.x - startMouse.x;
+      pos[id].y = startPos.y + cur.y - startMouse.y;
+      updateElement(id);
+    }}
+    function onEnd() {{
+      dragging = false;
+      el.style.cursor = "grab";
+    }}
+
+    el.addEventListener("mousedown", e => {{ onStart(e.clientX, e.clientY); e.preventDefault(); }});
+    el.addEventListener("touchstart", e => {{ onStart(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }}, {{ passive: false }});
+    window.addEventListener("mousemove", e => onMove(e.clientX, e.clientY));
+    window.addEventListener("touchmove", e => {{ if (dragging) {{ onMove(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }} }}, {{ passive: false }});
+    window.addEventListener("mouseup", onEnd);
+    window.addEventListener("touchend", onEnd);
   }}
 
   function buildAll() {{
     linesG.innerHTML = "";
     residuesG.innerHTML = "";
+    Object.keys(els).forEach(k => delete els[k]);
 
     PLACEMENTS.forEach(p => {{
       const cfg = TYPE_CFG[p.itype] || TYPE_CFG["hbond"];
-      const cache = {{ line: null, distRect: null, distTxt: null,
-                       circ: null, txt: null }};
+      const cache = {{ line: null, distRect: null, distTxt: null, circ: null, txt: null, tw2: null }};
       els[p.id] = cache;
 
       if (cfg.lineclr) {{
         const line = SVG("line", {{
-          x1: p.lx, y1: p.ly,
-          x2: pos[p.id].x, y2: pos[p.id].y,
+          x1: p.lx + ligOffset.x,
+          y1: p.ly + ligOffset.y,
+          x2: pos[p.id].x,
+          y2: pos[p.id].y,
           stroke: cfg.lineclr,
           "stroke-width": cfg.lw,
           "stroke-dasharray": cfg.dash,
@@ -866,249 +945,161 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
         cache.line = line;
 
         if (p.distance != null) {{
-          const ds  = p.distance + "\u00c5";
+          const ds = String(p.distance) + "Å";
           const tw2 = ds.length * 7 + 8;
-          const dr  = SVG("rect", {{
-            width: tw2, height: 17, rx: 4,
-            fill: "white", stroke: cfg.lineclr, "stroke-width": "0.5",
-          }});
-          const dt = SVG("text", {{
-            "text-anchor": "middle", "dominant-baseline": "central",
-            "font-family": "Arial,sans-serif", "font-size": "14",
-            "font-weight": "700", fill: cfg.lineclr,
-          }});
+          const dr = SVG("rect", {{ width: tw2, height: 17, rx: 4, fill: "white", stroke: cfg.lineclr, "stroke-width": "0.5" }});
+          const dt = SVG("text", {{ "text-anchor": "middle", "dominant-baseline": "central", "font-family": "Arial,sans-serif", "font-size": "14", "font-weight": "700", fill: cfg.lineclr }});
           dt.textContent = ds;
           linesG.appendChild(dr);
           linesG.appendChild(dt);
-          cache.distRect = dr; cache.distTxt = dt; cache.tw2 = tw2;
+          cache.distRect = dr;
+          cache.distTxt = dt;
+          cache.tw2 = tw2;
         }}
       }}
 
       const g = SVG("g", {{ style: "cursor:grab;" }});
-
       const circ = SVG("circle", {{
-        cx: pos[p.id].x, cy: pos[p.id].y,
+        cx: pos[p.id].x,
+        cy: pos[p.id].y,
         r: "24.55",
-        fill: cfg.fill, opacity: "0.5",
-        stroke: cfg.stroke, "stroke-width": "1.5",
+        fill: cfg.fill,
+        opacity: "0.5",
+        stroke: cfg.stroke,
+        "stroke-width": "1.5",
       }});
-      g.appendChild(circ);
-      cache.circ = circ;
-
       const txt = SVG("text", {{
-        x: pos[p.id].x, y: pos[p.id].y,
-        "text-anchor": "middle", "dominant-baseline": "central",
+        x: pos[p.id].x,
+        y: pos[p.id].y,
+        "text-anchor": "middle",
+        "dominant-baseline": "central",
         "font-family": "Arial,sans-serif",
-        "font-size": "13", "font-weight": "700",
+        "font-size": "13",
+        "font-weight": "700",
         fill: cfg.stroke,
       }});
       txt.textContent = p.label;
+      g.appendChild(circ);
       g.appendChild(txt);
-      cache.txt = txt;
-
       residuesG.appendChild(g);
+      cache.circ = circ;
+      cache.txt = txt;
       makeDraggable(g, p.id);
       updateElement(p.id);
     }});
   }}
 
-  function updateElement(id) {{
-    const p   = PLACEMENTS.find(d => d.id === id);
-    const cfg = TYPE_CFG[p.itype] || TYPE_CFG["hbond"];
-    const {{ x, y }} = pos[id];
-    const cache = els[id];
-
-    if (cache.line) {{
-      cache.line.setAttribute("x2", x);
-      cache.line.setAttribute("y2", y);
-    }}
-    if (cache.circ) {{ cache.circ.setAttribute("cx", x); cache.circ.setAttribute("cy", y); }}
-    if (cache.txt)  {{ cache.txt.setAttribute("x", x);   cache.txt.setAttribute("y", y);  }}
-
-    if (cache.distRect && cache.distTxt) {{
-      const t  = 0.4;
-      const mx = p.lx + (x - p.lx) * t;
-      const my = p.ly + (y - p.ly) * t;
-      const dx = x - p.lx, dy = y - p.ly;
-      const len = Math.sqrt(dx*dx + dy*dy) + 0.001;
-      const px  = -dy/len * 14, py = dx/len * 14;
-      const lx  = mx + px, ly = my + py;
-      const tw2 = cache.tw2;
-      cache.distRect.setAttribute("x",  lx - tw2/2);
-      cache.distRect.setAttribute("y",  ly - 8);
-      cache.distTxt.setAttribute("x",  lx);
-      cache.distTxt.setAttribute("y",  ly);
-    }}
+  function applyLigandOffset(x, y) {{
+    ligOffset.x = x;
+    ligOffset.y = y;
+    ligG.setAttribute("transform", `translate(${{x}},${{y}})`);
+    PLACEMENTS.forEach(p => updateElement(p.id));
   }}
 
-  function makeDraggable(el, id) {{
-    let dragging = false, startMouse = null, startPos = null;
-
-    function onStart(clientX, clientY) {{
-      dragging   = true;
-      startMouse = toSVGCoords(clientX, clientY);
-      startPos   = {{ ...pos[id] }};
-      el.style.cursor = "grabbing";
-    }}
-    function onMove(clientX, clientY) {{
-      if (!dragging) return;
-      const cur  = toSVGCoords(clientX, clientY);
-      pos[id].x  = startPos.x + cur.x - startMouse.x;
-      pos[id].y  = startPos.y + cur.y - startMouse.y;
-      updateElement(id);
-    }}
-    function onEnd() {{
-      dragging = false;
-      el.style.cursor = "grab";
-    }}
-
-    el.addEventListener("mousedown",  e => {{ onStart(e.clientX, e.clientY); e.preventDefault(); }});
-    el.addEventListener("touchstart", e => {{ onStart(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }}, {{passive:false}});
-
-    window.addEventListener("mousemove",  e => onMove(e.clientX, e.clientY));
-    window.addEventListener("touchmove",  e => {{ if(dragging) {{ onMove(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }} }}, {{passive:false}});
-    window.addEventListener("mouseup",  onEnd);
-    window.addEventListener("touchend", onEnd);
-  }}
-
-  window.resetLayout = function() {{
+  function resetLayout() {{
     PLACEMENTS.forEach(p => {{ pos[p.id] = {{ x: p.bx, y: p.by }}; }});
+    applyLigandOffset(0, 0);
     buildAll();
-  }};
+  }}
 
-  window.exportSVG = function() {{
+  function exportSVG() {{
     const clone = svg.cloneNode(true);
-    clone.setAttribute("xmlns","http://www.w3.org/2000/svg");
-    const blob = new Blob([clone.outerHTML], {{type:"image/svg+xml"}});
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", String({W}));
+    clone.setAttribute("height", String({H}));
+    clone.removeAttribute("style");
+    const blob = new Blob([clone.outerHTML], {{ type: "image/svg+xml;charset=utf-8" }});
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "interaction_diagram.svg";
+    document.body.appendChild(a);
     a.click();
-  }};
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 250);
+  }}
 
-  window.exportPNG = function() {{
-    const scale = parseInt(document.getElementById("iac-dpi").value) || 2;
-    const W = {W}, H = {H};
+  function exportPNG() {{
+    const scale = parseInt((dpiSel && dpiSel.value) || "2", 10) || 2;
     const clone = svg.cloneNode(true);
-    clone.setAttribute("xmlns","http://www.w3.org/2000/svg");
-    clone.setAttribute("width", W);
-    clone.setAttribute("height", H);
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", String({W}));
+    clone.setAttribute("height", String({H}));
     clone.removeAttribute("style");
     const svgStr = new XMLSerializer().serializeToString(clone);
-    const svgBlob = new Blob([svgStr], {{type:"image/svg+xml;charset=utf-8"}});
+    const svgBlob = new Blob([svgStr], {{ type: "image/svg+xml;charset=utf-8" }});
     const url = URL.createObjectURL(svgBlob);
     const img = new Image();
     img.onload = function() {{
       const canvas = document.createElement("canvas");
-      canvas.width  = W * scale;
-      canvas.height = H * scale;
+      canvas.width = {W} * scale;
+      canvas.height = {H} * scale;
       const ctx = canvas.getContext("2d");
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.scale(scale, scale);
-      ctx.drawImage(img, 0, 0, W, H);
+      ctx.drawImage(img, 0, 0, {W}, {H});
       URL.revokeObjectURL(url);
       const a = document.createElement("a");
       a.download = "interaction_diagram.png";
       a.href = canvas.toDataURL("image/png");
+      document.body.appendChild(a);
       a.click();
+      a.remove();
     }};
     img.onerror = function() {{
       URL.revokeObjectURL(url);
       alert("PNG export failed — use SVG export instead.");
     }};
     img.src = url;
-  }};
+  }}
+
+  if (resetBtn) resetBtn.addEventListener("click", resetLayout);
+  if (exportSvgBtn) exportSvgBtn.addEventListener("click", exportSVG);
+  if (exportPngBtn) exportPngBtn.addEventListener("click", exportPNG);
 
   buildAll();
 
-  // ── Ligand structure drag ──────────────────────────────────────────────────
-  // The entire ligand group (#iac-ligand) can be moved as a whole.
-  // Residue interaction lines originate from absolute SVG coordinates (lx/ly)
-  // that don't change when the ligand moves — so we also shift the line origins
-  // by storing a global ligand offset and applying it in updateElement.
   (function() {{
-    const ligG = document.getElementById("iac-ligand");
-    if (!ligG) return;
-
-    let ligOffset = {{ x: 0, y: 0 }};   // running translate of the ligand group
     let dragActive = false;
     let startMouse = null;
     let startOffset = null;
 
-    function applyOffset(ox, oy) {{
-      ligG.setAttribute("transform", `translate(${{ox}},${{oy}})`);
-      // Shift all residue line start-points by the same delta so lines track the atoms
-      PLACEMENTS.forEach(p => {{
-        const cache = els[p.id];
-        if (cache && cache.line) {{
-          cache.line.setAttribute("x1", p.lx + ox);
-          cache.line.setAttribute("y1", p.ly + oy);
-        }}
-        if (cache && cache.distRect && cache.distTxt) {{
-          // Recompute distance label position with shifted lx/ly
-          const {{ x, y }} = pos[p.id];
-          const lx2 = p.lx + ox, ly2 = p.ly + oy;
-          const t  = 0.4;
-          const mx = lx2 + (x - lx2) * t, my = ly2 + (y - ly2) * t;
-          const dx = x - lx2, dy = y - ly2;
-          const len = Math.sqrt(dx*dx + dy*dy) + 0.001;
-          const px  = -dy/len*14, py = dx/len*14;
-          cache.distRect.setAttribute("x", mx + px - cache.tw2/2);
-          cache.distRect.setAttribute("y", my + py - 8);
-          cache.distTxt.setAttribute("x", mx + px);
-          cache.distTxt.setAttribute("y", my + py);
-        }}
-      }});
+    function onStart(clientX, clientY) {{
+      dragActive = true;
+      startMouse = toSVGCoords(clientX, clientY);
+      startOffset = {{ ...ligOffset }};
+      ligG.style.cursor = "grabbing";
     }}
 
     ligG.addEventListener("mousedown", function(e) {{
-      dragActive = true;
-      startMouse = toSVGCoords(e.clientX, e.clientY);
-      startOffset = {{ ...ligOffset }};
-      ligG.style.cursor = "grabbing";
+      onStart(e.clientX, e.clientY);
       e.preventDefault();
       e.stopPropagation();
     }});
     ligG.addEventListener("touchstart", function(e) {{
-      dragActive = true;
-      startMouse = toSVGCoords(e.touches[0].clientX, e.touches[0].clientY);
-      startOffset = {{ ...ligOffset }};
+      onStart(e.touches[0].clientX, e.touches[0].clientY);
       e.preventDefault();
       e.stopPropagation();
-    }}, {{passive: false}});
+    }}, {{ passive: false }});
 
     window.addEventListener("mousemove", function(e) {{
       if (!dragActive) return;
       const cur = toSVGCoords(e.clientX, e.clientY);
-      ligOffset.x = startOffset.x + cur.x - startMouse.x;
-      ligOffset.y = startOffset.y + cur.y - startMouse.y;
-      applyOffset(ligOffset.x, ligOffset.y);
+      applyLigandOffset(startOffset.x + cur.x - startMouse.x, startOffset.y + cur.y - startMouse.y);
     }});
     window.addEventListener("touchmove", function(e) {{
       if (!dragActive) return;
       const cur = toSVGCoords(e.touches[0].clientX, e.touches[0].clientY);
-      ligOffset.x = startOffset.x + cur.x - startMouse.x;
-      ligOffset.y = startOffset.y + cur.y - startMouse.y;
-      applyOffset(ligOffset.x, ligOffset.y);
+      applyLigandOffset(startOffset.x + cur.x - startMouse.x, startOffset.y + cur.y - startMouse.y);
       e.preventDefault();
-    }}, {{passive: false}});
-    window.addEventListener("mouseup",  function() {{ dragActive = false; ligG.style.cursor = "move"; }});
-    window.addEventListener("touchend", function() {{ dragActive = false; }});
-
-    // Extend resetLayout to also reset ligand position
-    const _origReset = window.resetLayout;
-    window.resetLayout = function() {{
-      ligOffset = {{ x: 0, y: 0 }};
-      applyOffset(0, 0);
-      if (_origReset) _origReset();
-    }};
+    }}, {{ passive: false }});
+    window.addEventListener("mouseup", function() {{ if (dragActive) {{ dragActive = false; ligG.style.cursor = "move"; }} }});
+    window.addEventListener("touchend", function() {{ dragActive = false; ligG.style.cursor = "move"; }});
   }})();
 }})();
 </script>
 """
     return html
-
 
 def _chart_colors():
     theme = st.get_option("theme.base") if hasattr(st, "get_option") else "light"
@@ -1560,33 +1551,27 @@ def _render_binding_pocket_panel(
 
 def _strip_acd_toolbar(html_str: str) -> str:
     """
-    Remove the toolbar div AND the top title pill from the ACD interactive HTML
-    so only the clean diagram is shown inside the figure panel.
-
-    What is stripped:
-    1. The <div style="display:flex..."> toolbar block (Reset / Export / drag hint).
-    2. The title pill <rect> + <text> at the top of the SVG (ligand-name capsule).
+    Remove the interactive toolbar and title pill from the ACD HTML so only the
+    clean SVG diagram remains when embedded into combined export panels.
     """
     import re
-    # 1. Remove the outer toolbar div (between <div style="display:flex... and </div>)
+
     cleaned = re.sub(
-        r'<div\s+style="display:flex[^"]*"[^>]*>.*?</div>\s*(?=<svg)',
+        r'<div[^>]*id="iac-toolbar-[^"]+"[^>]*>.*?</div>\s*',
         '',
         html_str,
         count=1,
         flags=re.DOTALL,
     )
-    # 2. Strip the border/background wrapper div styling
-    cleaned = cleaned.replace(
-        'style="font-family:Arial,sans-serif;background:white;border-radius:8px;\n'
-        '            border:1px solid #e0e0e0;overflow:hidden;"',
-        'style="font-family:Arial,sans-serif;background:white;"',
-    )
-    # 3. Remove the title pill — match by fill="#f2f2f2" which is common to
-    #    both static SVG (rx≈23.0) and interactive HTML SVG (rx=22) variants.
     cleaned = re.sub(
-        r'<rect\b[^>]*fill="#f2f2f2"[^>]*/>\s*'
-        r'<text\b[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
+        r'<div([^>]*)style="[^"]*font-family:Arial,sans-serif;[^"]*border:1px solid #e0e0e0;[^"]*"([^>]*)>',
+        r'<divstyle="font-family:Arial,sans-serif;background:white;">',
+        cleaned,
+        count=1,
+        flags=re.DOTALL,
+    )
+    cleaned = re.sub(
+        r'<rect[^>]*fill="#f2f2f2"[^>]*/>\s*<text[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
         '',
         cleaned,
         count=1,
@@ -1594,34 +1579,21 @@ def _strip_acd_toolbar(html_str: str) -> str:
     )
     return cleaned
 
-
 def _2d_svg_bytes(acd_svg, acd_ihtml, rdk_svg, pv_svg, pv_png,
                   diag_source: str):
     """
     Return (svg_bytes_or_None, png_bytes_or_None) for the currently selected
     2D diagram source, for use in the figure export.
 
-    For ACD diagrams: the title pill is stripped so it doesn't duplicate the
-    summary capsule that _build_figure_svg adds below the diagram.
-
-    Two SVG variants exist:
-      • Static SVG from draw_interaction_diagram (core.py):
-            rx="{pr:.1f}" where pr = ph/2 = 23.0, fill="#f2f2f2"
-      • Interactive HTML SVG from _render_interactive_diagram (app.py):
-            rx="22", fill="#f2f2f2"
-    The regex must match BOTH — match by fill="#f2f2f2", not by rx value.
+    For ACD diagrams, prefer the interactive HTML SVG when available so the
+    exported figure preserves the user-edited layout.
     """
     import re
 
     def _strip_title_pill_from_svg(svg_text: str) -> str:
-        """
-        Remove the title pill <rect fill="#f2f2f2"> and the <text fill="#1a1a1a">
-        that follows it.  Works on both static SVG (rx≈23.0) and interactive
-        HTML SVG (rx=22) variants.
-        """
         return re.sub(
-            r'<rect\b[^>]*fill="#f2f2f2"[^>]*/>\s*'
-            r'<text\b[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
+            r'<rect[^>]*fill="#f2f2f2"[^>]*/>\s*'
+            r'<text[^>]*fill="#1a1a1a"[^>]*>.*?</text>',
             '',
             svg_text,
             count=1,
@@ -1629,29 +1601,28 @@ def _2d_svg_bytes(acd_svg, acd_ihtml, rdk_svg, pv_svg, pv_png,
         )
 
     if diag_source == "acd":
+        if acd_ihtml:
+            m = re.search(r'(<svg.*?</svg>)', acd_ihtml, re.DOTALL)
+            if m:
+                cleaned = _strip_title_pill_from_svg(m.group(1))
+                return cleaned.encode(), None
         if acd_svg:
             raw = acd_svg if isinstance(acd_svg, bytes) else acd_svg.encode()
             cleaned = _strip_title_pill_from_svg(raw.decode("utf-8", errors="replace"))
             return cleaned.encode(), None
-        if acd_ihtml:
-            m = re.search(r'(<svg\b.*?</svg>)', acd_ihtml, re.DOTALL)
-            if m:
-                cleaned = _strip_title_pill_from_svg(m.group(1))
-                return cleaned.encode(), None
         return None, None
     elif diag_source == "rdkit":
         if rdk_svg:
             raw = rdk_svg if isinstance(rdk_svg, bytes) else rdk_svg.encode()
             return raw, None
         return None, None
-    else:  # poseview
+    else:
         if pv_png:
             return None, pv_png
         if pv_svg:
             raw = pv_svg if isinstance(pv_svg, bytes) else pv_svg.encode()
             return raw, None
         return None, None
-
 
 def _build_figure_svg(
     diag_svg_bytes,  # bytes of 2D SVG (may be None if only PNG available)
@@ -2784,7 +2755,7 @@ def _poseview_ui(
                             cutoff=_cutoff,
                             max_residues=_maxres,
                         )
-                        _html = _render_interactive_diagram(_data) if _data else None
+                        _html = _render_interactive_diagram(_data, key_prefix=btn_key) if _data else None
                         st.session_state[img_svg_key + "_new"]   = _svg
                         st.session_state[img_svg_key + "_ihtml"] = _html
                         st.session_state[pose_key_key + "_new"]  = _pose_key
@@ -2832,7 +2803,7 @@ def _poseview_ui(
                                 cutoff=_cutoff,
                                 max_residues=_maxres,
                             )
-                            _ref_html = _render_interactive_diagram(_ref_data) if _ref_data else None
+                            _ref_html = _render_interactive_diagram(_ref_data, key_prefix=btn_key + "_ref") if _ref_data else None
                             st.session_state[ref_svg_key + "_new"]   = _ref_svg
                             st.session_state[ref_svg_key + "_ihtml"] = _ref_html
                         except Exception as e:
