@@ -81,6 +81,15 @@ try:
 except ImportError:
     _HEME_RESNAMES = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
 
+try:
+    from core import METAL_RESNAMES as _METAL_RESNAMES
+except ImportError:
+    _METAL_RESNAMES = {
+        "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K", "HO",
+        "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1370,11 +1379,15 @@ def _add_ions_to_view(view, rec_fh, model_idx):
     Add ion/metal atoms from rec_fh as spheres to an existing py3Dmol view.
     Returns updated model_idx (incremented if ions were added).
     """
+    _metal_names = globals().get("_METAL_RESNAMES", {
+        "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K", "HO",
+        "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
+    })
     if rec_fh and os.path.exists(rec_fh):
         _ion_lines = [
             l for l in open(rec_fh)
             if l[:6].strip() in ("ATOM", "HETATM")
-            and l[17:20].strip().upper() in _METAL_RESNAMES
+            and l[17:20].strip().upper() in _metal_names
         ]
         if _ion_lines:
             view.addModel("".join(_ion_lines) + "END\n", "pdb")
