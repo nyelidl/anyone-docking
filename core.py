@@ -2470,9 +2470,11 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
     r_ch  = np.array([rch[j].strip() for j in range(nr)])
     r_ri  = np.array([int(rri[j])    for j in range(nr)])
     HYDL = {"C","S","CL","BR","I","F"}
-    LIG_ACCEPTOR_EL = {"N","O","F","S"}
+    LIG_ACCEPTOR_EL = {"N","O","F","S","CL","BR","I"}
+    LIG_METAL_BIND_EL = {"N","O","S","F","CL","BR","I","P"}
     lig_is_acceptor    = np.array([lel[i] in LIG_ACCEPTOR_EL for i in range(nl)])
     lig_is_hydrophobic = np.array([lel[i] in HYDL for i in range(nl)])
+    lig_is_metal_binder = np.array([lel[i] in LIG_METAL_BIND_EL for i in range(nl)])
     def _is_lig_donor(i):
         a = latom[i]
         if lel[i] not in ("N","O","S","F"): return False
@@ -2606,7 +2608,14 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                         lig_atom_idx=i,prot_el=el,is_donor=True,ring_atom_indices=None)); break
         _is_heme_fe = (r_rn[j] in HEME_RESNAMES and r_an[j].strip().upper() == "FE")
         if rn.strip().upper() in METAL_RESNAMES or el in METAL_RESNAMES or _is_heme_fe:
-            if md < 2.8:
+            metal_cand = np.where(lig_is_metal_binder & (dists_j <= 3.2))[0]
+            if len(metal_cand):
+                best_i = int(metal_cand[np.argmin(dists_j[metal_cand])])
+                best_d = float(dists_j[best_i])
+                results.append(dict(resname=rn,chain=ch,resid=ri,
+                    itype="metal",distance=round(best_d,1),lig_atom_idx=best_i,
+                    prot_el=el,is_donor=False,ring_atom_indices=None))
+            elif md < 2.8:
                 results.append(dict(resname=rn,chain=ch,resid=ri,
                     itype="metal",distance=round(md,1),lig_atom_idx=mi,
                     prot_el=el,is_donor=False,ring_atom_indices=None))
@@ -3198,7 +3207,7 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
     ded = _select_interactions_for_2d(raw, max_residues=max_residues)
     if not ded:
         try:
-            raw_fb = _fallback_contacts_for_2d(mol3d, receptor_pdb, cutoff=max(cutoff, 4.8), max_residues=max_residues)
+            raw_fb = _fallback_contacts_for_2d(mol3d, receptor_pdb, cutoff=max(cutoff, 5.2), max_residues=max_residues)
         except Exception:
             raw_fb = []
         for ix in raw_fb:
@@ -3408,6 +3417,7 @@ def _fallback_contacts_for_2d(lig_mol_3d, receptor_pdb: str, cutoff: float = 4.8
     import numpy as np
     from prody import parsePDB
 
+    cutoff = max(float(cutoff), 5.2)
     rec = parsePDB(receptor_pdb)
     if rec is None:
         return []
@@ -3452,7 +3462,7 @@ def _fallback_contacts_for_2d(lig_mol_3d, receptor_pdb: str, cutoff: float = 4.8
 
         if rn in metal_names or elem in metal_names or atom_name == 'FE':
             itype = 'metal'
-        elif elem in {'N', 'O', 'S'}:
+        elif elem in {'N', 'O', 'S', 'P'}:
             itype = 'hbond'
         else:
             itype = 'hydrophobic'
