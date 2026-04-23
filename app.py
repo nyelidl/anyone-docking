@@ -73,6 +73,7 @@ except ImportError:
         "IHP", "TTP", "CTP", "UTP",
         "COA", "SAM", "SAH",
         "EPE", "MES", "TRS", "ACT", "ACY",
+        "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
     }
 
 try:
@@ -205,7 +206,7 @@ def _rcsb_entry_has_no_missing_residues(entry_json: dict):
     return None
 
 
-def _search_protein_rcsb(query: str, top_n: int = 12) -> list[dict]:
+def _search_protein_rcsb(query: str, top_n: int = 25) -> list[dict]:
     """
     Search RCSB by protein/keyword and return entry summaries.
     Uses Search API for IDs, then Data API for metadata.
@@ -1322,24 +1323,10 @@ def show3d(view, height=480):
     except ImportError:
         raw  = view._make_html()
         resp = _re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', raw)
-
-        # Streamlit deprecated st.components.v1.html.
-        # Prefer st.iframe when available, then st.html, and keep the old
-        # components.html only as a last-resort fallback.
-        try:
-            import base64
-            _html_doc = f'<div style="width:100%;overflow:hidden">{resp}</div>'
-            _b64 = base64.b64encode(_html_doc.encode("utf-8")).decode("ascii")
-            _src = "data:text/html;base64," + _b64
-            st.iframe(_src, height=height, scrolling=False)
-        except Exception:
-            try:
-                st.html(f'<div style="width:100%;overflow:hidden">{resp}</div>')
-            except Exception:
-                components.html(
-                    f'<div style="width:100%;overflow:hidden">{resp}</div>',
-                    height=height, scrolling=False,
-                )
+        components.html(
+            f'<div style="width:100%;overflow:hidden">{resp}</div>',
+            height=height, scrolling=False,
+        )
 
 def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
     try:
@@ -3958,7 +3945,7 @@ st.markdown(
     "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown("**Basic** — single ligand. **Batch** — multiple ligands.")
-st.markdown("**☁️ Run on your local machine | 🌐 web-based interface**")
+st.markdown("**☁️ Cloud-ready | 📱 Mobile-compatible**")
 
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
