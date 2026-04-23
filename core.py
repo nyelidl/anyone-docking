@@ -3196,6 +3196,16 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
             # BUG FIX #3: fall back to 0, not i (i may exceed 2D atom count)
             ix["ring_atom_indices"] = [m3to2d.get(i, 0) for i in ix["ring_atom_indices"]]
     ded = _select_interactions_for_2d(raw, max_residues=max_residues)
+    if not ded:
+        try:
+            raw_fb = _fallback_contacts_for_2d(mol3d, receptor_pdb, cutoff=max(cutoff, 4.8), max_residues=max_residues)
+        except Exception:
+            raw_fb = []
+        for ix in raw_fb:
+            ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
+            if ix.get("ring_atom_indices"):
+                ix["ring_atom_indices"] = [m3to2d.get(i, 0) for i in ix["ring_atom_indices"]]
+        ded = _select_interactions_for_2d(raw_fb, max_residues=max_residues)
     cx, cy = W // 2, H // 2
     sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
     pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
@@ -3391,6 +3401,72 @@ def draw_interactions_rdkit(lig_mol, receptor_pdb: str, smiles: str,
         smiles=smiles,title=title,cutoff=cutoff,size=(800,759),max_residues=max_residues)
 
 
+
+
+
+def _fallback_contacts_for_2d(lig_mol_3d, receptor_pdb: str, cutoff: float = 4.8, max_residues: int = 14):
+    import numpy as np
+    from prody import parsePDB
+
+    rec = parsePDB(receptor_pdb)
+    if rec is None:
+        return []
+    conf = lig_mol_3d.GetConformer()
+    nl = lig_mol_3d.GetNumAtoms()
+    lxyz = np.array([[conf.getAtomPosition(i).x,
+                      conf.getAtomPosition(i).y,
+                      conf.getAtomPosition(i).z] for i in range(nl)], dtype=float)
+
+    rc  = np.array(rec.getCoords(), dtype=float)
+    rrn = rec.getResnames()
+    rch = rec.getChids()
+    rri = rec.getResnums()
+    ran = rec.getNames()
+    rel = rec.getElements()
+
+    grouped = {}
+    water_names = {"HOH", "WAT", "DOD"}
+    for j in range(len(rc)):
+        rn = str(rrn[j]).strip().upper()
+        if rn in water_names:
+            continue
+        ch = str(rch[j]).strip()
+        ri = int(rri[j])
+        key = (ch, ri, rn)
+        grouped.setdefault(key, []).append(j)
+
+    out = []
+    metal_names = HEME_RESNAMES | METAL_RESNAMES
+    for (ch, ri, rn), idxs in grouped.items():
+        sub = rc[idxs]
+        diff = lxyz[:, None, :] - sub[None, :, :]
+        dmat = np.linalg.norm(diff, axis=2)
+        i_lig, i_res = np.unravel_index(np.argmin(dmat), dmat.shape)
+        dmin = float(dmat[i_lig, i_res])
+        if dmin > cutoff:
+            continue
+
+        atom_idx = idxs[int(i_res)]
+        atom_name = str(ran[atom_idx]).strip().upper()
+        elem = str(rel[atom_idx]).strip().upper() if rel[atom_idx] else atom_name[:1].upper()
+
+        if rn in metal_names or elem in metal_names or atom_name == 'FE':
+            itype = 'metal'
+        elif elem in {'N', 'O', 'S'}:
+            itype = 'hbond'
+        else:
+            itype = 'hydrophobic'
+
+        out.append(dict(
+            resname=rn, chain=ch, resid=ri,
+            itype=itype, distance=round(dmin, 1),
+            lig_atom_idx=int(i_lig), prot_el=elem,
+            is_donor=False, ring_atom_indices=None,
+        ))
+
+    priority = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    out.sort(key=lambda x: (priority.get(x.get('itype', ''), 99), x.get('distance', 999.0)))
+    return out[:max_residues]
 
 def _select_interactions_for_2d(raw, max_residues: int):
     pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
