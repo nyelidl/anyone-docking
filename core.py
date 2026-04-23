@@ -3233,42 +3233,56 @@ def draw_interaction_diagram_data(
     size: tuple = (800, 759),
     max_residues: int = 14,
 ) -> dict:
-    from rdkit import Chem, RDLogger
-    from rdkit.Chem import rdDepictor
-    import json as _json
+    from rdkit import RDLogger
     RDLogger.DisableLog("rdApp.*")
     W, H = size
     try:
-        mol2d, sc, pl, W, H = _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size)
+        mol2d, sc, pl, W, H = _build_diagram_data(
+            receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size
+        )
     except Exception:
         return None
+
     lig_svg = _render_ligand_svg(mol2d, sc)
     sc_serial = {str(k): [round(v[0], 2), round(v[1], 2)] for k, v in sc.items()}
+
+    special_labels = HEME_RESNAMES | METAL_RESNAMES
     pl_serial = []
-    for p in pl:
-        lx, ly = sc.get(p.get("lig_atom_idx", 0), (W//2, H//2))
-        if p.get("ring_atom_indices"):
-            rx, ry = _ring_centroid_2d(p["ring_atom_indices"], sc)
-            if rx is not None: lx, ly = rx, ry
+    for idx, p in enumerate(pl):
+        lx, ly = sc.get(p.get("lig_atom_idx", 0), (W // 2, H // 2))
+        ring_atom_indices = p.get("ring_atom_indices") or []
+        if ring_atom_indices:
+            rx, ry = _ring_centroid_2d(ring_atom_indices, sc)
+            if rx is not None and ry is not None:
+                lx, ly = rx, ry
+
+        resname = str(p.get("resname", "")).strip()
+        chain = str(p.get("chain", "")).strip()
+        resid = p.get("resid", "")
+        label = resname.upper() if resname.upper() in special_labels else f"{resname} {resid}{chain}".strip()
+
+        bx = p.get("bx", lx)
+        by = p.get("by", ly)
         pl_serial.append({
-            "id":       f"r{len(pl_serial)}",
-            "label":    (p['resname'].upper() if p['resname'].upper() in (HEME_RESNAMES | METAL_RESNAMES)
-                         else f"{p['resname']} {p['resid']}{p.get('chain','')}"),
-            "itype":    p["itype"],
+            "id": f"r{idx}",
+            "label": label,
+            "itype": p.get("itype", "hbond"),
             "distance": p.get("distance"),
-            "lx":       round(lx, 2),
-            "ly":       round(ly, 2),
-            "bx":       round(p["bx"], 2),
-            "by":       round(p["by"], 2),
+            "lx": round(lx, 2),
+            "ly": round(ly, 2),
+            "bx": round(bx, 2),
+            "by": round(by, 2),
         })
+
     RDLogger.EnableLog("rdApp.error")
     return {
-        "W": W, "H": H, "title": title,
+        "W": W,
+        "H": H,
+        "title": title,
         "ligand_svg": lig_svg,
         "placements": pl_serial,
         "svg_coords": sc_serial,
     }
-
 
 def draw_interactions_rdkit_classic(
     lig_mol,
