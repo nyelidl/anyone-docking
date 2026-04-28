@@ -13,3 +13,4 @@ numpy>=1.24
 Pillow>=10.0
 cairosvg>=2.7.1
 requests>=2.31
+admet-ai
