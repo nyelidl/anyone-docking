@@ -5054,29 +5054,6 @@ with tab_basic:
                     st.download_button("⬇ Receptor (.pdb)", open(st.session_state.receptor_fh, "rb"),
                         file_name="receptor.pdb", key="dl_rec", width='stretch')
 
-                st.markdown("---")
-                st.markdown("**📷 Snapshot**")
-                if st.button("Capture view", key=f"btn_capture_{pose_idx}",
-                             help="Capture the current 3D viewer as a PNG image."):
-                    try:
-                        _png = v2.png()
-                        if _png and len(_png) > 100:
-                            st.session_state[f"pose_png_{pose_idx}"] = _png
-                        else:
-                            st.warning("Could not capture image from viewer.")
-                    except Exception as _pe:
-                        st.warning(f"Capture failed: {_pe}")
-                _saved_png = st.session_state.get(f"pose_png_{pose_idx}")
-                if _saved_png:
-                    st.download_button(
-                        "⬇ PNG",
-                        data=_saved_png,
-                        file_name=f"pose_{pose_idx+1}.png",
-                        mime="image/png",
-                        key=f"dl_png_{pose_idx}",
-                        width='stretch',
-                    )
-
             st.markdown("---")
 
             # ── Binding Pocket View ───────────────────────────────────────
