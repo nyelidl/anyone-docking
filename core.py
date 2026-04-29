@@ -1589,7 +1589,73 @@ def prepare_ligand(
                 raise ValueError(f"RDKit could not parse SMILES: {raw[:60]}")
             prot = Chem.MolToSmiles(mol_check, isomericSmiles=True, canonical=True)
             log.append("✓ Neutral mode (keep input charge state)")
+
+        elif actual_mode == "pkanet":
+            # ── pKaNET Cloud pipeline ──────────────────────────────────────
+            try:
+                import pkanet_core as _pk
+                _out_tmp = str(wdir / "_pkanet_tmp")
+                _pk_result = _pk.run_job(
+                    input_type              = "SMILES",
+                    smiles_text             = raw,
+                    uploaded_bytes          = None,
+                    uploaded_name           = None,
+                    target_pH               = ph,
+                    output_name             = name,
+                    out_dir                 = _out_tmp,
+                    output_formats          = [],
+                    enumerate_stereoisomers = False,
+                    use_pubchem             = use_pubchem,
+                    ph_window               = ph_window,
+                    max_tautomers           = max_tautomers,
+                    top_n_microstates       = 1,
+                    write_alt_3d_for_top_k  = 0,
+                )
+                _ligands = _pk_result.get("ligands", [])
+                if _ligands and _ligands[0].get("selected_microstate_smiles"):
+                    _r = _ligands[0]
+                    prot = _r["selected_microstate_smiles"]
+                    _score = _r.get("selection_score", "n/a")
+                    _backend = _r.get("decision_backend", "heuristic")
+                    _pc_cid  = _r.get("pubchem_cid")
+                    log.append(f"✓ pKaNET Cloud — score: {_score} | backend: {_backend}")
+                    if _pc_cid:
+                        log.append(f"  PubChem CID: {_pc_cid}  pKa: {_r.get('pubchem_pka_values')}")
+                    if _r.get("ambiguous_top_assignment"):
+                        log.append("⚠ pKaNET: ambiguous top state — consider checking alternatives")
+                    if _r.get("flag_aromaticity_lost"):
+                        log.append("⚠ pKaNET: aromaticity lost in selected tautomer")
+                    if _r.get("flag_borderline_pka"):
+                        log.append("⚠ pKaNET: borderline pKa (|pH−pKa| ≤ 1) — result may be ambiguous")
+                else:
+                    log.append("⚠ pKaNET returned no microstate — falling back to Dimorphite-DL")
+                    actual_mode = "dimorphite"
+                    raise RuntimeError("pKaNET returned empty result")
+            except ImportError:
+                log.append("⚠ pkanet_core not found — falling back to Dimorphite-DL")
+                log.append("  Place pkanet_core.py alongside app.py to enable pKaNET mode")
+                actual_mode = "dimorphite"
+            except Exception as _pke:
+                log.append(f"⚠ pKaNET failed ({_pke}) — falling back to Dimorphite-DL")
+                actual_mode = "dimorphite"
+
+            # Fallback: run Dimorphite if pKaNET was not available or failed
+            if actual_mode == "dimorphite":
+                try:
+                    from dimorphite_dl import protonate_smiles
+                    vs = protonate_smiles(raw, ph_min=ph, ph_max=ph, max_variants=1)
+                    if vs:
+                        prot = vs[0] if isinstance(vs, list) else vs
+                        log.append(f"✓ Dimorphite-DL fallback pH {ph:.1f}")
+                    else:
+                        log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
+                        prot = raw
+                except Exception as e:
+                    log.append(f"⚠ Dimorphite-DL fallback skipped: {e}")
+                    prot = raw
+
         else:
+            # dimorphite (default)
             try:
                 from dimorphite_dl import protonate_smiles
                 vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
@@ -1600,9 +1666,6 @@ def prepare_ligand(
                     log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
             except Exception as e:
                 log.append(f"⚠ Dimorphite-DL skipped: {e}")
-            if actual_mode == "pkanet":
-                log.append("ℹ pKaNET mode is mapped to the simplified ligand-preparation workflow in this version")
-                actual_mode = "dimorphite"
 
         mol = Chem.MolFromSmiles(prot)
         if mol is None:
