@@ -1,11 +1,445 @@
+
+Claude finished the response
+You said: สารนี้คือ baicalein ประจุ [-1] แต่ py3Dmol แสดงผลเป็นแบบนี้ แก้ไขยังไง
+Screenshot 2026-04-30 at 11.05.48.png
+สารนี้คือ baicalein ประจุ [-1] แต่ py3Dmol แสดงผลเป็นแบบนี้ แก้ไขยังไง
+
+11:06 AM
+Claude responded: ปัญหาและวิธีแก้
+
+Diagnosed baicalein charge display issue and formulated RDKit solution
+Diagnosed baicalein charge display issue and formulated RDKit solution
+ปัญหาและวิธีแก้
+ปัญหาหลักคือ py3Dmol แสดง baicalein ที่มี formal charge -1 ผิดพลาดเพราะ RDKit generate 3D coordinates ไม่ถูกต้องสำหรับ charged species และ hydrogen ไม่ถูก assign ให้ถูกต้อง
+
+วิธีแก้
+python
+from rdkit import Chem
+from rdkit.Chem import AllChem, Draw
+import py3Dmol
+
+# ❌ วิธีที่มักทำให้เกิดปัญหา
+# mol = Chem.MolFromSmiles('O=c1cc(-c2ccccc2)oc2cc(O)c(O)c([O-])c12')
+
+# ✅ วิธีที่ถูกต้อง: สร้าง neutral ก่อน แล้วค่อย deprotonate
+def prepare_charged_ligand(smiles_neutral, smiles_charged):
+    # 1. Generate 3D จาก neutral form ก่อน
+    mol_neutral = Chem.MolFromSmiles(smiles_neutral)
+    mol_neutral = Chem.AddHs(mol_neutral)
+    AllChem.EmbedMolecule(mol_neutral, AllChem.ETKDGv3())
+    AllChem.MMFFOptimizeMolecule(mol_neutral)
+    
+    # 2. แปลงเป็น charged form โดยเก็บ coordinates ไว้
+    mol_charged = Chem.MolFromSmiles(smiles_charged)
+    mol_charged = Chem.AddHs(mol_charged)
+    
+    # Map coordinates จาก neutral → charged
+    AllChem.EmbedMolecule(mol_charged, AllChem.ETKDGv3())
+    AllChem.MMFFOptimizeMolecule(mol_charged)
+    
+    return mol_charged
+
+# Baicalein neutral และ deprotonated ที่ C7-OH (pKa ต่ำสุด)
+smiles_neutral = 'Oc1ccc(-c2cc(=O)c3c(O)c(O)cc(O)c3o2)cc1'
+# Baicalein: 5,6,7-trihydroxyflavone — deprotonate ที่ C7
+smiles_charged = 'Oc1ccc(-c2cc(=O)c3c(O)c([O-])cc(O)c3o2)cc1'
+
+mol = prepare_charged_ligand(smiles_neutral, smiles_charged)
+
+# 3. Export เป็น MolBlock พร้อม charge ที่ถูกต้อง
+mol_block = Chem.MolToMolBlock(mol)
+
+# 4. แสดงใน py3Dmol
+view = py3Dmol.view(width=800, height=600)
+view.addModel(mol_block, 'mol')
+view.setStyle({'stick': {'colorscheme': 'cyanCarbon', 'radius': 0.15}})
+view.addSurface(py3Dmol.VDW, {'opacity': 0.3, 'color': 'cyan'})
+view.zoomTo()
+view.show()
+ถ้าใช้กับ Docking Pose (SDF file)
+python
+# กรณีมี SDF จาก docking แล้วต้องการแสดง charge ให้ถูกต้อง
+def fix_charge_in_sdf(sdf_path, charge=-1):
+    mol = Chem.MolFromMolFile(sdf_path, sanitize=False)
+    
+    # แก้ formal charge ที่ oxygen ตัวที่เหมาะสม
+    mol = Chem.RWMol(mol)
+    
+    # หา OH ที่ควร deprotonate (C7 position ของ baicalein)
+    pattern = Chem.MolFromSmarts('[OH1]c1cc([OH1])c([OH1])c2c1oc(=O)cc2')
+    matches = mol.GetSubstructMatches(pattern)
+    
+    if matches:
+        # Deprotonate ตัวแรกที่ match (C7-OH)
+        oh_idx = matches[0][0]
+        atom = mol.GetAtomWithIdx(oh_idx)
+        atom.SetFormalCharge(-1)
+        atom.SetNumExplicitHs(0)
+    
+    Chem.SanitizeMol(mol)
+    return mol
+
+mol = fix_charge_in_sdf('baicalein_docked.sdf')
+mol_block = Chem.MolToMolBlock(mol)
+
+view = py3Dmol.view(width=800, height=600)
+view.addModel(mol_block, 'mol')
+view.setStyle({'stick': {}})
+view.zoomTo()
+view.show()
+สาเหตุหลักที่ทำให้ display ผิดพลาด
+ปัญหา	สาเหตุ	วิธีแก้
+โครงสร้างบิดเบี้ยว	EmbedMolecule ล้มเหลวกับ charged SMILES	Generate neutral ก่อน
+Hydrogen หาย	AddHs() ไม่ add H ที่ O⁻	ตรวจสอบ GetTotalNumHs()
+Bond order ผิด	Sanitization ล้มเหลว	ใช้ sanitize=False แล้วแก้ charge
+Valence error	Formal charge ไม่ได้ set	Set ด้วย SetFormalCharge(-1)
+ลองใช้ Chem.MolToSmiles(mol) ตรวจสอบว่า SMILES หลัง sanitize ถูกต้องก่อน render ครับ
+
+You said: ลองดูที แก้ตรงไหน บ้างเพราะ ที่เป็น 3D strucutre ผิด หมดเลย
+
+ACD_app.py
+py
+
+
+ACD_core.py
+py
+
+ลองดูที แก้ตรงไหน บ้างเพราะ ที่เป็น 3D strucutre ผิด หมดเลย
+
+11:08 AM
+Claude responded: ตรวจสอบแล้ว พบ 3 จุดหลัก ที่ทำให้ 3D structure แสดงผลผิดหมดเลย
+
+ระบุปัญหาการโหลด SDF และเสนอแก้ไขหลายจุด
+ระบุปัญหาการโหลด SDF และเสนอแก้ไขหลายจุด
+ตรวจสอบแล้ว พบ 3 จุดหลัก ที่ทำให้ 3D structure แสดงผลผิดหมดเลย
+
+สาเหตุหลัก
+🔴 Bug 1 — pose_mols โหลดจาก raw Vina SDF (single bond ทั้งหมด)
+ใน ACD_app.py หลัง run docking:
+
+python
+# ❌ ผิด — โหลดจาก raw Vina output ซึ่ง bond order = single bond ทั้งหมด
+mols = load_mols_from_sdf(dock["out_sdf"], sanitize=False)
+st.session_state["pose_mols"] = mols
+dock["out_sdf"] คือ output จาก Vina ตรงๆ ซึ่งมี bond เป็น single bond ทั้งหมด → py3Dmol render ผิดเพราะ bond order ไม่ถูก
+
+🔴 Bug 2 — Animated viewer ก็ใช้ raw SDF เช่นกัน
+python
+# ❌ ผิด
+sdf_txt = open(st.session_state.output_sdf).read()
+🔴 Bug 3 — _bo_template ใน ACD_core.py fail กับ charged aromatic SMILES
+python
+def _bo_template(smiles: str):
+    mol = Chem.MolFromSmiles(smiles)
+    Chem.Kekulize(mol, clearAromaticFlags=True)  # ❌ fail สำหรับ flavonoid tautomer เช่น O=c1...oc2...
+    return mol
+เมื่อ Dimorphite-DL สร้าง SMILES แบบ O=c1cc(...)oc2cc([O-])c(O)c(O)c12 (baicalein[-1]) → Kekulize fail → fix_sdf_bond_orders เรียก shutil.copy(raw_sdf, fixed_sdf) แทน → pv_sdf ก็ยังผิด
+
+วิธีแก้
+แก้ใน ACD_core.py
+python
+# แก้ที่ _bo_template — บรรทัด ~1893
+def _bo_template(smiles: str):
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Cannot parse SMILES: {smiles!r}")
+    try:
+        Chem.Kekulize(mol, clearAromaticFlags=True)
+    except Exception:
+        # Kekulize ล้มเหลวสำหรับ tautomeric/charged aromatics เช่น flavonoids
+        # ใช้ mol ตามปกติได้เลย AssignBondOrdersFromTemplate ยังทำงานได้
+        pass
+    return mol
+แก้ใน ACD_app.py
+จุดที่ 1 — หลัง run docking (Basic tab) แก้ pose_mols:
+
+python
+# ❌ เดิม
+mols = load_mols_from_sdf(dock["out_sdf"], sanitize=False) if os.path.exists(dock["out_sdf"]) else []
+
+# ✅ แก้ใหม่ — ใช้ pv_sdf (bond-order fixed) ก่อน fallback ไป raw
+_mols_src = (
+    pv_sdf if (pv_sdf and os.path.exists(pv_sdf) and os.path.getsize(pv_sdf) > 10)
+    else dock["out_sdf"]
+)
+mols = load_mols_from_sdf(_mols_src, sanitize=False) if os.path.exists(_mols_src) else []
+จุดที่ 2 — Animated Pose Viewer:
+
+python
+# ❌ เดิม
+sdf_txt = open(st.session_state.output_sdf).read()
+
+# ✅ แก้ใหม่
+_anim_src = st.session_state.get("output_pv_sdf") or st.session_state.output_sdf
+if not (_anim_src and os.path.exists(_anim_src) and os.path.getsize(_anim_src) > 10):
+    _anim_src = st.session_state.output_sdf
+sdf_txt = open(_anim_src).read()
+จุดที่ 3 — Redocking browser (Basic tab):
+
+python
+# ❌ เดิม
+_rd_mols = load_mols_from_sdf(_redock_result["out_sdf"], sanitize=False)
+
+# ✅ แก้ใหม่
+_rd_src = _redock_result.get("pv_sdf") or _redock_result["out_sdf"]
+_rd_mols = load_mols_from_sdf(_rd_src, sanitize=False)
+จุดที่ 4 — Batch Pose Browser:
+
+python
+# ❌ เดิม
+b_mols = load_mols_from_sdf(sel_res["out_sdf"], sanitize=False)
+
+# ✅ แก้ใหม่
+_b_src = sel_res.get("pv_sdf") or sel_res["out_sdf"]
+b_mols = load_mols_from_sdf(_b_src, sanitize=False) if (_b_src and os.path.exists(_b_src)) else []
+จุดที่ 5 — Batch 2D section (pv_all_mols):
+
+python
+# ❌ เดิม
+pv_all_mols = load_mols_from_sdf(pv_sel_res["out_sdf"], sanitize=False)
+
+# ✅ แก้ใหม่
+_pv_all_src = pv_sel_res.get("pv_sdf") or pv_sel_res["out_sdf"]
+pv_all_mols = load_mols_from_sdf(_pv_all_src, sanitize=False) if (_pv_all_src and os.path.exists(_pv_all_src)) else []
+สรุป flow ที่ถูกต้อง
+Vina output (raw .sdf)
+    ↓ fix_sdf_bond_orders()  ← แก้ Bug 3 ให้ไม่ fail
+pv_sdf (bond orders ถูกต้อง)
+    ↓ load_mols_from_sdf()   ← แก้ Bug 1, 2, 4, 5 ให้โหลดจากที่นี่
+pose_mols (bond orders ถูก + coordinates จาก docking)
+    ↓ Chem.MolToMolBlock()
+py3Dmol → 3D structure ถูกต้อง ✅
+You said: ส่วนของ 2D diagram ผิด ไหม?
+ส่วนของ 2D diagram ผิด ไหม?
+
+11:11 AM
+Claude responded: มี 2 bug ใน 2D diagram ที่เชื่อมโยงกับปัญหา charge โดยตรงครับ
+
+ตรวจสอบปัญหา 2D diagram และพบข้อบกพร่องหลายประการ
+ตรวจสอบปัญหา 2D diagram และพบข้อบกพร่องหลายประการ
+มี 2 bug ใน 2D diagram ที่เชื่อมโยงกับปัญหา charge โดยตรงครับ
+
+Bug 1 — GetSubstructMatch fail เพราะ charge ไม่ตรง (ร้ายแรงที่สุด)
+ใน _build_diagram_data บรรทัด ~3303:
+
+python
+m3 = Chem.RemoveHs(mol3d, sanitize=False)
+try: Chem.SanitizeMol(m3)
+except: pass
+m3to2d = {}
+try:
+    mt = m3.GetSubstructMatch(mol2d)   # ❌ fail เมื่อ mol2d มี [O-] แต่ m3 จาก raw SDF ไม่มี charge
+    if len(mt) == mol2d.GetNumAtoms():
+        for i2, i3 in enumerate(mt): m3to2d[i3] = i2
+except: pass
+เมื่อ mol2d มาจาก prot_smiles ที่มี [O-] แต่ m3 มาจาก raw Vina SDF ที่ไม่มี formal charge → GetSubstructMatch fail → m3to2d = {} ว่างเปล่า
+
+ผลคือ interaction ทุกเส้น fallback ไปที่ atom index 0:
+
+python
+ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
+#                                                              ↑ fallback = 0 เสมอ
+เส้นทุกเส้นชี้ไปที่อะตอมเดียวกัน (atom 0) แทนที่จะชี้ไปยังอะตอมที่ถูกต้อง
+
+เดิมเป็นเหมือนกันใน draw_interactions_rdkit_classic ด้วย:
+
+python
+match = mol3d_noH.GetSubstructMatch(mol2d)  # ❌ fail เช่นกัน
+Bug 2 — Chem.MolFromSmiles แบบ plain ใน _build_diagram_data
+python
+# ACD diagram — ใช้ plain parser
+mol2d = Chem.MolFromSmiles(smiles.strip())   # ❌ fail กับ tautomeric SMILES บางตัว
+
+# RDKit diagram — มี _parse_robust() ที่ดีกว่า
+mol2d = _parse_robust(smiles)                # ✅ มี fallback ที่ดีกว่า
+_build_diagram_data ไม่มี fallback → ถ้า parse fail → mol2d สร้างจาก mol3d ซึ่งมี bond order ผิด → 2D structure ผิด
+
+วิธีแก้ใน ACD_core.py
+แก้ _build_diagram_data
+python
+def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size=(800,759)):
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdDepictor
+    RDLogger.DisableLog("rdApp.*")
+    W, H = size
+    mol3d = None
+    for san in (True, False):
+        sup = Chem.SDMolSupplier(pose_sdf, sanitize=san, removeHs=False)
+        mol3d = next((m for m in sup if m is not None), None)
+        if mol3d is not None:
+            if not san:
+                try: Chem.SanitizeMol(mol3d)
+                except: pass
+            break
+    if mol3d is None or mol3d.GetNumConformers() == 0:
+        raise ValueError("No valid 3D pose in SDF")
+
+    # ✅ แก้ Bug 2: ใช้ robust parser แบบเดียวกับ RDKit diagram
+    mol2d = None
+    if smiles and smiles.strip():
+        mol2d = Chem.MolFromSmiles(smiles.strip())
+        if mol2d is None:
+            try:
+                mol2d = Chem.MolFromSmiles(smiles.strip(), sanitize=False)
+                if mol2d is not None:
+                    mol2d.UpdatePropertyCache(strict=False)
+                    Chem.FastFindRings(mol2d)
+                    Chem.SetAromaticity(mol2d)
+                    mol2d = Chem.MolFromSmiles(Chem.MolToSmiles(mol2d))
+            except Exception:
+                mol2d = None
+    if mol2d is None:
+        mol2d = Chem.RemoveHs(mol3d, sanitize=False)
+        try: Chem.SanitizeMol(mol2d)
+        except: pass
+    mol2d = Chem.RemoveHs(mol2d)
+    rdDepictor.Compute2DCoords(mol2d)
+
+    m3 = Chem.RemoveHs(mol3d, sanitize=False)
+    try: Chem.SanitizeMol(m3)
+    except: pass
+
+    # ✅ แก้ Bug 1: ทำ charge-agnostic copy สำหรับ matching เท่านั้น
+    m3to2d = {}
+    try:
+        mol2d_for_match = Chem.RWMol(mol2d)
+        for atom in mol2d_for_match.GetAtoms():
+            atom.SetFormalCharge(0)
+        mol2d_for_match = mol2d_for_match.GetMol()
+        Chem.SanitizeMol(mol2d_for_match)
+
+        m3_neutral = Chem.RWMol(m3)
+        for atom in m3_neutral.GetAtoms():
+            atom.SetFormalCharge(0)
+        m3_neutral = m3_neutral.GetMol()
+        Chem.SanitizeMol(m3_neutral)
+
+        mt = m3_neutral.GetSubstructMatch(mol2d_for_match)
+        if len(mt) == mol2d.GetNumAtoms():
+            for i2, i3 in enumerate(mt): m3to2d[i3] = i2
+    except: pass
+
+    # ... rest unchanged
+แก้ draw_interactions_rdkit_classic เช่นกัน
+python
+    # ✅ แก้ Bug 1 ใน RDKit diagram ด้วย
+    idx3d_to_2d = {}
+    try:
+        mol2d_for_match = Chem.RWMol(mol2d)
+        for atom in mol2d_for_match.GetAtoms(): atom.SetFormalCharge(0)
+        mol2d_for_match = mol2d_for_match.GetMol()
+        Chem.SanitizeMol(mol2d_for_match)
+
+        m3_neutral = Chem.RWMol(mol3d_noH)
+        for atom in m3_neutral.GetAtoms(): atom.SetFormalCharge(0)
+        m3_neutral = m3_neutral.GetMol()
+        Chem.SanitizeMol(m3_neutral)
+
+        match = m3_neutral.GetSubstructMatch(mol2d_for_match)
+        if len(match) == mol2d.GetNumAtoms():
+            for i2d, i3d in enumerate(match):
+                idx3d_to_2d[i3d] = i2d
+    except: pass
+สรุปทุก bug ที่ต้องแก้
+จุด	Bug	แก้ที่ไหน
+_bo_template	Kekulize fail → fix_sdf fail	core.py
+pose_mols	โหลดจาก raw SDF	app.py
+Animated viewer	ใช้ raw SDF	app.py
+Batch b_mols	ใช้ raw SDF	app.py
+_build_diagram_data	SMILES parser ไม่ robust	core.py
+_build_diagram_data	GetSubstructMatch fail เพราะ charge	core.py
+draw_interactions_rdkit_classic	GetSubstructMatch fail เพราะ charge	core.py
+You said: แก้ code ทั้งหมดให้ ที
+แก้ code ทั้งหมดให้ ที
+
+11:14 AM
+Claude responded: ได้เลย ก็อปไฟล์มาแก้เลย ### Fix 1 — botemplate: wrap Kekulize ### Fix 2 — builddiagramdata: robust SMILES parser + charge-agnostic matching ### Fix 3 — drawint…
+
+กำหนดจุดแก้ไขในโค้ด ACD_core.py อย่างแม่นยำ
+กำหนดจุดแก้ไขในโค้ด ACD_core.py อย่างแม่นยำ
+ได้เลย ก็อปไฟล์มาแก้เลย
+
+
+Copy files to working directory
+Copy files to working directory
+Fix 1 — _bo_template: wrap Kekulize
+
+Fix _bo_template Kekulize
+Fix _bo_template Kekulize
+Fix 2 — _build_diagram_data: robust SMILES parser + charge-agnostic matching
+
+Fix _build_diagram_data SMILES parsing and substructure matching
+Fix _build_diagram_data SMILES parsing and substructure matching
+Fix 3 — draw_interactions_rdkit_classic: charge-agnostic matching
+
+Fix rdkit_classic charge-agnostic matching
+Fix rdkit_classic charge-agnostic matching
+Fix 4 — app.py: pose_mols ใช้ pv_sdf
+
+Fix pose_mols to load from pv_sdf
+Fix pose_mols to load from pv_sdf
+Fix 5 — app.py: Animated viewer ใช้ output_pv_sdf
+
+Fix animated viewer to use pv_sdf
+Fix animated viewer to use pv_sdf
+Fix 6 — app.py: Redocking browser ใช้ pv_sdf
+
+Fix redock mols to use pv_sdf
+Fix redock mols to use pv_sdf
+Fix 7 — app.py: Batch pose browser ใช้ pv_sdf
+
+Fix batch b_mols to use pv_sdf
+Fix batch b_mols to use pv_sdf
+Fix 8 — app.py: Batch 2D pv_all_mols ใช้ pv_sdf
+
+Fix pv_all_mols to use pv_sdf
+Fix pv_all_mols to use pv_sdf
+ตรวจสอบว่าแก้ครบทุกจุด:
+
+
+Ran 3 commands
+Ran 3 commands
+ทุกอย่างถูกต้อง copy ไป output:
+
+
+Ran a command, read a file
+Ran a command, read a file
+สรุปทุก fix ที่ทำ:
+
+#	ไฟล์	จุดที่แก้	ปัญหา → วิธีแก้
+1	core.py	_bo_template	Kekulize fail กับ charged flavonoid → ใส่ try/except + fallback parser
+2	core.py	_build_diagram_data	MolFromSmiles plain → เปลี่ยนเป็น _parse_smi_robust
+3	core.py	_build_diagram_data	GetSubstructMatch fail เพราะ charge ไม่ตรง → _strip_charges ก่อน match
+4	core.py	draw_interactions_rdkit_classic	เดียวกับ #3 → _strip_charges_rdk ก่อน match
+5	app.py	pose_mols (Basic)	โหลดจาก raw Vina SDF → ใช้ pv_sdf แทน
+6	app.py	Animated viewer	output_sdf (single bond) → ใช้ output_pv_sdf
+7	app.py	Redocking browser	out_sdf → ใช้ pv_sdf
+8	app.py	Batch pose browser	out_sdf → ใช้ pv_sdf
+9	app.py	Batch 2D pv_all_mols	out_sdf → ใช้ pv_sdf
+
+Acd core
+PY 
+
+Acd app
+PY 
+
+
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
+Acd core · PY
+Copy
+
 #!/usr/bin/env python3
 """
 core.py — Pure computation layer for Anyone Can Dock.
 No Streamlit imports. All functions return plain dicts / tuples.
 Safe to import in Colab notebooks, pytest, or any UI framework.
-
+ 
 """
-
+ 
 import os
 import subprocess
 import sys
@@ -13,11 +447,11 @@ import tempfile
 import time
 import re as _re
 from pathlib import Path
-
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 METAL_RESNAMES = {
     "MG", "ZN", "CA", "MN", "FE", "CU", "CO", "NI", "CD", "HG", "NA", "K", "HO",
     "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
@@ -30,7 +464,7 @@ METAL_CHARGES = {
     "YB": 3.0, "LU": 3.0,
     "NA": 1.0, "K":  1.0,
 }
-
+ 
 EXCLUDE_IONS = set(
     "HOH,WAT,DOD,SOL,NA,CL,K,CA,MG,ZN,MN,FE,CU,CO,NI,CD,HG,HO,LA,CE,PR,ND,PM,SM,EU,GD,TB,DY,ER,TM,YB,LU".split(",")
 )
@@ -50,26 +484,26 @@ COFACTOR_NAMES = {
     "EPE", "MES", "TRS", "ACT", "ACY",
     "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
 }
-
+ 
 HEME_RESNAMES = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
-
+ 
 _PV_MAX_RETRIES = 3
 _PV_RETRY_DELAY = 10
 _PV_POLL_ATTEMPTS = 60
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def run_cmd(cmd, cwd=None):
     r = subprocess.run(
         cmd, shell=isinstance(cmd, str),
         capture_output=True, text=True, cwd=cwd,
     )
     return r.returncode, (r.stdout + r.stderr).strip()
-
-
+ 
+ 
 def _rdkit_six_patch():
     try:
         from rdkit import six  # noqa
@@ -82,8 +516,8 @@ def _rdkit_six_patch():
         _m.PY3 = True
         _rdkit.six = _m
         sys.modules["rdkit.six"] = _m
-
-
+ 
+ 
 def _strip_h_from_pdb(pdb_path: str, out_path: str) -> bool:
     import shutil
     try:
@@ -103,8 +537,8 @@ def _strip_h_from_pdb(pdb_path: str, out_path: str) -> bool:
     except Exception:
         shutil.copy(pdb_path, out_path)
         return False
-
-
+ 
+ 
 def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
     log = []
     try:
@@ -126,7 +560,7 @@ def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
         log.append("⚠ gemmi not installed — trying OpenBabel")
     except Exception as e:
         log.append(f"⚠ gemmi failed ({e}) — trying OpenBabel")
-
+ 
     try:
         rc, out = run_cmd(f'obabel "{cif_path}" -O "{pdb_out_path}" -ipdb')
         if not os.path.exists(pdb_out_path) or os.path.getsize(pdb_out_path) < 100:
@@ -138,7 +572,7 @@ def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
             log.append(f"⚠ OpenBabel CIF->PDB produced empty file (exit {rc}): {out[:300]}")
     except Exception as e:
         log.append(f"⚠ OpenBabel CIF->PDB failed: {e}")
-
+ 
     try:
         from prody import parseMMCIF, writePDB as _writePDB
         atoms = parseMMCIF(cif_path)
@@ -155,15 +589,15 @@ def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
         log.append("⚠ ProDy parseMMCIF not available")
     except Exception as e:
         log.append(f"⚠ ProDy parseMMCIF failed: {e}")
-
+ 
     return {
         "success": False,
         "pdb_path": pdb_out_path,
         "log": log,
         "error": "All CIF->PDB conversion methods failed.",
     }
-
-
+ 
+ 
 def is_cif_file(filepath: str) -> bool:
     ext = Path(filepath).suffix.lower()
     if ext in (".cif", ".mmcif"):
@@ -176,24 +610,24 @@ def is_cif_file(filepath: str) -> bool:
     except Exception:
         pass
     return False
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TOOL AVAILABILITY CHECKS
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def check_obabel():
     import shutil
     if shutil.which("obabel") is None:
         return False, "obabel not found — add 'openbabel' to packages.txt"
     _, out = run_cmd("obabel --version")
     return True, (out.splitlines()[0] if out else "ok")
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  VINA BINARY
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def get_vina_binary(path: str = ""):
     import platform
     system  = platform.system().lower()
@@ -212,7 +646,7 @@ def get_vina_binary(path: str = ""):
     _URL = _BASE + _FNAME
     if not path:
         path = os.path.join(tempfile.gettempdir(), _FNAME)
-
+ 
     def _download(url, dest):
         import requests as _rq
         r = _rq.get(url, stream=True, timeout=120, allow_redirects=True)
@@ -220,7 +654,7 @@ def get_vina_binary(path: str = ""):
         with open(dest, "wb") as f:
             for chunk in r.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
-
+ 
     if not os.path.exists(path) or os.path.getsize(path) < 100_000:
         try:
             _download(_URL, path)
@@ -235,19 +669,19 @@ def get_vina_binary(path: str = ""):
                     return None, f"Download failed: {e1} / x86_64 fallback: {e2}"
             else:
                 return None, f"Download failed: {e1}"
-
+ 
     if system != "windows":
         os.chmod(path, 0o755)
     return path, f"ok ({system}/{machine})"
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  RECEPTOR PREPARATION
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 _MIN_LIG_ATOMS = 4
-
-
+ 
+ 
 def _collect_removable_ligands(atoms) -> list:
     from prody import calcCenter
     excl = EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES
@@ -286,8 +720,8 @@ def _collect_removable_ligands(atoms) -> list:
         })
     results.sort(key=lambda d: (-d["n_atoms"], d["chain"] != "A"))
     return results
-
-
+ 
+ 
 def detect_cocrystal_ligand(raw_pdb: str) -> dict:
     from prody import parsePDB
     atoms = parsePDB(raw_pdb)
@@ -308,8 +742,8 @@ def detect_cocrystal_ligand(raw_pdb: str) -> dict:
         "n_atoms":   chosen["n_atoms"],
         "atoms":     chosen["atoms"],
     }
-
-
+ 
+ 
 def scan_ligands(raw_pdb: str) -> list:
     try:
         from prody import parsePDB, confProDy
@@ -331,8 +765,8 @@ def scan_ligands(raw_pdb: str) -> list:
         ]
     except Exception:
         return []
-
-
+ 
+ 
 def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
     wdir = Path(wdir)
     log  = []
@@ -363,7 +797,7 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
             raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
         log.append("✓ PDBQT conversion complete")
-
+ 
         # Keep ions/metals in receptor.pdb for display/reference only.
         # This is done AFTER PDBQT generation so the docking PDBQT still follows
         # the dedicated reinjection logic below.
@@ -378,7 +812,7 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 log.append(f"✓ Re-added {len(metal_lines)} ion/metal atom(s) to receptor.pdb for display/reference")
             except Exception as e:
                 log.append(f"⚠ Could not re-add ions/metals to receptor.pdb: {e}")
-
+ 
         if metal_lines:
             pdbqt_lines = open(rec_pdbqt).readlines()
             pdbqt_lines = [l for l in pdbqt_lines if l.strip() != "END"]
@@ -424,8 +858,8 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
-
-
+ 
+ 
 def write_box_pdb(filename: str, cx, cy, cz, sx, sy, sz):
     hx, hy, hz = sx / 2, sy / 2, sz / 2
     corners = [
@@ -446,8 +880,8 @@ def write_box_pdb(filename: str, cx, cy, cz, sx, sy, sz):
             "CONECT    5    1    6    7\nCONECT    6    2    5    8\n"
             "CONECT    7    3    5    8\nCONECT    8    4    6    7\n"
         )
-
-
+ 
+ 
 def write_vina_config(filename: str, cx, cy, cz, sx, sy, sz):
     with open(filename, "w") as f:
         f.write(
@@ -458,8 +892,8 @@ def write_vina_config(filename: str, cx, cy, cz, sx, sy, sz):
             f"size_y = {sy}\n"
             f"size_z = {sz}\n"
         )
-
-
+ 
+ 
 def prepare_receptor(
     raw_pdb: str,
     wdir,
@@ -482,16 +916,16 @@ def prepare_receptor(
             if not cif_result["success"]:
                 raise ValueError(f"CIF -> PDB conversion failed: {cif_result.get('error', 'unknown')}")
             raw_pdb = converted_pdb
-
+ 
         atoms = parsePDB(raw_pdb)
         if atoms is None:
             raise ValueError("ProDy parsePDB returned None")
         log.append(f"✓ Parsed {atoms.numAtoms()} atoms")
-
+ 
         ligand_pdb_path     = None
         cocrystal_ligand_id = ""
         cx = cy = cz = 0.0
-
+ 
         _all_ligs = _collect_removable_ligands(atoms)
         _primary  = None
         if _all_ligs:
@@ -502,7 +936,7 @@ def prepare_receptor(
                     log.append(f"⚠ Preferred ligand '{preferred_ligand}' not found — using largest ({_all_ligs[0]['resname']})")
             if _primary is None:
                 _primary = _all_ligs[0]
-
+ 
         if _primary is not None:
             rn  = _primary["resname"]
             ch  = _primary["chain"]
@@ -515,7 +949,7 @@ def prepare_receptor(
                 f"✓ Co-crystal ligand: {rn} chain '{ch}' resnum {ri} ({_primary['n_atoms']} atoms)"
                 + (f"  +{_n_extra} additional ligand(s) will also be removed" if _n_extra else "")
             )
-
+ 
         if center_mode == "auto":
             if _primary is not None:
                 cx, cy, cz = _primary["cx"], _primary["cy"], _primary["cz"]
@@ -539,7 +973,7 @@ def prepare_receptor(
             log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
             if _primary is not None:
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
-
+ 
         if _all_ligs:
             _excl_expr = " or ".join(f"({d['sel_str']})" for d in _all_ligs)
             sel_str = f"not ({_excl_expr}) and not water"
@@ -550,15 +984,15 @@ def prepare_receptor(
                 )
         else:
             sel_str = "not water"
-
+ 
         rec_sel = atoms.select(sel_str)
         if rec_sel is None or rec_sel.numAtoms() == 0:
             raise ValueError("Receptor selection returned no atoms")
-
+ 
         rec_raw_path = str(wdir / "receptor_atoms.pdb")
         writePDB(rec_raw_path, rec_sel)
         log.append(f"✓ Receptor: {rec_sel.numAtoms()} atoms")
-
+ 
         try:
             _rec_lines   = open(rec_raw_path).readlines()
             _coord_lines = [l for l in _rec_lines if l[:6].strip() in ("ATOM", "HETATM")]
@@ -577,18 +1011,18 @@ def prepare_receptor(
                 log.append("✓ Assigned chain A to all blank-chain atoms")
         except Exception as _ce:
             log.append(f"⚠ Chain-fix skipped: {_ce}")
-
+ 
         conv = strip_and_convert_receptor(rec_raw_path, wdir)
         log.extend(conv["log"])
         if not conv["success"]:
             raise ValueError(conv["error"])
-
+ 
         box_pdb  = str(wdir / "rec.box.pdb")
         cfg_path = str(wdir / "rec.box.txt")
         write_box_pdb(box_pdb, cx, cy, cz, sx, sy, sz)
         write_vina_config(cfg_path, cx, cy, cz, sx, sy, sz)
         log.append("✓ Box + config written")
-
+ 
         return {
             "success":             True,
             "rec_fh":              conv["rec_fh"],
@@ -610,20 +1044,20 @@ def prepare_receptor(
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PKANET CLOUD — ionizable site table + HH scoring helpers
 #  Ported from pKaNET Cloud notebook (Hengphasatporn et al. 2026)
 #  Full replacement with all 12 fixes — see file header for details.
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 _PKANET_CACHE: dict = {}
 _PKA_PATTERNS = [
     _re.compile(r"pK[aA][\w\s\(\)]*?=\s*([+-]?\d+(?:\.\d+)?)", _re.IGNORECASE),
     _re.compile(r"([+-]?\d+(?:\.\d+)?)\s*\((?:pK[aA]|acid dissociation)[^)]*\)", _re.IGNORECASE),
 ]
-
+ 
 # Weights matching real pKaNET Cloud notebook
 _W_AROM_RING_LOST         = 8.0
 _W_PHENOL_TO_KETO_FLIP    = 6.0
@@ -632,9 +1066,9 @@ _W_CATECHOL_DIKETO        = 4.0
 _W_PHENOL_PRESERVED_BONUS = 0.5
 _TAUTOMER_PLAUSIBILITY_CUTOFF = 3.0
 _AMBIGUITY_SCORE_GAP          = 0.5
-
+ 
 # ── Chromone system detection ─────────────────────────────────────────────────
-
+ 
 def _detect_chromone_system(mol):
     """Return atom indices of the fused chromen-4-one system."""
     from rdkit import Chem
@@ -642,7 +1076,7 @@ def _detect_chromone_system(mol):
     rings = [set(r) for r in ring_info.AtomRings() if len(r) == 6]
     if not rings:
         return set()
-
+ 
     def _has_exo_carbonyl(atom_idx):
         atom = mol.GetAtomWithIdx(atom_idx)
         if atom.GetSymbol() != "C":
@@ -657,7 +1091,7 @@ def _detect_chromone_system(mol):
             if bo == 1.5 and other.GetTotalNumHs() == 0 and other.GetDegree() == 1:
                 return True
         return False
-
+ 
     pyrone_rings = [
         ring for ring in rings
         if sum(1 for i in ring if mol.GetAtomWithIdx(i).GetSymbol() == "O") == 1
@@ -665,7 +1099,7 @@ def _detect_chromone_system(mol):
     ]
     if not pyrone_rings:
         return set()
-
+ 
     system: set = set()
     for py in pyrone_rings:
         system.update(py)
@@ -673,14 +1107,14 @@ def _detect_chromone_system(mol):
             if other is not py and len(py & other) >= 2:
                 system.update(other)
     return system
-
-
+ 
+ 
 # ── FIX 1-4: Flavonoid A-ring phenol detection ───────────────────────────────
-
+ 
 def _find_flavone_A_ring_phenols(mol):
     """
     Position-aware pKa assignment for chromone A-ring phenolic OHs.
-
+ 
     Classification (Fixes 1-4):
       carbonyl_direct=True   -> flavone_3OH_flavonol   pKa  9.0  (FIX 3)
       carbonyl_direct=False  -> flavone_5OH_chelated   pKa 11.0  (FIX 1)
@@ -692,10 +1126,10 @@ def _find_flavone_A_ring_phenols(mol):
     chromone_atoms = _detect_chromone_system(mol)
     if not chromone_atoms:
         return []
-
+ 
     ring_carbonyl_idx = None
     ring_oxygen_idx   = None
-
+ 
     for idx in chromone_atoms:
         atom = mol.GetAtomWithIdx(idx)
         if atom.GetSymbol() == "C":
@@ -710,11 +1144,11 @@ def _find_flavone_A_ring_phenols(mol):
                     break
         elif atom.GetSymbol() == "O" and atom.IsInRing():
             ring_oxygen_idx = idx
-
+ 
     def _chromone_nbrs(idx):
         return [n.GetIdx() for n in mol.GetAtomWithIdx(idx).GetNeighbors()
                 if n.GetIdx() in chromone_atoms]
-
+ 
     def _has_phenolic_OH(c_idx):
         for bond in mol.GetAtomWithIdx(c_idx).GetBonds():
             other = bond.GetOtherAtom(mol.GetAtomWithIdx(c_idx))
@@ -725,7 +1159,7 @@ def _find_flavone_A_ring_phenols(mol):
                     and not other.IsInRing()):
                 return True
         return False
-
+ 
     candidates = []
     for atom in mol.GetAtoms():
         c_idx = atom.GetIdx()
@@ -744,13 +1178,13 @@ def _find_flavone_A_ring_phenols(mol):
                     and not other.IsInRing()):
                 candidates.append((c_idx, other.GetIdx()))
                 break
-
+ 
     sites = []
     for c_idx, o_idx in candidates:
         chromone_nbrs = _chromone_nbrs(c_idx)
         ortho_carbons = [n for n in chromone_nbrs
                          if mol.GetAtomWithIdx(n).GetSymbol() == "C"]
-
+ 
         # FIX 1 + FIX 3: direct bond vs peri path to C4=O
         ortho_to_carbonyl = False
         carbonyl_direct   = False
@@ -767,11 +1201,11 @@ def _find_flavone_A_ring_phenols(mol):
                         ortho_to_carbonyl = True
                         carbonyl_direct   = False
                         break
-
+ 
         ortho_to_ring_O = (ring_oxygen_idx is not None
                            and ring_oxygen_idx in chromone_nbrs)
         n_ortho_phenols = sum(1 for n in ortho_carbons if _has_phenolic_OH(n))
-
+ 
         if ortho_to_carbonyl:
             if carbonyl_direct:
                 label, pka = "flavone_3OH_flavonol", 9.0    # FIX 3
@@ -785,7 +1219,7 @@ def _find_flavone_A_ring_phenols(mol):
             label, pka = "flavone_phenol_catechol_pair", 7.0   # FIX 4b
         else:
             label, pka = "flavone_phenol_isolated", 7.0         # FIX 2
-
+ 
         sites.append({
             "label":         label,
             "atom_indices":  [o_idx, c_idx],
@@ -793,19 +1227,19 @@ def _find_flavone_A_ring_phenols(mol):
             "heuristic_pka": pka,
             "site_type":     "acid",
         })
-
+ 
     if sites:
         detail = ", ".join(
             f"{s['label'].replace('flavone_','')}(pKa={s['heuristic_pka']})"
             for s in sites
         )
         print(f"    🌸  Detected {len(sites)} flavonoid A-ring phenol(s): {detail}")
-
+ 
     return sites
-
-
+ 
+ 
 # ── Ionizable site SMARTS table ───────────────────────────────────────────────
-
+ 
 _IONIZABLE_SITE_DEF = [
     ("sulfonic_acid",      "[SX4](=O)(=O)[OX2H1]",                             1.0,  "acid"),
     ("phosphoric_mono",    "[PX4](=O)([OX2H1])([OX2H1])[OX2H1]",              2.1,  "acid"),
@@ -840,8 +1274,8 @@ _IONIZABLE_SITE_DEF = [
     ("amidine",            "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                 12.4,  "base"),
     ("guanidine",          "[NX3][CX3](=[NX2])[NX3]",                         13.0,  "base"),
 ]
-
-
+ 
+ 
 def _compile_ionizable_sites():
     from rdkit import Chem
     compiled = []
@@ -850,23 +1284,23 @@ def _compile_ionizable_sites():
         if pat is not None:
             compiled.append((lbl, pat, pka, stype))
     return compiled
-
+ 
 _IONIZABLE_SITES_COMPILED = _compile_ionizable_sites()
-
-
+ 
+ 
 # ── FIX 5: find_ionizable_sites with claimed_atoms ───────────────────────────
-
+ 
 def _find_ionizable_sites(mol):
     """
     FIX 5: claimed_atoms prevents SMARTS pass from overwriting A-ring OHs.
-
+ 
     Pass 1: flavonoid A-ring phenols (claim atoms -> block Pass 2).
     Pass 2: SMARTS table, first-match-wins per ionizable atom.
     """
     sites         = []
     seen_ion      = set()
     claimed_atoms = set()
-
+ 
     # Pass 1 — flavone A-ring (highest priority)
     for site in _find_flavone_A_ring_phenols(mol):
         ion_idx = site["ionizable_idx"]
@@ -875,7 +1309,7 @@ def _find_ionizable_sites(mol):
         seen_ion.add(ion_idx)
         claimed_atoms.update(site["atom_indices"])
         sites.append(site)
-
+ 
     # Pass 2 — generic SMARTS table
     for lbl, pat, pka, stype in _IONIZABLE_SITES_COMPILED:
         for match in mol.GetSubstructMatches(pat):
@@ -907,16 +1341,16 @@ def _find_ionizable_sites(mol):
                 "site_type":     stype,
             })
     return sites
-
-
+ 
+ 
 # ── FIX 6: HH scoring with dpH-scaled formula ────────────────────────────────
-
+ 
 def _hh_fraction_charged(pka, ph, site_type):
     if site_type == "acid":
         return 1.0 / (1.0 + 10.0 ** (pka - ph))
     return 1.0 / (1.0 + 10.0 ** (ph - pka))
-
-
+ 
+ 
 def _hh_match_score(pka, ph, site_type, actual_charge):
     """FIX 6: Real pKaNET Cloud formula — dpH-scaled with decisive multiplier."""
     f_charged = _hh_fraction_charged(pka, ph, site_type)
@@ -944,10 +1378,10 @@ def _hh_match_score(pka, ph, site_type, actual_charge):
             return  0.15
         else:
             return -min(1.5, dpH * 0.45 * pen_mul) - 0.15
-
-
+ 
+ 
 # ── FIX 7: Tautomer plausibility with aromaticity guards ─────────────────────
-
+ 
 _CHEM_BONUS_DEF = [
     ("amide",            +2.5, "[CX3](=O)[NX3;H1,H2]"),
     ("lactam",           +2.5, "[C;R](=O)[N;R]"),
@@ -967,8 +1401,8 @@ _CHEM_PENALTY_DEF = [
     ("catechol_diketo",    -_W_CATECHOL_DIKETO,
         "[#6;!a;R]1(=O)[#6;!a;R](=O)[#6;R][#6;R][#6;R][#6;R]1"),
 ]
-
-
+ 
+ 
 def _compile_chem_rules():
     from rdkit import Chem
     rules = []
@@ -977,10 +1411,10 @@ def _compile_chem_rules():
         if pat is not None:
             rules.append((lbl, wt, pat))
     return rules
-
+ 
 _CHEM_RULES = _compile_chem_rules()
-
-
+ 
+ 
 def _n_aromatic_rings(mol):
     if mol is None:
         return 0
@@ -989,8 +1423,8 @@ def _n_aromatic_rings(mol):
         return int(rdMolDescriptors.CalcNumAromaticRings(mol))
     except Exception:
         return 0
-
-
+ 
+ 
 def _count_phenolic_OH(mol):
     if mol is None:
         return 0
@@ -999,8 +1433,8 @@ def _count_phenolic_OH(mol):
     if pat is None:
         return 0
     return len(mol.GetSubstructMatches(pat))
-
-
+ 
+ 
 def _score_tautomer(smiles, ref_mol=None):
     """FIX 7: Aromaticity-loss and phenol-flip penalties vs ref_mol."""
     from rdkit import Chem
@@ -1020,10 +1454,10 @@ def _score_tautomer(smiles, ref_mol=None):
         if phenols_lost > 0:
             total += -_W_PHENOL_TO_KETO_FLIP * phenols_lost
     return total
-
-
+ 
+ 
 # ── FIX 8: Full 8-component microstate scoring ───────────────────────────────
-
+ 
 def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
     """
     FIX 8: Full 8-component scoring matching real pKaNET Cloud:
@@ -1040,27 +1474,27 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return -1e9
-
+ 
     ion_sites = _find_ionizable_sites(mol)
     fc_map    = {a.GetIdx(): int(a.GetFormalCharge()) for a in mol.GetAtoms()}
     net       = sum(fc_map.values())
     n_pos     = sum(1 for v in fc_map.values() if v > 0)
     n_neg     = sum(1 for v in fc_map.values() if v < 0)
-
+ 
     # s1: amide-N deprotonation safety
     pat_bad = Chem.MolFromSmarts("[$([NX3-]C=O),$([NX3-]c=O)]")
     s1 = -5.0 * len(mol.GetSubstructMatches(pat_bad)) if pat_bad else 0.0
-
+ 
     # s2: aromaticity loss vs ref_mol
     s2 = 0.0
     if ref_mol is not None:
         rings_lost = max(0, _n_aromatic_rings(ref_mol) - _n_aromatic_rings(mol))
         if rings_lost > 0:
             s2 = -_W_AROM_RING_LOST * rings_lost
-
+ 
     # s3: tautomer plausibility
     s3 = 0.65 * taut_score
-
+ 
     # s4: HH pH-consistency for each ionizable site
     s4 = 0.0
     for site in ion_sites:
@@ -1071,7 +1505,7 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
                 pka = min(pc_vals, key=lambda v: abs(v - pka))
         site_charge = sum(fc_map.get(i, 0) for i in site["atom_indices"])
         s4 += _hh_match_score(pka, ph, site["site_type"], site_charge)
-
+ 
     # s5: PubChem evidence bonus
     s5 = 0.0
     if pubchem.get("available"):
@@ -1081,7 +1515,7 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
             exp = -1 if _hh_fraction_charged(pv, ph, "acid") > 0.5 else 0
             s5 += 0.25 * w if net == exp else -0.15 * w
         s5 = max(-0.4, min(0.5, s5))
-
+ 
     # s6: zwitterion consistency
     has_acid = any(s["site_type"] == "acid"
                    and (ph - s["heuristic_pka"]) > 1.0 for s in ion_sites)
@@ -1092,7 +1526,7 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
         s6 = 0.8 if (has_acid and has_base) else -0.6
     else:
         s6 = -0.4 if (has_acid and has_base and net == 0 and n_pos == 0) else 0.0
-
+ 
     # s7: improbable neutral penalty
     strong_acid   = [s for s in ion_sites if s["site_type"] == "acid"
                      and (ph - s["heuristic_pka"]) > 2.0]
@@ -1111,15 +1545,15 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
         s7 -= 0.35 * len(probable_acid)
     if probable_base and net <= 0 and n_pos == 0:
         s7 -= 0.35 * len(probable_base)
-
+ 
     # s8: multicharge penalty
     s8 = -0.12 * max(0, n_pos + n_neg - 2)
-
+ 
     return s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8
-
-
+ 
+ 
 # ── FIX 9: Manual deprotonation ──────────────────────────────────────────────
-
+ 
 def _manual_deprotonate_site(smiles, site):
     """FIX 9: Manually ionize a specific site. Returns new SMILES or None."""
     from rdkit import Chem
@@ -1158,10 +1592,10 @@ def _manual_deprotonate_site(smiles, site):
         return Chem.MolToSmiles(new_mol, isomericSmiles=True, canonical=True)
     except Exception:
         return None
-
-
+ 
+ 
 # ── FIX 10: Supplement Dimorphite with missed ionizable sites ─────────────────
-
+ 
 def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, target_ph):
     """
     FIX 10: For each ionizable site Dimorphite missed, force-generate
@@ -1182,10 +1616,10 @@ def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, targe
             supplemented.append(new_smi)
             existing.add(new_smi)
     return supplemented
-
-
+ 
+ 
 # ── PubChem lookup ────────────────────────────────────────────────────────────
-
+ 
 def _pubchem_pka_lookup(smiles: str) -> dict:
     from rdkit import Chem
     result = {"available": False, "pka_values": [], "confidence": "low",
@@ -1240,10 +1674,10 @@ def _pubchem_pka_lookup(smiles: str) -> dict:
         return result
     except Exception:
         return result
-
-
+ 
+ 
 # ── FIX 11: generate_ranked_microstates (full pipeline) ──────────────────────
-
+ 
 def _generate_ranked_microstates(
     base_smiles,
     target_ph=7.4,
@@ -1258,14 +1692,14 @@ def _generate_ranked_microstates(
     """
     from rdkit import Chem
     from rdkit.Chem.MolStandardize import rdMolStandardize
-
+ 
     if pubchem is None:
         pubchem = {}
-
+ 
     ref_mol = Chem.MolFromSmiles(base_smiles)
     if ref_mol is None:
         return []
-
+ 
     # Tautomer enumeration with aromaticity guard (FIX 7)
     enum   = rdMolStandardize.TautomerEnumerator()
     seen_t = set()
@@ -1288,23 +1722,23 @@ def _generate_ranked_microstates(
             })
     except Exception:
         pass
-
+ 
     tautomers = sorted(tautomers, key=lambda x: -x["score"])[:max_tautomers]
     best_t    = tautomers[0]["score"]
     kept      = [t for t in tautomers
                  if t["score"] >= best_t - _TAUTOMER_PLAUSIBILITY_CUTOFF]
     if not kept:
         kept = [tautomers[0]]
-
+ 
     # Ionizable sites from input molecule (FIX 5 — claimed_atoms)
     ion_sites = _find_ionizable_sites(ref_mol)
-
+ 
     ph_lo = max(0.0,  target_ph - ph_window / 2)
     ph_hi = min(14.0, target_ph + ph_window / 2)
-
+ 
     all_micro = []
     seen_smi  = set()
-
+ 
     for taut in kept:
         # Dimorphite-DL enumeration
         raw_states = [taut["smiles"]]
@@ -1334,12 +1768,12 @@ def _generate_ranked_microstates(
                         raw_states.append(c)
         except Exception:
             pass
-
+ 
         # FIX 10: supplement for sites Dimorphite missed
         microstates = _supplement_dimorphite(
             taut["smiles"], raw_states, ion_sites, target_ph
         )
-
+ 
         for smi in microstates:
             if smi in seen_smi:
                 continue
@@ -1356,17 +1790,17 @@ def _generate_ranked_microstates(
                 "selection_score":   float(sc),
                 "net_charge":        net,
             })
-
+ 
     all_micro.sort(key=lambda x: (
         -x["selection_score"],
         abs(x["net_charge"]),
         x["microstate_smiles"],
     ))
     return all_micro
-
-
+ 
+ 
 # ── FIX 12: _apply_ionizable_site_correction (uses fixed site detection) ─────
-
+ 
 def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
                                       ph: float, log: list) -> str:
     """
@@ -1379,10 +1813,10 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
     mol = Chem.MolFromSmiles(current_smiles)
     if mol is None:
         return current_smiles
-
+ 
     fc_map = {a.GetIdx(): int(a.GetFormalCharge()) for a in mol.GetAtoms()}
     sites  = _find_ionizable_sites(mol)
-
+ 
     missed = sorted(
         [s for s in sites
          if s["site_type"] == "acid"
@@ -1394,7 +1828,7 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
     )
     if not missed:
         return current_smiles
-
+ 
     site = missed[0]
     try:
         rw = Chem.RWMol(mol)
@@ -1409,10 +1843,10 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
     except Exception as e:
         log.append(f"⚠ Site correction failed ({site['label']}): {e}")
         return current_smiles
-
-
+ 
+ 
 # ── protonate_pkanet: public API (unchanged signature) ───────────────────────
-
+ 
 def protonate_pkanet(
     smiles: str,
     ph: float,
@@ -1426,10 +1860,10 @@ def protonate_pkanet(
     """
     from rdkit import Chem
     from rdkit.Chem.MolStandardize import rdMolStandardize
-
+ 
     log       = []
     canonical = smiles.strip()
-
+ 
     # Standardize
     try:
         mol = Chem.MolFromSmiles(canonical)
@@ -1443,7 +1877,7 @@ def protonate_pkanet(
             log.append("✓ RDKit standardized")
     except Exception as e:
         log.append(f"⚠ Standardization skipped: {e}")
-
+ 
     # PubChem lookup
     pubchem = {"available": False, "pka_values": [], "confidence": "low"}
     if use_pubchem:
@@ -1456,7 +1890,7 @@ def protonate_pkanet(
                 log.append("ℹ PubChem: no data — heuristic table")
         except Exception as e:
             log.append(f"⚠ PubChem failed: {e}")
-
+ 
     # Ranked microstates
     try:
         all_micro = _generate_ranked_microstates(
@@ -1490,16 +1924,16 @@ def protonate_pkanet(
             pass
         mol_fb = Chem.MolFromSmiles(best_smi)
         charge = int(Chem.GetFormalCharge(mol_fb)) if mol_fb else 0
-
+ 
     log.append(f"✓ Formal charge: {charge:+d}")
     return best_smi, charge, log
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  LIGAND PREPARATION
 # ══════════════════════════════════════════════════════════════════════════════
-
-
+ 
+ 
 def _meeko_to_pdbqt(mol, out_path: str):
     """Convert an RDKit mol to PDBQT via Meeko."""
     from meeko import MoleculePreparation
@@ -1513,8 +1947,8 @@ def _meeko_to_pdbqt(mol, out_path: str):
         pdbqt_str = prep.write_pdbqt_string()
     with open(out_path, "w") as f:
         f.write(pdbqt_str)
-
-
+ 
+ 
 def _ligand_charge_summary(smiles: str) -> dict:
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
@@ -1540,13 +1974,13 @@ def _ligand_charge_summary(smiles: str) -> dict:
         "charged_atoms": rows,
         "is_zwitterion": bool(n_pos > 0 and n_neg > 0 and net == 0),
     }
-
+ 
 def _charged_atoms_text(rows: list) -> str:
     if not rows:
         return "none"
     return ", ".join(f"{r['symbol']}{r['atom_idx']}({r['formal_charge']:+d})" for r in rows)
-
-
+ 
+ 
 def prepare_ligand(
     smiles: str,
     name: str,
@@ -1559,103 +1993,37 @@ def prepare_ligand(
 ) -> dict:
     """
     Ligand preparation aligned to the simpler, stable version the user preferred.
-
+ 
     Behavior:
       - neutral    : keep the input connectivity/charge state, add H only
       - dimorphite : protonate with Dimorphite-DL at target pH using the first returned state
       - pkanet     : accepted for compatibility, but currently falls back to the same
                      simple Dimorphite-based preparation used in the preferred version
-
+ 
     Charge reporting is always based on RDKit formal charge of the final SMILES
     actually used for 3D building and docking.
     """
     _rdkit_six_patch()
     from rdkit import Chem
     from rdkit.Chem import AllChem
-
+ 
     wdir      = Path(wdir)
     log       = []
     out_pdbqt = str(wdir / f"{name}.pdbqt")
     out_sdf   = str(wdir / f"{name}_3d.sdf")
-
+ 
     try:
         raw = smiles.strip()
         prot = raw
         actual_mode = mode or "dimorphite"
-
+ 
         if actual_mode == "neutral":
             mol_check = Chem.MolFromSmiles(raw)
             if mol_check is None:
                 raise ValueError(f"RDKit could not parse SMILES: {raw[:60]}")
             prot = Chem.MolToSmiles(mol_check, isomericSmiles=True, canonical=True)
             log.append("✓ Neutral mode (keep input charge state)")
-
-        elif actual_mode == "pkanet":
-            # ── pKaNET Cloud pipeline ──────────────────────────────────────
-            try:
-                import pkanet_core as _pk
-                _out_tmp = str(wdir / "_pkanet_tmp")
-                _pk_result = _pk.run_job(
-                    input_type              = "SMILES",
-                    smiles_text             = raw,
-                    uploaded_bytes          = None,
-                    uploaded_name           = None,
-                    target_pH               = ph,
-                    output_name             = name,
-                    out_dir                 = _out_tmp,
-                    output_formats          = [],
-                    enumerate_stereoisomers = False,
-                    use_pubchem             = use_pubchem,
-                    ph_window               = ph_window,
-                    max_tautomers           = max_tautomers,
-                    top_n_microstates       = 1,
-                    write_alt_3d_for_top_k  = 0,
-                )
-                _ligands = _pk_result.get("ligands", [])
-                if _ligands and _ligands[0].get("selected_microstate_smiles"):
-                    _r = _ligands[0]
-                    prot = _r["selected_microstate_smiles"]
-                    _score = _r.get("selection_score", "n/a")
-                    _backend = _r.get("decision_backend", "heuristic")
-                    _pc_cid  = _r.get("pubchem_cid")
-                    log.append(f"✓ pKaNET Cloud — score: {_score} | backend: {_backend}")
-                    if _pc_cid:
-                        log.append(f"  PubChem CID: {_pc_cid}  pKa: {_r.get('pubchem_pka_values')}")
-                    if _r.get("ambiguous_top_assignment"):
-                        log.append("⚠ pKaNET: ambiguous top state — consider checking alternatives")
-                    if _r.get("flag_aromaticity_lost"):
-                        log.append("⚠ pKaNET: aromaticity lost in selected tautomer")
-                    if _r.get("flag_borderline_pka"):
-                        log.append("⚠ pKaNET: borderline pKa (|pH−pKa| ≤ 1) — result may be ambiguous")
-                else:
-                    log.append("⚠ pKaNET returned no microstate — falling back to Dimorphite-DL")
-                    actual_mode = "dimorphite"
-                    raise RuntimeError("pKaNET returned empty result")
-            except ImportError:
-                log.append("⚠ pkanet_core not found — falling back to Dimorphite-DL")
-                log.append("  Place pkanet_core.py alongside app.py to enable pKaNET mode")
-                actual_mode = "dimorphite"
-            except Exception as _pke:
-                log.append(f"⚠ pKaNET failed ({_pke}) — falling back to Dimorphite-DL")
-                actual_mode = "dimorphite"
-
-            # Fallback: run Dimorphite if pKaNET was not available or failed
-            if actual_mode == "dimorphite":
-                try:
-                    from dimorphite_dl import protonate_smiles
-                    vs = protonate_smiles(raw, ph_min=ph, ph_max=ph, max_variants=1)
-                    if vs:
-                        prot = vs[0] if isinstance(vs, list) else vs
-                        log.append(f"✓ Dimorphite-DL fallback pH {ph:.1f}")
-                    else:
-                        log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
-                        prot = raw
-                except Exception as e:
-                    log.append(f"⚠ Dimorphite-DL fallback skipped: {e}")
-                    prot = raw
-
         else:
-            # dimorphite (default)
             try:
                 from dimorphite_dl import protonate_smiles
                 vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
@@ -1666,35 +2034,38 @@ def prepare_ligand(
                     log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
             except Exception as e:
                 log.append(f"⚠ Dimorphite-DL skipped: {e}")
-
+            if actual_mode == "pkanet":
+                log.append("ℹ pKaNET mode is mapped to the simplified ligand-preparation workflow in this version")
+                actual_mode = "dimorphite"
+ 
         mol = Chem.MolFromSmiles(prot)
         if mol is None:
             raise ValueError(f"RDKit could not parse SMILES: {prot[:60]}")
-
+ 
         charge_info = _ligand_charge_summary(prot)
         charge = int(charge_info["net_charge"])
         log.append(f"✓ Formal charge: {charge:+d}")
         log.append(f"✓ Charged atoms: {_charged_atoms_text(charge_info['charged_atoms'])}")
-
+ 
         mol = Chem.AddHs(mol)
         try:
             params = AllChem.ETKDGv3()
         except AttributeError:
             params = AllChem.ETKDG()
         params.randomSeed = 42
-
+ 
         if AllChem.EmbedMolecule(mol, params) == -1:
             AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
-
+ 
         if AllChem.MMFFHasAllMoleculeParams(mol):
             AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
         else:
             AllChem.UFFOptimizeMolecule(mol, maxIters=500)
         log.append("✓ 3D conformer generated + minimised")
-
+ 
         with Chem.SDWriter(out_sdf) as w:
             w.write(mol)
-
+ 
         try:
             _meeko_to_pdbqt(mol, out_pdbqt)
             log.append("✓ PDBQT written (Meeko)")
@@ -1707,7 +2078,7 @@ def prepare_ligand(
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
             log.append("✓ PDBQT written (OpenBabel fallback)")
-
+ 
         return {
             "success":           True,
             "pdbqt":             out_pdbqt,
@@ -1723,11 +2094,11 @@ def prepare_ligand(
             "protonation_mode":  actual_mode,
             "log":               log,
         }
-
+ 
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
-
+ 
 def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
     """
     Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
@@ -1737,13 +2108,13 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
     _rdkit_six_patch()
     from rdkit import Chem
     from rdkit.Chem import AllChem
-
+ 
     wdir      = Path(wdir)
     log       = []
     out_pdbqt = str(wdir / f"{name}.pdbqt")
     out_sdf   = str(wdir / f"{name}_3d.sdf")
     ext       = Path(file_path).suffix.lower()
-
+ 
     try:
         mol = None
         if ext == ".sdf":
@@ -1779,23 +2150,23 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
                     mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
                     if mol is None:
                         mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
-
+ 
         if mol is None:
             raise ValueError(f"Could not read molecule from {Path(file_path).name}")
-
+ 
         frags = Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)
         if len(frags) > 1:
             frags = sorted(frags, key=lambda m: m.GetNumAtoms(), reverse=True)
             mol = frags[0]
             log.append(f"⚠ {len(frags)} fragments — kept largest ({mol.GetNumAtoms()} atoms)")
-
+ 
         try:
             Chem.SanitizeMol(mol)
         except Exception:
             pass
-
+ 
         log.append("✓ Loaded molecule from file (no protonation)")
-
+ 
         try:
             smi = Chem.MolToSmiles(Chem.RemoveHs(mol))
         except Exception:
@@ -1808,10 +2179,10 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
         except Exception:
             charge = 0
         log.append(f"✓ Formal charge: {charge:+d}")
-
+ 
         mol = Chem.AddHs(mol, addCoords=True)
         log.append("✓ All hydrogens made explicit")
-
+ 
         conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
         if conf is None or conf.Is3D() is False:
             try:
@@ -1828,10 +2199,10 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             log.append("✓ 3D conformer generated (no coords in file)")
         else:
             log.append("✓ Using 3D coordinates from uploaded file")
-
+ 
         with Chem.SDWriter(out_sdf) as w:
             w.write(mol)
-
+ 
         try:
             _meeko_to_pdbqt(mol, out_pdbqt)
             log.append("✓ PDBQT written (Meeko)")
@@ -1845,7 +2216,7 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
             log.append("✓ PDBQT written (OpenBabel fallback)")
-
+ 
         return {
             "success":     True,
             "pdbqt":       out_pdbqt,
@@ -1857,8 +2228,8 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
-
-
+ 
+ 
 def smiles_from_file(file_path: str, wdir) -> str:
     """Extract SMILES from SDF / MOL2 / PDB. Raises ValueError on failure."""
     wdir = Path(wdir)
@@ -1877,12 +2248,12 @@ def smiles_from_file(file_path: str, wdir) -> str:
             if pts:
                 return pts[0]
         raise ValueError("Could not convert structure file to SMILES")
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DOCKING
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def run_vina(
     receptor_pdbqt: str,
     ligand_pdbqt: str,
@@ -1897,7 +2268,7 @@ def run_vina(
     wdir      = Path(wdir)
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
     out_sdf   = str(wdir / f"{out_name}_out.sdf")
-
+ 
     rc, vlog = run_cmd(
         f'"{vina_path}" '
         f'--receptor "{receptor_pdbqt}" '
@@ -1909,12 +2280,12 @@ def run_vina(
         f'--out "{out_pdbqt}"',
         cwd=str(wdir),
     )
-
+ 
     if rc != 0 or not os.path.exists(out_pdbqt):
         return {"success": False, "error": f"Vina exit code {rc}", "log": vlog}
-
+ 
     run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" 2>/dev/null')
-
+ 
     scores    = []
     cur_model = None
     for line in open(out_pdbqt):
@@ -1935,7 +2306,7 @@ def run_vina(
                 })
             except Exception:
                 pass
-
+ 
     return {
         "success":   True,
         "out_pdbqt": out_pdbqt,
@@ -1944,21 +2315,35 @@ def run_vina(
         "top_score": scores[0]["affinity"] if scores else None,
         "log":       vlog,
     }
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  BOND ORDER CORRECTION
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def _bo_template(smiles: str):
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        raise ValueError(f"Cannot parse SMILES: {smiles!r}")
-    Chem.Kekulize(mol, clearAromaticFlags=True)
+        # Try sanitize=False fallback for charged/tautomeric SMILES
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+        if mol is None:
+            raise ValueError(f"Cannot parse SMILES: {smiles!r}")
+        try:
+            mol.UpdatePropertyCache(strict=False)
+            Chem.FastFindRings(mol)
+            Chem.SetAromaticity(mol)
+        except Exception:
+            pass
+    try:
+        Chem.Kekulize(mol, clearAromaticFlags=True)
+    except Exception:
+        # Kekulize fails for some tautomeric/charged aromatics (e.g. flavonoids with [O-])
+        # AssignBondOrdersFromTemplate still works without it
+        pass
     return mol
-
-
+ 
+ 
 def _bo_fix_mol(probe, template):
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -1978,8 +2363,8 @@ def _bo_fix_mol(probe, template):
     for prop in probe.GetPropsAsDict():
         fixed.SetProp(prop, probe.GetProp(prop))
     return fixed
-
-
+ 
+ 
 def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
     import shutil
     from rdkit import Chem, RDLogger
@@ -2027,12 +2412,12 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
     RDLogger.EnableLog("rdApp.error")
     log.append(f"Bond-order fix: {ok} OK, {err} fallback")
     return log
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SDF UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def load_mols_from_sdf(sdf_path: str, sanitize: bool = True) -> list:
     from rdkit import Chem, RDLogger
     RDLogger.DisableLog("rdApp.*")
@@ -2062,19 +2447,19 @@ def load_mols_from_sdf(sdf_path: str, sanitize: bool = True) -> list:
             pass
     RDLogger.EnableLog("rdApp.error")
     return mols
-
-
+ 
+ 
 def write_single_pose(mol, path: str) -> None:
     from rdkit import Chem
     with Chem.SDWriter(path) as w:
         w.write(mol)
-
-
+ 
+ 
 def write_single_pose_pdb(mol, path: str) -> None:
     from rdkit import Chem
     Chem.MolToPDBFile(mol, path)
-
-
+ 
+ 
 def convert_sdf_to_v2000(sdf_path: str) -> str:
     from rdkit import Chem, RDLogger
     out = sdf_path.replace(".sdf", "_v2000.sdf")
@@ -2117,12 +2502,12 @@ def convert_sdf_to_v2000(sdf_path: str) -> str:
     if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
         return out
     return sdf_path
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STRUCTURAL ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5) -> list:
     try:
         import numpy as np
@@ -2148,8 +2533,8 @@ def get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5) ->
         return [{"chain": k[0], "resi": k[1], "resn": v} for k, v in seen.items()]
     except Exception:
         return []
-
-
+ 
+ 
 def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
     try:
         from rdkit import Chem
@@ -2212,18 +2597,18 @@ def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
         return min(_rmsd(pm, cm) for pm in pose_matches for cm in cryst_matches)
     except Exception:
         return None
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  POSEVIEW REST API
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 _PP_BASE          = "https://proteins.plus/api/v2/"
 _PP_UPLOAD        = _PP_BASE + "molecule_handler/upload/"
 _PP_UPLOAD_JOBS   = _PP_BASE + "molecule_handler/upload/jobs/"
 _PP_POSEVIEW      = _PP_BASE + "poseview/"
 _PP_POSEVIEW_JOBS = _PP_BASE + "poseview/jobs/"
-
+ 
 _PP_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -2233,10 +2618,10 @@ _PP_HEADERS = {
     "Referer": "https://proteins.plus/",
     "Origin":  "https://proteins.plus",
 }
-
+ 
 _PP_PROTEIN_CACHE: dict = {}
-
-
+ 
+ 
 def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
              max_polls: int = 60) -> dict:
     import requests
@@ -2251,8 +2636,8 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
         job    = requests.get(poll_url + job_id + "/", headers=_PP_HEADERS, timeout=15).json()
         status = str(job.get("status", "")).lower()
     return job
-
-
+ 
+ 
 def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
     rec_dir = os.path.dirname(os.path.abspath(receptor_pdb))
     candidates = [
@@ -2288,8 +2673,8 @@ def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
     except Exception:
         pass
     return receptor_pdb
-
-
+ 
+ 
 def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     import requests
     last_error = "Unknown error"
@@ -2341,16 +2726,16 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             last_error = f"SVG download failed (attempt {attempt}): {e}"
             continue
     return None, last_error
-
-
+ 
+ 
 def warm_poseview_cache(receptor_pdb: str) -> tuple:
     return True, "Direct POST mode — no pre-upload needed"
-
-
+ 
+ 
 def clear_poseview_cache():
     _PP_PROTEIN_CACHE.clear()
-
-
+ 
+ 
 def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
     import requests
     _SUBMIT = "https://proteins.plus/api/poseview2_rest"
@@ -2404,8 +2789,8 @@ def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
         if not job_failed:
             last_error = f"Timed out after {_PV_POLL_ATTEMPTS * 2} s (attempt {attempt})"
     return None, last_error
-
-
+ 
+ 
 def diagnose_poseview() -> dict:
     import requests
     result = {
@@ -2470,12 +2855,12 @@ def diagnose_poseview() -> dict:
         result["error"] = f"PoseView step failed: {e}"
         log.append(f"✗ PoseView failed: {e}")
     return result
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  IMAGE UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 def svg_to_png(svg_bytes: bytes):
     """Convert SVG bytes -> PNG bytes via cairosvg. Returns None if unavailable."""
     try:
@@ -2483,8 +2868,8 @@ def svg_to_png(svg_bytes: bytes):
         return cairosvg.svg2png(bytestring=svg_bytes, scale=2, background_color="white")
     except Exception:
         return None
-
-
+ 
+ 
 def stamp_png(png_bytes: bytes, text: str) -> bytes:
     """Burn a centred label pill into the bottom of a PNG."""
     try:
@@ -2525,20 +2910,20 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
         return buf.getvalue()
     except Exception:
         return png_bytes
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CUSTOM 2D INTERACTION DIAGRAM
 #  (unchanged from original — full implementation below)
 # ══════════════════════════════════════════════════════════════════════════════
-
+ 
 import math as _math
-
+ 
 _ITYPE_PRIORITY = [
     "metal", "ionic", "halogen", "hbond_to_halogen",
     "hbond", "pi_pi", "cation_pi", "hydrophobic",
 ]
-
+ 
 _CLR_HBOND   = "#1a7a1a"
 _CLR_PIPI    = "#e200e8"
 _CLR_HYDRO   = "#2287ff"
@@ -2546,7 +2931,7 @@ _CLR_IONIC   = "#aa0077"
 _CLR_METAL   = "#cc8800"
 _CLR_HAL     = "#cc2277"
 _CLR_HBXHAL  = "#6633aa"
-
+ 
 _RES_CIRCLE = {
     "hbond":            dict(fill="#80dd80", opacity=0.2),
     "hbond_to_halogen": dict(fill="#80dd80", opacity=0.2),
@@ -2557,7 +2942,7 @@ _RES_CIRCLE = {
     "metal":            dict(fill="#ffe080", opacity=0.2),
     "halogen":          dict(fill="#ffb0d0", opacity=0.2),
 }
-
+ 
 _LBL_CLR = {
     "hbond":            _CLR_HBOND,
     "hbond_to_halogen": _CLR_HBOND,
@@ -2568,7 +2953,7 @@ _LBL_CLR = {
     "metal":            _CLR_METAL,
     "halogen":          _CLR_HAL,
 }
-
+ 
 _LINE_CLR = {
     "hbond":            _CLR_HBOND,
     "hbond_to_halogen": _CLR_HBXHAL,
@@ -2578,16 +2963,16 @@ _LINE_CLR = {
     "metal":            _CLR_METAL,
     "halogen":          _CLR_HAL,
 }
-
+ 
 _ATOM_CLR = {
     "C":"#1a1a1a", "N":"#1a5fa8", "O":"#cc2222",
     "S":"#c8a800", "P":"#e07000", "F":"#1a7a1a",
     "CL":"#1a7a1a", "BR":"#8b2500", "I":"#5c2d8a", "H":"#555555",
 }
 _AROM_DOT_CLR = "#1a7a1a"
-
+ 
 _AROM_ATOMS = {"PHE","TYR","TRP","HIS","HEM","HEC","HEA","HEB","HDD","HDM"}
-
+ 
 _AROM_ATOM_NAMES = {
     "CG","CD1","CD2","CE1","CE2","CZ",
     "ND1","NE2","CE3","CZ2","CZ3","CH2",
@@ -2603,12 +2988,12 @@ _AROM_ATOM_NAMES = {
     "C2D","C3D","C4D",
     "CHA","CHB","CHC","CHD",
 }
-
+ 
 _HYDR_BASE     = {"ALA","VAL","ILE","LEU","MET","PHE","TRP","PRO","GLY","TYR","HIS"}
 _HYDR_EXTENDED = _HYDR_BASE | HEME_RESNAMES
-
-
-
+ 
+ 
+ 
 def _get_aromatic_ring_data(mol, conf):
     import numpy as np
     results = []
@@ -2624,8 +3009,8 @@ def _get_aromatic_ring_data(mol, conf):
         if nl > 0: n /= nl
         results.append((centroid, n, list(ring)))
     return results
-
-
+ 
+ 
 def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                               cutoff: float = 4.5) -> list:
     import numpy as np
@@ -2883,8 +3268,8 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
                     itype="hbond_to_halogen",distance=round(dhx,1),
                     lig_atom_idx=i,prot_el="N",is_donor=True,ring_atom_indices=None))
     return results
-
-
+ 
+ 
 def _deduplicate_interactions(interactions: list) -> list:
     priority={t:i for i,t in enumerate(_ITYPE_PRIORITY)}
     best:dict={}
@@ -2895,8 +3280,8 @@ def _deduplicate_interactions(interactions: list) -> list:
             pn=priority.get(ix["itype"],99); po=priority.get(best[key]["itype"],99)
             if pn<po or (pn==po and ix["distance"]<best[key]["distance"]): best[key]=ix
     return list(best.values())
-
-
+ 
+ 
 def _enrich_with_res_xyz(interactions, mol3d, receptor_pdb):
     import numpy as np
     from prody import parsePDB
@@ -2937,8 +3322,8 @@ def _enrich_with_res_xyz(interactions, mol3d, receptor_pdb):
         dists = np.linalg.norm(res_coords - lig_anchor, axis=1)
         closest_local = int(dists.argmin())
         ix["res_xyz"] = rc[res_idx[closest_local]].tolist()
-
-
+ 
+ 
 def _compute_svg_coords(mol2d, cx, cy, target_size=280):
     from rdkit.Chem import rdDepictor
     if mol2d.GetNumConformers()==0: rdDepictor.Compute2DCoords(mol2d)
@@ -2949,15 +3334,15 @@ def _compute_svg_coords(mol2d, cx, cy, target_size=280):
     span=max(max(xs)-min(xs),max(ys)-min(ys),0.01)
     sc=target_size/span; mx=(min(xs)+max(xs))/2; my=(min(ys)+max(ys))/2
     return {i:(cx+(xs[i]-mx)*sc, cy-(ys[i]-my)*sc) for i in range(n)}
-
-
+ 
+ 
 def _ring_centroid_2d(ring_atom_indices, svg_coords):
     xs=[svg_coords[i][0] for i in ring_atom_indices if i in svg_coords]
     ys=[svg_coords[i][1] for i in ring_atom_indices if i in svg_coords]
     if not xs: return None, None
     return sum(xs)/len(xs), sum(ys)/len(ys)
-
-
+ 
+ 
 def _ring_centroid_from_atom(mol2d, atom_idx_2d, svg_coords):
     ring_info = mol2d.GetRingInfo()
     best_ring = None
@@ -2975,8 +3360,8 @@ def _ring_centroid_from_atom(mol2d, atom_idx_2d, svg_coords):
     if not xs:
         return None, None
     return sum(xs) / len(xs), sum(ys) / len(ys)
-
-
+ 
+ 
 def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
     if not interactions: return []
     items = []
@@ -3026,16 +3411,16 @@ def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
         a = item["angle"]
         result.append({**item, "bx": cx + R * _math.cos(a), "by": cy + R * _math.sin(a), "slot_angle": a})
     return result
-
-
+ 
+ 
 def _rl_ligand_center(svg_coords):
     pts = list(svg_coords.values())
     if not pts: return 400.0, 380.0
     cx = sum(p[0] for p in pts) / len(pts)
     cy = sum(p[1] for p in pts) / len(pts)
     return cx, cy
-
-
+ 
+ 
 def _rl_anchor_angle(ix, svg_coords, cx, cy):
     ai = ix.get("lig_atom_idx", 0)
     ax, ay = svg_coords.get(ai, (cx, cy))
@@ -3045,8 +3430,8 @@ def _rl_anchor_angle(ix, svg_coords, cx, cy):
         if rx is not None:
             ax, ay = rx, ry
     return _math.atan2(ay - cy, ax - cx)
-
-
+ 
+ 
 def _rl_ray_boundary(cx, cy, theta, atom_xy, atom_r=20.0):
     dx = _math.cos(theta)
     dy = _math.sin(theta)
@@ -3061,8 +3446,8 @@ def _rl_ray_boundary(cx, cy, theta, atom_xy, atom_r=20.0):
         t_exit = t_proj + _math.sqrt(max(r2 - perp2, 0.0))
         if t_exit > t_max: t_max = t_exit
     return t_max if t_max > 1.0 else 20.0
-
-
+ 
+ 
 def _rl_place_radially(sorted_interactions, svg_coords, cx, cy, atom_xy, atom_r, gap, node_r, rng):
     JITTER_T = 7.0; JITTER_R = 4.0
     n = len(sorted_interactions)
@@ -3079,8 +3464,8 @@ def _rl_place_radially(sorted_interactions, svg_coords, cx, cy, atom_xy, atom_r,
         by = cy + r_place * sin_t + jit_t[k] * ty
         positions.append((bx, by))
     return positions
-
-
+ 
+ 
 def _rl_resolve_overlaps(positions, atom_xy, cx, cy, node_r=24.55, excl_r=46.0, max_iters=400):
     n = len(positions)
     if n <= 1: return list(positions)
@@ -3122,8 +3507,8 @@ def _rl_resolve_overlaps(positions, atom_xy, cx, cy, node_r=24.55, excl_r=46.0, 
                     bx[i] += push * ddx; by[i] += push * ddy
         if not any_overlap: break
     return list(zip(bx, by))
-
-
+ 
+ 
 def _rl_reduce_crossings(ix_list, bx_by, svg_coords, cx, cy):
     n = len(ix_list); bx_by = list(bx_by)
     def _anchor(ix):
@@ -3148,8 +3533,8 @@ def _rl_reduce_crossings(ix_list, bx_by, svg_coords, cx, cy):
                     bx_by[i], bx_by[j] = bx_by[j], bx_by[i]; improved = True
         if not improved: break
     return bx_by
-
-
+ 
+ 
 def _place_residues_pca(interactions, svg_coords, mol3d, cx, cy, R=210):
     if not interactions: return []
     try:
@@ -3171,8 +3556,8 @@ def _place_residues_pca(interactions, svg_coords, mol3d, cx, cy, R=210):
         return result
     except Exception:
         return _place_residues_no_cross(interactions, svg_coords, cx, cy, R)
-
-
+ 
+ 
 def _render_ligand_svg(mol2d, svg_coords):
     from rdkit import Chem
     parts=[]
@@ -3244,8 +3629,8 @@ def _render_ligand_svg(mol2d, svg_coords):
             fcs="+" if fc==1 else "\u2212" if fc==-1 else f"{fc:+d}"
             parts.append(f'<text x="{ax+hw:.1f}" y="{ay-hw+2:.1f}" font-family="Arial,sans-serif" font-size="10" fill="{clr}">{fcs}</text>')
     return "".join(parts)
-
-
+ 
+ 
 def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
     parts=[]
     parts.append(f'<svg width="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">')
@@ -3336,8 +3721,8 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
             parts.append(f'<text x="{text_x:.1f}" y="{ly0+10}" text-anchor="start" dominant-baseline="central" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#555">{lbl}</text>')
     parts.append('</svg>')
     return "\n".join(parts)
-
-
+ 
+ 
 def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size=(800,759)):
     from rdkit import Chem, RDLogger
     from rdkit.Chem import rdDepictor
@@ -3354,24 +3739,58 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
             break
     if mol3d is None or mol3d.GetNumConformers() == 0:
         raise ValueError("No valid 3D pose in SDF")
+    # ── Robust mol2d from SMILES (handles charged/tautomeric aromatics) ──────
+    def _parse_smi_robust(smi):
+        if not smi: return None
+        m = Chem.MolFromSmiles(smi)
+        if m: return m
+        try:
+            m = Chem.MolFromSmiles(smi, sanitize=False)
+            if m is None: return None
+            m.UpdatePropertyCache(strict=False)
+            Chem.FastFindRings(m)
+            Chem.SetAromaticity(m)
+            m2 = Chem.MolFromSmiles(Chem.MolToSmiles(m))
+            return m2 if m2 else m
+        except Exception:
+            return None
+ 
     mol2d = None
     if smiles and smiles.strip():
-        mol2d = Chem.MolFromSmiles(smiles.strip())
+        mol2d = _parse_smi_robust(smiles.strip())
     if mol2d is None:
         mol2d = Chem.RemoveHs(mol3d, sanitize=False)
         try: Chem.SanitizeMol(mol2d)
         except: pass
     mol2d = Chem.RemoveHs(mol2d)
     rdDepictor.Compute2DCoords(mol2d)
+ 
     m3 = Chem.RemoveHs(mol3d, sanitize=False)
     try: Chem.SanitizeMol(m3)
     except: pass
+ 
+    # ── Charge-agnostic substructure matching ─────────────────────────────
+    # GetSubstructMatch fails when mol2d has [O-] but m3 from raw Vina SDF
+    # has no formal charges. Strip charges on both sides for matching only.
     m3to2d = {}
     try:
-        mt = m3.GetSubstructMatch(mol2d)
+        def _strip_charges(mol):
+            rw = Chem.RWMol(mol)
+            for a in rw.GetAtoms(): a.SetFormalCharge(0)
+            Chem.SanitizeMol(rw)
+            return rw.GetMol()
+        m3_neutral   = _strip_charges(m3)
+        mol2d_neutral = _strip_charges(mol2d)
+        mt = m3_neutral.GetSubstructMatch(mol2d_neutral)
         if len(mt) == mol2d.GetNumAtoms():
             for i2, i3 in enumerate(mt): m3to2d[i3] = i2
-    except: pass
+    except Exception:
+        try:
+            mt = m3.GetSubstructMatch(mol2d)
+            if len(mt) == mol2d.GetNumAtoms():
+                for i2, i3 in enumerate(mt): m3to2d[i3] = i2
+        except Exception:
+            pass
     try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
     except: raw = []
     try: _enrich_with_res_xyz(raw, mol3d, receptor_pdb)
@@ -3389,8 +3808,8 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
     pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
     RDLogger.EnableLog("rdApp.error")
     return mol2d, sc, pl, W, H
-
-
+ 
+ 
 def draw_interaction_diagram(
     receptor_pdb: str,
     pose_sdf: str,
@@ -3410,8 +3829,8 @@ def draw_interaction_diagram(
                 f'Error: {e}</text></svg>').encode()
     svg = _render_diagram_svg(mol2d, sc, pl, title, W, H)
     return svg.encode()
-
-
+ 
+ 
 def draw_interaction_diagram_data(
     receptor_pdb: str,
     pose_sdf: str,
@@ -3456,8 +3875,8 @@ def draw_interaction_diagram_data(
         "placements": pl_serial,
         "svg_coords": sc_serial,
     }
-
-
+ 
+ 
 def draw_interactions_rdkit_classic(
     lig_mol,
     receptor_pdb: str,
@@ -3500,11 +3919,25 @@ def draw_interactions_rdkit_classic(
     except: pass
     idx3d_to_2d = {}
     try:
-        match = mol3d_noH.GetSubstructMatch(mol2d)
+        def _strip_charges_rdk(mol):
+            rw = Chem.RWMol(mol)
+            for a in rw.GetAtoms(): a.SetFormalCharge(0)
+            Chem.SanitizeMol(rw)
+            return rw.GetMol()
+        m3n   = _strip_charges_rdk(mol3d_noH)
+        m2d_n = _strip_charges_rdk(mol2d)
+        match = m3n.GetSubstructMatch(m2d_n)
         if len(match) == mol2d.GetNumAtoms():
             for i2d, i3d in enumerate(match):
                 idx3d_to_2d[i3d] = i2d
-    except: pass
+    except Exception:
+        try:
+            match = mol3d_noH.GetSubstructMatch(mol2d)
+            if len(match) == mol2d.GetNumAtoms():
+                for i2d, i3d in enumerate(match):
+                    idx3d_to_2d[i3d] = i2d
+        except Exception:
+            pass
     try:
         raw = _detect_all_interactions(lig_mol, receptor_pdb, cutoff=cutoff)
     except:
@@ -3555,8 +3988,8 @@ def draw_interactions_rdkit_classic(
         svg_text = _svg_stamp(svg_text, title, W, H)
     RDLogger.EnableLog("rdApp.error")
     return svg_text.encode()
-
-
+ 
+ 
 def draw_interactions_rdkit(lig_mol, receptor_pdb: str, smiles: str,
                             title: str="", cutoff: float=3.5,
                             size: tuple=(500,500), max_residues: int=10) -> bytes:
@@ -3566,8 +3999,8 @@ def draw_interactions_rdkit(lig_mol, receptor_pdb: str, smiles: str,
     with Chem.SDWriter(tmp.name) as w: w.write(lig_mol)
     return draw_interaction_diagram(receptor_pdb=receptor_pdb,pose_sdf=tmp.name,
         smiles=smiles,title=title,cutoff=cutoff,size=(800,759),max_residues=max_residues)
-
-
+ 
+ 
 def _svg_stamp(svg_text:str,title:str,w:int,h:int)->str:
     esc=title.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
     pad=int(w*0.05); pw=w-2*pad; ph=28; py=h-ph-8; ty=py+ph//2; r=ph//2
@@ -3577,8 +4010,8 @@ def _svg_stamp(svg_text:str,title:str,w:int,h:int)->str:
         f' font-family="Arial,sans-serif" font-size="13" font-weight="500" fill="#1A1A1A">'
         f'{esc}</text></g>')
     return svg_text.replace("</svg>",f"{st}</svg>")
-
-
+ 
+ 
 def draw_interaction_diagram_interactive(
     receptor_pdb: str,
     pose_sdf: str,
@@ -3614,3 +4047,7 @@ def draw_interaction_diagram_interactive(
     # Return minimal interactive HTML (full version in app.py _render_interactive_diagram)
     return json.dumps({"placements": residues_js, "W": W, "H": H,
                        "ligand_svg": lig_svg, "title": title})
+ 
+
+
+
