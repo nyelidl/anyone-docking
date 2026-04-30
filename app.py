@@ -4454,8 +4454,55 @@ with tab_basic:
     st.caption("Default ligand preparation uses Dimorphite-DL at the target pH, then reports the RDKit formal charge of the final SMILES.")
 
     # ── Protonation mode ──────────────────────────────────────────────────────
-    _prot_mode_key = "dimorphite"
-    _use_pubchem = False
+    _prot_mode_ui = st.radio(
+        "Protonation mode",
+        [
+            "⚡ Fast (Dimorphite-DL)",
+            "🔬 Neutral (add H only)",
+            "🧬 pKaNET Cloud",
+        ],
+        horizontal=True,
+        key="prot_mode",
+        help=(
+            "How to determine the ligand's protonation state at the target pH.\n\n"
+            "📖 ⚡ Fast       : Dimorphite-DL — fast, works offline, good for most drugs.\n"
+            "   🔬 Neutral    : keep input charge, just add H — use with pre-prepared files.\n"
+            "   🧬 pKaNET     : tautomer-aware microstate ranking, PubChem pKa evidence.\n"
+            "                   Best for polyphenols, flavonoids, zwitterions.\n"
+            "⚙️ Use pKaNET for natural products and complex ring systems.\n"
+            "⚠️ pKaNET requires pkanet_core.py — falls back to Dimorphite if not found."
+        ),
+    )
+    _prot_mode_key = {
+        "⚡ Fast (Dimorphite-DL)": "dimorphite",
+        "🔬 Neutral (add H only)": "neutral",
+        "🧬 pKaNET Cloud":         "pkanet",
+    }.get(_prot_mode_ui, "dimorphite")
+
+    # pKaNET advanced options (shown only when pKaNET is selected)
+    _use_pubchem    = False
+    _pkanet_max_tau = 8
+    _pkanet_ph_win  = 1.0
+    if _prot_mode_ui == "🧬 pKaNET Cloud":
+        with st.expander("⚙️ pKaNET options", expanded=False):
+            _use_pubchem    = st.checkbox(
+                "Query PubChem for experimental pKa",
+                value=True, key="pkanet_use_pubchem",
+                help="Fetch dissociation constants from PubChem to guide microstate scoring.",
+            )
+            _pkanet_max_tau = st.slider(
+                "Max tautomers", 1, 20, 8, key="pkanet_max_tau",
+                help="Max tautomers enumerated per SMILES. Higher = more thorough, slower.",
+            )
+            _pkanet_ph_win  = st.slider(
+                "pH window", 0.2, 2.0, 1.0, 0.1, key="pkanet_ph_win",
+                help="Dimorphite-DL enumerates states in [pH − window/2, pH + window/2].",
+            )
+        st.info(
+            "🧬 pKaNET Cloud mode — uses tautomer enumeration + 8-component HH scoring. "
+            "May take 5–30 s per ligand. Requires **pkanet_core.py** in the same folder.",
+            icon="ℹ️",
+        )
     # ─────────────────────────────────────────────────────────────────────────
 
     if not st.session_state.receptor_done:
