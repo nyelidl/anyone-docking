@@ -4476,8 +4476,13 @@ with tab_basic:
         })
         with st.spinner("Preparing ligand…"):
             _mode = st.session_state.get("lig_input_mode", "SMILES string")
-            _prot_mode_key  = "dimorphite"
-            _use_pubchem    = False
+            # ✅ Use the actual radio selection — do NOT hardcode "dimorphite"
+            _prot_mode_key = {
+                "⚡ Fast (Dimorphite-DL)": "dimorphite",
+                "🔬 Neutral (add H only)": "neutral",
+                "🧬 pKaNET Cloud":         "pkanet",
+            }.get(st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)"), "dimorphite")
+            _use_pubchem    = st.session_state.get("pkanet_use_pubchem", False)
             _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
 
