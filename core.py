@@ -1891,7 +1891,7 @@ def _bo_template(smiles: str):
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        # Try sanitize=False fallback for charged/tautomeric SMILES
+        # Fallback for charged/tautomeric SMILES (e.g. flavonoids with [O-])
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
         if mol is None:
             raise ValueError(f"Cannot parse SMILES: {smiles!r}")
@@ -1905,7 +1905,7 @@ def _bo_template(smiles: str):
         Chem.Kekulize(mol, clearAromaticFlags=True)
     except Exception:
         # Kekulize fails for some tautomeric/charged aromatics (e.g. flavonoids with [O-])
-        # AssignBondOrdersFromTemplate still works without it
+        # AssignBondOrdersFromTemplate still works without explicit Kekulization
         pass
     return mol
 
@@ -3345,7 +3345,7 @@ def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, si
             for a in rw.GetAtoms(): a.SetFormalCharge(0)
             Chem.SanitizeMol(rw)
             return rw.GetMol()
-        m3_neutral   = _strip_charges(m3)
+        m3_neutral    = _strip_charges(m3)
         mol2d_neutral = _strip_charges(mol2d)
         mt = m3_neutral.GetSubstructMatch(mol2d_neutral)
         if len(mt) == mol2d.GetNumAtoms():
