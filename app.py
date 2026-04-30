@@ -4454,55 +4454,8 @@ with tab_basic:
     st.caption("Default ligand preparation uses Dimorphite-DL at the target pH, then reports the RDKit formal charge of the final SMILES.")
 
     # ── Protonation mode ──────────────────────────────────────────────────────
-    _prot_mode_ui = st.radio(
-        "Protonation mode",
-        [
-            "⚡ Fast (Dimorphite-DL)",
-            "🔬 Neutral (add H only)",
-            "🧬 pKaNET Cloud",
-        ],
-        horizontal=True,
-        key="prot_mode",
-        help=(
-            "How to determine the ligand's protonation state at the target pH.\n\n"
-            "📖 ⚡ Fast       : Dimorphite-DL — fast, works offline, good for most drugs.\n"
-            "   🔬 Neutral    : keep input charge, just add H — use with pre-prepared files.\n"
-            "   🧬 pKaNET     : tautomer-aware microstate ranking, PubChem pKa evidence.\n"
-            "                   Best for polyphenols, flavonoids, zwitterions.\n"
-            "⚙️ Use pKaNET for natural products and complex ring systems.\n"
-            "⚠️ pKaNET requires pkanet_core.py — falls back to Dimorphite if not found."
-        ),
-    )
-    _prot_mode_key = {
-        "⚡ Fast (Dimorphite-DL)": "dimorphite",
-        "🔬 Neutral (add H only)": "neutral",
-        "🧬 pKaNET Cloud":         "pkanet",
-    }.get(_prot_mode_ui, "dimorphite")
-
-    # pKaNET advanced options (shown only when pKaNET is selected)
-    _use_pubchem    = False
-    _pkanet_max_tau = 8
-    _pkanet_ph_win  = 1.0
-    if _prot_mode_ui == "🧬 pKaNET Cloud":
-        with st.expander("⚙️ pKaNET options", expanded=False):
-            _use_pubchem    = st.checkbox(
-                "Query PubChem for experimental pKa",
-                value=True, key="pkanet_use_pubchem",
-                help="Fetch dissociation constants from PubChem to guide microstate scoring.",
-            )
-            _pkanet_max_tau = st.slider(
-                "Max tautomers", 1, 20, 8, key="pkanet_max_tau",
-                help="Max tautomers enumerated per SMILES. Higher = more thorough, slower.",
-            )
-            _pkanet_ph_win  = st.slider(
-                "pH window", 0.2, 2.0, 1.0, 0.1, key="pkanet_ph_win",
-                help="Dimorphite-DL enumerates states in [pH − window/2, pH + window/2].",
-            )
-        st.info(
-            "🧬 pKaNET Cloud mode — uses tautomer enumeration + 8-component HH scoring. "
-            "May take 5–30 s per ligand. Requires **pkanet_core.py** in the same folder.",
-            icon="ℹ️",
-        )
+    _prot_mode_key = "dimorphite"
+    _use_pubchem = False
     # ─────────────────────────────────────────────────────────────────────────
 
     if not st.session_state.receptor_done:
@@ -4736,11 +4689,8 @@ with tab_basic:
             rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             ph_val = st.session_state.get("ph_in", 7.4)
             _rd_prot_mode = st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)")
-            _rd_prot_mode = {
-                "⚡ Fast (Dimorphite-DL)": "dimorphite",
-                "🔬 Neutral (add H only)": "neutral",
-                "🧬 pKaNET Cloud":         "pkanet",
-            }.get(_rd_prot_mode, "dimorphite")
+            _rd_prot_mode = {"⚡ Fast (Dimorphite-DL)": "dimorphite",
+                              "🔬 Neutral (add H only)": "neutral"}.get(_rd_prot_mode, "dimorphite")
             _rd_use_pubchem = False
             _rd_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _rd_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
@@ -4816,7 +4766,11 @@ with tab_basic:
             else:
                 df = None
 
-            mols = load_mols_from_sdf(dock["out_sdf"], sanitize=False) if os.path.exists(dock["out_sdf"]) else []
+            mols = load_mols_from_sdf(
+                pv_sdf if (pv_sdf and os.path.exists(pv_sdf) and os.path.getsize(pv_sdf) > 10)
+                else dock["out_sdf"],
+                sanitize=False,
+            ) if os.path.exists(dock["out_sdf"]) else []
             _full_log = dock["log"] + "\n\n── Bond-order fix ──\n" + "\n".join(pv_log)
             st.session_state.update({
                 "output_pdbqt": dock["out_pdbqt"], "output_sdf": dock["out_sdf"],
@@ -4907,7 +4861,8 @@ with tab_basic:
         _redock_result = st.session_state.get("redock_result")
         if _redock_result and _redock_result.get("out_sdf") and os.path.exists(_redock_result["out_sdf"]):
             st.markdown("**⭐ Redocking Reference**")
-            _rd_mols = load_mols_from_sdf(_redock_result["out_sdf"], sanitize=False)
+            _rd_src = _redock_result.get("pv_sdf") or _redock_result["out_sdf"]
+            _rd_mols = load_mols_from_sdf(_rd_src, sanitize=False)
             if _rd_mols:
                 _rd_pose_i = st.slider("Reference pose", 1, len(_rd_mols), 1, key="rd_pose_sel") - 1
                 _rd_scores = _redock_result.get("pose_scores", [])
@@ -5003,8 +4958,11 @@ with tab_basic:
                 "   3000 ms = slow, careful inspection per pose."
             ),
         )
+        _anim_sdf = st.session_state.get("output_pv_sdf") or st.session_state.output_sdf
+        if not (_anim_sdf and os.path.exists(_anim_sdf) and os.path.getsize(_anim_sdf) > 10):
+            _anim_sdf = st.session_state.output_sdf
         if st.session_state.output_sdf and os.path.exists(st.session_state.output_sdf):
-            sdf_txt = open(st.session_state.output_sdf).read()
+            sdf_txt = open(_anim_sdf).read()
             va = py3Dmol.view(width="100%", height=440)
             va.setBackgroundColor(_viewer_bg())
             mai = 0
@@ -5571,7 +5529,8 @@ with tab_batch:
             is_redock_sel = sel_res.get("is_redock", False)
             pose_scores_l = sel_res.get("pose_scores", [])
 
-            b_mols = load_mols_from_sdf(sel_res["out_sdf"], sanitize=False)
+            _b_src = sel_res.get("pv_sdf") or sel_res["out_sdf"]
+            b_mols = load_mols_from_sdf(_b_src, sanitize=False) if (_b_src and os.path.exists(_b_src)) else []
             if b_mols:
                 b_pose_i = st.slider("Pose", 1, len(b_mols), 1, key="b_pose_sel") - 1
                 this_score = pose_scores_l[b_pose_i] if b_pose_i < len(pose_scores_l) else sel_res["Top Score"]
@@ -5748,7 +5707,8 @@ with tab_batch:
                 [r["Name"] for r in pv_browsable], index=0, key="b_pv_lig_sel")
             pv_sel_res  = next(r for r in pv_browsable if r["Name"] == pv_sel_nm)
             pv_safe_nm  = pv_sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
-            pv_all_mols = load_mols_from_sdf(pv_sel_res["out_sdf"], sanitize=False)
+            _pv_all_src = pv_sel_res.get("pv_sdf") or pv_sel_res["out_sdf"]
+            pv_all_mols = load_mols_from_sdf(_pv_all_src, sanitize=False) if (_pv_all_src and os.path.exists(_pv_all_src)) else []
 
             if pv_all_mols:
                 pv_pose_i = st.slider("Pose (AI prompt context)", 1, len(pv_all_mols), 1, key="b_pv_pose_sel") - 1
