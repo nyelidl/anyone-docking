@@ -1493,8 +1493,6 @@ def protonate_pkanet(
             pass
         mol_fb = Chem.MolFromSmiles(best_smi)
         charge = int(Chem.GetFormalCharge(mol_fb)) if mol_fb else 0
-
-    log.append(f"✓ Formal charge: {charge:+d}")
     return best_smi, charge, log
 
 
