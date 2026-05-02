@@ -1024,7 +1024,7 @@ def _score_tautomer(smiles, ref_mol=None):
 
 # ── FIX 8: Full 8-component microstate scoring ───────────────────────────────
 
-def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
+def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None, ion_sites=None):
     """
     FIX 8: Full 8-component scoring matching real pKaNET Cloud:
       s1 amide-N deprotonation safety
@@ -1041,7 +1041,10 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
     if mol is None:
         return -1e9
 
-    ion_sites = _find_ionizable_sites(mol)
+    # ion_sites must come from ref_mol (the original input SMILES), NOT from
+    # the microstate mol which has [O-] atoms (Hs=0) that break site detection.
+    if ion_sites is None:
+        ion_sites = _find_ionizable_sites(ref_mol if ref_mol is not None else mol)
     fc_map    = {a.GetIdx(): int(a.GetFormalCharge()) for a in mol.GetAtoms()}
     net       = sum(fc_map.values())
     n_pos     = sum(1 for v in fc_map.values() if v > 0)
@@ -1348,7 +1351,7 @@ def _generate_ranked_microstates(
                 continue
             seen_smi.add(smi)
             sc  = _score_microstate(smi, target_ph, taut["score"], pubchem,
-                                    ref_mol=ref_mol)
+                                    ref_mol=ref_mol, ion_sites=ion_sites)
             net = int(Chem.GetFormalCharge(mol_check))
             all_micro.append({
                 "microstate_smiles": smi,
