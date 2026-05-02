@@ -1592,7 +1592,31 @@ def prepare_ligand(
                 raise ValueError(f"RDKit could not parse SMILES: {raw[:60]}")
             prot = Chem.MolToSmiles(mol_check, isomericSmiles=True, canonical=True)
             log.append("✓ Neutral mode (keep input charge state)")
+
+        elif actual_mode == "pkanet":
+            try:
+                prot, _, pka_log = protonate_pkanet(
+                    raw, ph,
+                    use_pubchem=use_pubchem,
+                    max_tautomers=max_tautomers,
+                    ph_window=ph_window,
+                )
+                log.extend(pka_log)
+                log.append("✓ pKaNET Cloud protonation applied")
+            except Exception as _pke:
+                log.append(f"⚠ pKaNET failed ({_pke}) — falling back to Dimorphite-DL")
+                try:
+                    from dimorphite_dl import protonate_smiles
+                    vs = protonate_smiles(raw, ph_min=ph, ph_max=ph, max_variants=1)
+                    if vs:
+                        prot = vs[0] if isinstance(vs, list) else vs
+                        log.append(f"✓ Dimorphite-DL fallback pH {ph:.1f}")
+                    prot = _apply_ionizable_site_correction(raw, prot, ph, log)
+                except Exception as e2:
+                    log.append(f"⚠ Dimorphite-DL fallback skipped: {e2}")
+
         else:
+            # dimorphite (default)
             try:
                 from dimorphite_dl import protonate_smiles
                 vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
@@ -1603,9 +1627,7 @@ def prepare_ligand(
                     log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
             except Exception as e:
                 log.append(f"⚠ Dimorphite-DL skipped: {e}")
-            if actual_mode == "pkanet":
-                log.append("ℹ pKaNET mode is mapped to the simplified ligand-preparation workflow in this version")
-                actual_mode = "dimorphite"
+            prot = _apply_ionizable_site_correction(raw, prot, ph, log)
 
         mol = Chem.MolFromSmiles(prot)
         if mol is None:
