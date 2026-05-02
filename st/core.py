@@ -1024,7 +1024,7 @@ def _score_tautomer(smiles, ref_mol=None):
 
 # ── FIX 8: Full 8-component microstate scoring ───────────────────────────────
 
-def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
+def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None, ion_sites=None):
     """
     FIX 8: Full 8-component scoring matching real pKaNET Cloud:
       s1 amide-N deprotonation safety
@@ -1041,7 +1041,10 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None):
     if mol is None:
         return -1e9
 
-    ion_sites = _find_ionizable_sites(mol)
+    # ion_sites must come from ref_mol (the original input SMILES), NOT from
+    # the microstate mol which has [O-] atoms (Hs=0) that break site detection.
+    if ion_sites is None:
+        ion_sites = _find_ionizable_sites(ref_mol if ref_mol is not None else mol)
     fc_map    = {a.GetIdx(): int(a.GetFormalCharge()) for a in mol.GetAtoms()}
     net       = sum(fc_map.values())
     n_pos     = sum(1 for v in fc_map.values() if v > 0)
@@ -1348,7 +1351,7 @@ def _generate_ranked_microstates(
                 continue
             seen_smi.add(smi)
             sc  = _score_microstate(smi, target_ph, taut["score"], pubchem,
-                                    ref_mol=ref_mol)
+                                    ref_mol=ref_mol, ion_sites=ion_sites)
             net = int(Chem.GetFormalCharge(mol_check))
             all_micro.append({
                 "microstate_smiles": smi,
@@ -1490,8 +1493,6 @@ def protonate_pkanet(
             pass
         mol_fb = Chem.MolFromSmiles(best_smi)
         charge = int(Chem.GetFormalCharge(mol_fb)) if mol_fb else 0
-
-    log.append(f"✓ Formal charge: {charge:+d}")
     return best_smi, charge, log
 
 
@@ -1589,7 +1590,31 @@ def prepare_ligand(
                 raise ValueError(f"RDKit could not parse SMILES: {raw[:60]}")
             prot = Chem.MolToSmiles(mol_check, isomericSmiles=True, canonical=True)
             log.append("✓ Neutral mode (keep input charge state)")
+
+        elif actual_mode == "pkanet":
+            try:
+                prot, _, pka_log = protonate_pkanet(
+                    raw, ph,
+                    use_pubchem=use_pubchem,
+                    max_tautomers=max_tautomers,
+                    ph_window=ph_window,
+                )
+                log.extend(pka_log)
+                log.append("✓ pKaNET Cloud protonation applied")
+            except Exception as _pke:
+                log.append(f"⚠ pKaNET failed ({_pke}) — falling back to Dimorphite-DL")
+                try:
+                    from dimorphite_dl import protonate_smiles
+                    vs = protonate_smiles(raw, ph_min=ph, ph_max=ph, max_variants=1)
+                    if vs:
+                        prot = vs[0] if isinstance(vs, list) else vs
+                        log.append(f"✓ Dimorphite-DL fallback pH {ph:.1f}")
+                    prot = _apply_ionizable_site_correction(raw, prot, ph, log)
+                except Exception as e2:
+                    log.append(f"⚠ Dimorphite-DL fallback skipped: {e2}")
+
         else:
+            # dimorphite (default)
             try:
                 from dimorphite_dl import protonate_smiles
                 vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
@@ -1600,9 +1625,7 @@ def prepare_ligand(
                     log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
             except Exception as e:
                 log.append(f"⚠ Dimorphite-DL skipped: {e}")
-            if actual_mode == "pkanet":
-                log.append("ℹ pKaNET mode is mapped to the simplified ligand-preparation workflow in this version")
-                actual_mode = "dimorphite"
+            prot = _apply_ionizable_site_correction(raw, prot, ph, log)
 
         mol = Chem.MolFromSmiles(prot)
         if mol is None:
