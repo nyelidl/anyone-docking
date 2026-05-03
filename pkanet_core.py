@@ -798,31 +798,40 @@ def _find_flavone_A_ring_phenols(mol: Chem.Mol) -> list[dict]:
 
 
 def find_ionizable_sites(mol: Chem.Mol) -> list[dict]:
-    sites:  list[dict]     = []
-    seen_k: set[frozenset] = set()
+    sites: list[dict] = []
+    seen_ion: set[int] = set()       # dedup by ionizable atom idx
     claimed_atoms: set[int] = set()
 
-    # Pass 1: flavonoid A-ring phenols (highest priority).
-    flavone_hits = _find_flavone_A_ring_phenols(mol)
-    for site in flavone_hits:
-        k = frozenset(site["atom_indices"])
-        if k in seen_k:
+    # Pass 1: flavonoid A-ring phenols (highest priority)
+    for site in _find_flavone_A_ring_phenols(mol):
+        ion_idx = site.get("atom_indices", [None])[0]
+        if ion_idx in seen_ion:
             continue
-        seen_k.add(k)
+        seen_ion.add(ion_idx)
         claimed_atoms.update(site["atom_indices"])
         sites.append(site)
 
-    # Pass 2: SMARTS-driven generic site list.
+    # Pass 2: SMARTS-driven generic site list — per ionizable atom
     for lbl, pat, pka_v, stype in _IONIZABLE_SITES_COMPILED:
         for match in mol.GetSubstructMatches(pat):
-            k = frozenset(match)
-            if k in seen_k:
-                continue
             if any(a in claimed_atoms for a in match):
                 continue
-            seen_k.add(k)
-            sites.append(dict(label=lbl, atom_indices=list(match),
-                               heuristic_pka=pka_v, site_type=stype))
+            ion_atoms = [
+                idx for idx in match
+                if mol.GetAtomWithIdx(idx).GetAtomicNum() in (7, 8, 16)
+                and mol.GetAtomWithIdx(idx).GetTotalNumHs() > 0
+                and idx not in seen_ion
+            ]
+            if not ion_atoms:
+                continue
+            for ion_idx in ion_atoms:
+                seen_ion.add(ion_idx)
+                sites.append(dict(
+                    label=lbl,
+                    atom_indices=[ion_idx],  # per-atom site
+                    heuristic_pka=pka_v,
+                    site_type=stype,
+                ))
     return sites
 
 
