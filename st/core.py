@@ -808,15 +808,12 @@ def _find_flavone_A_ring_phenols(mol):
 
 _IONIZABLE_SITE_DEF = [
     ("sulfonic_acid",      "[SX4](=O)(=O)[OX2H1]",                             1.0,  "acid"),
-    ("phosphoric_mono",    "[PX4](=O)([OX2H1])([OX2H1])[OX2H1]",              2.1,  "acid"),
-    ("phosphoric_free",  "[PX4](=O)([OX2H1])([OX2H1])[OX2H1]",                  1.0, "acid"),
-    ("phosphate_diester","[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",           2.1, "acid"), 
-    ("phosphonate",      "[PX4](=O)([OX2H1])[OX2H1]",                            2.1, "acid"), 
+    ("phosphate_diester",  "[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",       2.1,  "acid"),  # alpha/beta/gamma-P (1 OH)
+    ("phosphonate",       "[PX4](=O)([OX2H1])[OX2H1]",                         2.1,  "acid"),  # gamma-P (2 OH)
     ("carboxylic_acid",    "[CX3](=O)[OX2H1]",                                 4.5,  "acid"),
     ("tetrazole",          "c1nn[nH]n1",                                        4.9,  "acid"),
     ("imidazole_acid",     "c1cn[nH]c1",                                        6.0,  "acid"),
     ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                 5.5,  "acid"),
-    ("phosphonate",        "[PX4](=O)([OX2H1])[OX2H1,OX1-]",                  6.5,  "acid"),
     ("sulfonamide_NH",     "[SX4](=O)(=O)[NX3;H1]",                           10.1,  "acid"),
     ("imide_NH",           "[CX3](=O)[NX3;H1][CX3]=O",                         9.6,  "acid"),
     ("acylhydrazone_NH",   "[CX3](=O)[NX3;H1][NX2]=[CX3]",                   10.5,  "acid"),
@@ -879,36 +876,31 @@ def _find_ionizable_sites(mol):
         claimed_atoms.update(site["atom_indices"])
         sites.append(site)
 
-    # Pass 2 — generic SMARTS table
+    # Pass 2 — generic SMARTS table (per-atom dedup)
+    # Each ionizable atom (O/S/N with H) in a match becomes its own site.
+    # This correctly handles multi-OH groups (e.g. gamma-phosphate in ATP/ADP)
+    # where a single SMARTS match covers 2 ionizable oxygens.
     for lbl, pat, pka, stype in _IONIZABLE_SITES_COMPILED:
         for match in mol.GetSubstructMatches(pat):
             if any(a in claimed_atoms for a in match):
                 continue
-            ion_idx = None
-            for idx in match:
-                a = mol.GetAtomWithIdx(idx)
-                if a.GetAtomicNum() in (7, 8, 16) and (
-                        a.GetTotalNumHs() > 0 or a.GetFormalCharge() < 0):
-                    ion_idx = idx
-                    break
-            if ion_idx is None:
-                for idx in match:
-                    a = mol.GetAtomWithIdx(idx)
-                    if a.GetAtomicNum() in (7, 8, 16):
-                        ion_idx = idx
-                        break
-            if ion_idx is None:
-                ion_idx = match[0]
-            if ion_idx in seen_ion:
+            ion_atoms = [
+                idx for idx in match
+                if mol.GetAtomWithIdx(idx).GetAtomicNum() in (7, 8, 16)
+                and mol.GetAtomWithIdx(idx).GetTotalNumHs() > 0
+                and idx not in seen_ion
+            ]
+            if not ion_atoms:
                 continue
-            seen_ion.add(ion_idx)
-            sites.append({
-                "label":         lbl,
-                "atom_indices":  list(match),
-                "ionizable_idx": ion_idx,
-                "heuristic_pka": pka,
-                "site_type":     stype,
-            })
+            for ion_idx in ion_atoms:
+                seen_ion.add(ion_idx)
+                sites.append({
+                    "label":         lbl,
+                    "atom_indices":  [ion_idx],
+                    "ionizable_idx": ion_idx,
+                    "heuristic_pka": pka,
+                    "site_type":     stype,
+                })
     return sites
 
 
@@ -1496,6 +1488,8 @@ def protonate_pkanet(
             pass
         mol_fb = Chem.MolFromSmiles(best_smi)
         charge = int(Chem.GetFormalCharge(mol_fb)) if mol_fb else 0
+
+    log.append(f"✓ Formal charge: {charge:+d}")
     return best_smi, charge, log
 
 
