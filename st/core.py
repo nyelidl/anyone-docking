@@ -809,6 +809,9 @@ def _find_flavone_A_ring_phenols(mol):
 _IONIZABLE_SITE_DEF = [
     ("sulfonic_acid",      "[SX4](=O)(=O)[OX2H1]",                             1.0,  "acid"),
     ("phosphoric_mono",    "[PX4](=O)([OX2H1])([OX2H1])[OX2H1]",              2.1,  "acid"),
+    ("phosphoric_free",  "[PX4](=O)([OX2H1])([OX2H1])[OX2H1]",                  1.0, "acid"),
+    ("phosphate_diester","[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",           2.1, "acid"), 
+    ("phosphonate",      "[PX4](=O)([OX2H1])[OX2H1]",                            2.1, "acid"), 
     ("carboxylic_acid",    "[CX3](=O)[OX2H1]",                                 4.5,  "acid"),
     ("tetrazole",          "c1nn[nH]n1",                                        4.9,  "acid"),
     ("imidazole_acid",     "c1cn[nH]c1",                                        6.0,  "acid"),
