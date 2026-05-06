@@ -5341,6 +5341,30 @@ with tab_batch:
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
         _b_use_pubchem = False
 
+        # ── Protonation mode (same options as single-ligand tab) ─────────────
+        _b_prot_mode_ui = st.radio(
+            "Protonation mode",
+            ["⚡ Fast (Dimorphite-DL)", "🧬 pKaNET Cloud", "🔬 Neutral (keep input)"],
+            horizontal=True,
+            key="b_prot_mode_ui",
+            help=(
+                "**Dimorphite-DL** — fast rule-based protonation.\n\n"
+                "**pKaNET Cloud** — full tautomer + microstate ranking "
+                "(recommended for polyphenols, nucleotides, charged ligands). "
+                "⚠️ ~5–30 s per ligand.\n\n"
+                "**Neutral** — use SMILES as-is."
+            ),
+        )
+        _b_pkanet_max_tau = 8
+        _b_pkanet_ph_win  = 1.0
+        if _b_prot_mode_ui == "🧬 pKaNET Cloud":
+            st.info("⚠️ pKaNET may take 5–30 s per ligand (built-in algorithm, no extra file needed).")
+            _bc1, _bc2 = st.columns(2)
+            with _bc1:
+                _b_pkanet_max_tau = st.slider("Max tautomers", 1, 20, 8, key="b_pkanet_max_tau")
+            with _bc2:
+                _b_pkanet_ph_win  = st.slider("pH window", 0.2, 2.0, 1.0, 0.1, key="b_pkanet_ph_win")
+
     with col_b2:
         st.markdown("**Redocking validation**")
         b_do_redock = st.checkbox(
@@ -5389,7 +5413,11 @@ with tab_batch:
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
-        _b_prot_mode  = "dimorphite"
+        _b_prot_mode  = {
+            "⚡ Fast (Dimorphite-DL)":    "dimorphite",
+            "🧬 pKaNET Cloud":            "pkanet",
+            "🔬 Neutral (keep input)":   "neutral",
+        }.get(st.session_state.get("b_prot_mode_ui", "⚡ Fast (Dimorphite-DL)"), "dimorphite")
         _b_use_pubchem  = False
         _b_pkanet_max_tau = st.session_state.get("b_pkanet_max_tau", 8)
         _b_pkanet_ph_win  = st.session_state.get("b_pkanet_ph_win", 1.0)
