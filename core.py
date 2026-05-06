@@ -724,8 +724,9 @@ _SMARTS_CACHE: dict = {}
 
 def _match(mol, sma: str) -> int:
     """Cached SMARTS substructure match count."""
+    from rdkit import Chem as _Chem
     if sma not in _SMARTS_CACHE:
-        _SMARTS_CACHE[sma] = Chem.MolFromSmarts(sma)
+        _SMARTS_CACHE[sma] = _Chem.MolFromSmarts(sma)
     p = _SMARTS_CACHE[sma]
     return len(mol.GetSubstructMatches(p)) if p else 0
 
@@ -742,6 +743,7 @@ def _naive_expected_charge(smiles: str) -> int:
       Aliphatic NHR    pKa ~10 => +1
       Flavone/chromanone core + >=1 ArOH => -1  (one activated phenol ionised)
     """
+    from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return 0
@@ -775,6 +777,7 @@ def pick_best_dimorphite_state(states: list, target_ph: float,
     If they disagree by >=1 unit, pick the available state closest to expected
     (tie-break: smallest absolute charge).
     """
+    from rdkit import Chem
     from rdkit.Chem import GetFormalCharge
     if not states:
         return input_smiles
