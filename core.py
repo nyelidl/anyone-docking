@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """
-core.py  —  Pure computation layer for Anyone Can Dock.
+core.py — Pure computation layer for Anyone Can Dock.
 No Streamlit imports. All functions return plain dicts / tuples.
 Safe to import in Colab notebooks, pytest, or any UI framework.
 
-Optimisation patches applied (v3):
-  * Lazy compile _IONIZABLE_SITES_COMPILED / _CHEM_RULES  (not at import)
-  * lru_cache on _cached_parse_pdb  (receptor parsed once per path)
-  * _admetlab3_predict  replaces ADMET-AI (~500 MB model) with REST API
-  * Clearer Vina error messages (4 Thai-language cases)
-  * clear_poseview_cache also clears _cached_parse_pdb
 """
 
 import os
@@ -18,7 +12,6 @@ import sys
 import tempfile
 import time
 import re as _re
-import functools
 from pathlib import Path
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -125,24 +118,26 @@ def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
         with open(pdb_out_path, "w") as f:
             f.write(pdb_str)
         if os.path.exists(pdb_out_path) and os.path.getsize(pdb_out_path) > 100:
-            log.append("CIF -> PDB via gemmi")
+            log.append("✓ CIF -> PDB conversion via gemmi")
             return {"success": True, "pdb_path": pdb_out_path, "log": log}
         else:
-            log.append("gemmi produced empty PDB")
+            log.append("⚠ gemmi produced empty PDB — trying OpenBabel")
     except ImportError:
-        log.append("gemmi not installed")
+        log.append("⚠ gemmi not installed — trying OpenBabel")
     except Exception as e:
-        log.append(f"gemmi failed ({e})")
+        log.append(f"⚠ gemmi failed ({e}) — trying OpenBabel")
 
     try:
-        rc, out = run_cmd(f'obabel "{cif_path}" -O "{pdb_out_path}"')
+        rc, out = run_cmd(f'obabel "{cif_path}" -O "{pdb_out_path}" -ipdb')
+        if not os.path.exists(pdb_out_path) or os.path.getsize(pdb_out_path) < 100:
+            rc, out = run_cmd(f'obabel "{cif_path}" -O "{pdb_out_path}"')
         if os.path.exists(pdb_out_path) and os.path.getsize(pdb_out_path) > 100:
-            log.append("CIF -> PDB via OpenBabel")
+            log.append("✓ CIF -> PDB conversion via OpenBabel")
             return {"success": True, "pdb_path": pdb_out_path, "log": log}
         else:
-            log.append(f"OpenBabel produced empty file (exit {rc}): {out[:200]}")
+            log.append(f"⚠ OpenBabel CIF->PDB produced empty file (exit {rc}): {out[:300]}")
     except Exception as e:
-        log.append(f"OpenBabel failed: {e}")
+        log.append(f"⚠ OpenBabel CIF->PDB failed: {e}")
 
     try:
         from prody import parseMMCIF, writePDB as _writePDB
@@ -150,13 +145,23 @@ def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
         if atoms is not None and atoms.numAtoms() > 0:
             _writePDB(pdb_out_path, atoms)
             if os.path.exists(pdb_out_path) and os.path.getsize(pdb_out_path) > 100:
-                log.append("CIF -> PDB via ProDy parseMMCIF")
+                log.append("✓ CIF -> PDB conversion via ProDy parseMMCIF")
                 return {"success": True, "pdb_path": pdb_out_path, "log": log}
+            else:
+                log.append("⚠ ProDy parseMMCIF produced empty PDB")
+        else:
+            log.append("⚠ ProDy parseMMCIF returned None or 0 atoms")
+    except ImportError:
+        log.append("⚠ ProDy parseMMCIF not available")
     except Exception as e:
-        log.append(f"ProDy parseMMCIF failed: {e}")
+        log.append(f"⚠ ProDy parseMMCIF failed: {e}")
 
-    return {"success": False, "pdb_path": pdb_out_path, "log": log,
-            "error": "All CIF->PDB methods failed."}
+    return {
+        "success": False,
+        "pdb_path": pdb_out_path,
+        "log": log,
+        "error": "All CIF->PDB conversion methods failed.",
+    }
 
 
 def is_cif_file(filepath: str) -> bool:
@@ -180,7 +185,7 @@ def is_cif_file(filepath: str) -> bool:
 def check_obabel():
     import shutil
     if shutil.which("obabel") is None:
-        return False, "obabel not found"
+        return False, "obabel not found — add 'openbabel' to packages.txt"
     _, out = run_cmd("obabel --version")
     return True, (out.splitlines()[0] if out else "ok")
 
@@ -349,15 +354,19 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
             f.writelines(clean_lines)
         if metal_lines:
             names = ", ".join(sorted({l[17:20].strip() for l in metal_lines}))
-            log.append(f"Stripped {len(metal_lines)} metal atom(s): {names}")
+            log.append(f"⚠ Stripped {len(metal_lines)} metal atom(s) before OpenBabel: {names}")
         rc1, out1 = run_cmd(f'obabel "{rec_nometal}" -O "{rec_fh}" -h')
         if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
-            raise ValueError(f"OpenBabel H-addition produced empty file (exit {rc1}): {out1[:300]}")
-        log.append("Hydrogens added")
+            raise ValueError(f"OpenBabel H-addition produced empty file (exit {rc1}). Output: {out1[:400]}")
+        log.append("✓ Hydrogens added")
         rc2, out2 = run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger')
         if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
-            raise ValueError(f"PDBQT conversion empty (exit {rc2}): {out2[:300]}")
-        log.append("PDBQT conversion complete")
+            raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
+        log.append("✓ PDBQT conversion complete")
+
+        # Keep ions/metals in receptor.pdb for display/reference only.
+        # This is done AFTER PDBQT generation so the docking PDBQT still follows
+        # the dedicated reinjection logic below.
         if metal_lines and os.path.exists(rec_fh):
             try:
                 rec_lines = open(rec_fh).readlines()
@@ -366,9 +375,10 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 rec_lines.append("END\n")
                 with open(rec_fh, "w") as f:
                     f.writelines(rec_lines)
-                log.append(f"Re-added {len(metal_lines)} ion/metal atom(s) to receptor.pdb")
+                log.append(f"✓ Re-added {len(metal_lines)} ion/metal atom(s) to receptor.pdb for display/reference")
             except Exception as e:
-                log.append(f"Could not re-add ions: {e}")
+                log.append(f"⚠ Could not re-add ions/metals to receptor.pdb: {e}")
+
         if metal_lines:
             pdbqt_lines = open(rec_pdbqt).readlines()
             pdbqt_lines = [l for l in pdbqt_lines if l.strip() != "END"]
@@ -398,13 +408,18 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                     )
                     injected += 1
                 except Exception as e:
-                    log.append(f"Could not re-inject metal: {e}")
+                    log.append(f"⚠ Could not re-inject metal line: {e}")
             pdbqt_lines.append("END\n")
             with open(rec_pdbqt, "w") as f:
                 f.writelines(pdbqt_lines)
             if injected:
-                log.append(f"Re-injected {injected} metal atom(s) into PDBQT")
-        log.append("Receptor PDBQT ready")
+                log.append(f"✅ Re-injected {injected} metal atom(s) into PDBQT")
+            if skipped_exotic:
+                log.append(
+                    f"ℹ Skipped re-injection of {skipped_exotic} Ho/lanthanide ion(s) into docking PDBQT; "
+                    f"kept only in source/display PDB"
+                )
+        log.append("✓ Receptor PDBQT ready")
         return {"success": True, "rec_fh": rec_fh, "rec_pdbqt": rec_pdbqt, "log": log}
     except Exception as e:
         log.append(f"ERROR: {e}")
@@ -445,14 +460,6 @@ def write_vina_config(filename: str, cx, cy, cz, sx, sy, sz):
         )
 
 
-# ── CACHED parsePDB — receptor parsed once per path, shared across slider calls ──
-@functools.lru_cache(maxsize=4)
-def _cached_parse_pdb(receptor_pdb: str):
-    """Parse receptor PDB once per path -- cached across slider calls."""
-    from prody import parsePDB
-    return parsePDB(receptor_pdb)
-
-
 def prepare_receptor(
     raw_pdb: str,
     wdir,
@@ -468,18 +475,18 @@ def prepare_receptor(
     sx, sy, sz = box_size
     try:
         if is_cif_file(raw_pdb):
-            log.append("Detected mmCIF format -- converting to PDB...")
+            log.append("📄 Detected mmCIF format — converting to PDB…")
             converted_pdb = str(wdir / "converted_from_cif.pdb")
             cif_result = convert_cif_to_pdb(raw_pdb, converted_pdb)
             log.extend(cif_result["log"])
             if not cif_result["success"]:
-                raise ValueError(f"CIF -> PDB failed: {cif_result.get('error', 'unknown')}")
+                raise ValueError(f"CIF -> PDB conversion failed: {cif_result.get('error', 'unknown')}")
             raw_pdb = converted_pdb
 
         atoms = parsePDB(raw_pdb)
         if atoms is None:
             raise ValueError("ProDy parsePDB returned None")
-        log.append(f"Parsed {atoms.numAtoms()} atoms")
+        log.append(f"✓ Parsed {atoms.numAtoms()} atoms")
 
         ligand_pdb_path     = None
         cocrystal_ligand_id = ""
@@ -492,7 +499,7 @@ def prepare_receptor(
                 _pref = preferred_ligand.strip().upper()
                 _primary = next((d for d in _all_ligs if d["resname"].upper() == _pref), None)
                 if _primary is None:
-                    log.append(f"Preferred ligand '{preferred_ligand}' not found -- using {_all_ligs[0]['resname']}")
+                    log.append(f"⚠ Preferred ligand '{preferred_ligand}' not found — using largest ({_all_ligs[0]['resname']})")
             if _primary is None:
                 _primary = _all_ligs[0]
 
@@ -505,19 +512,22 @@ def prepare_receptor(
             writePDB(ligand_pdb_path, _primary["atoms"])
             _n_extra = len(_all_ligs) - 1
             log.append(
-                f"Co-crystal ligand: {rn} chain '{ch}' resnum {ri} ({_primary['n_atoms']} atoms)"
-                + (f"  +{_n_extra} additional ligand(s) removed" if _n_extra else "")
+                f"✓ Co-crystal ligand: {rn} chain '{ch}' resnum {ri} ({_primary['n_atoms']} atoms)"
+                + (f"  +{_n_extra} additional ligand(s) will also be removed" if _n_extra else "")
             )
 
         if center_mode == "auto":
             if _primary is not None:
                 cx, cy, cz = _primary["cx"], _primary["cy"], _primary["cz"]
-                log.append(f"Auto center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+                log.append(f"📍 Auto center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+                log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
             else:
-                log.append("No co-crystal ligand -- grid at protein centroid")
+                log.append("⚠ No co-crystal ligand found")
         elif center_mode == "manual":
             cx, cy, cz = (float(v) for v in manual_xyz)
-            log.append(f"Manual center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+            log.append(f"🛠 Manual center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+            if _primary is not None:
+                log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
         elif center_mode == "selection":
             if not prody_sel.strip():
                 raise ValueError("ProDy selection string is empty.")
@@ -525,11 +535,19 @@ def prepare_receptor(
             if ref_atoms is None or ref_atoms.numAtoms() == 0:
                 raise ValueError(f"ProDy selection '{prody_sel}' matched 0 atoms.")
             cx, cy, cz = (float(v) for v in calcCenter(ref_atoms))
-            log.append(f"Selection '{prody_sel}' -> center ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+            log.append(f"🔬 ProDy selection: '{prody_sel}' -> {ref_atoms.numAtoms()} atoms")
+            log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
+            if _primary is not None:
+                log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
 
         if _all_ligs:
             _excl_expr = " or ".join(f"({d['sel_str']})" for d in _all_ligs)
             sel_str = f"not ({_excl_expr}) and not water"
+            if len(_all_ligs) > 1:
+                log.append(
+                    f"🧹 Removing {len(_all_ligs)} ligand(s) from receptor: "
+                    + ", ".join(f"{d['resname']}({d['n_atoms']}at)" for d in _all_ligs)
+                )
         else:
             sel_str = "not water"
 
@@ -539,7 +557,7 @@ def prepare_receptor(
 
         rec_raw_path = str(wdir / "receptor_atoms.pdb")
         writePDB(rec_raw_path, rec_sel)
-        log.append(f"Receptor: {rec_sel.numAtoms()} atoms")
+        log.append(f"✓ Receptor: {rec_sel.numAtoms()} atoms")
 
         try:
             _rec_lines   = open(rec_raw_path).readlines()
@@ -556,9 +574,9 @@ def prepare_receptor(
                     _fixed.append(l)
                 with open(rec_raw_path, "w") as _f:
                     _f.writelines(_fixed)
-                log.append("Assigned chain A to blank-chain atoms")
+                log.append("✓ Assigned chain A to all blank-chain atoms")
         except Exception as _ce:
-            log.append(f"Chain-fix skipped: {_ce}")
+            log.append(f"⚠ Chain-fix skipped: {_ce}")
 
         conv = strip_and_convert_receptor(rec_raw_path, wdir)
         log.extend(conv["log"])
@@ -569,7 +587,7 @@ def prepare_receptor(
         cfg_path = str(wdir / "rec.box.txt")
         write_box_pdb(box_pdb, cx, cy, cz, sx, sy, sz)
         write_vina_config(cfg_path, cx, cy, cz, sx, sy, sz)
-        log.append("Box + config written")
+        log.append("✓ Box + config written")
 
         return {
             "success":             True,
@@ -595,7 +613,9 @@ def prepare_receptor(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PKANET CLOUD  —  ionizable site table + HH scoring helpers
+#  PKANET CLOUD — ionizable site table + HH scoring helpers
+#  Ported from pKaNET Cloud notebook (Hengphasatporn et al. 2026)
+#  Full replacement with all 12 fixes — see file header for details.
 # ══════════════════════════════════════════════════════════════════════════════
 
 _PKANET_CACHE: dict = {}
@@ -604,6 +624,7 @@ _PKA_PATTERNS = [
     _re.compile(r"([+-]?\d+(?:\.\d+)?)\s*\((?:pK[aA]|acid dissociation)[^)]*\)", _re.IGNORECASE),
 ]
 
+# Weights matching real pKaNET Cloud notebook
 _W_AROM_RING_LOST         = 8.0
 _W_PHENOL_TO_KETO_FLIP    = 6.0
 _W_PYROGALLOL_TRIKETO     = 6.0
@@ -612,6 +633,7 @@ _W_PHENOL_PRESERVED_BONUS = 0.5
 _TAUTOMER_PLAUSIBILITY_CUTOFF = 3.0
 _AMBIGUITY_SCORE_GAP          = 0.5
 
+# ── Chromone system detection ─────────────────────────────────────────────────
 
 def _detect_chromone_system(mol):
     """Return atom indices of the fused chromen-4-one system."""
@@ -653,17 +675,19 @@ def _detect_chromone_system(mol):
     return system
 
 
+# ── FIX 1-4: Flavonoid A-ring phenol detection ───────────────────────────────
+
 def _find_flavone_A_ring_phenols(mol):
     """
     Position-aware pKa assignment for chromone A-ring phenolic OHs.
 
-    Classification:
-      carbonyl_direct=True   -> flavone_3OH_flavonol   pKa  9.0
-      carbonyl_direct=False  -> flavone_5OH_chelated   pKa 11.0
-      ortho_to_ring_O        -> flavone_8OH             pKa  8.5
-      n_ortho_phenols >= 2   -> flavone_6OH_pyrogallol  pKa  8.5
-      n_ortho_phenols == 1   -> flavone_catechol_pair   pKa  7.0
-      else                   -> flavone_isolated        pKa  7.0
+    Classification (Fixes 1-4):
+      carbonyl_direct=True   -> flavone_3OH_flavonol   pKa  9.0  (FIX 3)
+      carbonyl_direct=False  -> flavone_5OH_chelated   pKa 11.0  (FIX 1)
+      ortho_to_ring_O        -> flavone_8OH            pKa  8.5
+      n_ortho_phenols >= 2   -> flavone_6OH_pyrogallol pKa  8.5  (FIX 4a)
+      n_ortho_phenols == 1   -> flavone_catechol_pair  pKa  7.0  (FIX 4b)
+      else                   -> flavone_isolated       pKa  7.0  (FIX 2)
     """
     chromone_atoms = _detect_chromone_system(mol)
     if not chromone_atoms:
@@ -727,13 +751,16 @@ def _find_flavone_A_ring_phenols(mol):
         ortho_carbons = [n for n in chromone_nbrs
                          if mol.GetAtomWithIdx(n).GetSymbol() == "C"]
 
+        # FIX 1 + FIX 3: direct bond vs peri path to C4=O
         ortho_to_carbonyl = False
         carbonyl_direct   = False
         if ring_carbonyl_idx is not None:
             if ring_carbonyl_idx in chromone_nbrs:
+                # Direct bond C3-C4=O -> flavonol 3-OH (FIX 3)
                 ortho_to_carbonyl = True
                 carbonyl_direct   = True
             else:
+                # Peri path C5-C4a-C4=O -> flavone 5-OH (FIX 1)
                 for nb in chromone_nbrs:
                     if any(n.GetIdx() == ring_carbonyl_idx
                            for n in mol.GetAtomWithIdx(nb).GetNeighbors()):
@@ -747,17 +774,17 @@ def _find_flavone_A_ring_phenols(mol):
 
         if ortho_to_carbonyl:
             if carbonyl_direct:
-                label, pka = "flavone_3OH_flavonol", 9.0
+                label, pka = "flavone_3OH_flavonol", 9.0    # FIX 3
             else:
-                label, pka = "flavone_5OH_chelated", 11.0
+                label, pka = "flavone_5OH_chelated", 11.0   # FIX 1
         elif ortho_to_ring_O:
             label, pka = "flavone_8OH_ortho_pyranO", 8.5
         elif n_ortho_phenols >= 2:
-            label, pka = "flavone_6OH_pyrogallol_center", 8.5
+            label, pka = "flavone_6OH_pyrogallol_center", 8.5  # FIX 4a
         elif n_ortho_phenols == 1:
-            label, pka = "flavone_phenol_catechol_pair", 7.0
+            label, pka = "flavone_phenol_catechol_pair", 7.0   # FIX 4b
         else:
-            label, pka = "flavone_phenol_isolated", 7.0
+            label, pka = "flavone_phenol_isolated", 7.0         # FIX 2
 
         sites.append({
             "label":         label,
@@ -767,42 +794,51 @@ def _find_flavone_A_ring_phenols(mol):
             "site_type":     "acid",
         })
 
+    if sites:
+        detail = ", ".join(
+            f"{s['label'].replace('flavone_','')}(pKa={s['heuristic_pka']})"
+            for s in sites
+        )
+        print(f"    🌸  Detected {len(sites)} flavonoid A-ring phenol(s): {detail}")
+
     return sites
 
 
+# ── Ionizable site SMARTS table ───────────────────────────────────────────────
+
 _IONIZABLE_SITE_DEF = [
     ("sulfonic_acid",      "[SX4](=O)(=O)[OX2H1]",                             1.0,  "acid"),
-    ("phosphate_diester",  "[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",        2.1,  "acid"),
-    ("phosphonate",        "[PX4](=O)([OX2H1])[OX2H1]",                        2.1,  "acid"),
-    ("carboxylic_acid",    "[CX3](=O)[OX2H1]",                                  4.5,  "acid"),
-    ("tetrazole",          "c1nn[nH]n1",                                         4.9,  "acid"),
-    ("imidazole_acid",     "c1cn[nH]c1",                                         6.0,  "acid"),
-    ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                  5.5,  "acid"),
-    ("sulfonamide_NH",     "[SX4](=O)(=O)[NX3;H1]",                            10.1,  "acid"),
-    ("imide_NH",           "[CX3](=O)[NX3;H1][CX3]=O",                          9.6,  "acid"),
-    ("acylhydrazone_NH",   "[CX3](=O)[NX3;H1][NX2]=[CX3]",                    10.5,  "acid"),
-    ("hydrazide_NH",       "[CX3](=O)[NX3;H1][NX3;H2]",                        10.5,  "acid"),
-    ("urea_NH",            "[NX3;H1][CX3](=O)[NX3;H1,H2]",                     13.0,  "acid"),
-    ("amide_NH",           "[CX3](=O)[NX3;H1,H2;!$([N]~N)]",                   15.0,  "acid"),
-    ("phenol_diacyl",      "[OX2H1][c;R]1[c;R][c;R](=O)[c;R][c;R][c;R]1=O",    3.5,  "acid"),
-    ("phenol_ortho_CO",    "[OX2H1][c;R]:[c;R][CX3;R](=O)",                     7.8,  "acid"),
-    ("catechol_OH",        "[OX2H1][c;R]:[c;R][OX2H1]",                         9.4,  "acid"),
+    ("phosphate_diester",  "[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",       2.1,  "acid"),  # alpha/beta/gamma-P (1 OH)
+    ("phosphonate",       "[PX4](=O)([OX2H1])[OX2H1]",                         2.1,  "acid"),  # gamma-P (2 OH)
+    ("carboxylic_acid",    "[CX3](=O)[OX2H1]",                                 4.5,  "acid"),
+    ("tetrazole",          "c1nn[nH]n1",                                        4.9,  "acid"),
+    ("imidazole_acid",     "c1cn[nH]c1",                                        6.0,  "acid"),
+    ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                 5.5,  "acid"),
+    ("sulfonamide_NH",     "[SX4](=O)(=O)[NX3;H1]",                           10.1,  "acid"),
+    ("imide_NH",           "[CX3](=O)[NX3;H1][CX3]=O",                         9.6,  "acid"),
+    ("acylhydrazone_NH",   "[CX3](=O)[NX3;H1][NX2]=[CX3]",                   10.5,  "acid"),
+    ("hydrazide_NH",       "[CX3](=O)[NX3;H1][NX3;H2]",                       10.5,  "acid"),
+    ("urea_NH",            "[NX3;H1][CX3](=O)[NX3;H1,H2]",                    13.0,  "acid"),
+    ("amide_NH",           "[CX3](=O)[NX3;H1,H2;!$([N]~N)]",                  15.0,  "acid"),
+    ("phenol_diacyl",      "[OX2H1][c;R]1[c;R][c;R](=O)[c;R][c;R][c;R]1=O",   3.5,  "acid"),
+    ("phenol_ortho_CO",    "[OX2H1][c;R]:[c;R][CX3;R](=O)",                    7.8,  "acid"),
+    ("catechol_OH",        "[OX2H1][c;R]:[c;R][OX2H1]",                        9.4,  "acid"),
     ("phenol_EWG",         "[OX2H1][c;R]:[c;R][$([NX3](=O)=O),$([CX3]=O),"
-                           "$(C#N),$([SX4](=O)(=O))]",                          7.2,  "acid"),
-    ("phenol",             "c[OX2H1]",                                          10.0,  "acid"),
-    ("thiol_arom",         "c[SX2H1]",                                           6.5,  "acid"),
-    ("thiol_aliph",        "[CX4][SX2H1]",                                      10.5,  "acid"),
-    ("aniline",            "c[NX3;H1,H2;!$(N~[!#6])]",                          4.6,  "base"),
-    ("pyridine_like",      "[$([nX2]1:[c,n]:c:[c,n]:c1),$([nX2]:c:n)]",         5.2,  "base"),
-    ("morpholine_N",       "[NX3;H0;R;$(N1CC[O,S]CC1)]",                        4.9,  "base"),
-    ("piperazine_NH",      "[NX3;H1;R;$(N1CCNCC1)]",                            8.1,  "base"),
-    ("piperazine_N_sub",   "[NX3;H0;R;$(N1CCNCC1)]",                            3.5,  "base"),
+                           "$(C#N),$([SX4](=O)(=O))]",                         7.2,  "acid"),
+    ("phenol",             "c[OX2H1]",                                         10.0,  "acid"),
+    ("thiol_arom",         "c[SX2H1]",                                          6.5,  "acid"),
+    ("thiol_aliph",        "[CX4][SX2H1]",                                     10.5,  "acid"),
+    ("aniline",            "c[NX3;H1,H2;!$(N~[!#6])]",                         4.6,  "base"),
+    ("pyridine_like",      "[$([nX2]1:[c,n]:c:[c,n]:c1),$([nX2]:c:n)]",        5.2,  "base"),
+    ("morpholine_N",       "[NX3;H0;R;$(N1CC[O,S]CC1)]",                       4.9,  "base"),
+    ("piperazine_NH",      "[NX3;H1;R;$(N1CCNCC1)]",                           8.1,  "base"),
+    ("piperazine_N_sub",   "[NX3;H0;R;$(N1CCNCC1)]",                           3.5,  "base"),
     ("aliphatic_amine",    "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);"
-                           "!$(Nc)]",                                            9.5,  "base"),
+                           "!$(Nc)]",                                           9.5,  "base"),
     ("aliphatic_amine_t",  "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);"
-                           "!$([N;R]1CC[O,S]CC1);!$([N;R]1CCNCC1)]",           9.0,  "base"),
-    ("amidine",            "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                  12.4,  "base"),
-    ("guanidine",          "[NX3][CX3](=[NX2])[NX3]",                          13.0,  "base"),
+                           "!$([N;R]1CC[O,S]CC1);!$([N;R]1CCNCC1)]",          9.0,  "base"),
+    ("amidine",            "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                 12.4,  "base"),
+    ("guanidine",          "[NX3][CX3](=[NX2])[NX3]",                         13.0,  "base"),
 ]
 
 
@@ -815,20 +851,15 @@ def _compile_ionizable_sites():
             compiled.append((lbl, pat, pka, stype))
     return compiled
 
-
-# ── PATCH 1: Lazy compile (not at import time) ────────────────────────────────
-_IONIZABLE_SITES_COMPILED = None   # lazy
+_IONIZABLE_SITES_COMPILED = _compile_ionizable_sites()
 
 
-def _get_compiled_sites():
-    global _IONIZABLE_SITES_COMPILED
-    if _IONIZABLE_SITES_COMPILED is None:
-        _IONIZABLE_SITES_COMPILED = _compile_ionizable_sites()
-    return _IONIZABLE_SITES_COMPILED
-
+# ── FIX 5: find_ionizable_sites with claimed_atoms ───────────────────────────
 
 def _find_ionizable_sites(mol):
     """
+    FIX 5: claimed_atoms prevents SMARTS pass from overwriting A-ring OHs.
+
     Pass 1: flavonoid A-ring phenols (claim atoms -> block Pass 2).
     Pass 2: SMARTS table, first-match-wins per ionizable atom.
     """
@@ -836,6 +867,7 @@ def _find_ionizable_sites(mol):
     seen_ion      = set()
     claimed_atoms = set()
 
+    # Pass 1 — flavone A-ring (highest priority)
     for site in _find_flavone_A_ring_phenols(mol):
         ion_idx = site["ionizable_idx"]
         if ion_idx in seen_ion:
@@ -844,7 +876,11 @@ def _find_ionizable_sites(mol):
         claimed_atoms.update(site["atom_indices"])
         sites.append(site)
 
-    for lbl, pat, pka, stype in _get_compiled_sites():
+    # Pass 2 — generic SMARTS table (per-atom dedup)
+    # Each ionizable atom (O/S/N with H) in a match becomes its own site.
+    # This correctly handles multi-OH groups (e.g. gamma-phosphate in ATP/ADP)
+    # where a single SMARTS match covers 2 ionizable oxygens.
+    for lbl, pat, pka, stype in _IONIZABLE_SITES_COMPILED:
         for match in mol.GetSubstructMatches(pat):
             if any(a in claimed_atoms for a in match):
                 continue
@@ -868,6 +904,8 @@ def _find_ionizable_sites(mol):
     return sites
 
 
+# ── FIX 6: HH scoring with dpH-scaled formula ────────────────────────────────
+
 def _hh_fraction_charged(pka, ph, site_type):
     if site_type == "acid":
         return 1.0 / (1.0 + 10.0 ** (pka - ph))
@@ -875,7 +913,7 @@ def _hh_fraction_charged(pka, ph, site_type):
 
 
 def _hh_match_score(pka, ph, site_type, actual_charge):
-    """dpH-scaled HH formula with decisive multiplier."""
+    """FIX 6: Real pKaNET Cloud formula — dpH-scaled with decisive multiplier."""
     f_charged = _hh_fraction_charged(pka, ph, site_type)
     dpH       = abs(ph - pka)
     decisive  = (f_charged >= 0.65) or (f_charged <= 0.35)
@@ -903,6 +941,8 @@ def _hh_match_score(pka, ph, site_type, actual_charge):
             return -min(1.5, dpH * 0.45 * pen_mul) - 0.15
 
 
+# ── FIX 7: Tautomer plausibility with aromaticity guards ─────────────────────
+
 _CHEM_BONUS_DEF = [
     ("amide",            +2.5, "[CX3](=O)[NX3;H1,H2]"),
     ("lactam",           +2.5, "[C;R](=O)[N;R]"),
@@ -912,11 +952,11 @@ _CHEM_BONUS_DEF = [
     ("phenol_preserved", _W_PHENOL_PRESERVED_BONUS, "c[OX2H1]"),
 ]
 _CHEM_PENALTY_DEF = [
-    ("lactim_ring",        -4.0, "[C;R](=[NX2])[OX2H1]"),
-    ("iminol_general",     -3.5, "[NX2]=[CX3][OX2H1]"),
-    ("amide_N_deproton",   -5.0, "[$([NX3-]C=O),$([NX3-]c=O)]"),
-    ("enol_simple",        -1.2, "[CX3](=[CX3])[OX2H1]"),
-    ("exo_imine_arom",     -2.5, "[NX2;!r]=[cX3]"),
+    ("lactim_ring",      -4.0, "[C;R](=[NX2])[OX2H1]"),
+    ("iminol_general",   -3.5, "[NX2]=[CX3][OX2H1]"),
+    ("amide_N_deproton", -5.0, "[$([NX3-]C=O),$([NX3-]c=O)]"),
+    ("enol_simple",      -1.2, "[CX3](=[CX3])[OX2H1]"),
+    ("exo_imine_arom",   -2.5, "[NX2;!r]=[cX3]"),
     ("pyrogallol_triketo", -_W_PYROGALLOL_TRIKETO,
         "[#6;!a;R]1(=O)[#6;!a;R](=O)[#6;!a;R](=O)[#6;R][#6;R][#6;R]1"),
     ("catechol_diketo",    -_W_CATECHOL_DIKETO,
@@ -933,16 +973,7 @@ def _compile_chem_rules():
             rules.append((lbl, wt, pat))
     return rules
 
-
-# ── PATCH 1 continued: lazy _CHEM_RULES ──────────────────────────────────────
-_CHEM_RULES = None   # lazy
-
-
-def _get_chem_rules():
-    global _CHEM_RULES
-    if _CHEM_RULES is None:
-        _CHEM_RULES = _compile_chem_rules()
-    return _CHEM_RULES
+_CHEM_RULES = _compile_chem_rules()
 
 
 def _n_aromatic_rings(mol):
@@ -966,13 +997,13 @@ def _count_phenolic_OH(mol):
 
 
 def _score_tautomer(smiles, ref_mol=None):
-    """Aromaticity-loss and phenol-flip penalties vs ref_mol."""
+    """FIX 7: Aromaticity-loss and phenol-flip penalties vs ref_mol."""
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return -999.0
     total = 0.0
-    for lbl, wt, pat in _get_chem_rules():
+    for lbl, wt, pat in _CHEM_RULES:
         n = len(mol.GetSubstructMatches(pat))
         if n:
             total += wt * n
@@ -986,13 +1017,27 @@ def _score_tautomer(smiles, ref_mol=None):
     return total
 
 
+# ── FIX 8: Full 8-component microstate scoring ───────────────────────────────
+
 def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None, ion_sites=None):
-    """Full 8-component scoring."""
+    """
+    FIX 8: Full 8-component scoring matching real pKaNET Cloud:
+      s1 amide-N deprotonation safety
+      s2 aromaticity loss vs ref_mol
+      s3 tautomer plausibility (weighted)
+      s4 HH pH-consistency per ionizable site
+      s5 PubChem evidence bonus
+      s6 zwitterion consistency
+      s7 improbable neutral penalty
+      s8 multicharge penalty
+    """
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return -1e9
 
+    # ion_sites must come from ref_mol (the original input SMILES), NOT from
+    # the microstate mol which has [O-] atoms (Hs=0) that break site detection.
     if ion_sites is None:
         ion_sites = _find_ionizable_sites(ref_mol if ref_mol is not None else mol)
     fc_map    = {a.GetIdx(): int(a.GetFormalCharge()) for a in mol.GetAtoms()}
@@ -1000,17 +1045,21 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None, ion_sites=N
     n_pos     = sum(1 for v in fc_map.values() if v > 0)
     n_neg     = sum(1 for v in fc_map.values() if v < 0)
 
+    # s1: amide-N deprotonation safety
     pat_bad = Chem.MolFromSmarts("[$([NX3-]C=O),$([NX3-]c=O)]")
     s1 = -5.0 * len(mol.GetSubstructMatches(pat_bad)) if pat_bad else 0.0
 
+    # s2: aromaticity loss vs ref_mol
     s2 = 0.0
     if ref_mol is not None:
         rings_lost = max(0, _n_aromatic_rings(ref_mol) - _n_aromatic_rings(mol))
         if rings_lost > 0:
             s2 = -_W_AROM_RING_LOST * rings_lost
 
+    # s3: tautomer plausibility
     s3 = 0.65 * taut_score
 
+    # s4: HH pH-consistency for each ionizable site
     s4 = 0.0
     for site in ion_sites:
         pka = site["heuristic_pka"]
@@ -1021,6 +1070,7 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None, ion_sites=N
         site_charge = sum(fc_map.get(i, 0) for i in site["atom_indices"])
         s4 += _hh_match_score(pka, ph, site["site_type"], site_charge)
 
+    # s5: PubChem evidence bonus
     s5 = 0.0
     if pubchem.get("available"):
         w = {"high": 1.0, "medium": 0.6, "low": 0.2}.get(
@@ -1030,6 +1080,7 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None, ion_sites=N
             s5 += 0.25 * w if net == exp else -0.15 * w
         s5 = max(-0.4, min(0.5, s5))
 
+    # s6: zwitterion consistency
     has_acid = any(s["site_type"] == "acid"
                    and (ph - s["heuristic_pka"]) > 1.0 for s in ion_sites)
     has_base = any(s["site_type"] == "base"
@@ -1040,6 +1091,7 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None, ion_sites=N
     else:
         s6 = -0.4 if (has_acid and has_base and net == 0 and n_pos == 0) else 0.0
 
+    # s7: improbable neutral penalty
     strong_acid   = [s for s in ion_sites if s["site_type"] == "acid"
                      and (ph - s["heuristic_pka"]) > 2.0]
     strong_base   = [s for s in ion_sites if s["site_type"] == "base"
@@ -1058,13 +1110,16 @@ def _score_microstate(smiles, ph, taut_score, pubchem, ref_mol=None, ion_sites=N
     if probable_base and net <= 0 and n_pos == 0:
         s7 -= 0.35 * len(probable_base)
 
+    # s8: multicharge penalty
     s8 = -0.12 * max(0, n_pos + n_neg - 2)
 
     return s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8
 
 
+# ── FIX 9: Manual deprotonation ──────────────────────────────────────────────
+
 def _manual_deprotonate_site(smiles, site):
-    """Manually ionize a specific site. Returns new SMILES or None."""
+    """FIX 9: Manually ionize a specific site. Returns new SMILES or None."""
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -1103,10 +1158,13 @@ def _manual_deprotonate_site(smiles, site):
         return None
 
 
+# ── FIX 10: Supplement Dimorphite with missed ionizable sites ─────────────────
+
 def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, target_ph):
     """
-    For each ionizable site Dimorphite missed, force-generate the ionized variant.
-    Critical for flavonoid A-ring OHs which Dimorphite's SMARTS table does not cover.
+    FIX 10: For each ionizable site Dimorphite missed, force-generate
+    the ionized variant. Critical for flavonoid A-ring OHs which
+    Dimorphite's internal SMARTS table does not cover.
     """
     supplemented = list(dimorphite_results)
     existing     = set(dimorphite_results)
@@ -1123,6 +1181,8 @@ def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, targe
             existing.add(new_smi)
     return supplemented
 
+
+# ── PubChem lookup ────────────────────────────────────────────────────────────
 
 def _pubchem_pka_lookup(smiles: str) -> dict:
     from rdkit import Chem
@@ -1180,6 +1240,8 @@ def _pubchem_pka_lookup(smiles: str) -> dict:
         return result
 
 
+# ── FIX 11: generate_ranked_microstates (full pipeline) ──────────────────────
+
 def _generate_ranked_microstates(
     base_smiles,
     target_ph=7.4,
@@ -1187,7 +1249,11 @@ def _generate_ranked_microstates(
     max_tautomers=8,
     pubchem=None,
 ):
-    """Full pKaNET Cloud microstate ranking pipeline."""
+    """
+    FIX 11: Full pKaNET Cloud microstate ranking pipeline.
+    Returns list of dicts sorted by selection_score descending.
+    Each dict: microstate_smiles, net_charge, selection_score
+    """
     from rdkit import Chem
     from rdkit.Chem.MolStandardize import rdMolStandardize
 
@@ -1198,6 +1264,7 @@ def _generate_ranked_microstates(
     if ref_mol is None:
         return []
 
+    # Tautomer enumeration with aromaticity guard (FIX 7)
     enum   = rdMolStandardize.TautomerEnumerator()
     seen_t = set()
     tautomers = []
@@ -1227,6 +1294,7 @@ def _generate_ranked_microstates(
     if not kept:
         kept = [tautomers[0]]
 
+    # Ionizable sites from input molecule (FIX 5 — claimed_atoms)
     ion_sites = _find_ionizable_sites(ref_mol)
 
     ph_lo = max(0.0,  target_ph - ph_window / 2)
@@ -1236,6 +1304,7 @@ def _generate_ranked_microstates(
     seen_smi  = set()
 
     for taut in kept:
+        # Dimorphite-DL enumeration
         raw_states = [taut["smiles"]]
         try:
             from dimorphite_dl import protonate_smiles as _dim
@@ -1264,6 +1333,7 @@ def _generate_ranked_microstates(
         except Exception:
             pass
 
+        # FIX 10: supplement for sites Dimorphite missed
         microstates = _supplement_dimorphite(
             taut["smiles"], raw_states, ion_sites, target_ph
         )
@@ -1293,11 +1363,15 @@ def _generate_ranked_microstates(
     return all_micro
 
 
+# ── FIX 12: _apply_ionizable_site_correction (uses fixed site detection) ─────
+
 def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
                                       ph: float, log: list) -> str:
     """
-    Post-Dimorphite correction using fixed _find_ionizable_sites.
+    FIX 12: Post-Dimorphite correction using the FIXED _find_ionizable_sites.
     Deprotonates any acid site with pKa < pH still protonated in current_smiles.
+    Now works for flavonoids because _find_ionizable_sites uses claimed_atoms
+    (FIX 5) and correct A-ring pKas (Fixes 1-4).
     """
     from rdkit import Chem
     mol = Chem.MolFromSmiles(current_smiles)
@@ -1326,14 +1400,16 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
         Chem.SanitizeMol(rw)
         corrected = Chem.MolToSmiles(rw, canonical=True)
         log.append(
-            f"pKa site correction: deprotonated {site['label']} "
+            f"✓ pKa site correction: deprotonated {site['label']} "
             f"(pKa={site['heuristic_pka']:.1f} < pH {ph:.1f})"
         )
         return corrected
     except Exception as e:
-        log.append(f"Site correction failed ({site['label']}): {e}")
+        log.append(f"⚠ Site correction failed ({site['label']}): {e}")
         return current_smiles
 
+
+# ── protonate_pkanet: public API (unchanged signature) ───────────────────────
 
 def protonate_pkanet(
     smiles: str,
@@ -1342,13 +1418,17 @@ def protonate_pkanet(
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> tuple:
-    """pKaNET Cloud protonation pipeline. Returns (best_smiles, charge, log_list)."""
+    """
+    pKaNET Cloud protonation pipeline (Hengphasatporn et al. 2026).
+    Returns (best_smiles, charge, log_list).
+    """
     from rdkit import Chem
     from rdkit.Chem.MolStandardize import rdMolStandardize
 
     log       = []
     canonical = smiles.strip()
 
+    # Standardize
     try:
         mol = Chem.MolFromSmiles(canonical)
         if mol:
@@ -1358,21 +1438,24 @@ def protonate_pkanet(
             except Exception:
                 pass
             canonical = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-            log.append("RDKit standardized")
+            log.append("✓ RDKit standardized")
     except Exception as e:
-        log.append(f"Standardization skipped: {e}")
+        log.append(f"⚠ Standardization skipped: {e}")
 
+    # PubChem lookup
     pubchem = {"available": False, "pka_values": [], "confidence": "low"}
     if use_pubchem:
         try:
             pubchem = _pubchem_pka_lookup(canonical)
             if pubchem["available"]:
-                log.append(f"PubChem pKa: {pubchem['pka_values']} (conf: {pubchem['confidence']})")
+                log.append(f"✓ PubChem pKa: {pubchem['pka_values']} "
+                           f"(conf: {pubchem['confidence']})")
             else:
-                log.append("PubChem: no data -- heuristic table")
+                log.append("ℹ PubChem: no data — heuristic table")
         except Exception as e:
-            log.append(f"PubChem failed: {e}")
+            log.append(f"⚠ PubChem failed: {e}")
 
+    # Ranked microstates
     try:
         all_micro = _generate_ranked_microstates(
             canonical,
@@ -1386,13 +1469,15 @@ def protonate_pkanet(
         best     = all_micro[0]
         best_smi = best["microstate_smiles"]
         charge   = best["net_charge"]
-        log.append(f"Ranked {len(all_micro)} microstates -- best score: {best['selection_score']:.2f}")
+        log.append(f"✓ Ranked {len(all_micro)} microstates — "
+                   f"best score: {best['selection_score']:.2f}")
         if len(all_micro) > 1:
             gap = all_micro[0]["selection_score"] - all_micro[1]["selection_score"]
             if gap <= _AMBIGUITY_SCORE_GAP:
-                log.append(f"Ambiguous (gap={gap:.2f}) -- alt charge {all_micro[1]['net_charge']:+d}")
+                log.append(f"⚠ Ambiguous (gap={gap:.2f}) — "
+                           f"alt charge {all_micro[1]['net_charge']:+d}")
     except Exception as e:
-        log.append(f"Microstate ranking failed ({e}) -- Dimorphite fallback")
+        log.append(f"⚠ Microstate ranking failed ({e}) — Dimorphite fallback")
         best_smi = canonical
         try:
             from dimorphite_dl import protonate_smiles as _dim
@@ -1404,101 +1489,17 @@ def protonate_pkanet(
         mol_fb = Chem.MolFromSmiles(best_smi)
         charge = int(Chem.GetFormalCharge(mol_fb)) if mol_fb else 0
 
-    log.append(f"Formal charge: {charge:+d}")
+    log.append(f"✓ Formal charge: {charge:+d}")
     return best_smi, charge, log
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ADMET  —  ADMETlab 3.0 REST API  (replaces ADMET-AI ~500MB local model)
-# ══════════════════════════════════════════════════════════════════════════════
-
-@functools.lru_cache(maxsize=64)
-def _admetlab3_predict(smiles: str) -> dict:
-    """
-    POST to ADMETlab 3.0 API.  lru_cache avoids repeat calls for same SMILES.
-    Raises RuntimeError on network / HTTP failure (caller shows fallback UI).
-    """
-    import requests
-    try:
-        r = requests.post(
-            "https://admetlab3.scbdd.com/api/evaluate",
-            json={"smiles": smiles},
-            headers={"Content-Type": "application/json"},
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except requests.Timeout:
-        raise RuntimeError("ADMETlab 3.0 timeout (>20s) -- แสดงผล RDKit อย่างเดียว")
-    except requests.ConnectionError:
-        raise RuntimeError("ไม่สามารถเชื่อมต่อ ADMETlab 3.0 -- ตรวจสอบ internet")
-    except requests.HTTPError as e:
-        raise RuntimeError(f"ADMETlab 3.0 HTTP error: {e}")
-    except Exception as e:
-        raise RuntimeError(f"ADMETlab 3.0 error: {e}")
-
-    def _f(v, d=None):
-        try: return float(v) if v is not None else d
-        except: return d
-
-    def _b(v):
-        if v is None: return None
-        if isinstance(v, bool): return v
-        return str(v).strip().lower() in ("yes", "true", "1", "positive")
-
-    return {
-        # Absorption
-        "caco2":              _f(data.get("Caco-2")),
-        "hia":                _f(data.get("HIA")),
-        "bioavailability_ml": _f(data.get("F20%") or data.get("Bioavailability")),
-        "solubility":         _f(data.get("Solubility") or data.get("LogS")),
-        "pgp_substrate_ml":   _b(data.get("Pgp-substrate")),
-        "pgp_inhibitor":      _b(data.get("Pgp-inhibitor")),
-        # Distribution
-        "bbb_prob":           _f(data.get("BBB") or data.get("BBB_prob")),
-        "ppb":                _f(data.get("PPB")),
-        "vdd":                _f(data.get("VDss")),
-        "lipophilicity_ml":   _f(data.get("LogP") or data.get("Lipophilicity")),
-        # CYP inhibition
-        "cyp1a2_inh":         _b(data.get("CYP1A2-inhibitor")),
-        "cyp2c9_inh":         _b(data.get("CYP2C9-inhibitor")),
-        "cyp2c19_inh":        _b(data.get("CYP2C19-inhibitor")),
-        "cyp2d6_inh":         _b(data.get("CYP2D6-inhibitor")),
-        "cyp3a4_inh":         _b(data.get("CYP3A4-inhibitor")),
-        "cyp1a2_prob":        _f(data.get("CYP1A2-inhibitor_prob")),
-        "cyp2c9_prob":        _f(data.get("CYP2C9-inhibitor_prob")),
-        "cyp2c19_prob":       _f(data.get("CYP2C19-inhibitor_prob")),
-        "cyp2d6_prob":        _f(data.get("CYP2D6-inhibitor_prob")),
-        "cyp3a4_prob":        _f(data.get("CYP3A4-inhibitor_prob")),
-        # CYP substrate
-        "cyp2c9_sub":         _b(data.get("CYP2C9-substrate")),
-        "cyp2d6_sub":         _b(data.get("CYP2D6-substrate")),
-        "cyp3a4_sub":         _b(data.get("CYP3A4-substrate")),
-        "cyp2c9_sub_prob":    _f(data.get("CYP2C9-substrate_prob")),
-        "cyp2d6_sub_prob":    _f(data.get("CYP2D6-substrate_prob")),
-        "cyp3a4_sub_prob":    _f(data.get("CYP3A4-substrate_prob")),
-        # Excretion
-        "half_life":          _f(data.get("Half-life") or data.get("T1/2")),
-        "clearance":          _f(data.get("CL") or data.get("Clearance")),
-        # Toxicity
-        "herg":               _b(data.get("hERG")),
-        "herg_prob":          _f(data.get("hERG_prob")),
-        "ames":               _b(data.get("AMES")),
-        "ames_prob":          _f(data.get("AMES_prob")),
-        "dili":               _b(data.get("DILI")),
-        "dili_prob":          _f(data.get("DILI_prob")),
-        "skin_reaction":      _b(data.get("Skin-reaction")),
-        "skin_prob":          _f(data.get("Skin-reaction_prob")),
-        "ld50":               _f(data.get("LD50") or data.get("Acute-toxicity")),
-        "_raw": data,
-    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  LIGAND PREPARATION
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def _meeko_to_pdbqt(mol, out_path: str):
+    """Convert an RDKit mol to PDBQT via Meeko."""
     from meeko import MoleculePreparation
     prep = MoleculePreparation()
     try:
@@ -1538,7 +1539,6 @@ def _ligand_charge_summary(smiles: str) -> dict:
         "is_zwitterion": bool(n_pos > 0 and n_neg > 0 and net == 0),
     }
 
-
 def _charged_atoms_text(rows: list) -> str:
     if not rows:
         return "none"
@@ -1555,6 +1555,18 @@ def prepare_ligand(
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> dict:
+    """
+    Ligand preparation aligned to the simpler, stable version the user preferred.
+
+    Behavior:
+      - neutral    : keep the input connectivity/charge state, add H only
+      - dimorphite : protonate with Dimorphite-DL at target pH using the first returned state
+      - pkanet     : accepted for compatibility, but currently falls back to the same
+                     simple Dimorphite-based preparation used in the preferred version
+
+    Charge reporting is always based on RDKit formal charge of the final SMILES
+    actually used for 3D building and docking.
+    """
     _rdkit_six_patch()
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -1574,7 +1586,7 @@ def prepare_ligand(
             if mol_check is None:
                 raise ValueError(f"RDKit could not parse SMILES: {raw[:60]}")
             prot = Chem.MolToSmiles(mol_check, isomericSmiles=True, canonical=True)
-            log.append("Neutral mode (keep input charge state)")
+            log.append("✓ Neutral mode (keep input charge state)")
 
         elif actual_mode == "pkanet":
             try:
@@ -1585,18 +1597,18 @@ def prepare_ligand(
                     ph_window=ph_window,
                 )
                 log.extend(pka_log)
-                log.append("pKaNET Cloud protonation applied")
+                log.append("✓ pKaNET Cloud protonation applied")
             except Exception as _pke:
-                log.append(f"pKaNET failed ({_pke}) -- Dimorphite fallback")
+                log.append(f"⚠ pKaNET failed ({_pke}) — falling back to Dimorphite-DL")
                 try:
                     from dimorphite_dl import protonate_smiles
                     vs = protonate_smiles(raw, ph_min=ph, ph_max=ph, max_variants=1)
                     if vs:
                         prot = vs[0] if isinstance(vs, list) else vs
-                        log.append(f"Dimorphite-DL fallback pH {ph:.1f}")
+                        log.append(f"✓ Dimorphite-DL fallback pH {ph:.1f}")
                     prot = _apply_ionizable_site_correction(raw, prot, ph, log)
                 except Exception as e2:
-                    log.append(f"Dimorphite-DL fallback skipped: {e2}")
+                    log.append(f"⚠ Dimorphite-DL fallback skipped: {e2}")
 
         else:
             # dimorphite (default)
@@ -1605,11 +1617,11 @@ def prepare_ligand(
                 vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
                 if vs:
                     prot = vs[0] if isinstance(vs, list) else vs
-                    log.append(f"Dimorphite-DL pH {ph:.1f}")
+                    log.append(f"✓ Dimorphite-DL pH {ph:.1f}")
                 else:
-                    log.append("Dimorphite-DL returned no variants -- using input SMILES")
+                    log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
             except Exception as e:
-                log.append(f"Dimorphite-DL skipped: {e}")
+                log.append(f"⚠ Dimorphite-DL skipped: {e}")
             prot = _apply_ionizable_site_correction(raw, prot, ph, log)
 
         mol = Chem.MolFromSmiles(prot)
@@ -1618,8 +1630,8 @@ def prepare_ligand(
 
         charge_info = _ligand_charge_summary(prot)
         charge = int(charge_info["net_charge"])
-        log.append(f"Formal charge: {charge:+d}")
-        log.append(f"Charged atoms: {_charged_atoms_text(charge_info['charged_atoms'])}")
+        log.append(f"✓ Formal charge: {charge:+d}")
+        log.append(f"✓ Charged atoms: {_charged_atoms_text(charge_info['charged_atoms'])}")
 
         mol = Chem.AddHs(mol)
         try:
@@ -1635,23 +1647,23 @@ def prepare_ligand(
             AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
         else:
             AllChem.UFFOptimizeMolecule(mol, maxIters=500)
-        log.append("3D conformer generated + minimised")
+        log.append("✓ 3D conformer generated + minimised")
 
         with Chem.SDWriter(out_sdf) as w:
             w.write(mol)
 
         try:
             _meeko_to_pdbqt(mol, out_pdbqt)
-            log.append("PDBQT written (Meeko)")
+            log.append("✓ PDBQT written (Meeko)")
         except Exception as e_meeko:
-            log.append(f"Meeko failed ({e_meeko}), trying OpenBabel...")
+            log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
             subprocess.run(
                 f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
                 shell=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
-            log.append("PDBQT written (OpenBabel fallback)")
+            log.append("✓ PDBQT written (OpenBabel fallback)")
 
         return {
             "success":           True,
@@ -1673,8 +1685,12 @@ def prepare_ligand(
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
 
-
 def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
+    """
+    Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
+    WITHOUT protonation — use the molecule exactly as provided.
+    Returns dict: success, pdbqt, sdf, prot_smiles, charge, log, error
+    """
     _rdkit_six_patch()
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -1697,6 +1713,7 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
                 mol = mols[0]
         elif ext in (".mol2", ".pdb"):
             _ob_sdf = str(wdir / f"{name}_ob.sdf")
+            import subprocess
             subprocess.run(
                 f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
                 shell=True, timeout=30,
@@ -1704,14 +1721,21 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
                 supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
                 mols = [m for m in supp if m]
+                if not mols:
+                    supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=False)
+                    mols = [m for m in supp if m]
                 if mols:
                     mol = mols[0]
-                    log.append("Converted via OpenBabel")
+                    log.append("✓ Converted via OpenBabel")
             if mol is None:
                 if ext == ".mol2":
-                    mol = Chem.MolFromMol2File(file_path, removeHs=False)
+                    mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+                    if mol is None:
+                        mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
                 else:
-                    mol = Chem.MolFromPDBFile(file_path, removeHs=False)
+                    mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
+                    if mol is None:
+                        mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
 
         if mol is None:
             raise ValueError(f"Could not read molecule from {Path(file_path).name}")
@@ -1720,28 +1744,33 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
         if len(frags) > 1:
             frags = sorted(frags, key=lambda m: m.GetNumAtoms(), reverse=True)
             mol = frags[0]
-            log.append(f"{len(frags)} fragments -- kept largest ({mol.GetNumAtoms()} atoms)")
+            log.append(f"⚠ {len(frags)} fragments — kept largest ({mol.GetNumAtoms()} atoms)")
 
         try:
             Chem.SanitizeMol(mol)
         except Exception:
             pass
 
-        log.append("Loaded molecule from file (no protonation)")
+        log.append("✓ Loaded molecule from file (no protonation)")
 
         try:
             smi = Chem.MolToSmiles(Chem.RemoveHs(mol))
         except Exception:
-            smi = name
+            try:
+                smi = Chem.MolToSmiles(mol)
+            except Exception:
+                smi = name
         try:
             charge = Chem.GetFormalCharge(mol)
         except Exception:
             charge = 0
-        log.append(f"Formal charge: {charge:+d}")
+        log.append(f"✓ Formal charge: {charge:+d}")
 
         mol = Chem.AddHs(mol, addCoords=True)
+        log.append("✓ All hydrogens made explicit")
+
         conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
-        if conf is None or not conf.Is3D():
+        if conf is None or conf.Is3D() is False:
             try:
                 params = AllChem.ETKDGv3()
             except AttributeError:
@@ -1753,25 +1782,26 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
                 AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
             else:
                 AllChem.UFFOptimizeMolecule(mol, maxIters=500)
-            log.append("3D conformer generated")
+            log.append("✓ 3D conformer generated (no coords in file)")
         else:
-            log.append("Using 3D coordinates from uploaded file")
+            log.append("✓ Using 3D coordinates from uploaded file")
 
         with Chem.SDWriter(out_sdf) as w:
             w.write(mol)
 
         try:
             _meeko_to_pdbqt(mol, out_pdbqt)
-            log.append("PDBQT written (Meeko)")
+            log.append("✓ PDBQT written (Meeko)")
         except Exception as e_meeko:
-            log.append(f"Meeko failed, trying OpenBabel...")
+            log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
+            import subprocess
             subprocess.run(
                 f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
                 shell=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
-            log.append("PDBQT written (OpenBabel fallback)")
+            log.append("✓ PDBQT written (OpenBabel fallback)")
 
         return {
             "success":     True,
@@ -1787,6 +1817,7 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
 
 
 def smiles_from_file(file_path: str, wdir) -> str:
+    """Extract SMILES from SDF / MOL2 / PDB. Raises ValueError on failure."""
     wdir = Path(wdir)
     ext  = Path(file_path).suffix.lower()
     if ext == ".sdf":
@@ -1837,20 +1868,7 @@ def run_vina(
     )
 
     if rc != 0 or not os.path.exists(out_pdbqt):
-        vll = vlog.lower()
-        if "could not open" in vll or "no such file" in vll:
-            error = "ไม่พบไฟล์ receptor หรือ ligand -- ลอง prepare ใหม่อีกครั้ง"
-        elif "no atoms" in vll or "empty" in vll:
-            error = "Ligand ไม่มี atom ที่ถูกต้อง -- ตรวจสอบ SMILES หรือ structure file"
-        elif "outside the box" in vll:
-            error = "Ligand อยู่นอก docking box -- ตรวจสอบ grid center และ box size"
-        elif "exhaustiveness" in vll:
-            error = "ค่า exhaustiveness ไม่ถูกต้อง"
-        elif rc != 0:
-            error = f"Vina exit code {rc} -- ดู log ด้านล่าง"
-        else:
-            error = "Vina ไม่สร้างไฟล์ output -- ดู log ด้านล่าง"
-        return {"success": False, "error": error, "log": vlog}
+        return {"success": False, "error": f"Vina exit code {rc}", "log": vlog}
 
     run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" 2>/dev/null')
 
@@ -1893,6 +1911,7 @@ def _bo_template(smiles: str):
     from rdkit import Chem
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
+        # Fallback for charged/tautomeric SMILES (e.g. flavonoids with [O-])
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
         if mol is None:
             raise ValueError(f"Cannot parse SMILES: {smiles!r}")
@@ -1905,6 +1924,8 @@ def _bo_template(smiles: str):
     try:
         Chem.Kekulize(mol, clearAromaticFlags=True)
     except Exception:
+        # Kekulize fails for some tautomeric/charged aromatics (e.g. flavonoids with [O-])
+        # AssignBondOrdersFromTemplate still works without explicit Kekulization
         pass
     return mol
 
@@ -1939,7 +1960,7 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
     try:
         template = _bo_template(smiles)
     except Exception as e:
-        log.append(f"Could not build template: {e} -- skipping fix")
+        log.append(f"⚠ Could not build template: {e} — skipping fix")
         RDLogger.EnableLog("rdApp.error")
         shutil.copy(raw_sdf, fixed_sdf)
         return log
@@ -1949,7 +1970,7 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
     ok = err = 0
     for i, mol in enumerate(supplier):
         if mol is None:
-            log.append(f"Pose {i+1}: could not read -- skipped")
+            log.append(f"⚠ Pose {i+1}: could not read — skipped")
             err += 1
             continue
         try:
@@ -1969,7 +1990,7 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
                 writer.write(fixed)
             ok += 1
         except Exception as e:
-            log.append(f"Pose {i+1}: fix failed ({e}) -- writing raw")
+            log.append(f"⚠ Pose {i+1}: fix failed ({e}) — writing raw")
             mol_noH = Chem.RemoveHs(mol, sanitize=False)
             writer.write(mol_noH)
             err += 1
@@ -1994,6 +2015,22 @@ def load_mols_from_sdf(sdf_path: str, sanitize: bool = True) -> list:
                 mols.append(m)
     except Exception:
         pass
+    if sanitize:
+        try:
+            sup2 = Chem.SDMolSupplier(sdf_path, sanitize=False, removeHs=False)
+            raw  = [m for m in sup2 if m is not None]
+            if len(raw) > len(mols):
+                result = []
+                for m in raw:
+                    try:
+                        Chem.SanitizeMol(m)
+                    except Exception:
+                        pass
+                    result.append(m)
+                RDLogger.EnableLog("rdApp.error")
+                return result
+        except Exception:
+            pass
     RDLogger.EnableLog("rdApp.error")
     return mols
 
@@ -2054,12 +2091,13 @@ def convert_sdf_to_v2000(sdf_path: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STRUCTURAL ANALYSIS  —  uses _cached_parse_pdb
+#  STRUCTURAL ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5) -> list:
     try:
         import numpy as np
+        from prody import parsePDB
         conf    = lig_mol.GetConformer()
         lig_xyz = np.array([
             [conf.GetAtomPosition(i).x,
@@ -2067,7 +2105,7 @@ def get_interacting_residues(receptor_pdb: str, lig_mol, cutoff: float = 3.5) ->
              conf.GetAtomPosition(i).z]
             for i in range(lig_mol.GetNumAtoms())
         ])
-        rec      = _cached_parse_pdb(receptor_pdb)   # cached
+        rec      = parsePDB(receptor_pdb)
         r_xyz    = rec.getCoords()
         chains   = rec.getChids()
         resids   = rec.getResnums()
@@ -2090,29 +2128,48 @@ def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
         import numpy as np
         if not os.path.exists(crystal_pdb_path):
             return None
-        cryst = Chem.MolFromPDBFile(crystal_pdb_path, sanitize=True, removeHs=True)
+        cryst = None
+        for sanitize, removeHs, proxBonding in [
+            (True,  True, True),
+            (False, True, True),
+            (True,  True, False),
+            (False, True, False),
+        ]:
+            try:
+                cryst = Chem.MolFromPDBFile(
+                    crystal_pdb_path, sanitize=sanitize,
+                    removeHs=removeHs, proximityBonding=proxBonding,
+                )
+                if cryst is not None and cryst.GetNumConformers() > 0:
+                    if not sanitize:
+                        try: Chem.SanitizeMol(cryst)
+                        except Exception: pass
+                    break
+                cryst = None
+            except Exception:
+                cryst = None
         if cryst is None or cryst.GetNumConformers() == 0:
             return None
         pose = Chem.RemoveHs(pose_mol, sanitize=False)
-        try:
-            Chem.SanitizeMol(pose)
-        except Exception:
-            pass
+        try: Chem.SanitizeMol(pose)
+        except Exception: pass
         if pose.GetNumConformers() == 0:
             return None
+        n_smaller = min(pose.GetNumAtoms(), cryst.GetNumAtoms())
         mcs = rdFMCS.FindMCS(
             [pose, cryst], timeout=10,
             bondCompare=rdFMCS.BondCompare.CompareAny,
             atomCompare=rdFMCS.AtomCompare.CompareElements,
+            completeRingsOnly=False, matchValences=False,
         )
-        if mcs.numAtoms < 3:
+        if mcs.numAtoms < 3 or mcs.numAtoms < 0.6 * n_smaller:
             return None
         mcs_mol = Chem.MolFromSmarts(mcs.smartsString)
         if mcs_mol is None:
             return None
-        pm = pose.GetSubstructMatches(mcs_mol,  uniquify=False)
-        cm = cryst.GetSubstructMatches(mcs_mol, uniquify=False)
-        if not pm or not cm:
+        pose_matches  = pose.GetSubstructMatches(mcs_mol,  uniquify=False)
+        cryst_matches = cryst.GetSubstructMatches(mcs_mol, uniquify=False)
+        if not pose_matches or not cryst_matches:
             return None
         pc, cc = pose.GetConformer(), cryst.GetConformer()
         def _rmsd(pm, cm):
@@ -2123,165 +2180,9 @@ def calc_rmsd_heavy(pose_mol, crystal_pdb_path: str):
                 for pi, ci in zip(pm, cm)
             )
             return float(np.sqrt(sq / len(pm)))
-        return min(_rmsd(p, c) for p in pm for c in cm)
+        return min(_rmsd(pm, cm) for pm in pose_matches for cm in cryst_matches)
     except Exception:
         return None
-
-
-_AROM_ATOMS = {"PHE", "TYR", "TRP", "HIS", "HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
-_AROM_ATOM_NAMES = {
-    "CG", "CD1", "CD2", "CE1", "CE2", "CZ",
-    "ND1", "NE2", "CE3", "CZ2", "CZ3", "CH2",
-}
-_HYDR_BASE     = {"ALA", "VAL", "ILE", "LEU", "MET", "PHE", "TRP", "PRO", "GLY", "TYR", "HIS"}
-_HYDR_EXTENDED = _HYDR_BASE | HEME_RESNAMES
-_ITYPE_PRIORITY = [
-    "metal", "ionic", "halogen", "hbond_to_halogen",
-    "hbond", "pi_pi", "cation_pi", "hydrophobic",
-]
-
-
-def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
-                              cutoff: float = 4.5) -> list:
-    import numpy as np
-    rec = _cached_parse_pdb(receptor_pdb)   # cached
-    if rec is None:
-        return []
-    rc  = np.array(rec.getCoords(),  dtype=float)
-    rrn = rec.getResnames()
-    rch = rec.getChids()
-    rri = rec.getResnums()
-    ran = rec.getNames()
-    rel = rec.getElements()
-    conf = lig_mol_3d.GetConformer()
-    nl   = lig_mol_3d.GetNumAtoms()
-    lxyz = np.array([[conf.GetAtomPosition(i).x,
-                      conf.GetAtomPosition(i).y,
-                      conf.GetAtomPosition(i).z] for i in range(nl)], dtype=float)
-    latom = [lig_mol_3d.GetAtomWithIdx(i) for i in range(nl)]
-    lel   = [a.GetSymbol().upper() for a in latom]
-    lchg  = [a.GetFormalCharge() for a in latom]
-    nr = len(rc)
-    r_el  = [rel[j].strip().upper() if rel[j] and rel[j].strip()
-             else ran[j][:1].upper() for j in range(nr)]
-    r_rn  = [rrn[j].strip() for j in range(nr)]
-    r_an  = [ran[j].strip() for j in range(nr)]
-    r_ch  = [rch[j].strip() for j in range(nr)]
-    r_ri  = [int(rri[j])    for j in range(nr)]
-    LIG_ACCEPTOR_EL    = {"N", "O", "F", "S"}
-    lig_is_acceptor    = np.array([lel[i] in LIG_ACCEPTOR_EL for i in range(nl)])
-    lig_is_hydrophobic = np.array([lel[i] in {"C", "S", "CL", "BR", "I", "F"} for i in range(nl)])
-
-    def _is_lig_donor(i):
-        a = latom[i]
-        if lel[i] not in ("N", "O", "S", "F"): return False
-        for nb in a.GetNeighbors():
-            if nb.GetAtomicNum() == 1: return True
-        return a.GetTotalNumHs() > 0
-    lig_is_donor = np.array([_is_lig_donor(i) for i in range(nl)])
-
-    def _angle3(a, b, c):
-        va = a - b; vc = c - b
-        na = np.linalg.norm(va); nc = np.linalg.norm(vc)
-        if na < 1e-8 or nc < 1e-8: return 0.0
-        return float(np.degrees(np.arccos(
-            np.clip(np.dot(va, vc) / (na * nc), -1.0, 1.0))))
-
-    results        = []
-    hbond_residues = set()
-    PROT_DONOR    = {"N", "OG", "OG1", "OH", "SG", "NZ", "NH1", "NH2", "NE",
-                     "ND1", "NE2", "NE1", "ND2"}
-    PROT_ACCEPTOR = {"O", "OD1", "OD2", "OE1", "OE2", "OG", "OG1", "OH",
-                     "ND1", "NE2", "SD"}
-    HBOND_DA_MAX  = 3.5
-    HBOND_ANG_MIN = 120.0
-
-    polar_idx = [j for j in range(nr)
-                 if r_el[j] in ("N", "O", "S")
-                 and r_rn[j] not in ("HOH", "WAT", "DOD")]
-    for j in polar_idx:
-        an = r_an[j]; ch = r_ch[j]; ri = int(r_ri[j]); el = r_el[j]
-        rp = rc[j]
-        key = (ch, ri)
-        if key in hbond_residues:
-            continue
-        dists_j = np.linalg.norm(lxyz - rp, axis=1)
-        if an in PROT_DONOR:
-            cand = np.where(lig_is_acceptor & (dists_j <= HBOND_DA_MAX))[0]
-            if len(cand):
-                for i in cand:
-                    d_DA = float(dists_j[i])
-                    nbs_i = [nb.GetIdx() for nb in latom[i].GetNeighbors()
-                             if nb.GetAtomicNum() != 1 and nb.GetIdx() < nl]
-                    if nbs_i and _angle3(rp, lxyz[i], lxyz[nbs_i[0]]) < HBOND_ANG_MIN:
-                        continue
-                    hbond_residues.add(key)
-                    results.append(dict(resname=r_rn[j], chain=ch, resid=ri,
-                        itype="hbond", distance=round(d_DA, 1), lig_atom_idx=int(i),
-                        prot_el=el, is_donor=True, ring_atom_indices=None))
-                    break
-        if key in hbond_residues:
-            continue
-        if an in PROT_ACCEPTOR:
-            cand = np.where(lig_is_donor & (dists_j <= HBOND_DA_MAX))[0]
-            if len(cand):
-                for i in cand:
-                    d_DA = float(dists_j[i])
-                    hbond_residues.add(key)
-                    results.append(dict(resname=r_rn[j], chain=ch, resid=ri,
-                        itype="hbond", distance=round(d_DA, 1), lig_atom_idx=int(i),
-                        prot_el=el, is_donor=False, ring_atom_indices=None))
-                    break
-
-    for j in range(nr):
-        rn = r_rn[j]; ch = r_ch[j]; ri = int(r_ri[j]); el = r_el[j]; rp = rc[j]
-        dists_j = np.linalg.norm(lxyz - rp, axis=1)
-        md = float(dists_j.min()); mi = int(dists_j.argmin())
-        if md > max(cutoff + 1.0, 5.6):
-            continue
-        if el in {"C", "S", "CL", "BR", "I"} and rn in _HYDR_EXTENDED:
-            cand = np.where(lig_is_hydrophobic & (dists_j < cutoff))[0]
-            if len(cand):
-                i = int(cand[0])
-                results.append(dict(resname=rn, chain=ch, resid=ri,
-                    itype="hydrophobic", distance=round(float(dists_j[i]), 1),
-                    lig_atom_idx=i, prot_el=el, is_donor=False, ring_atom_indices=None))
-        if rn in {"ASP", "GLU"} and el == "O":
-            for i in range(nl):
-                if lchg[i] > 0 and float(dists_j[i]) < 4.0:
-                    results.append(dict(resname=rn, chain=ch, resid=ri,
-                        itype="ionic", distance=round(float(dists_j[i]), 1),
-                        lig_atom_idx=i, prot_el=el, is_donor=False, ring_atom_indices=None))
-                    break
-        if rn in {"LYS", "ARG"} and el == "N":
-            for i in range(nl):
-                if lchg[i] < 0 and float(dists_j[i]) < 4.0:
-                    results.append(dict(resname=rn, chain=ch, resid=ri,
-                        itype="ionic", distance=round(float(dists_j[i]), 1),
-                        lig_atom_idx=i, prot_el=el, is_donor=True, ring_atom_indices=None))
-                    break
-        _is_heme_fe = (r_rn[j] in HEME_RESNAMES and r_an[j].strip().upper() == "FE")
-        if rn.strip().upper() in METAL_RESNAMES or el in METAL_RESNAMES or _is_heme_fe:
-            if md < 2.8:
-                results.append(dict(resname=rn, chain=ch, resid=ri,
-                    itype="metal", distance=round(md, 1), lig_atom_idx=mi,
-                    prot_el=el, is_donor=False, ring_atom_indices=None))
-    return results
-
-
-def _deduplicate_interactions(interactions: list) -> list:
-    priority = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
-    best: dict = {}
-    for ix in interactions:
-        key = (ix["chain"], ix["resid"])
-        if key not in best:
-            best[key] = ix
-        else:
-            pn = priority.get(ix["itype"], 99)
-            po = priority.get(best[key]["itype"], 99)
-            if pn < po or (pn == po and ix["distance"] < best[key]["distance"]):
-                best[key] = ix
-    return list(best.values())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2315,7 +2216,7 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
     polls  = 0
     while status in ("pending", "running", "processing", "queued", ""):
         if polls >= max_polls:
-            raise RuntimeError(f"Job {job_id} timed out after {max_polls * poll_interval}s")
+            raise RuntimeError(f"Job {job_id} still '{status}' after {max_polls * poll_interval} s")
         time.sleep(poll_interval)
         polls += 1
         job    = requests.get(poll_url + job_id + "/", headers=_PP_HEADERS, timeout=15).json()
@@ -2381,10 +2282,10 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             pv_data   = r.json()
             pv_job_id = pv_data.get("job_id") or pv_data.get("id")
             if not pv_job_id:
-                last_error = f"No job_id in response: {pv_data}"
+                last_error = f"PoseView submission: no job_id in {pv_data}"
                 continue
         except Exception as e:
-            last_error = f"Submission failed (attempt {attempt}): {e}"
+            last_error = f"PoseView submission failed (attempt {attempt}): {e}"
             continue
         try:
             pv_job = _pp_poll(pv_job_id, _PP_POSEVIEW_JOBS)
@@ -2393,12 +2294,15 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
             last_error = str(e); continue
         except Exception as e:
             last_error = f"Polling error (attempt {attempt}): {e}"; continue
+        if status in ("failed", "failure", "error"):
+            last_error = f"PoseView rejected job (attempt {attempt}). Full response: {pv_job}"
+            continue
         if status != "success":
-            last_error = f"PoseView status '{status}' (attempt {attempt})"
+            last_error = f"Unexpected status '{status}' (attempt {attempt}). Full response: {pv_job}"
             continue
         img_url = pv_job.get("image")
         if not img_url:
-            last_error = f"No image URL in response: {list(pv_job.keys())}"
+            last_error = f"Job succeeded but 'image' key missing. Keys: {list(pv_job.keys())}"
             continue
         try:
             resp = requests.get(img_url, headers=_PP_HEADERS, timeout=20)
@@ -2411,12 +2315,11 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
 
 
 def warm_poseview_cache(receptor_pdb: str) -> tuple:
-    return True, "Direct POST mode -- no pre-upload needed"
+    return True, "Direct POST mode — no pre-upload needed"
 
 
 def clear_poseview_cache():
     _PP_PROTEIN_CACHE.clear()
-    _cached_parse_pdb.cache_clear()   # clear parsePDB cache when receptor changes
 
 
 def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
@@ -2438,15 +2341,16 @@ def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
             )
             data = r.json()
             if r.status_code not in (200, 202):
-                last_error = f"Submission failed ({r.status_code}): {data}"
+                last_error = f"Submission failed ({r.status_code}), attempt {attempt}: {data}"
                 continue
             location = data.get("location", "")
             if not location:
-                last_error = f"No job location in response: {data}"
+                last_error = f"API returned no job location. Response: {data}"
                 continue
         except Exception as e:
             last_error = f"Submission error (attempt {attempt}): {e}"
             continue
+        job_failed = False
         for poll_i in range(_PV_POLL_ATTEMPTS):
             time.sleep(2)
             try:
@@ -2455,27 +2359,88 @@ def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
                 if status_code == 200:
                     svg_url = poll.get("result_svg", "")
                     if not svg_url:
-                        last_error = f"result_svg missing: {poll}"
-                        break
+                        last_error = f"Job finished but result_svg is empty. Full response: {poll}"
+                        job_failed = True; break
                     resp = requests.get(svg_url, timeout=20)
                     resp.raise_for_status()
                     return resp.content, None
                 elif status_code == 202:
                     continue
                 else:
-                    last_error = f"Poll status {status_code}: {poll}"
-                    break
+                    last_error = f"Unexpected poll status {status_code} (attempt {attempt}). Full response: {poll}"
+                    job_failed = True; break
             except Exception as e:
-                last_error = f"Poll error (attempt {attempt}, poll {poll_i+1}): {e}"
+                last_error = f"Polling error (attempt {attempt}, poll {poll_i+1}): {e}"
                 continue
-        else:
-            last_error = f"Timed out after {_PV_POLL_ATTEMPTS * 2}s (attempt {attempt})"
+        if not job_failed:
+            last_error = f"Timed out after {_PV_POLL_ATTEMPTS * 2} s (attempt {attempt})"
     return None, last_error
 
 
 def diagnose_poseview() -> dict:
-    return {"server_reachable": False, "upload_ok": False,
-            "poseview_ok": False, "log": [], "error": "Not implemented in stub"}
+    import requests
+    result = {
+        "server_reachable": False, "upload_ok": False,
+        "poseview_ok": False, "status": "", "job_response": {},
+        "image_url": "", "error": "", "log": [],
+    }
+    log = result["log"]
+    try:
+        r = requests.get("https://proteins.plus/api/v2/", timeout=10)
+        r.raise_for_status()
+        result["server_reachable"] = True
+        log.append(f"✓ Server reachable (HTTP {r.status_code})")
+    except Exception as e:
+        result["error"] = f"Server unreachable: {e}"
+        log.append(f"✗ Server unreachable: {e}")
+        return result
+    try:
+        r = requests.post(_PP_UPLOAD, data={"pdb_code": "4agn"}, timeout=30)
+        r.raise_for_status()
+        job_id = r.json().get("job_id")
+        log.append(f"✓ Upload job submitted: {job_id}")
+        job = _pp_poll(job_id, _PP_UPLOAD_JOBS, poll_interval=1, max_polls=30)
+        log.append(f"✓ Upload job: {job.get('status')}")
+        protein_id   = job["output_protein"]
+        protein_json = requests.get(_PP_BASE + "molecule_handler/proteins/" + protein_id + "/", timeout=15).json()
+        pdb_text     = protein_json["file_string"]
+        ligand_id    = protein_json["ligand_set"][0]
+        ligand_json  = requests.get(_PP_BASE + "molecule_handler/ligands/" + ligand_id + "/", timeout=15).json()
+        sdf_text     = ligand_json["file_string"]
+        log.append(f"✓ Got protein ({len(pdb_text)} chars) + ligand {ligand_json.get('name')} ({len(sdf_text)} chars)")
+        result["upload_ok"] = True
+    except Exception as e:
+        result["error"] = f"MoleculeHandler step failed: {e}"
+        log.append(f"✗ MoleculeHandler failed: {e}")
+        return result
+    try:
+        import io as _io
+        r = requests.post(
+            _PP_POSEVIEW,
+            files={
+                "protein_file": ("test.pdb", _io.StringIO(pdb_text), "chemical/x-pdb"),
+                "ligand_file":  ("test.sdf", _io.StringIO(sdf_text), "chemical/x-mdl-sdfile"),
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        pv_job_id = r.json().get("job_id")
+        log.append(f"✓ PoseView job submitted: {pv_job_id}")
+        pv_job = _pp_poll(pv_job_id, _PP_POSEVIEW_JOBS, poll_interval=2, max_polls=30)
+        result["job_response"] = pv_job
+        result["status"]       = pv_job.get("status", "")
+        log.append(f"✓ PoseView job status: {result['status']}")
+        if result["status"] == "success":
+            result["image_url"]   = pv_job.get("image", "")
+            result["poseview_ok"] = True
+            log.append(f"✓ Image URL: {result['image_url']}")
+        else:
+            result["error"] = f"PoseView returned '{result['status']}'. Full response: {pv_job}"
+            log.append(f"✗ {result['error']}")
+    except Exception as e:
+        result["error"] = f"PoseView step failed: {e}"
+        log.append(f"✗ PoseView failed: {e}")
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2483,6 +2448,7 @@ def diagnose_poseview() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def svg_to_png(svg_bytes: bytes):
+    """Convert SVG bytes -> PNG bytes via cairosvg. Returns None if unavailable."""
     try:
         import cairosvg
         return cairosvg.svg2png(bytestring=svg_bytes, scale=2, background_color="white")
@@ -2491,6 +2457,7 @@ def svg_to_png(svg_bytes: bytes):
 
 
 def stamp_png(png_bytes: bytes, text: str) -> bytes:
+    """Burn a centred label pill into the bottom of a PNG."""
     try:
         from PIL import Image, ImageDraw, ImageFont
         import io as _io
@@ -2500,6 +2467,7 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
         for fp, sz in [
             ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 28),
             ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28),
+            ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 26),
         ]:
             try:
                 font = ImageFont.truetype(fp, sz); break
@@ -2532,12 +2500,23 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CUSTOM 2D INTERACTION DIAGRAM
+#  (unchanged from original — full implementation below)
 # ══════════════════════════════════════════════════════════════════════════════
 
 import math as _math
 
-_CLR_HBOND = "#1a7a1a"; _CLR_PIPI  = "#e200e8"; _CLR_HYDRO = "#2287ff"
-_CLR_IONIC = "#aa0077"; _CLR_METAL = "#cc8800"; _CLR_HAL   = "#cc2277"
+_ITYPE_PRIORITY = [
+    "metal", "ionic", "halogen", "hbond_to_halogen",
+    "hbond", "pi_pi", "cation_pi", "hydrophobic",
+]
+
+_CLR_HBOND   = "#1a7a1a"
+_CLR_PIPI    = "#e200e8"
+_CLR_HYDRO   = "#2287ff"
+_CLR_IONIC   = "#aa0077"
+_CLR_METAL   = "#cc8800"
+_CLR_HAL     = "#cc2277"
+_CLR_HBXHAL  = "#6633aa"
 
 _RES_CIRCLE = {
     "hbond":            dict(fill="#80dd80", opacity=0.2),
@@ -2549,123 +2528,872 @@ _RES_CIRCLE = {
     "metal":            dict(fill="#ffe080", opacity=0.2),
     "halogen":          dict(fill="#ffb0d0", opacity=0.2),
 }
+
 _LBL_CLR = {
-    "hbond": _CLR_HBOND, "hbond_to_halogen": _CLR_HBOND,
-    "pi_pi": _CLR_PIPI,  "cation_pi": _CLR_PIPI,
-    "hydrophobic": _CLR_HYDRO, "ionic": _CLR_IONIC,
-    "metal": _CLR_METAL, "halogen": _CLR_HAL,
+    "hbond":            _CLR_HBOND,
+    "hbond_to_halogen": _CLR_HBOND,
+    "pi_pi":            _CLR_PIPI,
+    "cation_pi":        _CLR_PIPI,
+    "hydrophobic":      _CLR_HYDRO,
+    "ionic":            _CLR_IONIC,
+    "metal":            _CLR_METAL,
+    "halogen":          _CLR_HAL,
 }
+
 _LINE_CLR = {
-    "hbond": _CLR_HBOND, "hbond_to_halogen": "#6633aa",
-    "pi_pi": _CLR_PIPI,  "cation_pi": _CLR_PIPI,
-    "ionic": _CLR_IONIC, "metal": _CLR_METAL, "halogen": _CLR_HAL,
+    "hbond":            _CLR_HBOND,
+    "hbond_to_halogen": _CLR_HBXHAL,
+    "pi_pi":            _CLR_PIPI,
+    "cation_pi":        _CLR_PIPI,
+    "ionic":            _CLR_IONIC,
+    "metal":            _CLR_METAL,
+    "halogen":          _CLR_HAL,
 }
+
 _ATOM_CLR = {
-    "C": "#1a1a1a", "N": "#1a5fa8", "O": "#cc2222",
-    "S": "#c8a800", "P": "#e07000", "F": "#1a7a1a",
-    "CL": "#1a7a1a", "BR": "#8b2500", "I": "#5c2d8a", "H": "#555555",
+    "C":"#1a1a1a", "N":"#1a5fa8", "O":"#cc2222",
+    "S":"#c8a800", "P":"#e07000", "F":"#1a7a1a",
+    "CL":"#1a7a1a", "BR":"#8b2500", "I":"#5c2d8a", "H":"#555555",
 }
 _AROM_DOT_CLR = "#1a7a1a"
+
+_AROM_ATOMS = {"PHE","TYR","TRP","HIS","HEM","HEC","HEA","HEB","HDD","HDM"}
+
+_AROM_ATOM_NAMES = {
+    "CG","CD1","CD2","CE1","CE2","CZ",
+    "ND1","NE2","CE3","CZ2","CZ3","CH2",
+    "C1","C2","C3","C4","C5","C6","C7","C8",
+    "C10","C11","C12","C13","C14","C15","C16","C17",
+    "C19","C20",
+    "CA","CB",
+    "CAA","CAB","CAC","CAD",
+    "CBA","CBB","CBC","CBD",
+    "C2A","C3A","C4A",
+    "C2B","C3B","C4B",
+    "C2C","C3C","C4C",
+    "C2D","C3D","C4D",
+    "CHA","CHB","CHC","CHD",
+}
+
+_HYDR_BASE     = {"ALA","VAL","ILE","LEU","MET","PHE","TRP","PRO","GLY","TYR","HIS"}
+_HYDR_EXTENDED = _HYDR_BASE | HEME_RESNAMES
+
+
+
+def _get_aromatic_ring_data(mol, conf):
+    import numpy as np
+    results = []
+    for ring in mol.GetRingInfo().AtomRings():
+        if len(ring) not in (5, 6): continue
+        if not all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in ring): continue
+        coords   = np.array([[conf.GetAtomPosition(i).x,
+                               conf.GetAtomPosition(i).y,
+                               conf.GetAtomPosition(i).z] for i in ring])
+        centroid = coords.mean(axis=0)
+        v1 = coords[1]-coords[0]; v2 = coords[2]-coords[0]
+        n  = np.cross(v1,v2); nl = np.linalg.norm(n)
+        if nl > 0: n /= nl
+        results.append((centroid, n, list(ring)))
+    return results
+
+
+def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
+                              cutoff: float = 4.5) -> list:
+    import numpy as np
+    from prody import parsePDB
+    rec = parsePDB(receptor_pdb)
+    if rec is None:
+        return []
+    rc  = np.array(rec.getCoords(),  dtype=float)
+    rrn = rec.getResnames()
+    rch = rec.getChids()
+    rri = rec.getResnums()
+    ran = rec.getNames()
+    rel = rec.getElements()
+    conf = lig_mol_3d.GetConformer()
+    nl   = lig_mol_3d.GetNumAtoms()
+    lxyz = np.array([[conf.GetAtomPosition(i).x,
+                      conf.GetAtomPosition(i).y,
+                      conf.GetAtomPosition(i).z] for i in range(nl)], dtype=float)
+    latom = [lig_mol_3d.GetAtomWithIdx(i) for i in range(nl)]
+    lel   = [a.GetSymbol().upper() for a in latom]
+    lchg  = [a.GetFormalCharge() for a in latom]
+    _VDW = {"H":1.20,"C":1.70,"N":1.55,"O":1.52,"S":1.80,"P":1.80,
+            "F":1.47,"CL":1.75,"BR":1.85,"I":1.98,"SE":1.90}
+    nr = len(rc)
+    r_el  = [rel[j].strip().upper() if rel[j] and rel[j].strip()
+             else ran[j][:1].upper() for j in range(nr)]
+    r_el_arr = np.array(r_el)
+    r_rn  = np.array([rrn[j].strip() for j in range(nr)])
+    r_an  = np.array([ran[j].strip() for j in range(nr)])
+    r_ch  = np.array([rch[j].strip() for j in range(nr)])
+    r_ri  = np.array([int(rri[j])    for j in range(nr)])
+    HYDL = {"C","S","CL","BR","I","F"}
+    LIG_ACCEPTOR_EL = {"N","O","F","S"}
+    lig_is_acceptor    = np.array([lel[i] in LIG_ACCEPTOR_EL for i in range(nl)])
+    lig_is_hydrophobic = np.array([lel[i] in HYDL for i in range(nl)])
+    def _is_lig_donor(i):
+        a = latom[i]
+        if lel[i] not in ("N","O","S","F"): return False
+        for nb in a.GetNeighbors():
+            if nb.GetAtomicNum() == 1: return True
+        return a.GetTotalNumHs() > 0
+    lig_is_donor = np.array([_is_lig_donor(i) for i in range(nl)])
+    def _angles_at_b(a_pts, b_pt, c_pt):
+        va = a_pts - b_pt
+        vc = c_pt  - b_pt
+        na = np.linalg.norm(va, axis=1)
+        nc = float(np.linalg.norm(vc))
+        if nc < 1e-8: return np.zeros(len(a_pts))
+        cos_t = (va @ vc) / (na * nc + 1e-12)
+        cos_t = np.clip(cos_t, -1.0, 1.0)
+        return np.degrees(np.arccos(cos_t))
+    def _angle3(a, b, c):
+        va = a - b; vc = c - b
+        na = np.linalg.norm(va); nc = np.linalg.norm(vc)
+        if na < 1e-8 or nc < 1e-8: return 0.0
+        return float(np.degrees(np.arccos(
+            np.clip(np.dot(va, vc) / (na * nc), -1.0, 1.0))))
+    h_mask    = r_el_arr == "H"
+    h_idx     = np.where(h_mask)[0]
+    heavy_idx = np.where(~h_mask)[0]
+    h_to_heavy = {}
+    if len(h_idx) and len(heavy_idx):
+        h_coords  = rc[h_idx]
+        hv_coords = rc[heavy_idx]
+        diff      = h_coords[:, None, :] - hv_coords[None, :, :]
+        dists_hh  = np.linalg.norm(diff, axis=2)
+        closest   = np.argmin(dists_hh, axis=1)
+        min_d     = dists_hh[np.arange(len(h_idx)), closest]
+        for k, (hi, ci, md) in enumerate(zip(h_idx, closest, min_d)):
+            if md < 1.15:
+                h_to_heavy[int(hi)] = int(heavy_idx[ci])
+    heavy_to_h = {}
+    for hj, hk in h_to_heavy.items():
+        heavy_to_h.setdefault(hk, []).append(hj)
+    PROT_DONOR_ATOMS = {
+        "N","OG","OG1","OH","SG","NZ","NH1","NH2","NE",
+        "ND1","NE2","NE1","ND2",
+    }
+    PROT_ACCEPTOR_ATOMS = {
+        "O","OD1","OD2","OE1","OE2","OG","OG1","OH",
+        "ND1","NE2","SD",
+    }
+    HBOND_DA_MAX  = 3.5
+    HBOND_ANG_MIN = 120.0
+    HBOND_PROXY   = 90.0
+    results        = []
+    hbond_residues = set()
+    polar_mask = np.array([
+        r_el_arr[j] in ("N","O","S") and r_el_arr[j] != "H"
+        and r_rn[j] not in ("HOH","WAT","DOD")
+        for j in range(nr)
+    ])
+    polar_idx = np.where(polar_mask)[0]
+    for j in polar_idx:
+        an = r_an[j]; ch = r_ch[j]; ri = int(r_ri[j]); el = r_el[j]
+        rp = rc[j]
+        key = (ch, ri)
+        if key in hbond_residues:
+            continue
+        dists_j = np.linalg.norm(lxyz - rp, axis=1)
+        if an in PROT_DONOR_ATOMS:
+            cand = np.where(lig_is_acceptor & (dists_j <= HBOND_DA_MAX))[0]
+            if len(cand):
+                hs = heavy_to_h.get(j, [])
+                for i in cand:
+                    d_DA = float(dists_j[i])
+                    if hs:
+                        best = max(_angle3(rp, rc[hj], lxyz[i]) for hj in hs)
+                        if best < HBOND_ANG_MIN: continue
+                    else:
+                        nbs_i = [nb.GetIdx() for nb in latom[i].GetNeighbors()
+                                 if nb.GetAtomicNum() != 1 and nb.GetIdx() < nl]
+                        if nbs_i:
+                            if _angle3(rp, lxyz[i], lxyz[nbs_i[0]]) < HBOND_PROXY:
+                                continue
+                    hbond_residues.add(key)
+                    results.append(dict(resname=r_rn[j],chain=ch,resid=ri,
+                        itype="hbond",distance=round(d_DA,1),lig_atom_idx=int(i),
+                        prot_el=el,is_donor=True,ring_atom_indices=None))
+                    break
+        if key in hbond_residues: continue
+        if an in PROT_ACCEPTOR_ATOMS:
+            cand = np.where(lig_is_donor & (dists_j <= HBOND_DA_MAX))[0]
+            if len(cand):
+                for i in cand:
+                    d_DA = float(dists_j[i])
+                    lig_hs = [nb.GetIdx() for nb in latom[i].GetNeighbors()
+                              if nb.GetAtomicNum() == 1 and nb.GetIdx() < nl]
+                    if lig_hs:
+                        best = max(_angle3(lxyz[i], lxyz[hi], rp) for hi in lig_hs)
+                        if best < HBOND_ANG_MIN: continue
+                    else:
+                        nbs_i = [nb.GetIdx() for nb in latom[i].GetNeighbors()
+                                 if nb.GetAtomicNum() != 1 and nb.GetIdx() < nl]
+                        if nbs_i:
+                            if _angle3(rp, lxyz[i], lxyz[nbs_i[0]]) < HBOND_PROXY:
+                                continue
+                    hbond_residues.add(key)
+                    results.append(dict(resname=r_rn[j],chain=ch,resid=ri,
+                        itype="hbond",distance=round(d_DA,1),lig_atom_idx=int(i),
+                        prot_el=el,is_donor=False,ring_atom_indices=None))
+                    break
+    for j in range(nr):
+        rn = r_rn[j]; ch = r_ch[j]; ri = int(r_ri[j]); el = r_el[j]; rp = rc[j]
+        dists_j = np.linalg.norm(lxyz - rp, axis=1)
+        md = float(dists_j.min()); mi = int(dists_j.argmin())
+        if md > max(cutoff + 1.0, 5.6): continue
+        if el in {"C","S","CL","BR","I"} and rn in _HYDR_EXTENDED:
+            cand = np.where(lig_is_hydrophobic & (dists_j < cutoff))[0]
+            if len(cand):
+                i = int(cand[0])
+                results.append(dict(resname=rn,chain=ch,resid=ri,
+                    itype="hydrophobic",distance=round(float(dists_j[i]),1),
+                    lig_atom_idx=i,prot_el=el,is_donor=False,ring_atom_indices=None))
+        if rn in {"ASP","GLU"} and el == "O":
+            for i in range(nl):
+                if lchg[i] > 0 and float(dists_j[i]) < 4.0:
+                    results.append(dict(resname=rn,chain=ch,resid=ri,
+                        itype="ionic",distance=round(float(dists_j[i]),1),
+                        lig_atom_idx=i,prot_el=el,is_donor=False,ring_atom_indices=None)); break
+        if rn in {"LYS","ARG"} and el == "N":
+            for i in range(nl):
+                if lchg[i] < 0 and float(dists_j[i]) < 4.0:
+                    results.append(dict(resname=rn,chain=ch,resid=ri,
+                        itype="ionic",distance=round(float(dists_j[i]),1),
+                        lig_atom_idx=i,prot_el=el,is_donor=True,ring_atom_indices=None)); break
+        _is_heme_fe = (r_rn[j] in HEME_RESNAMES and r_an[j].strip().upper() == "FE")
+        if rn.strip().upper() in METAL_RESNAMES or el in METAL_RESNAMES or _is_heme_fe:
+            if md < 2.8:
+                results.append(dict(resname=rn,chain=ch,resid=ri,
+                    itype="metal",distance=round(md,1),lig_atom_idx=mi,
+                    prot_el=el,is_donor=False,ring_atom_indices=None))
+    lr = _get_aromatic_ring_data(lig_mol_3d, conf)
+    if lr:
+        arom_mask = np.array([
+            r_rn[j] in _AROM_ATOMS and r_an[j] in _AROM_ATOM_NAMES and r_el[j] == "C"
+            for j in range(nr)
+        ])
+        arom_idx = np.where(arom_mask)[0]
+        for j in arom_idx:
+            rp = rc[j]
+            for lc, _, ring_idxs in lr:
+                d = float(np.linalg.norm(lc - rp))
+                if d < 5.5:
+                    results.append(dict(resname=r_rn[j],chain=r_ch[j],resid=int(r_ri[j]),
+                        itype="pi_pi",distance=round(d,1),
+                        lig_atom_idx=ring_idxs[0],prot_el="C",is_donor=False,
+                        ring_atom_indices=ring_idxs)); break
+        cat_mask = np.array([r_rn[j] in {"LYS","ARG"} and r_el[j] == "N" for j in range(nr)])
+        for j in np.where(cat_mask)[0]:
+            rp = rc[j]
+            for lc, _, ring_idxs in lr:
+                d = float(np.linalg.norm(lc - rp))
+                if d < 5.0:
+                    results.append(dict(resname=r_rn[j],chain=r_ch[j],resid=int(r_ri[j]),
+                        itype="cation_pi",distance=round(d,1),
+                        lig_atom_idx=ring_idxs[0],prot_el="N",is_donor=True,
+                        ring_atom_indices=ring_idxs)); break
+    _XD  = {17:"CL", 35:"BR", 53:"I"}
+    _XA_el = {"O","N","S","F"}
+    arom_C_mask = np.array([
+        r_rn[j] in _AROM_ATOMS and r_an[j] in _AROM_ATOM_NAMES and r_el[j] == "C"
+        for j in range(nr)
+    ])
+    xb_acc_mask = np.array([r_el[j] in _XA_el for j in range(nr)]) | arom_C_mask
+    for i in range(nl):
+        ano = latom[i].GetAtomicNum()
+        if ano not in _XD: continue
+        xel = _XD[ano]; xp = lxyz[i]; vdw_x = _VDW.get(xel, 1.80)
+        c_nb = next((nb.GetIdx() for nb in latom[i].GetNeighbors()
+                     if nb.GetAtomicNum() == 6 and nb.GetIdx() < nl), None)
+        if c_nb is None: continue
+        c_pos = lxyz[c_nb]
+        max_d = vdw_x + 1.98 + 0.5
+        cand_mask = xb_acc_mask & (np.linalg.norm(rc - xp, axis=1) <= max_d)
+        cand_idx  = np.where(cand_mask)[0]
+        if not len(cand_idx): continue
+        for j in cand_idx:
+            ael = r_el[j]; ap = rc[j]
+            vdw_sum = vdw_x + _VDW.get(ael, 1.70) + 0.5
+            d = float(np.linalg.norm(xp - ap))
+            if d > vdw_sum: continue
+            ang1 = _angle3(c_pos, xp, ap)
+            if ang1 < 140.0: continue
+            r_nbs = [k for k in range(nr)
+                     if k != j and r_el[k] != "H"
+                     and float(np.linalg.norm(rc[k] - ap)) < 1.85]
+            if r_nbs:
+                if _angle3(xp, ap, rc[r_nbs[0]]) < 90.0: continue
+            results.append(dict(resname=r_rn[j],chain=r_ch[j],resid=int(r_ri[j]),
+                itype="halogen",distance=round(d,1),lig_atom_idx=i,
+                prot_el=ael,is_donor=False,ring_atom_indices=None))
+    _HA = {9:"F", 17:"CL", 35:"BR", 53:"I"}
+    _HD = {"O","N","S"}
+    if len(h_idx):
+        h_coords = rc[h_idx]
+        for i in range(nl):
+            ano = latom[i].GetAtomicNum()
+            if ano not in _HA: continue
+            xel = _HA[ano]; xp = lxyz[i]; vdw_x = _VDW.get(xel, 1.80)
+            c_nb2 = next((nb.GetIdx() for nb in latom[i].GetNeighbors()
+                          if nb.GetIdx() < nl), None)
+            if c_nb2 is None: continue
+            c_pos2 = lxyz[c_nb2]
+            dhx_all = np.linalg.norm(h_coords - xp, axis=1)
+            close_h = np.where(dhx_all <= _VDW["H"] + vdw_x)[0]
+            for kk in close_h:
+                hj = int(h_idx[kk]); hp = rc[hj]; dhx = float(dhx_all[kk])
+                pk = h_to_heavy.get(hj)
+                if pk is None or r_el[pk] not in _HD: continue
+                dp = rc[pk]
+                if _angle3(dp, hp, xp) < 120.0: continue
+                if not (70.0 <= _angle3(c_pos2, xp, hp) <= 120.0): continue
+                results.append(dict(resname=r_rn[hj],chain=r_ch[hj],resid=int(r_ri[hj]),
+                    itype="hbond_to_halogen",distance=round(dhx,1),
+                    lig_atom_idx=i,prot_el="N",is_donor=True,ring_atom_indices=None))
+    return results
+
+
+def _deduplicate_interactions(interactions: list) -> list:
+    priority={t:i for i,t in enumerate(_ITYPE_PRIORITY)}
+    best:dict={}
+    for ix in interactions:
+        key=(ix["chain"],ix["resid"])
+        if key not in best: best[key]=ix
+        else:
+            pn=priority.get(ix["itype"],99); po=priority.get(best[key]["itype"],99)
+            if pn<po or (pn==po and ix["distance"]<best[key]["distance"]): best[key]=ix
+    return list(best.values())
+
+
+def _enrich_with_res_xyz(interactions, mol3d, receptor_pdb):
+    import numpy as np
+    from prody import parsePDB
+    try:
+        rec = parsePDB(receptor_pdb)
+        if rec is None: return
+        rc  = rec.getCoords()
+        rch = rec.getChids()
+        rri = rec.getResnums()
+        conf  = mol3d.GetConformer()
+        n_lig = mol3d.GetNumAtoms()
+        lxyz  = np.array([[conf.GetAtomPosition(i).x,
+                            conf.GetAtomPosition(i).y,
+                            conf.GetAtomPosition(i).z] for i in range(n_lig)])
+    except Exception:
+        return
+    for ix in interactions:
+        ch  = ix.get("chain", "")
+        ri  = ix.get("resid", 0)
+        lai = ix.get("lig_atom_idx", 0)
+        lai = min(lai, n_lig - 1)
+        ring_idxs = ix.get("ring_atom_indices") or []
+        if ring_idxs:
+            valid = [i for i in ring_idxs if 0 <= i < n_lig]
+            if valid:
+                lig_anchor = lxyz[valid].mean(axis=0)
+            else:
+                lig_anchor = lxyz[lai]
+        else:
+            lig_anchor = lxyz[lai]
+        ix["lig_anchor_xyz"] = lig_anchor.tolist()
+        res_idx = [j for j in range(len(rc))
+                   if rch[j].strip() == ch and int(rri[j]) == ri]
+        if not res_idx:
+            ix["res_xyz"] = lig_anchor.tolist()
+            continue
+        res_coords = rc[res_idx]
+        dists = np.linalg.norm(res_coords - lig_anchor, axis=1)
+        closest_local = int(dists.argmin())
+        ix["res_xyz"] = rc[res_idx[closest_local]].tolist()
 
 
 def _compute_svg_coords(mol2d, cx, cy, target_size=280):
     from rdkit.Chem import rdDepictor
-    if mol2d.GetNumConformers() == 0:
-        rdDepictor.Compute2DCoords(mol2d)
-    conf = mol2d.GetConformer(); n = mol2d.GetNumAtoms()
-    if n == 0:
-        return {}
-    xs = [conf.GetAtomPosition(i).x for i in range(n)]
-    ys = [conf.GetAtomPosition(i).y for i in range(n)]
-    span = max(max(xs) - min(xs), max(ys) - min(ys), 0.01)
-    sc = target_size / span; mx = (min(xs) + max(xs)) / 2; my = (min(ys) + max(ys)) / 2
-    return {i: (cx + (xs[i] - mx) * sc, cy - (ys[i] - my) * sc) for i in range(n)}
+    if mol2d.GetNumConformers()==0: rdDepictor.Compute2DCoords(mol2d)
+    conf=mol2d.GetConformer(); n=mol2d.GetNumAtoms()
+    if n==0: return {}
+    xs=[conf.GetAtomPosition(i).x for i in range(n)]
+    ys=[conf.GetAtomPosition(i).y for i in range(n)]
+    span=max(max(xs)-min(xs),max(ys)-min(ys),0.01)
+    sc=target_size/span; mx=(min(xs)+max(xs))/2; my=(min(ys)+max(ys))/2
+    return {i:(cx+(xs[i]-mx)*sc, cy-(ys[i]-my)*sc) for i in range(n)}
 
 
 def _ring_centroid_2d(ring_atom_indices, svg_coords):
-    xs = [svg_coords[i][0] for i in ring_atom_indices if i in svg_coords]
-    ys = [svg_coords[i][1] for i in ring_atom_indices if i in svg_coords]
+    xs=[svg_coords[i][0] for i in ring_atom_indices if i in svg_coords]
+    ys=[svg_coords[i][1] for i in ring_atom_indices if i in svg_coords]
+    if not xs: return None, None
+    return sum(xs)/len(xs), sum(ys)/len(ys)
+
+
+def _ring_centroid_from_atom(mol2d, atom_idx_2d, svg_coords):
+    ring_info = mol2d.GetRingInfo()
+    best_ring = None
+    best_size = 999
+    for ring in ring_info.AtomRings():
+        if atom_idx_2d in ring:
+            if mol2d.GetAtomWithIdx(ring[0]).GetIsAromatic():
+                if len(ring) < best_size:
+                    best_ring = ring
+                    best_size = len(ring)
+    if best_ring is None:
+        return None, None
+    xs = [svg_coords[i][0] for i in best_ring if i in svg_coords]
+    ys = [svg_coords[i][1] for i in best_ring if i in svg_coords]
     if not xs:
         return None, None
     return sum(xs) / len(xs), sum(ys) / len(ys)
 
 
 def _place_residues_no_cross(interactions, svg_coords, cx, cy, R=210):
-    if not interactions:
-        return []
+    if not interactions: return []
     items = []
     for ix in interactions:
-        ai = ix.get("lig_atom_idx", 0)
-        ax, ay = svg_coords.get(ai, (cx, cy))
+        if ix.get("ring_atom_indices"):
+            ax, ay = _ring_centroid_2d(ix["ring_atom_indices"], svg_coords)
+            if ax is None:
+                ax, ay = svg_coords.get(ix.get("lig_atom_idx", 0), (cx, cy))
+        else:
+            ai = ix.get("lig_atom_idx", 0)
+            ax, ay = svg_coords.get(ai, (cx, cy))
         angle = _math.atan2(ay - cy, ax - cx)
-        items.append({**ix, "angle": angle})
+        items.append({**ix, "angle": angle, "anchor_angle": angle})
     items.sort(key=lambda x: x["angle"])
     n = len(items)
     if n == 1:
         a = items[0]["angle"]
         return [{**items[0], "bx": cx + R * _math.cos(a), "by": cy + R * _math.sin(a), "slot_angle": a}]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if abs(items[j]["angle"] - items[i]["angle"]) < 0.001:
+                items[j]["angle"] += 0.05 * (j - i)
     min_dist_px = 78.0
     for _ in range(500):
-        delta = [0.0] * n; any_overlap = False
+        delta = [0.0] * n
+        any_overlap = False
         for i in range(n):
             for j in range(i + 1, n):
-                xi = cx + R * _math.cos(items[i]["angle"]); yi = cy + R * _math.sin(items[i]["angle"])
-                xj = cx + R * _math.cos(items[j]["angle"]); yj = cy + R * _math.sin(items[j]["angle"])
+                xi = cx + R * _math.cos(items[i]["angle"])
+                yi = cy + R * _math.sin(items[i]["angle"])
+                xj = cx + R * _math.cos(items[j]["angle"])
+                yj = cy + R * _math.sin(items[j]["angle"])
                 dx, dy = xj - xi, yj - yi
                 dist = _math.sqrt(dx * dx + dy * dy)
                 if dist < min_dist_px:
-                    push = (min_dist_px - dist) / max(R, 1.0)
-                    delta[i] -= push * 0.5; delta[j] += push * 0.5; any_overlap = True
+                    overlap_px = min_dist_px - dist
+                    push_angle = overlap_px / max(R, 1.0)
+                    delta[i] -= push_angle * 0.5
+                    delta[j] += push_angle * 0.5
+                    any_overlap = True
         for i in range(n):
             items[i]["angle"] += delta[i]
         if not any_overlap:
             break
-    return [{**item, "bx": cx + R * _math.cos(item["angle"]),
-             "by": cy + R * _math.sin(item["angle"]),
-             "slot_angle": item["angle"]} for item in items]
+    result = []
+    for item in items:
+        a = item["angle"]
+        result.append({**item, "bx": cx + R * _math.cos(a), "by": cy + R * _math.sin(a), "slot_angle": a})
+    return result
+
+
+def _rl_ligand_center(svg_coords):
+    pts = list(svg_coords.values())
+    if not pts: return 400.0, 380.0
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    return cx, cy
+
+
+def _rl_anchor_angle(ix, svg_coords, cx, cy):
+    ai = ix.get("lig_atom_idx", 0)
+    ax, ay = svg_coords.get(ai, (cx, cy))
+    ring_idxs = ix.get("ring_atom_indices")
+    if ring_idxs:
+        rx, ry = _ring_centroid_2d(ring_idxs, svg_coords)
+        if rx is not None:
+            ax, ay = rx, ry
+    return _math.atan2(ay - cy, ax - cx)
+
+
+def _rl_ray_boundary(cx, cy, theta, atom_xy, atom_r=20.0):
+    dx = _math.cos(theta)
+    dy = _math.sin(theta)
+    r2 = atom_r * atom_r
+    t_max = 0.0
+    for (ax, ay) in atom_xy:
+        vx = ax - cx; vy = ay - cy
+        t_proj = vx * dx + vy * dy
+        if t_proj < -atom_r: continue
+        perp2 = vx * vx + vy * vy - t_proj * t_proj
+        if perp2 >= r2: continue
+        t_exit = t_proj + _math.sqrt(max(r2 - perp2, 0.0))
+        if t_exit > t_max: t_max = t_exit
+    return t_max if t_max > 1.0 else 20.0
+
+
+def _rl_place_radially(sorted_interactions, svg_coords, cx, cy, atom_xy, atom_r, gap, node_r, rng):
+    JITTER_T = 7.0; JITTER_R = 4.0
+    n = len(sorted_interactions)
+    jit_t = rng.uniform(-JITTER_T, JITTER_T, n)
+    jit_r = rng.uniform(-JITTER_R, JITTER_R, n)
+    positions = []
+    for k, ix in enumerate(sorted_interactions):
+        theta  = _rl_anchor_angle(ix, svg_coords, cx, cy)
+        bdist  = _rl_ray_boundary(cx, cy, theta, atom_xy, atom_r)
+        r_place = bdist + gap + node_r + jit_r[k]
+        cos_t = _math.cos(theta); sin_t = _math.sin(theta)
+        tx, ty = -sin_t, cos_t
+        bx = cx + r_place * cos_t + jit_t[k] * tx
+        by = cy + r_place * sin_t + jit_t[k] * ty
+        positions.append((bx, by))
+    return positions
+
+
+def _rl_resolve_overlaps(positions, atom_xy, cx, cy, node_r=24.55, excl_r=46.0, max_iters=400):
+    n = len(positions)
+    if n <= 1: return list(positions)
+    min_sep = node_r * 2.0 + 8.0
+    bx = [p[0] for p in positions]
+    by = [p[1] for p in positions]
+    for i in range(n):
+        for j in range(i + 1, n):
+            ddx = bx[j] - bx[i]; ddy = by[j] - by[i]
+            if _math.sqrt(ddx * ddx + ddy * ddy) < 1.0:
+                ang = (i * 137.508 + j * 73.2) * _math.pi / 180.0
+                kick = min_sep * 0.5
+                bx[i] -= _math.cos(ang) * kick; by[i] -= _math.sin(ang) * kick
+                bx[j] += _math.cos(ang) * kick; by[j] += _math.sin(ang) * kick
+    for _it in range(max_iters):
+        dx_acc = [0.0] * n; dy_acc = [0.0] * n
+        any_overlap = False
+        for i in range(n):
+            for j in range(i + 1, n):
+                ddx = bx[j] - bx[i]; ddy = by[j] - by[i]
+                d   = _math.sqrt(ddx * ddx + ddy * ddy) + 1e-8
+                if d < min_sep:
+                    frac = (min_sep - d) * 0.55 / d
+                    dx_acc[i] -= frac * ddx; dy_acc[i] -= frac * ddy
+                    dx_acc[j] += frac * ddx; dy_acc[j] += frac * ddy
+                    any_overlap = True
+        for i in range(n):
+            bx[i] += dx_acc[i]; by[i] += dy_acc[i]
+        for i in range(n):
+            for (ax, ay) in atom_xy:
+                ddx = bx[i] - ax; ddy = by[i] - ay
+                d   = _math.sqrt(ddx * ddx + ddy * ddy) + 1e-8
+                if d < excl_r:
+                    push = (excl_r - d) * 0.5 / d
+                    if d < 0.5:
+                        ddx = bx[i] - cx; ddy = by[i] - cy
+                        d   = _math.sqrt(ddx * ddx + ddy * ddy) + 1e-8
+                        push = excl_r * 0.5 / d
+                    bx[i] += push * ddx; by[i] += push * ddy
+        if not any_overlap: break
+    return list(zip(bx, by))
+
+
+def _rl_reduce_crossings(ix_list, bx_by, svg_coords, cx, cy):
+    n = len(ix_list); bx_by = list(bx_by)
+    def _anchor(ix):
+        ai = ix.get("lig_atom_idx", 0)
+        ax, ay = svg_coords.get(ai, (cx, cy))
+        ri = ix.get("ring_atom_indices")
+        if ri:
+            rx, ry = _ring_centroid_2d(ri, svg_coords)
+            if rx is not None: return (rx, ry)
+        return (ax, ay)
+    def _cross(a1, b1, a2, b2):
+        def _side(O, A, B):
+            return (B[0]-O[0])*(A[1]-O[1]) - (B[1]-O[1])*(A[0]-O[0])
+        d1 = _side(a2, b2, a1); d2 = _side(a2, b2, b1)
+        d3 = _side(a1, b1, a2); d4 = _side(a1, b1, b2)
+        return (d1 * d2 < 0) and (d3 * d4 < 0)
+    for _pass in range(n * 2):
+        improved = False
+        for i in range(n):
+            for j in range(i + 1, n):
+                if _cross(_anchor(ix_list[i]), bx_by[i], _anchor(ix_list[j]), bx_by[j]):
+                    bx_by[i], bx_by[j] = bx_by[j], bx_by[i]; improved = True
+        if not improved: break
+    return bx_by
+
+
+def _place_residues_pca(interactions, svg_coords, mol3d, cx, cy, R=210):
+    if not interactions: return []
+    try:
+        import numpy as _np_rc
+        NODE_R = 24.55; GAP = 45.0; ATOM_R = 20.0
+        lx, ly  = _rl_ligand_center(svg_coords)
+        atom_xy = list(svg_coords.values())
+        anchor_a = [_rl_anchor_angle(ix, svg_coords, lx, ly) for ix in interactions]
+        order    = sorted(range(len(interactions)), key=lambda k: anchor_a[k])
+        sorted_ix = [interactions[k] for k in order]
+        rng       = _np_rc.random.default_rng(42)
+        positions = _rl_place_radially(sorted_ix, svg_coords, lx, ly, atom_xy, ATOM_R, GAP, NODE_R, rng)
+        positions = _rl_resolve_overlaps(positions, atom_xy, lx, ly, node_r=NODE_R, excl_r=NODE_R + ATOM_R)
+        positions = _rl_reduce_crossings(sorted_ix, positions, svg_coords, lx, ly)
+        result = []
+        for k, (bx, by) in enumerate(positions):
+            ang = _math.atan2(by - ly, bx - lx)
+            result.append({**sorted_ix[k], "angle": ang, "bx": float(bx), "by": float(by), "slot_angle": ang})
+        return result
+    except Exception:
+        return _place_residues_no_cross(interactions, svg_coords, cx, cy, R)
 
 
 def _render_ligand_svg(mol2d, svg_coords):
     from rdkit import Chem
-    parts = []
-    ri = mol2d.GetRingInfo()
-    arom_bonds = set(); arom_rings = []
+    parts=[]
+    ri=mol2d.GetRingInfo()
+    arom_bonds=set(); arom_rings=[]
     for ring in ri.AtomRings():
         if all(mol2d.GetAtomWithIdx(i).GetIsAromatic() for i in ring):
             for k in range(len(ring)):
-                arom_bonds.add(frozenset([ring[k], ring[(k + 1) % len(ring)]]))
+                arom_bonds.add(frozenset([ring[k],ring[(k+1)%len(ring)]]))
             arom_rings.append(ring)
+    def _sh(fx,fy,tx,ty,sym):
+        if sym not in ("C",""):
+            dx,dy=tx-fx,ty-fy; L=_math.sqrt(dx*dx+dy*dy)+1e-9
+            r={"H":8,"N":9,"O":9,"S":11,"P":11,"F":8,"CL":13,"BR":13,"I":11}.get(sym,9)
+            return fx+dx/L*r, fy+dy/L*r
+        return fx,fy
     for bond in mol2d.GetBonds():
-        i1, i2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        x1, y1 = svg_coords.get(i1, (0, 0)); x2, y2 = svg_coords.get(i2, (0, 0))
-        if frozenset([i1, i2]) in arom_bonds:
-            parts.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" stroke="#1a1a1a" stroke-width="1.77" opacity="0.9"/>')
+        i1,i2=bond.GetBeginAtomIdx(),bond.GetEndAtomIdx()
+        x1,y1=svg_coords.get(i1,(0,0)); x2,y2=svg_coords.get(i2,(0,0))
+        s1=mol2d.GetAtomWithIdx(i1).GetSymbol().upper()
+        s2=mol2d.GetAtomWithIdx(i2).GetSymbol().upper()
+        x1s,y1s=_sh(x1,y1,x2,y2,s1); x2s,y2s=_sh(x2,y2,x1,y1,s2)
+        bt=bond.GetBondType()
+        if frozenset([i1,i2]) in arom_bonds:
+            parts.append(f'<line x1="{x1s:.2f}" y1="{y1s:.2f}" x2="{x2s:.2f}" y2="{y2s:.2f}" stroke="#1a1a1a" stroke-width="1.77" opacity="0.9"/>')
+        elif bt==Chem.BondType.DOUBLE:
+            dx,dy=x2s-x1s,y2s-y1s; L=_math.sqrt(dx*dx+dy*dy)+1e-9
+            px,py=-dy/L*2.5,dx/L*2.5
+            for sg in (1,-1):
+                parts.append(f'<line x1="{x1s+px*sg:.2f}" y1="{y1s+py*sg:.2f}" x2="{x2s+px*sg:.2f}" y2="{y2s+py*sg:.2f}" stroke="#1a1a1a" stroke-width="2.44" opacity="0.9"/>')
+        elif bt==Chem.BondType.TRIPLE:
+            dx,dy=x2s-x1s,y2s-y1s; L=_math.sqrt(dx*dx+dy*dy)+1e-9
+            px,py=-dy/L*3.8,dx/L*3.8
+            for m in (-1,0,1):
+                parts.append(f'<line x1="{x1s+px*m:.2f}" y1="{y1s+py*m:.2f}" x2="{x2s+px*m:.2f}" y2="{y2s+py*m:.2f}" stroke="#1a1a1a" stroke-width="2.0" opacity="0.9"/>')
         else:
-            bt = bond.GetBondType()
-            if bt == Chem.BondType.DOUBLE:
-                dx, dy = x2 - x1, y2 - y1; L = _math.sqrt(dx * dx + dy * dy) + 1e-9
-                px, py = -dy / L * 2.5, dx / L * 2.5
-                for sg in (1, -1):
-                    parts.append(f'<line x1="{x1+px*sg:.2f}" y1="{y1+py*sg:.2f}" x2="{x2+px*sg:.2f}" y2="{y2+py*sg:.2f}" stroke="#1a1a1a" stroke-width="2.44" opacity="0.9"/>')
+            bd=bond.GetBondDir()
+            if bd==Chem.BondDir.BEGINWEDGE:
+                dx,dy=x2s-x1s,y2s-y1s; L=_math.sqrt(dx*dx+dy*dy)+1e-9
+                px,py=-dy/L*3.0,dx/L*3.0
+                parts.append(f'<polygon points="{x1s:.2f},{y1s:.2f} {x2s+px:.2f},{y2s+py:.2f} {x2s-px:.2f},{y2s-py:.2f}" fill="#1a1a1a" stroke="none"/>')
+            elif bd==Chem.BondDir.BEGINDASH:
+                dx,dy=x2s-x1s,y2s-y1s; L=_math.sqrt(dx*dx+dy*dy)+1e-9
+                px,py=-dy/L,dx/L
+                for step in range(1,6):
+                    t=step/7; mx2=x1s+dx*t; my2=y1s+dy*t; w=t*5.0
+                    parts.append(f'<line x1="{mx2-px*w:.2f}" y1="{my2-py*w:.2f}" x2="{mx2+px*w:.2f}" y2="{my2+py*w:.2f}" stroke="#1a1a1a" stroke-width="1.6"/>')
             else:
-                parts.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" stroke="#1a1a1a" stroke-width="1.77" opacity="0.9"/>')
+                parts.append(f'<line x1="{x1s:.2f}" y1="{y1s:.2f}" x2="{x2s:.2f}" y2="{y2s:.2f}" stroke="#1a1a1a" stroke-width="1.77" opacity="0.9"/>')
     for ring in arom_rings:
-        rcoords = [svg_coords.get(i, (0, 0)) for i in ring]
-        rcx = sum(x for x, y in rcoords) / len(rcoords)
-        rcy = sum(y for x, y in rcoords) / len(rcoords)
-        avg = sum(_math.sqrt((x - rcx) ** 2 + (y - rcy) ** 2) for x, y in rcoords) / len(rcoords)
-        cr = avg * 0.58
+        rcoords=[svg_coords.get(i,(0,0)) for i in ring]
+        rcx=sum(x for x,y in rcoords)/len(rcoords)
+        rcy=sum(y for x,y in rcoords)/len(rcoords)
+        avg=sum(_math.sqrt((x-rcx)**2+(y-rcy)**2) for x,y in rcoords)/len(rcoords)
+        cr=avg*0.58
         parts.append(f'<circle cx="{rcx:.2f}" cy="{rcy:.2f}" r="{cr:.2f}" fill="none" stroke="#1a1a1a" stroke-width="1.77" stroke-dasharray="5.43 2.72" opacity="0.7"/>')
         parts.append(f'<circle cx="{rcx:.2f}" cy="{rcy:.2f}" r="5.43" fill="{_AROM_DOT_CLR}"/>')
     for i in range(mol2d.GetNumAtoms()):
-        atom = mol2d.GetAtomWithIdx(i); sym = atom.GetSymbol()
-        if sym == "C": continue
-        ax, ay = svg_coords.get(i, (0, 0))
-        clr = _ATOM_CLR.get(sym.upper(), "#555"); fs = 17.65
-        hw = {"H": 7, "N": 9, "O": 9, "S": 11, "P": 11, "F": 8, "CL": 16, "BR": 16, "I": 11}.get(sym.upper(), 9)
+        atom=mol2d.GetAtomWithIdx(i); sym=atom.GetSymbol()
+        if sym=="C": continue
+        ax,ay=svg_coords.get(i,(0,0))
+        clr=_ATOM_CLR.get(sym.upper(),"#555")
+        fs={"H":16}.get(sym,17.65)
+        hw={"H":7,"N":9,"O":9,"S":11,"P":11,"F":8,"CL":16,"BR":16,"I":11}.get(sym.upper(),9)
         parts.append(f'<rect x="{ax-hw:.1f}" y="{ay-11:.1f}" width="{hw*2:.0f}" height="22" fill="white" stroke="none"/>')
         parts.append(f'<text x="{ax:.2f}" y="{ay:.2f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="{fs}" font-weight="700" fill="{clr}">{sym}</text>')
+        fc=atom.GetFormalCharge()
+        if fc!=0:
+            fcs="+" if fc==1 else "\u2212" if fc==-1 else f"{fc:+d}"
+            parts.append(f'<text x="{ax+hw:.1f}" y="{ay-hw+2:.1f}" font-family="Arial,sans-serif" font-size="10" fill="{clr}">{fcs}</text>')
     return "".join(parts)
+
+
+def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
+    parts=[]
+    parts.append(f'<svg width="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">')
+    parts.append(f'<rect width="{W}" height="{H}" fill="white"/>')
+    if title:
+        esc=title.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+        tw=len(esc)*14.5+48; tw=max(tw,240); tw=min(tw,W-40)
+        px=(W-tw)/2; ph=46; pr=ph/2
+        parts.append(f'<rect x="{px:.1f}" y="14" width="{tw:.0f}" height="{ph}" rx="{pr:.1f}" ry="{pr:.1f}" fill="#f2f2f2" stroke="none"/>')
+        parts.append(f'<text x="{W/2:.1f}" y="37" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="24.93" font-weight="700" fill="#1a1a1a">{esc}</text>')
+    for p in placements:
+        itype=p["itype"]; bx,by=p["bx"],p["by"]
+        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
+        bg=_RES_CIRCLE.get(itype,dict(fill="#cccccc",opacity=0.2))
+        parts.append(f'<circle cx="{cbx:.1f}" cy="{cby:.1f}" r="24.55" fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
+    for p in placements:
+        itype=p["itype"]
+        if itype=="hydrophobic": continue
+        bx,by=p["bx"],p["by"]
+        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
+        if itype in ("pi_pi","cation_pi") and p.get("ring_atom_indices"):
+            lx,ly=_ring_centroid_2d(p["ring_atom_indices"],svg_coords)
+            if lx is None:
+                ai=p.get("lig_atom_idx",0); lx,ly=svg_coords.get(ai,(W//2,H//2))
+        else:
+            ai=p.get("lig_atom_idx",0); lx,ly=svg_coords.get(ai,(W//2,H//2))
+        clr=_LINE_CLR.get(itype,"#888")
+        dash_attr=' stroke-dasharray="5 3"'
+        dash_attr_hbx=' stroke-dasharray="4 2 1 2"'
+        if itype in ("pi_pi","cation_pi"):
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{cbx:.2f}" y2="{cby:.2f}" stroke="{clr}" stroke-width="1.6"{dash_attr} opacity="0.85"/>')
+        elif itype in ("hbond","hbond_to_halogen"):
+            da=dash_attr if itype=="hbond" else dash_attr_hbx
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{cbx:.2f}" y2="{cby:.2f}" stroke="{clr}" stroke-width="1.6"{da} opacity="0.85"/>')
+            if p.get("distance") is not None:
+                t_along=0.40; bx_l=lx+(cbx-lx)*t_along; by_l=ly+(cby-ly)*t_along
+                dx_l=cbx-lx; dy_l=cby-ly; _len=_math.sqrt(dx_l*dx_l+dy_l*dy_l)+1e-9
+                px_l=-dy_l/_len*14; py_l=dx_l/_len*14; mx2=bx_l+px_l*14; my2=by_l+py_l*14
+                ds=f"{p['distance']}\u00c5"; tw2=len(ds)*7+8
+                parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}" width="{tw2:.0f}" height="17" rx="4" fill="white" stroke="{clr}" stroke-width="0.5"/>')
+                parts.append(f'<text x="{mx2:.1f}" y="{my2:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="{clr}">{ds}</text>')
+        else:
+            da={"ionic":"6 2 2 2","metal":"3 2","halogen":"5 2"}.get(itype,"5 3")
+            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{cbx:.2f}" y2="{cby:.2f}" stroke="{clr}" stroke-width="1.8" stroke-dasharray="{da}" opacity="0.85"/>')
+            if p.get("distance") is not None:
+                t_along=0.40; bx_l=lx+(cbx-lx)*t_along; by_l=ly+(cby-ly)*t_along
+                dx_l=cbx-lx; dy_l=cby-ly; _len=_math.sqrt(dx_l*dx_l+dy_l*dy_l)+1e-9
+                px_l=-dy_l/_len*14; py_l=dx_l/_len*14; mx2=bx_l+px_l*14; my2=by_l+py_l*14
+                ds=f"{p['distance']}\u00c5"; tw2=len(ds)*7+8
+                parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}" width="{tw2:.0f}" height="17" rx="4" fill="white" stroke="{clr}" stroke-width="0.5"/>')
+                parts.append(f'<text x="{mx2:.1f}" y="{my2:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="{clr}">{ds}</text>')
+    parts.append(_render_ligand_svg(mol2d, svg_coords))
+    for p in placements:
+        itype=p["itype"]; bx,by=p["bx"],p["by"]
+        cbx=max(50,min(bx,W-50)); cby=max(70,min(by,H-65))
+        rn=p["resname"]; ri=p["resid"]; ch=p.get("chain","")
+        _NO_NUM = HEME_RESNAMES | METAL_RESNAMES
+        lbl = rn.upper() if rn.upper() in _NO_NUM else f"{rn.upper()} {ri}{ch}"
+        lbl_clr=_LBL_CLR.get(itype,"#333")
+        parts.append(f'<text x="{cbx:.1f}" y="{cby:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14.29" font-weight="700" fill="{lbl_clr}">{lbl}</text>')
+    _LEG_ORDER=["hydrophobic","hbond","pi_pi","cation_pi","hbond_to_halogen","ionic","metal","halogen"]
+    _LEG_LABEL={"hydrophobic":"Hydrophobic","hbond":"Hydrogen bond","hbond_to_halogen":"H\u00b7\u00b7\u00b7Halogen","pi_pi":"\u03c0-\u03c0 stacking","cation_pi":"Cation-\u03c0","ionic":"Ionic","metal":"Metal","halogen":"Halogen bond"}
+    active=[t for t in _LEG_ORDER if any(p["itype"]==t for p in placements)]
+    if active:
+        ly0=H-52
+        def _entry_w(t):
+            txt=_LEG_LABEL.get(t,t)
+            return 9.54*2+(4+28 if t!="hydrophobic" else 0)+6+len(txt)*9.5+20
+        total_w=sum(_entry_w(t) for t in active); total_w=min(total_w,W-40)
+        lx0=(W-total_w)/2
+        parts.append(f'<rect x="{lx0-8:.0f}" y="{ly0-5}" width="{total_w+16:.0f}" height="44" fill="white" stroke="#e0e0e0" stroke-width="0.8" rx="6"/>')
+        for k,it in enumerate(active):
+            bg=_RES_CIRCLE.get(it,dict(fill="#ccc",opacity=0.2))
+            clr=_LINE_CLR.get(it,bg["fill"])
+            lbl=_LEG_LABEL.get(it,it)
+            text_w=len(lbl)*9.5+6
+            glyph_w=9.54*2+(4+28 if it!="hydrophobic" else 0)
+            entry_w=glyph_w+6+text_w
+            circ_cx=lx0+sum(
+                (9.54*2+(4+28 if active[kk]!="hydrophobic" else 0)+6+len(_LEG_LABEL.get(active[kk],active[kk]))*9.5+6+20)
+                for kk in range(k)
+            )+9.54
+            parts.append(f'<circle cx="{circ_cx:.1f}" cy="{ly0+10}" r="9.54" fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
+            line_x1=circ_cx+9.54+4; line_x2=line_x1+28
+            if it!="hydrophobic":
+                parts.append(f'<line x1="{line_x1:.1f}" y1="{ly0+10}" x2="{line_x2:.1f}" y2="{ly0+10}" stroke="{clr}" stroke-width="2" stroke-dasharray="5 3" opacity="0.85"/>')
+            text_x=(line_x2 if it!="hydrophobic" else circ_cx+9.54)+6
+            parts.append(f'<text x="{text_x:.1f}" y="{ly0+10}" text-anchor="start" dominant-baseline="central" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#555">{lbl}</text>')
+    parts.append('</svg>')
+    return "\n".join(parts)
+
+
+def _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size=(800,759)):
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdDepictor
+    RDLogger.DisableLog("rdApp.*")
+    W, H = size
+    mol3d = None
+    for san in (True, False):
+        sup = Chem.SDMolSupplier(pose_sdf, sanitize=san, removeHs=False)
+        mol3d = next((m for m in sup if m is not None), None)
+        if mol3d is not None:
+            if not san:
+                try: Chem.SanitizeMol(mol3d)
+                except: pass
+            break
+    if mol3d is None or mol3d.GetNumConformers() == 0:
+        raise ValueError("No valid 3D pose in SDF")
+    # ── Robust mol2d from SMILES (handles charged/tautomeric aromatics) ──────
+    def _parse_smi_robust(smi):
+        if not smi: return None
+        m = Chem.MolFromSmiles(smi)
+        if m: return m
+        try:
+            m = Chem.MolFromSmiles(smi, sanitize=False)
+            if m is None: return None
+            m.UpdatePropertyCache(strict=False)
+            Chem.FastFindRings(m)
+            Chem.SetAromaticity(m)
+            m2 = Chem.MolFromSmiles(Chem.MolToSmiles(m))
+            return m2 if m2 else m
+        except Exception:
+            return None
+
+    mol2d = None
+    if smiles and smiles.strip():
+        mol2d = _parse_smi_robust(smiles.strip())
+    if mol2d is None:
+        mol2d = Chem.RemoveHs(mol3d, sanitize=False)
+        try: Chem.SanitizeMol(mol2d)
+        except: pass
+    mol2d = Chem.RemoveHs(mol2d)
+    rdDepictor.Compute2DCoords(mol2d)
+
+    m3 = Chem.RemoveHs(mol3d, sanitize=False)
+    try: Chem.SanitizeMol(m3)
+    except: pass
+
+    # ── Charge-agnostic substructure matching ─────────────────────────────
+    # GetSubstructMatch fails when mol2d has [O-] but m3 from raw Vina SDF
+    # has no formal charges. Strip charges on both sides for matching only.
+    m3to2d = {}
+    try:
+        def _strip_charges(mol):
+            rw = Chem.RWMol(mol)
+            for a in rw.GetAtoms(): a.SetFormalCharge(0)
+            Chem.SanitizeMol(rw)
+            return rw.GetMol()
+        m3_neutral    = _strip_charges(m3)
+        mol2d_neutral = _strip_charges(mol2d)
+        mt = m3_neutral.GetSubstructMatch(mol2d_neutral)
+        if len(mt) == mol2d.GetNumAtoms():
+            for i2, i3 in enumerate(mt): m3to2d[i3] = i2
+    except Exception:
+        try:
+            mt = m3.GetSubstructMatch(mol2d)
+            if len(mt) == mol2d.GetNumAtoms():
+                for i2, i3 in enumerate(mt): m3to2d[i3] = i2
+        except Exception:
+            pass
+    try: raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
+    except: raw = []
+    try: _enrich_with_res_xyz(raw, mol3d, receptor_pdb)
+    except: pass
+    for ix in raw:
+        ix["lig_atom_idx"] = m3to2d.get(ix.get("lig_atom_idx", 0), 0)
+        if ix.get("ring_atom_indices"):
+            ix["ring_atom_indices"] = [m3to2d.get(i, i) for i in ix["ring_atom_indices"]]
+    pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    ded = _deduplicate_interactions(raw)
+    ded.sort(key=lambda x: (pm.get(x["itype"], 99), x["distance"]))
+    ded = ded[:max_residues]
+    cx, cy = W // 2, H // 2
+    sc = _compute_svg_coords(mol2d, cx, cy, target_size=280)
+    pl = _place_residues_pca(ded, sc, mol3d, cx, cy, R=210)
+    RDLogger.EnableLog("rdApp.error")
+    return mol2d, sc, pl, W, H
 
 
 def draw_interaction_diagram(
@@ -2677,109 +3405,231 @@ def draw_interaction_diagram(
     size: tuple = (800, 759),
     max_residues: int = 14,
 ) -> bytes:
-    from rdkit import Chem, RDLogger
-    from rdkit.Chem import rdDepictor
-    RDLogger.DisableLog("rdApp.*")
-    W, H = size; cx, cy = W // 2, H // 2
     try:
-        mol3d = None
-        for san in (True, False):
-            sup = Chem.SDMolSupplier(pose_sdf, sanitize=san, removeHs=False)
-            mol3d = next((m for m in sup if m is not None), None)
-            if mol3d is not None: break
-        if mol3d is None:
-            raise ValueError("No valid 3D pose")
-        mol2d = Chem.MolFromSmiles(smiles.strip()) if smiles and smiles.strip() else None
-        if mol2d is None:
-            mol2d = Chem.RemoveHs(mol3d, sanitize=False)
-            try: Chem.SanitizeMol(mol2d)
-            except: pass
-        mol2d = Chem.RemoveHs(mol2d)
-        rdDepictor.Compute2DCoords(mol2d)
-        try:
-            raw = _detect_all_interactions(mol3d, receptor_pdb, cutoff=cutoff)
-        except: raw = []
-        pm  = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
-        ded = _deduplicate_interactions(raw)
-        ded.sort(key=lambda x: (pm.get(x["itype"], 99), x["distance"]))
-        ded = ded[:max_residues]
-        sc  = _compute_svg_coords(mol2d, cx, cy, target_size=280)
-        pl  = _place_residues_no_cross(ded, sc, cx, cy, R=210)
-
-        parts = [
-            f'<svg width="100%" viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">',
-            f'<rect width="{W}" height="{H}" fill="white"/>',
-        ]
-        if title:
-            esc = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            tw  = len(esc) * 14.5 + 48; tw = max(tw, 240); tw = min(tw, W - 40)
-            px  = (W - tw) / 2; ph = 46; pr = ph / 2
-            parts.append(f'<rect x="{px:.1f}" y="14" width="{tw:.0f}" height="{ph}" rx="{pr:.1f}" ry="{pr:.1f}" fill="#f2f2f2" stroke="none"/>')
-            parts.append(f'<text x="{W/2:.1f}" y="37" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="24.93" font-weight="700" fill="#1a1a1a">{esc}</text>')
-        for p in pl:
-            bx, by = p["bx"], p["by"]
-            cbx = max(50, min(bx, W - 50)); cby = max(70, min(by, H - 65))
-            bg  = _RES_CIRCLE.get(p["itype"], dict(fill="#cccccc", opacity=0.2))
-            parts.append(f'<circle cx="{cbx:.1f}" cy="{cby:.1f}" r="24.55" fill="{bg["fill"]}" opacity="{bg["opacity"]}"/>')
-        for p in pl:
-            itype = p["itype"]
-            if itype == "hydrophobic": continue
-            bx, by = p["bx"], p["by"]
-            cbx = max(50, min(bx, W - 50)); cby = max(70, min(by, H - 65))
-            ai  = p.get("lig_atom_idx", 0); lx, ly = sc.get(ai, (cx, cy))
-            clr = _LINE_CLR.get(itype, "#888")
-            parts.append(f'<line x1="{lx:.2f}" y1="{ly:.2f}" x2="{cbx:.2f}" y2="{cby:.2f}" stroke="{clr}" stroke-width="1.6" stroke-dasharray="5 3" opacity="0.85"/>')
-            if p.get("distance"):
-                ds  = f'{p["distance"]}\u00c5'; tw2 = len(ds) * 7 + 8
-                mx2 = (lx + cbx) / 2; my2 = (ly + cby) / 2
-                parts.append(f'<rect x="{mx2-tw2/2:.1f}" y="{my2-9:.1f}" width="{tw2:.0f}" height="17" rx="4" fill="white" stroke="{clr}" stroke-width="0.5"/>')
-                parts.append(f'<text x="{mx2:.1f}" y="{my2:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="{clr}">{ds}</text>')
-        parts.append(_render_ligand_svg(mol2d, sc))
-        for p in pl:
-            bx, by = p["bx"], p["by"]
-            cbx = max(50, min(bx, W - 50)); cby = max(70, min(by, H - 65))
-            rn  = p["resname"]; ri = p["resid"]; ch = p.get("chain", "")
-            _NO_NUM = HEME_RESNAMES | METAL_RESNAMES
-            lbl     = rn.upper() if rn.upper() in _NO_NUM else f"{rn.upper()} {ri}{ch}"
-            lbl_clr = _LBL_CLR.get(p["itype"], "#333")
-            parts.append(f'<text x="{cbx:.1f}" y="{cby:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14.29" font-weight="700" fill="{lbl_clr}">{lbl}</text>')
-        parts.append('</svg>')
-        RDLogger.EnableLog("rdApp.error")
-        return "\n".join(parts).encode()
+        mol2d, sc, pl, W, H = _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size)
     except Exception as e:
-        RDLogger.EnableLog("rdApp.error")
+        W, H = size
         return (f'<svg viewBox="0 0 {W} 80" xmlns="http://www.w3.org/2000/svg">'
                 f'<rect width="{W}" height="80" fill="white"/>'
                 f'<text x="{W//2}" y="44" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" fill="#cc2222">'
                 f'Error: {e}</text></svg>').encode()
-
-
-def draw_interactions_rdkit(lig_mol, receptor_pdb: str, smiles: str,
-                            title: str = "", cutoff: float = 3.5,
-                            size: tuple = (500, 500), max_residues: int = 10) -> bytes:
-    import tempfile
-    from rdkit import Chem
-    tmp = tempfile.NamedTemporaryFile(suffix=".sdf", delete=False)
-    with Chem.SDWriter(tmp.name) as w:
-        w.write(lig_mol)
-    return draw_interaction_diagram(
-        receptor_pdb=receptor_pdb, pose_sdf=tmp.name,
-        smiles=smiles, title=title, cutoff=cutoff,
-        size=(800, 759), max_residues=max_residues,
-    )
+    svg = _render_diagram_svg(mol2d, sc, pl, title, W, H)
+    return svg.encode()
 
 
 def draw_interaction_diagram_data(
-    receptor_pdb: str, pose_sdf: str, smiles: str,
-    title: str = "", cutoff: float = 4.5,
-    size: tuple = (800, 759), max_residues: int = 14,
+    receptor_pdb: str,
+    pose_sdf: str,
+    smiles: str,
+    title: str = "",
+    cutoff: float = 4.5,
+    size: tuple = (800, 759),
+    max_residues: int = 14,
 ) -> dict:
-    return None
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdDepictor
+    import json as _json
+    RDLogger.DisableLog("rdApp.*")
+    W, H = size
+    try:
+        mol2d, sc, pl, W, H = _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size)
+    except Exception:
+        return None
+    lig_svg = _render_ligand_svg(mol2d, sc)
+    sc_serial = {str(k): [round(v[0], 2), round(v[1], 2)] for k, v in sc.items()}
+    pl_serial = []
+    for p in pl:
+        lx, ly = sc.get(p.get("lig_atom_idx", 0), (W//2, H//2))
+        if p.get("ring_atom_indices"):
+            rx, ry = _ring_centroid_2d(p["ring_atom_indices"], sc)
+            if rx is not None: lx, ly = rx, ry
+        pl_serial.append({
+            "id":       f"r{len(pl_serial)}",
+            "label":    (p['resname'].upper() if p['resname'].upper() in (HEME_RESNAMES | METAL_RESNAMES)
+                         else f"{p['resname']} {p['resid']}{p.get('chain','')}"),
+            "itype":    p["itype"],
+            "distance": p.get("distance"),
+            "lx":       round(lx, 2),
+            "ly":       round(ly, 2),
+            "bx":       round(p["bx"], 2),
+            "by":       round(p["by"], 2),
+        })
+    RDLogger.EnableLog("rdApp.error")
+    return {
+        "W": W, "H": H, "title": title,
+        "ligand_svg": lig_svg,
+        "placements": pl_serial,
+        "svg_coords": sc_serial,
+    }
+
+
+def draw_interactions_rdkit_classic(
+    lig_mol,
+    receptor_pdb: str,
+    smiles: str,
+    title: str = "",
+    cutoff: float = 3.5,
+    size: tuple = (650, 620),
+    max_residues: int = 10,
+) -> bytes:
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import Draw, rdDepictor, AllChem
+    RDLogger.DisableLog("rdApp.*")
+    _C_HB = (0.35, 0.61, 0.84, 0.45)
+    _C_HP = (0.17, 0.55, 0.34, 0.45)
+    _C_OT = (0.80, 0.37, 0.54, 0.45)
+    def _parse_robust(smi):
+        if not smi: return None
+        m = Chem.MolFromSmiles(smi)
+        if m: return m
+        try:
+            m = Chem.MolFromSmiles(smi, sanitize=False)
+            if m is None: return None
+            m.UpdatePropertyCache(strict=False)
+            Chem.FastFindRings(m)
+            Chem.SetAromaticity(m)
+            m2 = Chem.MolFromSmiles(Chem.MolToSmiles(m))
+            return m2 if m2 else m
+        except Exception:
+            return None
+    W, H = size
+    mol2d = _parse_robust(smiles)
+    if mol2d is None:
+        mol2d = Chem.RemoveHs(lig_mol, sanitize=False)
+        try: Chem.SanitizeMol(mol2d)
+        except: pass
+    rdDepictor.Compute2DCoords(mol2d)
+    n2d = mol2d.GetNumAtoms()
+    mol3d_noH = Chem.RemoveHs(lig_mol, sanitize=False)
+    try: Chem.SanitizeMol(mol3d_noH)
+    except: pass
+    idx3d_to_2d = {}
+    try:
+        def _strip_charges_rdk(mol):
+            rw = Chem.RWMol(mol)
+            for a in rw.GetAtoms(): a.SetFormalCharge(0)
+            Chem.SanitizeMol(rw)
+            return rw.GetMol()
+        m3n   = _strip_charges_rdk(mol3d_noH)
+        m2d_n = _strip_charges_rdk(mol2d)
+        match = m3n.GetSubstructMatch(m2d_n)
+        if len(match) == mol2d.GetNumAtoms():
+            for i2d, i3d in enumerate(match):
+                idx3d_to_2d[i3d] = i2d
+    except Exception:
+        try:
+            match = mol3d_noH.GetSubstructMatch(mol2d)
+            if len(match) == mol2d.GetNumAtoms():
+                for i2d, i3d in enumerate(match):
+                    idx3d_to_2d[i3d] = i2d
+        except Exception:
+            pass
+    try:
+        raw = _detect_all_interactions(lig_mol, receptor_pdb, cutoff=cutoff)
+    except:
+        raw = []
+    for ix in raw:
+        ix["lig_atom_idx"] = idx3d_to_2d.get(ix.get("lig_atom_idx", 0), 0)
+    pm = {t: i for i, t in enumerate(_ITYPE_PRIORITY)}
+    deduped = _deduplicate_interactions(raw)
+    deduped.sort(key=lambda x: (pm.get(x["itype"], 99), x["distance"]))
+    deduped = deduped[:max_residues]
+    if not deduped:
+        d2d = Draw.MolDraw2DSVG(W, H)
+        d2d.DrawMolecule(mol2d, legend=title or "No interactions found")
+        d2d.FinishDrawing()
+        RDLogger.EnableLog("rdApp.error")
+        return d2d.GetDrawingText().encode()
+    lig_ext = Chem.RWMol(mol2d)
+    pts, clrs = [], {}
+    for ix in deduped:
+        itype = ix["itype"]
+        ai = ix.get("lig_atom_idx", 0)
+        if ai >= n2d: ai = 0
+        if itype in ("hbond", "hbond_to_halogen"): color = _C_HB
+        elif itype == "hydrophobic":                color = _C_HP
+        else:                                       color = _C_OT
+        rn = ix["resname"]; ri = ix["resid"]; ch = ix.get("chain","")
+        _NO_NUM = HEME_RESNAMES | METAL_RESNAMES
+        lbl = rn.upper() if rn.upper() in _NO_NUM else f"{rn}{ri}{ch}"
+        res_atom = Chem.Atom(0)
+        res_atom.SetProp("atomLabel", lbl)
+        aid = lig_ext.AddAtom(res_atom)
+        pts.append(aid); clrs[aid] = color
+        lig_ext.AddBond(aid, ai, Chem.BondType.ZERO)
+    rdDepictor.Compute2DCoords(lig_ext)
+    d2d = Draw.MolDraw2DSVG(W, H)
+    opts = d2d.drawOptions()
+    opts.circleAtoms = True; opts.fillHighlights = True
+    opts.continuousHighlight = False; opts.highlightRadius = 0.5
+    opts.addAtomIndices = False; opts.padding = 0.15
+    try:
+        d2d.SetDrawBounds(0, 0, W, H - 40)
+    except AttributeError:
+        pass
+    d2d.DrawMolecule(lig_ext, highlightAtoms=pts, highlightAtomColors=clrs)
+    d2d.FinishDrawing()
+    svg_text = d2d.GetDrawingText()
+    if title:
+        svg_text = _svg_stamp(svg_text, title, W, H)
+    RDLogger.EnableLog("rdApp.error")
+    return svg_text.encode()
+
+
+def draw_interactions_rdkit(lig_mol, receptor_pdb: str, smiles: str,
+                            title: str="", cutoff: float=3.5,
+                            size: tuple=(500,500), max_residues: int=10) -> bytes:
+    import tempfile
+    from rdkit import Chem
+    tmp=tempfile.NamedTemporaryFile(suffix=".sdf",delete=False)
+    with Chem.SDWriter(tmp.name) as w: w.write(lig_mol)
+    return draw_interaction_diagram(receptor_pdb=receptor_pdb,pose_sdf=tmp.name,
+        smiles=smiles,title=title,cutoff=cutoff,size=(800,759),max_residues=max_residues)
+
+
+def _svg_stamp(svg_text:str,title:str,w:int,h:int)->str:
+    esc=title.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    pad=int(w*0.05); pw=w-2*pad; ph=28; py=h-ph-8; ty=py+ph//2; r=ph//2
+    st=(f'<g><rect x="{pad}" y="{py}" width="{pw}" height="{ph}" rx="{r}" ry="{r}"'
+        f' fill="#E8E8E8" fill-opacity="0.93" stroke="#C8C8C8" stroke-width="0.5"/>'
+        f'<text x="{w//2}" y="{ty}" text-anchor="middle" dominant-baseline="middle"'
+        f' font-family="Arial,sans-serif" font-size="13" font-weight="500" fill="#1A1A1A">'
+        f'{esc}</text></g>')
+    return svg_text.replace("</svg>",f"{st}</svg>")
 
 
 def draw_interaction_diagram_interactive(
-    receptor_pdb: str, pose_sdf: str, smiles: str,
-    title: str = "", cutoff: float = 4.5,
-    size: tuple = (800, 759), max_residues: int = 14,
+    receptor_pdb: str,
+    pose_sdf: str,
+    smiles: str,
+    title: str = "",
+    cutoff: float = 4.5,
+    size: tuple = (800, 759),
+    max_residues: int = 14,
 ) -> str:
-    return "{}"
+    import json
+    try:
+        mol2d, sc, pl, W, H = _build_diagram_data(receptor_pdb, pose_sdf, smiles, cutoff, max_residues, size)
+    except Exception as e:
+        return f'<p style="color:red">Error: {e}</p>'
+    lig_svg = _render_ligand_svg(mol2d, sc)
+    residues_js = []
+    for p in pl:
+        itype = p["itype"]
+        ai    = p.get("lig_atom_idx", 0)
+        lx, ly = sc.get(ai, (W // 2, H // 2))
+        if itype in ("pi_pi", "cation_pi") and p.get("ring_atom_indices"):
+            rx, ry = _ring_centroid_2d(p["ring_atom_indices"], sc)
+            if rx is not None: lx, ly = rx, ry
+        residues_js.append({
+            "id":      p["resname"] + str(p["resid"]) + p.get("chain",""),
+            "label":   (p['resname'].upper() if p['resname'].upper() in (HEME_RESNAMES | METAL_RESNAMES)
+                        else f"{p['resname']} {p['resid']}{p.get('chain','')}"),
+            "itype":   itype,
+            "dist":    str(p["distance"]) + "\u00c5" if p.get("distance") else "",
+            "lx":      round(lx, 2), "ly": round(ly, 2),
+            "bx":      round(p["bx"], 2), "by": round(p["by"], 2),
+        })
+    # Return minimal interactive HTML (full version in app.py _render_interactive_diagram)
+    return json.dumps({"placements": residues_js, "W": W, "H": H,
+                       "ligand_svg": lig_svg, "title": title})
