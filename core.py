@@ -718,6 +718,78 @@ def _apply_ionizable_site_correction(original_smiles,current_smiles,ph,log):
     except Exception as e:
         log.append(f"Site correction failed: {e}"); return current_smiles
 
+
+# ── Dimorphite-DL protonation state selector (bug-fix) ───────────────────────
+_SMARTS_CACHE: dict = {}
+
+def _match(mol, sma: str) -> int:
+    """Cached SMARTS substructure match count."""
+    if sma not in _SMARTS_CACHE:
+        _SMARTS_CACHE[sma] = Chem.MolFromSmarts(sma)
+    p = _SMARTS_CACHE[sma]
+    return len(mol.GetSubstructMatches(p)) if p else 0
+
+
+def _naive_expected_charge(smiles: str) -> int:
+    """
+    Rule-based formal charge at pH 7.4 — fallback target when Dimorphite-DL
+    state order diverges from chemical expectation.
+
+    Rules (conservative pKa refs):
+      Carboxylic acid  pKa ~4.5 => -1
+      Sulfonic acid            => -1
+      Aliphatic NH2    pKa ~10 => +1
+      Aliphatic NHR    pKa ~10 => +1
+      Flavone/chromanone core + >=1 ArOH => -1  (one activated phenol ionised)
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return 0
+    q = 0
+    q -= _match(mol, "[CX3](=O)[OX2H1]")           # COOH
+    q -= _match(mol, "[SX4](=O)(=O)[OX2H1]")       # SO3H
+    q += _match(mol, "[NX3;H2;!$(NC=O);!$(Nc)]")   # primary aliphatic amine
+    q += _match(mol, "[NX3;H1;!$(NC=O);!$([nH]);!$(Nc)]")  # secondary aliphatic amine
+    if q == 0:
+        n_aro_oh = _match(mol, "[OX2H1]c")
+        has_flavone_core = bool(
+            _match(mol, "O=c1ccoc2ccccc12") or   # aromatic chromone
+            _match(mol, "O=C1C=COc2ccccc21") or  # dienone form
+            _match(mol, "O=C1CCOc2ccccc21") or   # chromanone (flavanone)
+            _match(mol, "O=C1CC[OX2]c2ccccc12")  # general chromanone
+        )
+        if has_flavone_core and n_aro_oh >= 1:
+            q = -1
+    return q
+
+
+def pick_best_dimorphite_state(states: list, target_ph: float,
+                                input_smiles: str) -> str:
+    """
+    Select the most appropriate protonation microstate from Dimorphite-DL output.
+
+    Dimorphite-DL output order is non-deterministic: states[0] is often
+    over-deprotonated (e.g. -2 for flavonoids instead of -1).
+
+    Algorithm: compare states[0] against a rule-based expected charge.
+    If they disagree by >=1 unit, pick the available state closest to expected
+    (tie-break: smallest absolute charge).
+    """
+    from rdkit.Chem import GetFormalCharge
+    if not states:
+        return input_smiles
+    m0 = Chem.MolFromSmiles(states[0])
+    c0 = GetFormalCharge(m0) if m0 else 0
+    expected = _naive_expected_charge(input_smiles)
+    if abs(c0 - expected) < 1:
+        return states[0]
+    valid = [(GetFormalCharge(m), s)
+             for s in states
+             for m in [Chem.MolFromSmiles(s)] if m]
+    if not valid:
+        return states[0]
+    return min(valid, key=lambda x: (abs(x[0] - expected), abs(x[0])))[1]
+
 def prepare_ligand(smiles,name,ph,wdir,mode="dimorphite",use_pubchem=False,max_tautomers=8,ph_window=1.0):
     _rdkit_six_patch()
     from rdkit import Chem
@@ -746,11 +818,15 @@ def prepare_ligand(smiles,name,ph,wdir,mode="dimorphite",use_pubchem=False,max_t
         else:
             try:
                 from dimorphite_dl import protonate_smiles
-                vs=protonate_smiles(prot,ph_min=ph,ph_max=ph,max_variants=1)
-                if vs: prot=vs[0] if isinstance(vs,list) else vs; log.append(f"Dimorphite-DL pH {ph:.1f}")
-                else: log.append("Dimorphite-DL returned no variants")
-            except Exception as e: log.append(f"Dimorphite-DL skipped: {e}")
-            prot=_apply_ionizable_site_correction(raw,prot,ph,log)
+                vs = list(protonate_smiles(prot, ph_min=ph-1.0, ph_max=ph+1.0, max_variants=128) or [])
+                if vs:
+                    prot = pick_best_dimorphite_state(vs, ph, prot)
+                    log.append(f"Dimorphite-DL pH {ph:.1f} ({len(vs)} states -> best selected)")
+                else:
+                    log.append("Dimorphite-DL returned no variants")
+            except Exception as e:
+                log.append(f"Dimorphite-DL skipped: {e}")
+            prot = _apply_ionizable_site_correction(raw, prot, ph, log)
         mol=Chem.MolFromSmiles(prot)
         if mol is None: raise ValueError(f"RDKit could not parse SMILES: {prot[:60]}")
         charge_info=_ligand_charge_summary(prot); charge=int(charge_info["net_charge"])
