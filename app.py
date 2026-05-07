@@ -1,3 +1,12 @@
+
+def _pill(text, kind="info"):
+    cls = {
+        "info":    "result-pill",
+        "success": "success-pill",
+        "warn":    "warn-pill",
+    }.get(kind, "result-pill")
+    return f'<span class="{cls}">{text}</span>'
+
 #!/usr/bin/env python3
 """
 app.py — Streamlit UI layer for Anyone Can Dock.
