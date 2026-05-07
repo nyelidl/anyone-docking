@@ -398,21 +398,64 @@ def _calc_adme_properties(smiles: str) -> dict:
         except Exception:
             pass
 
-        # ── Part 2: ADMETlab 3.0 API (แทน ADMET-AI) ───────────────────────────────────────────────
-        ml_results   = {}
-        ml_source    = "RDKit only"
-        ml_error     = None
+        # ── Part 2: ADMET-AI ML predictions ──────────────────────────────
+        ml_results = {}
+        ml_source  = "rule-based (ADMET-AI not installed)"
+        ml_error   = None
         ml_available = False
 
         try:
-            from core import _admetlab3_predict
-            api_result   = _admetlab3_predict(smiles)
-            ml_results   = api_result
-            ml_source    = "ADMETlab 3.0"
-            ml_available = True
+            admet_model = _load_admet_model()
+            if admet_model is not None:
+                raw = admet_model.predict(smiles=smiles)
+                # Absorption
+                ml_results["caco2"]            = round(float(raw.get("Caco2_Wang", 0)), 3)
+                ml_results["hia"]              = round(float(raw.get("HIA_Hou", 0)), 3)
+                ml_results["pgp_substrate_ml"] = float(raw.get("Pgp_Broccatelli", 0)) > 0.5
+                ml_results["pgp_inhibitor"]    = float(raw.get("P-glycoprotein_Inhibitor_Broccatelli", 0)) > 0.5
+                ml_results["bioavailability_ml"] = round(float(raw.get("Bioavailability_Ma", 0)), 3)
+                ml_results["solubility"]       = round(float(raw.get("Solubility_AqSolDB", 0)), 3)
+                ml_results["lipophilicity_ml"] = round(float(raw.get("Lipophilicity_AstraZeneca", 0)), 3)
+                # Distribution
+                ml_results["bbb_prob"] = round(float(raw.get("BBB_Martins", 0)), 3)
+                ml_results["ppb"]      = round(float(raw.get("PPBR_AZ", 0)), 1)
+                ml_results["vdd"]      = round(float(raw.get("VDss_Lombardo", 0)), 3)
+                # CYP inhibition (ML replaces SMARTS flags)
+                ml_results["cyp1a2_inh"]  = float(raw.get("CYP1A2_Veith", 0)) > 0.5
+                ml_results["cyp2c9_inh"]  = float(raw.get("CYP2C9_Veith", 0)) > 0.5
+                ml_results["cyp2c19_inh"] = float(raw.get("CYP2C19_Veith", 0)) > 0.5
+                ml_results["cyp2d6_inh"]  = float(raw.get("CYP2D6_Veith", 0)) > 0.5
+                ml_results["cyp3a4_inh"]  = float(raw.get("CYP3A4_Veith", 0)) > 0.5
+                ml_results["cyp1a2_prob"]  = round(float(raw.get("CYP1A2_Veith", 0)), 3)
+                ml_results["cyp2c9_prob"]  = round(float(raw.get("CYP2C9_Veith", 0)), 3)
+                ml_results["cyp2c19_prob"] = round(float(raw.get("CYP2C19_Veith", 0)), 3)
+                ml_results["cyp2d6_prob"]  = round(float(raw.get("CYP2D6_Veith", 0)), 3)
+                ml_results["cyp3a4_prob"]  = round(float(raw.get("CYP3A4_Veith", 0)), 3)
+                # CYP substrate
+                ml_results["cyp2c9_sub"]  = float(raw.get("CYP2C9_Substrate_CarbonMangels", 0)) > 0.5
+                ml_results["cyp2d6_sub"]  = float(raw.get("CYP2D6_Substrate_CarbonMangels", 0)) > 0.5
+                ml_results["cyp3a4_sub"]  = float(raw.get("CYP3A4_Substrate_CarbonMangels", 0)) > 0.5
+                ml_results["cyp2c9_sub_prob"]  = round(float(raw.get("CYP2C9_Substrate_CarbonMangels", 0)), 3)
+                ml_results["cyp2d6_sub_prob"]  = round(float(raw.get("CYP2D6_Substrate_CarbonMangels", 0)), 3)
+                ml_results["cyp3a4_sub_prob"]  = round(float(raw.get("CYP3A4_Substrate_CarbonMangels", 0)), 3)
+                # Excretion
+                ml_results["half_life"] = round(float(raw.get("Half_Life_Obach", 0)), 2)
+                ml_results["clearance"] = round(float(raw.get("Clearance_Hepatocyte_AZ", 0)), 2)
+                # Toxicity
+                ml_results["herg"]          = float(raw.get("hERG", 0)) > 0.5
+                ml_results["herg_prob"]     = round(float(raw.get("hERG", 0)), 3)
+                ml_results["ames"]          = float(raw.get("AMES", 0)) > 0.5
+                ml_results["ames_prob"]     = round(float(raw.get("AMES", 0)), 3)
+                ml_results["dili"]          = float(raw.get("DILI", 0)) > 0.5
+                ml_results["dili_prob"]     = round(float(raw.get("DILI", 0)), 3)
+                ml_results["skin_reaction"] = float(raw.get("Skin_Reaction_Martins", 0)) > 0.5
+                ml_results["skin_prob"]     = round(float(raw.get("Skin_Reaction_Martins", 0)), 3)
+                ml_results["ld50"]          = round(float(raw.get("LD50_Zhu", 0)), 2)
+                ml_source    = "ADMET-AI (Chemprop MPNN + TDC datasets)"
+                ml_available = True
         except Exception as _ml_e:
-            ml_error  = str(_ml_e)
-            ml_source = f"RDKit only ({_ml_e})"
+            ml_error = str(_ml_e)
+            ml_source = f"rule-based (ADMET-AI error: {_ml_e})"
 
         # ── Rule-based fallbacks (used when ML unavailable) ───────────────
         if "bbb_prob" in ml_results:
@@ -443,13 +486,13 @@ def _calc_adme_properties(smiles: str) -> dict:
                   else "Low" if (tpsa > 200 or logp > 7) else "Medium")
 
         # Override CYP flags with ML predictions when available
-        if ml_available and ml_results.get("cyp1a2_inh") is not None:
+        if ml_available:
             cyp_flags = {
-                "CYP1A2":  bool(ml_results.get("cyp1a2_inh", False)),
-                "CYP2C9":  bool(ml_results.get("cyp2c9_inh", False)),
-                "CYP2C19": bool(ml_results.get("cyp2c19_inh", False)),
-                "CYP2D6":  bool(ml_results.get("cyp2d6_inh", False)),
-                "CYP3A4":  bool(ml_results.get("cyp3a4_inh", False)),
+                "CYP1A2":  ml_results["cyp1a2_inh"],
+                "CYP2C9":  ml_results["cyp2c9_inh"],
+                "CYP2C19": ml_results["cyp2c19_inh"],
+                "CYP2D6":  ml_results["cyp2d6_inh"],
+                "CYP3A4":  ml_results["cyp3a4_inh"],
             }
 
         return {
@@ -475,7 +518,8 @@ def _calc_adme_properties(smiles: str) -> dict:
         return {"error": str(e)}
 
 
-
+    except Exception:
+        return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1463,8 +1507,7 @@ _DEFAULTS = dict(
     b_pv2_ref_png=None, b_pv2_ref_svg=None,
     b_plot_png=None,
 )
-st.session_state.update({k: v for k, v in _DEFAULTS.items()
-                          if k not in st.session_state})
+st.session_state.update({k: v for k, v in _DEFAULTS.items() if k not in st.session_state})
 
 if st.session_state.workdir is None:
     st.session_state.workdir = tempfile.mkdtemp(prefix="vina_")
