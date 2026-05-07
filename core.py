@@ -6,7 +6,7 @@ No Streamlit imports. All functions return plain dicts / tuples.
 Optimisation changes (v2):
   * Lazy compile _IONIZABLE_SITES_COMPILED / _CHEM_RULES  (not at import)
   * lru_cache on _cached_parse_pdb  (receptor parsed once per wdir path)
-  * _admetlab3_predict  replaces ADMET-AI (~500 MB model) with REST API
+  * ADME: RDKit-only (offline, no external API dependency)
   * Clearer Vina error messages
   * clear_poseview_cache also clears _cached_parse_pdb
 """
@@ -579,91 +579,6 @@ def protonate_pkanet(smiles,ph,use_pubchem=False,max_tautomers=8,ph_window=1.0):
         charge=int(Chem.GetFormalCharge(mol_fb)) if mol_fb else 0
     log.append(f"Formal charge: {charge:+d}")
     return best_smi,charge,log
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ADMET  —  ADMETlab 3.0 REST API  (replaces ADMET-AI ~500MB model)
-# ══════════════════════════════════════════════════════════════════════════════
-
-@functools.lru_cache(maxsize=64)
-def _admetlab3_predict(smiles: str) -> dict:
-    """
-    POST to ADMETlab 3.0 API.  lru_cache avoids repeat calls for same SMILES.
-    Raises RuntimeError on network / HTTP failure (caller shows fallback UI).
-    """
-    import requests
-    try:
-        r = requests.post(
-            "https://admetlab3.scbdd.com/api/evaluate",
-            json={"smiles": smiles},
-            headers={"Content-Type": "application/json"},
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except requests.Timeout:
-        raise RuntimeError("ADMETlab 3.0 timeout (>20s) — แสดงผล RDKit อย่างเดียว")
-    except requests.ConnectionError:
-        raise RuntimeError("ไม่สามารถเชื่อมต่อ ADMETlab 3.0 — ตรวจสอบ internet")
-    except requests.HTTPError as e:
-        raise RuntimeError(f"ADMETlab 3.0 HTTP error: {e}")
-    except Exception as e:
-        raise RuntimeError(f"ADMETlab 3.0 error: {e}")
-
-    def _f(v, d=None):
-        try: return float(v) if v is not None else d
-        except: return d
-
-    def _b(v):
-        if v is None: return None
-        if isinstance(v,bool): return v
-        return str(v).strip().lower() in ("yes","true","1","positive")
-
-    return {
-        # Absorption
-        "caco2":              _f(data.get("Caco-2")),
-        "hia":                _f(data.get("HIA")),
-        "bioavailability_ml": _f(data.get("F20%") or data.get("Bioavailability")),
-        "solubility":         _f(data.get("Solubility") or data.get("LogS")),
-        "pgp_substrate_ml":   _b(data.get("Pgp-substrate")),
-        "pgp_inhibitor":      _b(data.get("Pgp-inhibitor")),
-        # Distribution
-        "bbb_prob":           _f(data.get("BBB") or data.get("BBB_prob")),
-        "ppb":                _f(data.get("PPB")),
-        "vdd":                _f(data.get("VDss")),
-        "lipophilicity_ml":   _f(data.get("LogP") or data.get("Lipophilicity")),
-        # CYP inhibition
-        "cyp1a2_inh":         _b(data.get("CYP1A2-inhibitor")),
-        "cyp2c9_inh":         _b(data.get("CYP2C9-inhibitor")),
-        "cyp2c19_inh":        _b(data.get("CYP2C19-inhibitor")),
-        "cyp2d6_inh":         _b(data.get("CYP2D6-inhibitor")),
-        "cyp3a4_inh":         _b(data.get("CYP3A4-inhibitor")),
-        "cyp1a2_prob":        _f(data.get("CYP1A2-inhibitor_prob")),
-        "cyp2c9_prob":        _f(data.get("CYP2C9-inhibitor_prob")),
-        "cyp2c19_prob":       _f(data.get("CYP2C19-inhibitor_prob")),
-        "cyp2d6_prob":        _f(data.get("CYP2D6-inhibitor_prob")),
-        "cyp3a4_prob":        _f(data.get("CYP3A4-inhibitor_prob")),
-        # CYP substrate
-        "cyp2c9_sub":         _b(data.get("CYP2C9-substrate")),
-        "cyp2d6_sub":         _b(data.get("CYP2D6-substrate")),
-        "cyp3a4_sub":         _b(data.get("CYP3A4-substrate")),
-        "cyp2c9_sub_prob":    _f(data.get("CYP2C9-substrate_prob")),
-        "cyp2d6_sub_prob":    _f(data.get("CYP2D6-substrate_prob")),
-        "cyp3a4_sub_prob":    _f(data.get("CYP3A4-substrate_prob")),
-        # Excretion
-        "half_life":          _f(data.get("Half-life") or data.get("T1/2")),
-        "clearance":          _f(data.get("CL") or data.get("Clearance")),
-        # Toxicity
-        "herg":               _b(data.get("hERG")),
-        "herg_prob":          _f(data.get("hERG_prob")),
-        "ames":               _b(data.get("AMES")),
-        "ames_prob":          _f(data.get("AMES_prob")),
-        "dili":               _b(data.get("DILI")),
-        "dili_prob":          _f(data.get("DILI_prob")),
-        "skin_reaction":      _b(data.get("Skin-reaction")),
-        "skin_prob":          _f(data.get("Skin-reaction_prob")),
-        "ld50":               _f(data.get("LD50") or data.get("Acute-toxicity")),
-        "_raw": data,
-    }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LIGAND PREPARATION
