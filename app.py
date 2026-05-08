@@ -3763,14 +3763,52 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         )
 
         _scan_path = None
-        if src == "Download from RCSB" and st.session_state.get(pfx + "pdb_token"):
-            _maybe = str(wdir / "raw.pdb")
-            _maybe_cif = str(wdir / "raw.cif")
-            _maybe_pref = str(wdir / "raw_prefiltered.pdb")
-            for _cand in (_maybe_pref, _maybe, _maybe_cif):
-                if os.path.exists(_cand):
-                    _scan_path = _cand
-                    break
+        if src == "Download from RCSB":
+            # Auto-download a lightweight raw structure for ligand scanning as soon as
+            # a valid PDB ID is available. No extra user click is required.
+            _token_scan = (pdb_id or "").strip().upper()
+            _fmt_scan = st.session_state.get(pfx + "rcsb_fmt", "PDB")
+            if len(_token_scan) == 4:
+                _scan_ext = "cif" if _fmt_scan == "CIF" else "pdb"
+                _scan_path_dl = str(wdir / f"raw_scan_{_token_scan}.{_scan_ext}")
+                _scan_key = f"{_token_scan}_{_fmt_scan}"
+                _cached_key = st.session_state.get(pfx + "ligand_scan_key", "")
+                _cached_path = st.session_state.get(pfx + "ligand_scan_path", "")
+
+                if (
+                    _cached_key == _scan_key
+                    and _cached_path
+                    and os.path.exists(_cached_path)
+                    and os.path.getsize(_cached_path) > 200
+                ):
+                    _scan_path = _cached_path
+                else:
+                    _url = f"https://files.rcsb.org/download/{_token_scan}.{_scan_ext}"
+                    with st.spinner(f"Scanning co-crystal ligands from RCSB entry {_token_scan}…"):
+                        rc, _ = _run_cmd(["curl", "-sf", _url, "-o", _scan_path_dl])
+
+                    # Some large/new structures may not be available as legacy PDB.
+                    # Fall back to CIF automatically for ligand scanning.
+                    if (
+                        (rc != 0 or not os.path.exists(_scan_path_dl) or os.path.getsize(_scan_path_dl) < 200)
+                        and _fmt_scan == "PDB"
+                    ):
+                        _scan_path_cif = str(wdir / f"raw_scan_{_token_scan}.cif")
+                        _url_cif = f"https://files.rcsb.org/download/{_token_scan}.cif"
+                        with st.spinner(f"PDB scan unavailable; trying CIF for {_token_scan}…"):
+                            rc2, _ = _run_cmd(["curl", "-sf", _url_cif, "-o", _scan_path_cif])
+                        if rc2 == 0 and os.path.exists(_scan_path_cif) and os.path.getsize(_scan_path_cif) > 200:
+                            _scan_path_dl = _scan_path_cif
+                            _scan_key = f"{_token_scan}_CIF"
+
+                    if os.path.exists(_scan_path_dl) and os.path.getsize(_scan_path_dl) > 200:
+                        _scan_path = _scan_path_dl
+                        st.session_state[pfx + "ligand_scan_key"] = _scan_key
+                        st.session_state[pfx + "ligand_scan_path"] = _scan_path_dl
+                        st.session_state[pfx + "pdb_token"] = _token_scan
+                    else:
+                        st.session_state[pfx + "ligand_scan_key"] = ""
+                        st.session_state[pfx + "ligand_scan_path"] = ""
         elif src != "Download from RCSB" and upload_file is not None:
             _up_ext = Path(upload_file.name).suffix.lower()
             _scan_path = str(wdir / ("raw_upload_prescan.cif" if _up_ext in (".cif", ".mmcif") else "raw_upload_prescan.pdb"))
@@ -3904,23 +3942,17 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 f"small-molecule candidates: {len(_lig_rows)}; keep: {_keep_n}; remove: {_remove_n}."
             )
         else:
-            if src == "Download from RCSB" and pdb_id:
-                _load_scan = st.button("Load / scan ligands from RCSB", key=pfx + "load_scan_hetatm")
-                if _load_scan:
-                    _token = pdb_id.strip().upper()
-                    _fmt = st.session_state.get(pfx + "rcsb_fmt", "PDB")
-                    _scan_path_dl = str(wdir / ("raw.cif" if _fmt == "CIF" else "raw.pdb"))
-                    _url = f"https://files.rcsb.org/download/{_token}.{'cif' if _fmt == 'CIF' else 'pdb'}"
-                    rc, _ = _run_cmd(["curl", "-sf", _url, "-o", _scan_path_dl])
-                    if rc == 0 and os.path.exists(_scan_path_dl) and os.path.getsize(_scan_path_dl) > 200:
-                        st.session_state[pfx + "pdb_token"] = _token
-                        st.rerun()
-                    else:
-                        st.error(f"Could not download {_token} for ligand scanning.")
-            st.info(
-                "Ligand selection will appear after a structure file is available. "
-                "For RCSB mode, click **Load / scan ligands from RCSB** first, or use Upload mode for immediate inspection."
-            )
+            if src == "Download from RCSB":
+                _token_msg = (pdb_id or "").strip().upper()
+                if len(_token_msg) == 4:
+                    st.warning(
+                        f"Could not automatically scan ligands for **{_token_msg}**. "
+                        "The receptor can still be prepared, but ligand auto-detection may fall back to the previous behavior."
+                    )
+                else:
+                    st.info("Enter a 4-character PDB ID to automatically inspect co-crystal ligand candidates.")
+            else:
+                st.info("Upload a PDB/CIF file to automatically inspect co-crystal ligand candidates.")
             st.session_state.setdefault(pfx + "hetatm_policy", {})
             st.session_state.setdefault(pfx + "reference_hetatm_key", "")
         # ─────────────────────────────────────────────────────────────
@@ -3976,7 +4008,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
     with st.expander("⚗️ HETATM action guide", expanded=False):
         st.markdown(
-            "Use the **Receptor setup panel** table above to control each non-protein residue:\n\n"
+            "Use the **Receptor setup panel** above to control non-protein residues:\n\n"
             "- **reference**: use this co-crystal ligand/cofactor to define the grid center, then remove it from the receptor.\n"
             "- **keep**: retain the residue in the receptor, e.g., catalytic metal, structural ion, heme/FAD/NAD cofactor, or conserved water.\n"
             "- **remove**: strip buffer/solvent/additive molecules such as GOL, EDO, SO4, or irrelevant waters.\n"
@@ -4229,34 +4261,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             + (f" {_pill('PoseView2: ' + _lig_id)}" if _lig_id else ""),
             unsafe_allow_html=True,
         )
-        _rank_rows = st.session_state.get("pkanet_ranked_microstates", []) or []
-        if _rank_rows:
-            st.markdown("#### 🧬 pKaNET ranked microstates")
-            _rank_df = pd.DataFrame(_rank_rows)
-            _cols = [
-                "microstate_rank", "recommended_default", "recommendation", "selection_score",
-                "delta_from_best", "net_charge", "microstate_smiles", "charged_atoms",
-                "flag_heuristic_only", "flag_polyphenol_like", "flag_coumarin_like",
-                "flag_possible_overdeprotonation", "flag_borderline_pka", "recommendation_reason",
-            ]
-            _cols = [c for c in _cols if c in _rank_df.columns]
-            st.dataframe(_rank_df[_cols].head(20), use_container_width=True, hide_index=True)
-            if st.session_state.get("pkanet_ambiguous"):
-                st.warning(
-                    "This ligand has ambiguous protonation/tautomer assignment. "
-                    "ACD used the recommended state for docking, but you may choose another rank and prepare again."
-                )
-            _csv_path = st.session_state.get("pkanet_ranked_csv", "")
-            if _csv_path and Path(_csv_path).exists():
-                with open(_csv_path, "rb") as _fh:
-                    st.download_button(
-                        "⬇️ Download pKaNET ranked microstates CSV",
-                        data=_fh.read(),
-                        file_name=Path(_csv_path).name,
-                        mime="text/csv",
-                        key="dl_pkanet_ranked_microstates",
-                    )
-
         with st.expander("📋 Preparation log", expanded=False):
             st.markdown(
                 f'<div class="log-box">'
@@ -4615,6 +4619,9 @@ with tab_basic:
             "ligand_charged_atoms": [],
             "ligand_is_zwitterion": False,
             "ligand_prep_mode": st.session_state.get("ligand_state_mode", "pkanet"),
+            "pkanet_ranked_microstates": [],
+            "pkanet_ambiguous": False,
+            "pkanet_ranked_csv": "",
         })
         with st.spinner("Preparing ligand…"):
             _mode = st.session_state.get("lig_input_mode", "SMILES string")
@@ -4683,6 +4690,9 @@ with tab_basic:
                 "ligand_charged_atoms": result.get("charged_atoms", []),
                 "ligand_is_zwitterion": result.get("is_zwitterion", False),
                 "ligand_prep_mode":    result.get("protonation_mode", _prot_mode_key),
+                "pkanet_ranked_microstates": result.get("pkanet_ranked_microstates", []),
+                "pkanet_ambiguous":          result.get("pkanet_ambiguous", False),
+                "pkanet_ranked_csv":         result.get("pkanet_ranked_csv", ""),
                 "ligand_done":         True,
                 "ligand_log":          "\n".join(result["log"]),
             })
