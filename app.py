@@ -4820,17 +4820,6 @@ with tab_basic:
                     "This ligand has ambiguous protonation/tautomer assignment. "
                     "ACD used the recommended state for docking. To dock a different state, select Manual rank above and prepare again."
                 )
-            _csv_path = st.session_state.get("pkanet_ranked_csv", "")
-            if _csv_path and Path(_csv_path).exists():
-                with open(_csv_path, "rb") as _fh:
-                    st.download_button(
-                        "⬇️ Download pKaNET ranked microstates CSV",
-                        data=_fh.read(),
-                        file_name=Path(_csv_path).name,
-                        mime="text/csv",
-                        key="dl_pkanet_ranked_microstates",
-                    )
-
         with st.expander("📋 Preparation log", expanded=False):
             st.markdown(
                 f'<div class="log-box">{st.session_state.ligand_log}</div>',
