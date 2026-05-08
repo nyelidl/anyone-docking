@@ -4541,14 +4541,14 @@ with tab_basic:
     _prot_mode_ui = st.radio(
         "Protonation mode",
         [
-            "🧬 pKaNET Cloud",
+            "🧪 pKaNET Cloud+",
             "🔬 Neutral (add H only)",
         ],
         horizontal=True,
         key="prot_mode",
         help=(
             "How to determine the ligand's protonation state at the target pH.\n\n"
-            "📖 🧬 pKaNET Cloud : tautomer-aware microstate ranking, PubChem pKa evidence.\n"
+            "📖 🧪 pKaNET Cloud+ : tautomer-aware microstate ranking, PubChem pKa evidence.\n"
             "                    Best for all drug-like molecules, polyphenols, zwitterions.\n"
             "   🔬 Neutral      : keep input charge state, add H only — use with pre-prepared files.\n"
             "⚠️ pKaNET requires pKaNET.py in the same folder as core.py."
@@ -4556,14 +4556,14 @@ with tab_basic:
     )
     _prot_mode_key = {
         "🔬 Neutral (add H only)": "neutral",
-        "🧬 pKaNET Cloud":         "pkanet",
+        "🧪 pKaNET Cloud+":         "pkanet",
     }.get(_prot_mode_ui, "pkanet")
 
     # pKaNET advanced options (always visible when pKaNET is selected, i.e. by default)
     _use_pubchem    = True
     _pkanet_max_tau = 8
     _pkanet_ph_win  = 1.0
-    if _prot_mode_ui == "🧬 pKaNET Cloud":
+    if _prot_mode_ui == "🧪 pKaNET Cloud+":
         with st.expander("⚙️ pKaNET options", expanded=False):
             _use_pubchem    = st.checkbox(
                 "Query PubChem for experimental pKa",
@@ -4655,8 +4655,8 @@ with tab_basic:
             # ✅ Use the actual radio selection — pKaNET is default
             _prot_mode_key = {
                 "🔬 Neutral (add H only)": "neutral",
-                "🧬 pKaNET Cloud":         "pkanet",
-            }.get(st.session_state.get("prot_mode", "🧬 pKaNET Cloud"), "pkanet")
+                "🧪 pKaNET Cloud+":         "pkanet",
+            }.get(st.session_state.get("prot_mode", "🧪 pKaNET Cloud+"), "pkanet")
             _use_pubchem    = st.session_state.get("pkanet_use_pubchem", True)
             _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
@@ -4751,7 +4751,7 @@ with tab_basic:
         )
         _rank_rows = st.session_state.get("pkanet_ranked_microstates", []) or []
         if _rank_rows:
-            st.markdown("#### 🧬 pKaNET ranked microstates")
+            st.markdown("#### 🧪 pKaNET Cloud+ ranked microstates")
 
             def _fmt_ranked_microstate(_r):
                 _rank = _r.get("microstate_rank", _r.get("rank", "?"))
@@ -4962,10 +4962,10 @@ with tab_basic:
             rd_smi = pts[0]
             rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             ph_val = st.session_state.get("ph_in", 7.4)
-            _rd_prot_mode = st.session_state.get("prot_mode", "🧬 pKaNET Cloud")
+            _rd_prot_mode = st.session_state.get("prot_mode", "🧪 pKaNET Cloud+")
             _rd_prot_mode = {
                 "🔬 Neutral (add H only)": "neutral",
-                "🧬 pKaNET Cloud":         "pkanet",
+                "🧪 pKaNET Cloud+":         "pkanet",
             }.get(_rd_prot_mode, "pkanet")
             _rd_use_pubchem = st.session_state.get("pkanet_use_pubchem", True)
             _rd_max_tau = st.session_state.get("pkanet_max_tau", 8)
@@ -5568,7 +5568,7 @@ with tab_batch:
         # ── Protonation mode ─────────────────────────────────────────────────
         _b_prot_mode_ui = st.radio(
             "Protonation mode",
-            ["🧬 pKaNET Cloud", "🔬 Neutral (keep input)"],
+            ["🧪 pKaNET Cloud+", "🔬 Neutral (keep input)"],
             horizontal=True,
             key="b_prot_mode_ui",
             help=(
@@ -5579,7 +5579,7 @@ with tab_batch:
         )
         _b_pkanet_max_tau = 8
         _b_pkanet_ph_win  = 1.0
-        if _b_prot_mode_ui == "🧬 pKaNET Cloud":
+        if _b_prot_mode_ui == "🧪 pKaNET Cloud+":
             _bc1, _bc2 = st.columns(2)
             with _bc1:
                 _b_pkanet_max_tau = st.slider("Max tautomers", 1, 20, 8, key="b_pkanet_max_tau")
@@ -5635,9 +5635,9 @@ with tab_batch:
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
         _b_prot_mode  = {
-            "🧬 pKaNET Cloud":          "pkanet",
+            "🧪 pKaNET Cloud+":          "pkanet",
             "🔬 Neutral (keep input)":  "neutral",
-        }.get(st.session_state.get("b_prot_mode_ui", "🧬 pKaNET Cloud"), "pkanet")
+        }.get(st.session_state.get("b_prot_mode_ui", "🧪 pKaNET Cloud+"), "pkanet")
         _b_use_pubchem  = st.session_state.get("pkanet_use_pubchem", True)
         _b_pkanet_max_tau = st.session_state.get("b_pkanet_max_tau", 8)
         _b_pkanet_ph_win  = st.session_state.get("b_pkanet_ph_win", 1.0)
