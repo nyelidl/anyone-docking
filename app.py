@@ -3754,12 +3754,12 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 "⚠️ If no ligand is found, grid defaults to protein centroid."
             ),
         )
-        # ── Receptor setup panel: explicit HETATM control ────────────────
+        # ── Receptor setup panel: ligand-focused HETATM control ────────
         st.markdown("#### Receptor setup panel")
         st.caption(
-            "Review all HETATM records before receptor preparation. "
-            "Use **reference** for the co-crystal ligand that defines the binding site; "
-            "that residue is removed from the receptor but used to center the grid."
+            "Select the co-crystal small molecule used to define the binding site. "
+            "The selected ligand is removed from the receptor but used to center the grid. "
+            "A dropdown is shown only when multiple plausible ligand candidates are present."
         )
 
         _scan_path = None
@@ -3777,79 +3777,135 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             with open(_scan_path, "wb") as _sf:
                 _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
 
+        def _lig_label(_r):
+            _ch = _r.get("chain") or "—"
+            return f"{_r.get('resname')}  | chain {_ch} | resid {_r.get('resid')} | {_r.get('n_atoms')} atoms"
+
+        def _choose_ligand_candidates(_ligs):
+            """Return (candidate_rows, auto_selected_row, reason).
+
+            UI rule:
+            - one small molecule → no dropdown
+            - homo-multimer-like repeated same ligand across chains → use chain A only, no dropdown
+            - multiple ligands in chain A, or distinct ligands across chains/heteromer-like entries → dropdown
+            """
+            if not _ligs:
+                return [], None, "no_ligand"
+            _chain_a = [r for r in _ligs if str(r.get("chain", "")).strip().upper() == "A"]
+            _resnames = {str(r.get("resname", "")).strip().upper() for r in _ligs}
+            _chains = [str(r.get("chain", "")).strip().upper() or "_" for r in _ligs]
+            _one_per_chain = all(_chains.count(c) == 1 for c in set(_chains))
+
+            if len(_ligs) == 1:
+                return _ligs, _ligs[0], "single_ligand"
+
+            # Homo-multimer-like case: same ligand repeated in multiple chains.
+            # ACD uses the chain-A copy as the reference and strips all copies from docking receptor.
+            if len(_resnames) == 1 and len(_chain_a) == 1 and _one_per_chain:
+                return _chain_a, _chain_a[0], "homo_multimer_chain_a"
+
+            # Several ligand-like residues in chain A: user should choose.
+            if len(_chain_a) > 1:
+                return _chain_a, None, "multiple_chain_a_ligands"
+
+            # Heteromer-like or chemically distinct ligands across chains: user should choose.
+            if len(_ligs) > 1:
+                return _ligs, None, "multiple_ligands"
+
+            return _ligs, _ligs[0], "fallback_single"
+
         if _scan_path and os.path.exists(_scan_path):
             try:
                 _het_rows = scan_hetatm_residues(_scan_path)
             except Exception:
                 _het_rows = []
-            if _het_rows:
-                import pandas as _pd
-                _df = _pd.DataFrame(_het_rows)
-                _df = _df[["key", "resname", "chain", "resid", "n_atoms", "type_guess", "action"]]
-                _df = _df.rename(columns={
-                    "resname": "Residue name",
-                    "chain": "Chain",
-                    "resid": "Residue ID",
-                    "n_atoms": "Atom count",
-                    "type_guess": "Type guess",
-                    "action": "Action",
-                })
-                _edited = st.data_editor(
-                    _df,
-                    key=pfx + "hetatm_editor",
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "key": st.column_config.TextColumn("key", disabled=True, help="Internal residue key"),
-                        "Residue name": st.column_config.TextColumn("Residue name", disabled=True),
-                        "Chain": st.column_config.TextColumn("Chain", disabled=True),
-                        "Residue ID": st.column_config.NumberColumn("Residue ID", disabled=True),
-                        "Atom count": st.column_config.NumberColumn("Atom count", disabled=True),
-                        "Type guess": st.column_config.TextColumn("Type guess", disabled=True),
-                        "Action": st.column_config.SelectboxColumn(
-                            "Action",
-                            options=["reference", "keep", "remove"],
-                            required=True,
-                            help="reference = define grid center and remove; keep = retain in receptor; remove = strip from receptor",
-                        ),
-                    },
-                )
-                _policy = {}
-                _ref_keys = []
-                for _, _row in _edited.iterrows():
-                    _k = str(_row["key"])
-                    _a = str(_row["Action"]).lower()
-                    _policy[_k] = _a
-                    if _a == "reference":
-                        _ref_keys.append(_k)
-                if len(_ref_keys) > 1:
-                    st.warning("More than one HETATM is marked as reference. ACD will use the first reference row for grid centering.")
-                st.session_state[pfx + "hetatm_policy"] = _policy
-                st.session_state[pfx + "reference_hetatm_key"] = _ref_keys[0] if _ref_keys else ""
 
-                _summ = _edited.groupby("Action").size().to_dict()
-                st.caption(
-                    "Current actions: "
-                    + ", ".join(f"{k}: {v}" for k, v in sorted(_summ.items()))
+            _lig_rows = [r for r in _het_rows if str(r.get("type_guess", "")).lower() == "ligand"]
+            _candidate_rows, _auto_row, _reason = _choose_ligand_candidates(_lig_rows)
+
+            _opt_col1, _opt_col2, _opt_col3 = st.columns(3)
+            with _opt_col1:
+                _remove_water = st.checkbox(
+                    "Remove waters", value=True, key=pfx + "het_remove_water",
+                    help="Remove crystallographic water molecules from the docking receptor."
+                )
+            with _opt_col2:
+                _keep_metals = st.checkbox(
+                    "Keep metal ions", value=True, key=pfx + "het_keep_metals",
+                    help="Keep metal ions such as Zn, Mg, Fe, Cu in the receptor when present."
+                )
+            with _opt_col3:
+                _keep_cofactors = st.checkbox(
+                    "Keep cofactors", value=True, key=pfx + "het_keep_cofactors",
+                    help="Keep cofactors such as HEM, FAD, NAD unless you intentionally remove them."
                 )
 
-                if center_mode == "Auto-detect co-crystal ligand":
-                    _ref_rows = _edited[_edited["Action"].astype(str).str.lower() == "reference"]
-                    if len(_ref_rows):
-                        _rr = _ref_rows.iloc[0]
-                        st.info(
-                            f"Grid center will be defined from **{_rr['Residue name']}** "
-                            f"chain **{_rr['Chain'] or '—'}**, residue **{int(_rr['Residue ID'])}**."
-                        )
-                    else:
-                        st.warning("No HETATM is marked as reference. Auto center will fall back to available ligand detection or protein centroid.")
+            _selected_ref_key = ""
+            if _auto_row is not None:
+                _selected_ref_key = str(_auto_row["key"])
+                if _reason == "single_ligand":
+                    st.success(f"Auto-selected co-crystal ligand: **{_lig_label(_auto_row)}**")
+                elif _reason == "homo_multimer_chain_a":
+                    st.success(
+                        "Homo-multimer-like repeated ligand detected. "
+                        f"ACD will use the chain-A copy: **{_lig_label(_auto_row)}**"
+                    )
+                else:
+                    st.success(f"Auto-selected reference ligand: **{_lig_label(_auto_row)}**")
+            elif _candidate_rows:
+                _labels = [_lig_label(r) for r in _candidate_rows]
+                _idx = st.selectbox(
+                    "Co-crystal ligand for auto-detect binding site",
+                    options=list(range(len(_candidate_rows))),
+                    format_func=lambda i: _labels[i],
+                    key=pfx + "reference_ligand_dropdown",
+                    help=(
+                        "Only ligand-like HETATM residues are shown here. "
+                        "Buffers, water, metals, and common cofactors are handled by the options above."
+                    ),
+                )
+                _sel_row = _candidate_rows[int(_idx)]
+                _selected_ref_key = str(_sel_row["key"])
+                st.info(f"Grid center will use: **{_lig_label(_sel_row)}**")
             else:
-                st.info("No HETATM records detected in the current structure file.")
-                st.session_state[pfx + "hetatm_policy"] = {}
-                st.session_state[pfx + "reference_hetatm_key"] = ""
+                st.warning(
+                    "No ligand-like HETATM candidate was detected. "
+                    "Auto-detect will fall back to the previous receptor-centroid behavior if no ligand is found."
+                )
+
+            _policy = {}
+            for _r in _het_rows:
+                _k = str(_r.get("key", ""))
+                _tg = str(_r.get("type_guess", "")).lower()
+                if not _k:
+                    continue
+                if _k == _selected_ref_key:
+                    _policy[_k] = "reference"
+                elif _tg == "ligand":
+                    # Other small molecules are removed by default to avoid accidental docking against a bound ligand copy.
+                    _policy[_k] = "remove"
+                elif _tg == "water":
+                    _policy[_k] = "remove" if _remove_water else "keep"
+                elif _tg == "metal":
+                    _policy[_k] = "keep" if _keep_metals else "remove"
+                elif "cofactor" in _tg:
+                    _policy[_k] = "keep" if _keep_cofactors else "remove"
+                else:
+                    # Buffers/additives/ions such as GOL, EDO, SO4, PO4 are removed by default.
+                    _policy[_k] = "remove"
+
+            st.session_state[pfx + "hetatm_policy"] = _policy
+            st.session_state[pfx + "reference_hetatm_key"] = _selected_ref_key
+
+            _keep_n = sum(1 for v in _policy.values() if v == "keep")
+            _remove_n = sum(1 for v in _policy.values() if v == "remove")
+            st.caption(
+                f"Detected HETATM residues: {len(_het_rows)} total; "
+                f"small-molecule candidates: {len(_lig_rows)}; keep: {_keep_n}; remove: {_remove_n}."
+            )
         else:
             if src == "Download from RCSB" and pdb_id:
-                _load_scan = st.button("Load / scan HETATM from RCSB", key=pfx + "load_scan_hetatm")
+                _load_scan = st.button("Load / scan ligands from RCSB", key=pfx + "load_scan_hetatm")
                 if _load_scan:
                     _token = pdb_id.strip().upper()
                     _fmt = st.session_state.get(pfx + "rcsb_fmt", "PDB")
@@ -3860,10 +3916,10 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                         st.session_state[pfx + "pdb_token"] = _token
                         st.rerun()
                     else:
-                        st.error(f"Could not download {_token} for HETATM scanning.")
+                        st.error(f"Could not download {_token} for ligand scanning.")
             st.info(
-                "HETATM table will appear after a structure file is available. "
-                "For RCSB mode, click **Load / scan HETATM from RCSB** first, or use Upload mode for immediate inspection."
+                "Ligand selection will appear after a structure file is available. "
+                "For RCSB mode, click **Load / scan ligands from RCSB** first, or use Upload mode for immediate inspection."
             )
             st.session_state.setdefault(pfx + "hetatm_policy", {})
             st.session_state.setdefault(pfx + "reference_hetatm_key", "")
