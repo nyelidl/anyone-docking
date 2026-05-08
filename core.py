@@ -247,6 +247,115 @@ def get_vina_binary(path: str = ""):
 
 _MIN_LIG_ATOMS = 4
 
+BUFFER_RESNAMES = {
+    "GOL", "EDO", "PEG", "PGE", "PG4", "MPD", "DMS", "DMSO", "ACT",
+    "ACY", "ACE", "TRS", "MES", "EPE", "BME", "SO4", "PO4", "NO3",
+    "SCN", "FMT", "IPA", "EOH", "MOH", "CL", "BR", "IOD"
+}
+WATER_RESNAMES = {"HOH", "WAT", "DOD", "SOL"}
+
+
+def _hetatm_key(resname, chain, resid):
+    return f"{str(resname).strip().upper()}|{str(chain or '').strip() or '_'}|{int(resid)}"
+
+
+def _guess_hetatm_type(resname, n_atoms):
+    rn = (resname or "").strip().upper()
+    if rn in WATER_RESNAMES:
+        return "water"
+    if rn in METAL_RESNAMES:
+        return "metal"
+    if rn in HEME_RESNAMES:
+        return "heme/cofactor"
+    if rn in COFACTOR_NAMES:
+        return "cofactor"
+    if rn in BUFFER_RESNAMES or n_atoms <= 3:
+        return "buffer/ion"
+    if n_atoms >= _MIN_LIG_ATOMS:
+        return "ligand"
+    return "other"
+
+
+def _default_hetatm_action(type_guess, n_atoms):
+    # reference = use for grid center and remove from receptor; keep = retain in receptor; remove = strip
+    if type_guess == "water":
+        return "remove"
+    if type_guess == "metal":
+        return "keep"
+    if "cofactor" in type_guess:
+        return "keep"
+    if type_guess == "ligand":
+        return "reference" if n_atoms >= _MIN_LIG_ATOMS else "remove"
+    return "remove"
+
+
+def _collect_hetatm_residues(atoms) -> list:
+    from prody import calcCenter
+    het = atoms.select("hetatm")
+    if het is None:
+        return []
+    rows = []
+    for r in het.getHierView().iterResidues():
+        rn = (r.getResname() or "").strip().upper()
+        ch = (r.getChid() or "").strip()
+        ri = int(r.getResnum())
+        n_atoms = int(r.numAtoms())
+        tg = _guess_hetatm_type(rn, n_atoms)
+        sel = (f"resname {rn} and resid {ri} and chain {ch}" if ch else f"resname {rn} and resid {ri}")
+        res_atoms = atoms.select(sel)
+        if res_atoms is None:
+            continue
+        cx_, cy_, cz_ = (float(v) for v in calcCenter(res_atoms))
+        rows.append({
+            "key": _hetatm_key(rn, ch, ri),
+            "resname": rn, "chain": ch, "resid": ri, "n_atoms": n_atoms,
+            "type_guess": tg, "default_action": _default_hetatm_action(tg, n_atoms),
+            "action": _default_hetatm_action(tg, n_atoms),
+            "sel_str": sel, "atoms": res_atoms, "cx": cx_, "cy": cy_, "cz": cz_,
+        })
+    # Ligand candidates first, then cofactors/metals/buffers/waters
+    rank = {"ligand": 0, "heme/cofactor": 1, "cofactor": 2, "metal": 3, "buffer/ion": 4, "other": 5, "water": 6}
+    rows.sort(key=lambda d: (rank.get(d["type_guess"], 9), -d["n_atoms"], d["resname"], d["chain"], d["resid"]))
+    # Only the largest ligand should be auto reference by default; other ligand-like HETATMs default to remove.
+    seen_reference = False
+    for d in rows:
+        if d["type_guess"] == "ligand":
+            if not seen_reference:
+                d["default_action"] = d["action"] = "reference"
+                seen_reference = True
+            else:
+                d["default_action"] = d["action"] = "remove"
+    return rows
+
+
+def scan_hetatm_residues(raw_pdb: str) -> list:
+    """Return HETATM residues for receptor setup UI.
+
+    action options:
+      reference = use as co-crystal reference/grid center and remove from receptor
+      keep      = keep in receptor
+      remove    = remove from receptor
+    """
+    try:
+        from prody import parsePDB, confProDy
+        confProDy(verbosity="none")
+        if is_cif_file(raw_pdb):
+            import tempfile as _tf
+            _tmp = _tf.mktemp(suffix=".pdb")
+            res = convert_cif_to_pdb(raw_pdb, _tmp)
+            if res["success"]:
+                raw_pdb = _tmp
+        atoms = parsePDB(raw_pdb)
+        if atoms is None:
+            return []
+        rows = _collect_hetatm_residues(atoms)
+        return [
+            {k: d[k] for k in ("key", "resname", "chain", "resid", "n_atoms", "type_guess", "default_action", "action")}
+            for d in rows
+        ]
+    except Exception:
+        return []
+
 
 def _collect_removable_ligands(atoms) -> list:
     from prody import calcCenter
@@ -468,6 +577,8 @@ def prepare_receptor(
     prody_sel: str = "",
     box_size: tuple = (16, 16, 16),
     preferred_ligand: str = "",
+    hetatm_policy: dict | None = None,
+    reference_hetatm_key: str = "",
 ) -> dict:
     from prody import parsePDB, calcCenter, writePDB
     wdir = Path(wdir)
@@ -492,9 +603,33 @@ def prepare_receptor(
         cocrystal_ligand_id = ""
         cx = cy = cz = 0.0
 
+        # HETATM-aware receptor setup. The UI can pass per-residue actions:
+        #   reference = use as grid-center reference and remove from receptor
+        #   keep      = keep in receptor
+        #   remove    = strip from receptor
+        _hetatm_rows = _collect_hetatm_residues(atoms)
+        _policy = {str(k): str(v).lower() for k, v in (hetatm_policy or {}).items()}
+        for _r in _hetatm_rows:
+            _r["action"] = _policy.get(_r["key"], _r.get("default_action", "remove")).lower()
+
+        _reference = None
+        if reference_hetatm_key:
+            _reference = next((d for d in _hetatm_rows if d["key"] == reference_hetatm_key), None)
+        if _reference is None:
+            _reference = next((d for d in _hetatm_rows if d.get("action") == "reference"), None)
+
+        # Backward compatibility: if no HETATM policy is provided, old preferred_ligand behavior still works.
         _all_ligs = _collect_removable_ligands(atoms)
-        _primary  = None
-        if _all_ligs:
+        _primary = None
+        if _reference is not None:
+            _primary = {
+                "resname": _reference["resname"], "chain": _reference["chain"],
+                "resid": _reference["resid"], "sel_str": _reference["sel_str"],
+                "ligand_id": f"{_reference['resname']}_{_reference['chain']}_{_reference['resid']}",
+                "n_atoms": _reference["n_atoms"], "atoms": _reference["atoms"],
+                "cx": _reference["cx"], "cy": _reference["cy"], "cz": _reference["cz"],
+            }
+        elif not hetatm_policy and _all_ligs:
             if preferred_ligand:
                 _pref = preferred_ligand.strip().upper()
                 _primary = next((d for d in _all_ligs if d["resname"].upper() == _pref), None)
@@ -510,11 +645,7 @@ def prepare_receptor(
             cocrystal_ligand_id = _primary["ligand_id"]
             ligand_pdb_path     = str(wdir / "LIG.pdb")
             writePDB(ligand_pdb_path, _primary["atoms"])
-            _n_extra = len(_all_ligs) - 1
-            log.append(
-                f"✓ Co-crystal ligand: {rn} chain '{ch}' resnum {ri} ({_primary['n_atoms']} atoms)"
-                + (f"  +{_n_extra} additional ligand(s) will also be removed" if _n_extra else "")
-            )
+            log.append(f"✓ Reference HETATM for grid: {rn} chain '{ch}' resnum {ri} ({_primary['n_atoms']} atoms)")
 
         if center_mode == "auto":
             if _primary is not None:
@@ -540,7 +671,24 @@ def prepare_receptor(
             if _primary is not None:
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
 
-        if _all_ligs:
+        if hetatm_policy:
+            _remove_rows = [d for d in _hetatm_rows if d.get("action") in {"remove", "reference"}]
+            if _remove_rows:
+                _excl_expr = " or ".join(f"({d['sel_str']})" for d in _remove_rows)
+                sel_str = f"not ({_excl_expr})"
+            else:
+                sel_str = "all"
+            _kept = [d for d in _hetatm_rows if d.get("action") == "keep"]
+            log.append(
+                f"🧾 HETATM policy: keep {len(_kept)}, remove/reference {len(_remove_rows)}"
+            )
+            if _remove_rows:
+                log.append(
+                    "🧹 Removed/reference HETATM: "
+                    + ", ".join(f"{d['resname']}:{d['chain'] or '-'}:{d['resid']}[{d.get('action')}]" for d in _remove_rows[:25])
+                    + (" …" if len(_remove_rows) > 25 else "")
+                )
+        elif _all_ligs:
             _excl_expr = " or ".join(f"({d['sel_str']})" for d in _all_ligs)
             sel_str = f"not ({_excl_expr}) and not water"
             if len(_all_ligs) > 1:
@@ -604,6 +752,10 @@ def prepare_receptor(
                 {"resname": d["resname"], "chain": d["chain"],
                  "resid": d["resid"], "n_atoms": d["n_atoms"]}
                 for d in _all_ligs
+            ],
+            "hetatm_table":        [
+                {k: d.get(k) for k in ("key", "resname", "chain", "resid", "n_atoms", "type_guess", "action")}
+                for d in _hetatm_rows
             ],
             "log": log,
         }
@@ -1467,10 +1619,14 @@ def protonate_pkanet(
     use_pubchem: bool = False,
     max_tautomers: int = 8,
     ph_window: float = 1.0,
+    selection_mode: str = "auto_recommended",
+    manual_rank: int | None = None,
+    return_details: bool = False,
 ) -> tuple:
     """
     pKaNET Cloud protonation pipeline.
-    Returns (best_smiles, charge, log_list).
+    Returns (selected_smiles, charge, log_list).
+    If return_details=True, returns (selected_smiles, charge, log_list, details_dict).
 
     Important:
     - This function force-loads ./pKaNET.py from the same folder as core.py.
@@ -1553,16 +1709,44 @@ def protonate_pkanet(
             f"smiles={r.get('microstate_smiles', '')}"
         )
 
-    best = top[0]
+    # ── Stage D: choose microstate for docking ───────────────────────────────
+    selection_mode = (selection_mode or "auto_recommended").strip().lower()
+    if selection_mode in {"auto", "recommended", "auto recommended"}:
+        selection_mode = "auto_recommended"
+    elif selection_mode in {"highest", "highest_score", "rank1", "rank_1"}:
+        selection_mode = "highest_score"
+    elif selection_mode in {"manual", "manual_rank"}:
+        selection_mode = "manual_rank"
+
+    if selection_mode == "manual_rank" and manual_rank is not None:
+        best = next((r for r in all_micro if int(r.get("microstate_rank", -1)) == int(manual_rank)), None)
+        if best is None:
+            log.append(f"⚠ Requested manual microstate rank {manual_rank} not found; using auto recommendation")
+            best = next((r for r in all_micro if r.get("recommended_default")), top[0])
+            selection_mode = "auto_recommended"
+    elif selection_mode == "highest_score":
+        best = top[0]
+    else:
+        best = next((r for r in all_micro if r.get("recommended_default")), top[0])
+        selection_mode = "auto_recommended"
+
     best_smi = best["microstate_smiles"]
     charge = int(best["net_charge"])
+    selected_rank = int(best.get("microstate_rank", 1))
 
     log.append(
         f"✓ pKaNET: ranked {len(all_micro)} microstates — "
-        f"rank-1 score: {float(best.get('selection_score', 0.0)):.3f}  "
+        f"selected rank: {selected_rank}  "
+        f"score: {float(best.get('selection_score', 0.0)):.3f}  "
         f"charge: {charge:+d}  "
+        f"mode: {selection_mode}  "
         f"backend: {best.get('decision_backend', '?')} ({best.get('decision_mode', '?')})"
     )
+    if selected_rank != 1:
+        log.append(
+            f"ℹ Rank-1 was not used for docking; conservative/manual selected rank {selected_rank}. "
+            f"Reason: {best.get('recommendation_reason', 'user/auto selection')}"
+        )
     log.append(f"✓ pKa source: {best.get('pKa_source', 'heuristic')}")
 
     if ambiguous:
@@ -1599,6 +1783,20 @@ def protonate_pkanet(
         )
         charge = actual_charge
 
+    details = {
+        "selection_mode": selection_mode,
+        "selected_rank": int(best.get("microstate_rank", 1)),
+        "selected_microstate": {k: v for k, v in best.items() if k != "charged_atom_rows"},
+        "ranked_microstates": [{k: v for k, v in r.items() if k != "charged_atom_rows"} for r in all_micro],
+        "top_microstates": [{k: v for k, v in r.items() if k != "charged_atom_rows"} for r in top],
+        "ambiguous": bool(ambiguous),
+        "tautomer_rich": bool(tr_flag),
+        "tautomer_rich_motifs": tr_motifs,
+        "pubchem_result": pubchem_result,
+        "ml_predictions": ml_preds,
+    }
+    if return_details:
+        return best_smi, charge, log, details
     return best_smi, charge, log
 
 
@@ -1663,6 +1861,8 @@ def prepare_ligand(
     use_pubchem: bool = True,
     max_tautomers: int = 8,
     ph_window: float = 1.0,
+    pkanet_selection_mode: str = "auto_recommended",
+    pkanet_manual_rank: int | None = None,
 ) -> dict:
     """
     Ligand preparation — pKaNET Cloud is the default protonation mode.
@@ -1687,6 +1887,9 @@ def prepare_ligand(
     try:
         raw = smiles.strip()
         prot = raw
+        pkanet_details = {}
+        pkanet_ranked_csv = ""
+        pkanet_decision_log = ""
         actual_mode = mode or "dimorphite"
 
         if actual_mode == "neutral":
@@ -1698,12 +1901,42 @@ def prepare_ligand(
 
         elif actual_mode == "pkanet":
             try:
-                prot, _, pka_log = protonate_pkanet(
+                prot, _, pka_log, pkanet_details = protonate_pkanet(
                     raw, ph,
                     use_pubchem=use_pubchem,
                     max_tautomers=max_tautomers,
                     ph_window=ph_window,
+                    selection_mode=pkanet_selection_mode,
+                    manual_rank=pkanet_manual_rank,
+                    return_details=True,
                 )
+                # Export ranked microstates and decision log for reproducibility/ESI.
+                try:
+                    import csv as _csv
+                    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(name)) or "ligand"
+                    pkanet_ranked_csv = str(wdir / f"{safe_name}_pkanet_ranked_microstates.csv")
+                    rows = pkanet_details.get("ranked_microstates", []) or []
+                    if rows:
+                        preferred = [
+                            "microstate_rank", "recommended_default", "recommendation", "selection_score",
+                            "delta_from_best", "net_charge", "microstate_smiles", "charged_atoms",
+                            "pKa_source", "decision_backend", "decision_mode", "ambiguous_top_assignment",
+                            "flag_heuristic_only", "flag_polyphenol_like", "flag_coumarin_like", "flag_flavonoid_like",
+                            "flag_possible_overdeprotonation", "flag_borderline_pka", "flag_tautomer_rich",
+                            "recommendation_reason",
+                        ]
+                        extra = sorted({k for r in rows for k in r.keys()} - set(preferred))
+                        fieldnames = preferred + extra
+                        with open(pkanet_ranked_csv, "w", newline="", encoding="utf-8") as fh:
+                            wr = _csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+                            wr.writeheader(); wr.writerows(rows)
+                    pkanet_decision_log = str(wdir / f"{safe_name}_pkanet_decision_log.txt")
+                    with open(pkanet_decision_log, "w", encoding="utf-8") as fh:
+                        fh.write("\n".join(pka_log))
+                    log.append(f"✓ pKaNET ranked microstates exported: {pkanet_ranked_csv}")
+                    log.append(f"✓ pKaNET decision log exported: {pkanet_decision_log}")
+                except Exception as _csv_e:
+                    log.append(f"⚠ Could not export pKaNET ranked table: {_csv_e}")
                 log.extend(pka_log)
                 log.append("✓ pKaNET Cloud protonation applied")
             except Exception as _pke:
@@ -1786,6 +2019,13 @@ def prepare_ligand(
             "charged_atoms":     charge_info["charged_atoms"],
             "is_zwitterion":     charge_info["is_zwitterion"],
             "protonation_mode":  actual_mode,
+            "pkanet_selection_mode": pkanet_details.get("selection_mode", pkanet_selection_mode),
+            "pkanet_selected_rank": pkanet_details.get("selected_rank"),
+            "pkanet_selected_microstate": pkanet_details.get("selected_microstate", {}),
+            "pkanet_ranked_microstates": pkanet_details.get("ranked_microstates", []),
+            "pkanet_ranked_csv": pkanet_ranked_csv,
+            "pkanet_decision_log": pkanet_decision_log,
+            "pkanet_ambiguous": pkanet_details.get("ambiguous", False),
             "log":               log,
         }
 
