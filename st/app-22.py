@@ -1496,7 +1496,7 @@ _DEFAULTS = dict(
     ligand_pdbqt=None, ligand_sdf=None, ligand_name="LIG",
     prot_smiles=None, ligand_done=False, ligand_log="",
     input_smiles_final="", ligand_charge=0, ligand_charge_method="rdkit_formal_charge",
-    ligand_charged_atoms=None, ligand_is_zwitterion=False, ligand_prep_mode="dimorphite",
+    ligand_charged_atoms=None, ligand_is_zwitterion=False, ligand_prep_mode="pkanet",
     output_pdbqt=None, output_sdf=None, output_pv_sdf=None, dock_base=None,
     docking_done=False, docking_log="", score_df=None, pose_mols=None,
     redock_done=False, redock_score=None, redock_result=None,
@@ -4407,7 +4407,7 @@ with tab_basic:
             help=(
                 "How to handle hydrogens for an uploaded structure file.\n\n"
                 "📖 Use uploaded form : keep all atoms exactly as in the file.\n"
-                "   Protonate at pH   : re-run Dimorphite-DL on extracted SMILES.\n"
+                "   Protonate at pH   : re-run pKaNET Cloud on extracted SMILES.\n"
                 "⚙️ 'As uploaded' if file is already correctly prepared.\n"
                 "   'At pH' if file is only a 3D template for coordinates.\n"
                 "⚠️ 'As uploaded' skips all protonation checks.\n"
@@ -4451,36 +4451,32 @@ with tab_basic:
             "⚠️ Wrong pH can shift net charge ±1 — large effect on docking affinity."
         ),
     )
-    st.caption("Default ligand preparation uses Dimorphite-DL at the target pH, then reports the RDKit formal charge of the final SMILES.")
+    st.caption("Ligand preparation uses pKaNET Cloud — tautomer-aware microstate ranking with 8-component HH scoring.")
 
     # ── Protonation mode ──────────────────────────────────────────────────────
     _prot_mode_ui = st.radio(
         "Protonation mode",
         [
-            "⚡ Fast (Dimorphite-DL)",
-            "🔬 Neutral (add H only)",
             "🧬 pKaNET Cloud",
+            "🔬 Neutral (add H only)",
         ],
         horizontal=True,
         key="prot_mode",
         help=(
             "How to determine the ligand's protonation state at the target pH.\n\n"
-            "📖 ⚡ Fast       : Dimorphite-DL — fast, works offline, good for most drugs.\n"
-            "   🔬 Neutral    : keep input charge, just add H — use with pre-prepared files.\n"
-            "   🧬 pKaNET     : tautomer-aware microstate ranking, PubChem pKa evidence.\n"
-            "                   Best for polyphenols, flavonoids, zwitterions.\n"
-            "⚙️ Use pKaNET for natural products and complex ring systems.\n"
-            "⚠️ pKaNET requires pkanet_core.py — falls back to Dimorphite if not found."
+            "📖 🧬 pKaNET Cloud : tautomer-aware microstate ranking, PubChem pKa evidence.\n"
+            "                    Best for all drug-like molecules, polyphenols, zwitterions.\n"
+            "   🔬 Neutral      : keep input charge state, add H only — use with pre-prepared files.\n"
+            "⚠️ pKaNET requires pKaNET.py in the same folder as core.py."
         ),
     )
     _prot_mode_key = {
-        "⚡ Fast (Dimorphite-DL)": "dimorphite",
         "🔬 Neutral (add H only)": "neutral",
         "🧬 pKaNET Cloud":         "pkanet",
-    }.get(_prot_mode_ui, "dimorphite")
+    }.get(_prot_mode_ui, "pkanet")
 
-    # pKaNET advanced options (shown only when pKaNET is selected)
-    _use_pubchem    = False
+    # pKaNET advanced options (always visible when pKaNET is selected, i.e. by default)
+    _use_pubchem    = True
     _pkanet_max_tau = 8
     _pkanet_ph_win  = 1.0
     if _prot_mode_ui == "🧬 pKaNET Cloud":
@@ -4496,13 +4492,8 @@ with tab_basic:
             )
             _pkanet_ph_win  = st.slider(
                 "pH window", 0.2, 2.0, 1.0, 0.1, key="pkanet_ph_win",
-                help="Dimorphite-DL enumerates states in [pH − window/2, pH + window/2].",
+                help="pH window used during Dimorphite-DL enumeration inside pKaNET: [pH − window/2, pH + window/2].",
             )
-        st.info(
-            "🧬 pKaNET Cloud mode — uses tautomer enumeration + 8-component HH scoring. "
-            "May take 5–30 s per ligand. Requires **pkanet_core.py** in the same folder.",
-            icon="ℹ️",
-        )
     # ─────────────────────────────────────────────────────────────────────────
 
     if not st.session_state.receptor_done:
@@ -4519,17 +4510,16 @@ with tab_basic:
             "ligand_charge_method": "rdkit_formal_charge",
             "ligand_charged_atoms": [],
             "ligand_is_zwitterion": False,
-            "ligand_prep_mode": st.session_state.get("ligand_state_mode", "dimorphite"),
+            "ligand_prep_mode": st.session_state.get("ligand_state_mode", "pkanet"),
         })
         with st.spinner("Preparing ligand…"):
             _mode = st.session_state.get("lig_input_mode", "SMILES string")
-            # ✅ Use the actual radio selection — do NOT hardcode "dimorphite"
+            # ✅ Use the actual radio selection — pKaNET is default
             _prot_mode_key = {
-                "⚡ Fast (Dimorphite-DL)": "dimorphite",
                 "🔬 Neutral (add H only)": "neutral",
                 "🧬 pKaNET Cloud":         "pkanet",
-            }.get(st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)"), "dimorphite")
-            _use_pubchem    = st.session_state.get("pkanet_use_pubchem", False)
+            }.get(st.session_state.get("prot_mode", "🧬 pKaNET Cloud"), "pkanet")
+            _use_pubchem    = st.session_state.get("pkanet_use_pubchem", True)
             _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
 
@@ -4598,7 +4588,7 @@ with tab_basic:
             f"{r['symbol']}{r['atom_idx']}({int(r['formal_charge']):+d})" for r in _charged_atoms_rows
         ) if _charged_atoms_rows else "none"
         st.markdown(
-            f"**Preparation mode:** `{st.session_state.get('ligand_prep_mode', 'dimorphite')}`  \n"
+            f"**Preparation mode:** `{st.session_state.get('ligand_prep_mode', 'pkanet')}`  \n"
             f"**Input SMILES:** `{st.session_state.get('input_smiles_final', '')}`  \n"
             f"**Final SMILES used for docking:** `{st.session_state.prot_smiles}`  \n"
             f"**Net formal charge:** `{int(st.session_state.get('ligand_charge', 0)):+d}`  \n"
@@ -4740,10 +4730,12 @@ with tab_basic:
             rd_smi = pts[0]
             rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             ph_val = st.session_state.get("ph_in", 7.4)
-            _rd_prot_mode = st.session_state.get("prot_mode", "⚡ Fast (Dimorphite-DL)")
-            _rd_prot_mode = {"⚡ Fast (Dimorphite-DL)": "dimorphite",
-                              "🔬 Neutral (add H only)": "neutral"}.get(_rd_prot_mode, "dimorphite")
-            _rd_use_pubchem = False
+            _rd_prot_mode = st.session_state.get("prot_mode", "🧬 pKaNET Cloud")
+            _rd_prot_mode = {
+                "🔬 Neutral (add H only)": "neutral",
+                "🧬 pKaNET Cloud":         "pkanet",
+            }.get(_rd_prot_mode, "pkanet")
+            _rd_use_pubchem = st.session_state.get("pkanet_use_pubchem", True)
             _rd_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _rd_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
@@ -5341,24 +5333,21 @@ with tab_batch:
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
         _b_use_pubchem = False
 
-        # ── Protonation mode (same options as single-ligand tab) ─────────────
+        # ── Protonation mode ─────────────────────────────────────────────────
         _b_prot_mode_ui = st.radio(
             "Protonation mode",
-            ["⚡ Fast (Dimorphite-DL)", "🧬 pKaNET Cloud", "🔬 Neutral (keep input)"],
+            ["🧬 pKaNET Cloud", "🔬 Neutral (keep input)"],
             horizontal=True,
             key="b_prot_mode_ui",
             help=(
-                "**Dimorphite-DL** — fast rule-based protonation.\n\n"
                 "**pKaNET Cloud** — full tautomer + microstate ranking "
-                "(recommended for polyphenols, nucleotides, charged ligands). "
-                "⚠️ ~5–30 s per ligand.\n\n"
-                "**Neutral** — use SMILES as-is."
+                "(recommended for all ligand types). ⚠️ ~5–30 s per ligand.\n\n"
+                "**Neutral** — use SMILES as-is, add H only."
             ),
         )
         _b_pkanet_max_tau = 8
         _b_pkanet_ph_win  = 1.0
         if _b_prot_mode_ui == "🧬 pKaNET Cloud":
-            st.info("⚠️ pKaNET may take 5–30 s per ligand (built-in algorithm, no extra file needed).")
             _bc1, _bc2 = st.columns(2)
             with _bc1:
                 _b_pkanet_max_tau = st.slider("Max tautomers", 1, 20, 8, key="b_pkanet_max_tau")
@@ -5414,11 +5403,10 @@ with tab_batch:
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
         _b_prot_mode  = {
-            "⚡ Fast (Dimorphite-DL)":    "dimorphite",
-            "🧬 pKaNET Cloud":            "pkanet",
-            "🔬 Neutral (keep input)":   "neutral",
-        }.get(st.session_state.get("b_prot_mode_ui", "⚡ Fast (Dimorphite-DL)"), "dimorphite")
-        _b_use_pubchem  = False
+            "🧬 pKaNET Cloud":          "pkanet",
+            "🔬 Neutral (keep input)":  "neutral",
+        }.get(st.session_state.get("b_prot_mode_ui", "🧬 pKaNET Cloud"), "pkanet")
+        _b_use_pubchem  = st.session_state.get("pkanet_use_pubchem", True)
         _b_pkanet_max_tau = st.session_state.get("b_pkanet_max_tau", 8)
         _b_pkanet_ph_win  = st.session_state.get("b_pkanet_ph_win", 1.0)
 

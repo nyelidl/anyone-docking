@@ -1410,6 +1410,18 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
 
 
 # ── protonate_pkanet: public API (unchanged signature) ───────────────────────
+# NOTE: delegates entirely to pKaNET.py (generate_ranked_microstates) which
+# contains the authoritative, bug-fixed implementation (2026-05 overhaul).
+# Bugs fixed in pKaNET.py that were present in the old internal implementation:
+#   Bug #1/#2  imidazole/benzimidazole pKa (6.0/5.5 → 14/13)
+#   Bug A      phosphonate double-counting
+#   Bug B      thiol_aliph pKa (10.5 → 9.8) + new thiol_alpha_amino (8.3)
+#   Bug C      missing hydroxamic acid entry
+#   Bug D      phosphate_diester label/pKa wrong
+#   Bug F      catechol_OH priority
+#   Bug G      new amine_alpha_EWG entry (pKa=7.5)
+#   + new entries: sulfonyl_imide_NH, enol_lactone, enol_cyclic_dicarbonyl,
+#                  enol_1_3_dicarbonyl, pyrazole_NH, indole_NH, aliphatic_imine
 
 def protonate_pkanet(
     smiles: str,
@@ -1421,73 +1433,113 @@ def protonate_pkanet(
     """
     pKaNET Cloud protonation pipeline (Hengphasatporn et al. 2026).
     Returns (best_smiles, charge, log_list).
+
+    Delegates to pKaNET.py for all pKa/microstate logic so that the
+    bug-fixed SMARTS table and 8-component scoring are always used.
+    pKaNET.py must reside in the same directory as core.py.
     """
     from rdkit import Chem
-    from rdkit.Chem.MolStandardize import rdMolStandardize
 
-    log       = []
-    canonical = smiles.strip()
+    log = []
 
-    # Standardize
+    # ── Import the authoritative pKaNET implementation ────────────────────────
     try:
-        mol = Chem.MolFromSmiles(canonical)
-        if mol:
-            mol = rdMolStandardize.LargestFragmentChooser().choose(mol)
-            try:
-                mol = rdMolStandardize.Normalizer().normalize(mol)
-            except Exception:
-                pass
-            canonical = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
-            log.append("✓ RDKit standardized")
-    except Exception as e:
-        log.append(f"⚠ Standardization skipped: {e}")
+        from pKaNET import (
+            standardize_smiles          as _pkanet_standardize,
+            pubchem_lookup              as _pkanet_pubchem,
+            generate_ranked_microstates as _pkanet_rank,
+        )
+    except ImportError as _ie:
+        log.append(f"⚠ pKaNET.py not found ({_ie}) — falling back to Dimorphite-DL")
+        canonical = smiles.strip()
+        try:
+            from dimorphite_dl import protonate_smiles as _dim
+            _vs = _dim(canonical, ph_min=ph - 0.5, ph_max=ph + 0.5, max_variants=1)
+            canonical = (_vs[0] if isinstance(_vs, list) else _vs) if _vs else canonical
+        except Exception:
+            pass
+        _m = Chem.MolFromSmiles(canonical)
+        _charge = int(Chem.GetFormalCharge(_m)) if _m else 0
+        log.append(f"✓ Formal charge: {_charge:+d}")
+        return canonical, _charge, log
 
-    # PubChem lookup
-    pubchem = {"available": False, "pka_values": [], "confidence": "low"}
+    # ── Stage A: Standardize via pKaNET ───────────────────────────────────────
+    canonical, _std_status = _pkanet_standardize(smiles.strip())
+    if canonical is None:
+        log.append(f"⚠ Standardization failed ({_std_status}) — using raw SMILES")
+        canonical = smiles.strip()
+    else:
+        log.append("✓ RDKit standardized (pKaNET)")
+
+    # ── Stage B: PubChem pKa lookup via pKaNET ────────────────────────────────
+    pubchem_result = {}
     if use_pubchem:
         try:
-            pubchem = _pubchem_pka_lookup(canonical)
-            if pubchem["available"]:
-                log.append(f"✓ PubChem pKa: {pubchem['pka_values']} "
-                           f"(conf: {pubchem['confidence']})")
+            pubchem_result = _pkanet_pubchem(canonical)
+            if pubchem_result.get("available"):
+                log.append(
+                    f"✓ PubChem pKa: {pubchem_result['pka_values']} "
+                    f"(conf: {pubchem_result.get('confidence', '?')})"
+                )
             else:
-                log.append("ℹ PubChem: no data — heuristic table")
-        except Exception as e:
-            log.append(f"⚠ PubChem failed: {e}")
+                log.append(f"ℹ PubChem: no data — heuristic table ({pubchem_result.get('error','')})")
+        except Exception as _pe:
+            log.append(f"⚠ PubChem lookup failed: {_pe}")
 
-    # Ranked microstates
+    # ── Stage C: Ranked microstates via pKaNET (bug-fixed engine) ─────────────
     try:
-        all_micro = _generate_ranked_microstates(
+        top, ambiguous, all_micro, tr_flag, tr_motifs, ml_preds = _pkanet_rank(
             canonical,
             target_ph     = ph,
             ph_window     = ph_window,
             max_tautomers = max_tautomers,
-            pubchem       = pubchem,
+            top_n         = 5,
+            pubchem_result= pubchem_result,
         )
-        if not all_micro:
-            raise ValueError("No microstates generated")
-        best     = all_micro[0]
+        if not top:
+            raise ValueError("pKaNET returned no microstates")
+
+        best     = top[0]
         best_smi = best["microstate_smiles"]
         charge   = best["net_charge"]
-        log.append(f"✓ Ranked {len(all_micro)} microstates — "
-                   f"best score: {best['selection_score']:.2f}")
-        if len(all_micro) > 1:
-            gap = all_micro[0]["selection_score"] - all_micro[1]["selection_score"]
-            if gap <= _AMBIGUITY_SCORE_GAP:
-                log.append(f"⚠ Ambiguous (gap={gap:.2f}) — "
-                           f"alt charge {all_micro[1]['net_charge']:+d}")
-    except Exception as e:
-        log.append(f"⚠ Microstate ranking failed ({e}) — Dimorphite fallback")
+
+        log.append(
+            f"✓ pKaNET: ranked {len(all_micro)} microstates — "
+            f"rank-1 score: {best['selection_score']:.3f}  "
+            f"charge: {charge:+d}  "
+            f"backend: {best.get('decision_backend', '?')} ({best.get('decision_mode', '?')})"
+        )
+        log.append(f"✓ pKa source: {best.get('pKa_source', 'heuristic')}")
+
+        if ambiguous:
+            _alt_chg = top[1]["net_charge"] if len(top) > 1 else "?"
+            log.append(f"⚠ Top assignment ambiguous — alt charge {_alt_chg:+d}" if len(top) > 1
+                       else "⚠ Top assignment ambiguous")
+        if tr_flag:
+            log.append(f"⚠ Tautomer-rich motifs: {', '.join(tr_motifs)}")
+        if best.get("flag_amide_preserved"):
+            log.append("✓ Amide bond preserved")
+        if best.get("flag_imidic_acid_penalty"):
+            log.append("⚠ Imidic-acid tautomer penalised")
+        if best.get("flag_aromaticity_lost"):
+            log.append("⚠ Aromaticity lost in top microstate")
+        if best.get("is_zwitterion_strict"):
+            log.append("✓ Zwitterion detected")
+        if best.get("flag_borderline_pka"):
+            log.append("⚠ Borderline pKa — protonation state uncertain near pH target")
+
+    except Exception as _re:
+        log.append(f"⚠ pKaNET ranking failed ({_re}) — Dimorphite-DL fallback")
         best_smi = canonical
         try:
             from dimorphite_dl import protonate_smiles as _dim
-            vs = _dim(canonical, ph_min=ph - 0.5, ph_max=ph + 0.5, max_variants=1)
-            if vs:
-                best_smi = vs[0] if isinstance(vs, list) else vs
+            _vs = _dim(canonical, ph_min=ph - 0.5, ph_max=ph + 0.5, max_variants=1)
+            if _vs:
+                best_smi = _vs[0] if isinstance(_vs, list) else _vs
         except Exception:
             pass
-        mol_fb = Chem.MolFromSmiles(best_smi)
-        charge = int(Chem.GetFormalCharge(mol_fb)) if mol_fb else 0
+        _m  = Chem.MolFromSmiles(best_smi)
+        charge = int(Chem.GetFormalCharge(_m)) if _m else 0
 
     log.append(f"✓ Formal charge: {charge:+d}")
     return best_smi, charge, log
@@ -1550,19 +1602,18 @@ def prepare_ligand(
     name: str,
     ph: float,
     wdir,
-    mode: str = "dimorphite",
-    use_pubchem: bool = False,
+    mode: str = "pkanet",
+    use_pubchem: bool = True,
     max_tautomers: int = 8,
     ph_window: float = 1.0,
 ) -> dict:
     """
-    Ligand preparation aligned to the simpler, stable version the user preferred.
+    Ligand preparation — pKaNET Cloud is the default protonation mode.
 
     Behavior:
+      - pkanet     : full tautomer-aware microstate ranking via pKaNET.py (default)
       - neutral    : keep the input connectivity/charge state, add H only
-      - dimorphite : protonate with Dimorphite-DL at target pH using the first returned state
-      - pkanet     : accepted for compatibility, but currently falls back to the same
-                     simple Dimorphite-based preparation used in the preferred version
+      - dimorphite : protonate with Dimorphite-DL (legacy fallback, kept for compatibility)
 
     Charge reporting is always based on RDKit formal charge of the final SMILES
     actually used for 3D building and docking.
