@@ -36,6 +36,7 @@ from core import (
     stamp_png,
     is_cif_file,
     convert_cif_to_pdb,
+    scan_hetatm_residues,
 )
 
 try:
@@ -3753,53 +3754,208 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 "⚠️ If no ligand is found, grid defaults to protein centroid."
             ),
         )
-        if center_mode == "Auto-detect co-crystal ligand":
-            # ── Multi-ligand selector ─────────────────────────────────────
-            # Pre-scan the file for qualifying ligands so the user can pick
-            # which one to center the grid on before clicking Prepare.
-            # We only scan when a file is already on disk (download) or
-            # uploaded — skip if neither is ready yet.
-            _scan_path = None
-            if src == "Download from RCSB" and st.session_state.get(pfx + "pdb_token"):
-                _maybe = str(wdir / "raw_prefiltered.pdb")
-                if not os.path.exists(_maybe):
-                    _maybe = str(wdir / "raw.pdb")
-                if os.path.exists(_maybe):
-                    _scan_path = _maybe
-            elif src != "Download from RCSB" and upload_file is not None:
-                _scan_path = str(wdir / "raw_upload_prescan.pdb")
-                if not os.path.exists(_scan_path):
-                    with open(_scan_path, "wb") as _sf:
-                        _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
+        # ── Receptor setup panel: ligand-focused HETATM control ────────
+        st.markdown("#### Receptor setup panel")
+        st.caption(
+            "Select the co-crystal small molecule used to define the binding site. "
+            "The selected ligand is removed from the receptor but used to center the grid. "
+            "A dropdown is shown only when multiple plausible ligand candidates are present."
+        )
 
-            if _scan_path and os.path.exists(_scan_path):
-                try:
-                    from core import scan_ligands as _scan_ligands
-                    _found_ligs = _scan_ligands(_scan_path)
-                    if len(_found_ligs) > 1:
-                        _lig_labels = [
-                            f"{d['resname']} (chain {d['chain'] or '—'}, "
-                            f"resid {d['resid']}, {d['n_atoms']} atoms)"
-                            for d in _found_ligs
-                        ]
-                        _sel_idx = st.selectbox(
-                            f"🔍 {len(_found_ligs)} ligands detected — select grid center:",
-                            options=range(len(_lig_labels)),
-                            format_func=lambda i: _lig_labels[i],
-                            key=pfx + "preferred_lig_idx",
-                        )
-                        st.session_state[pfx + "preferred_ligand"] = _found_ligs[_sel_idx]["resname"]
-                        st.caption(
-                            f"All {len(_found_ligs)} ligands will be removed from the receptor. "
-                            f"Grid will be centered on the selected one."
-                        )
-                    elif len(_found_ligs) == 1:
-                        st.session_state[pfx + "preferred_ligand"] = _found_ligs[0]["resname"]
+        _scan_path = None
+        if src == "Download from RCSB":
+            # Auto-download a lightweight raw structure for ligand scanning as soon as
+            # a valid PDB ID is available. No extra user click is required.
+            _token_scan = (pdb_id or "").strip().upper()
+            _fmt_scan = st.session_state.get(pfx + "rcsb_fmt", "PDB")
+            if len(_token_scan) == 4:
+                _scan_ext = "cif" if _fmt_scan == "CIF" else "pdb"
+                _scan_path_dl = str(wdir / f"raw_scan_{_token_scan}.{_scan_ext}")
+                _scan_key = f"{_token_scan}_{_fmt_scan}"
+                _cached_key = st.session_state.get(pfx + "ligand_scan_key", "")
+                _cached_path = st.session_state.get(pfx + "ligand_scan_path", "")
+
+                if (
+                    _cached_key == _scan_key
+                    and _cached_path
+                    and os.path.exists(_cached_path)
+                    and os.path.getsize(_cached_path) > 200
+                ):
+                    _scan_path = _cached_path
+                else:
+                    _url = f"https://files.rcsb.org/download/{_token_scan}.{_scan_ext}"
+                    with st.spinner(f"Scanning co-crystal ligands from RCSB entry {_token_scan}…"):
+                        rc, _ = _run_cmd(["curl", "-sf", _url, "-o", _scan_path_dl])
+
+                    # Some large/new structures may not be available as legacy PDB.
+                    # Fall back to CIF automatically for ligand scanning.
+                    if (
+                        (rc != 0 or not os.path.exists(_scan_path_dl) or os.path.getsize(_scan_path_dl) < 200)
+                        and _fmt_scan == "PDB"
+                    ):
+                        _scan_path_cif = str(wdir / f"raw_scan_{_token_scan}.cif")
+                        _url_cif = f"https://files.rcsb.org/download/{_token_scan}.cif"
+                        with st.spinner(f"PDB scan unavailable; trying CIF for {_token_scan}…"):
+                            rc2, _ = _run_cmd(["curl", "-sf", _url_cif, "-o", _scan_path_cif])
+                        if rc2 == 0 and os.path.exists(_scan_path_cif) and os.path.getsize(_scan_path_cif) > 200:
+                            _scan_path_dl = _scan_path_cif
+                            _scan_key = f"{_token_scan}_CIF"
+
+                    if os.path.exists(_scan_path_dl) and os.path.getsize(_scan_path_dl) > 200:
+                        _scan_path = _scan_path_dl
+                        st.session_state[pfx + "ligand_scan_key"] = _scan_key
+                        st.session_state[pfx + "ligand_scan_path"] = _scan_path_dl
+                        st.session_state[pfx + "pdb_token"] = _token_scan
                     else:
-                        st.session_state[pfx + "preferred_ligand"] = ""
-                except Exception:
-                    st.session_state.setdefault(pfx + "preferred_ligand", "")
-            # ─────────────────────────────────────────────────────────────
+                        st.session_state[pfx + "ligand_scan_key"] = ""
+                        st.session_state[pfx + "ligand_scan_path"] = ""
+        elif src != "Download from RCSB" and upload_file is not None:
+            _up_ext = Path(upload_file.name).suffix.lower()
+            _scan_path = str(wdir / ("raw_upload_prescan.cif" if _up_ext in (".cif", ".mmcif") else "raw_upload_prescan.pdb"))
+            with open(_scan_path, "wb") as _sf:
+                _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
+
+        def _lig_label(_r):
+            _ch = _r.get("chain") or "—"
+            return f"{_r.get('resname')}  | chain {_ch} | resid {_r.get('resid')} | {_r.get('n_atoms')} atoms"
+
+        def _choose_ligand_candidates(_ligs):
+            """Return (candidate_rows, auto_selected_row, reason).
+
+            UI rule:
+            - one small molecule → no dropdown
+            - homo-multimer-like repeated same ligand across chains → use chain A only, no dropdown
+            - multiple ligands in chain A, or distinct ligands across chains/heteromer-like entries → dropdown
+            """
+            if not _ligs:
+                return [], None, "no_ligand"
+            _chain_a = [r for r in _ligs if str(r.get("chain", "")).strip().upper() == "A"]
+            _resnames = {str(r.get("resname", "")).strip().upper() for r in _ligs}
+            _chains = [str(r.get("chain", "")).strip().upper() or "_" for r in _ligs]
+            _one_per_chain = all(_chains.count(c) == 1 for c in set(_chains))
+
+            if len(_ligs) == 1:
+                return _ligs, _ligs[0], "single_ligand"
+
+            # Homo-multimer-like case: same ligand repeated in multiple chains.
+            # ACD uses the chain-A copy as the reference and strips all copies from docking receptor.
+            if len(_resnames) == 1 and len(_chain_a) == 1 and _one_per_chain:
+                return _chain_a, _chain_a[0], "homo_multimer_chain_a"
+
+            # Several ligand-like residues in chain A: user should choose.
+            if len(_chain_a) > 1:
+                return _chain_a, None, "multiple_chain_a_ligands"
+
+            # Heteromer-like or chemically distinct ligands across chains: user should choose.
+            if len(_ligs) > 1:
+                return _ligs, None, "multiple_ligands"
+
+            return _ligs, _ligs[0], "fallback_single"
+
+        if _scan_path and os.path.exists(_scan_path):
+            try:
+                _het_rows = scan_hetatm_residues(_scan_path)
+            except Exception:
+                _het_rows = []
+
+            _lig_rows = [r for r in _het_rows if str(r.get("type_guess", "")).lower() == "ligand"]
+            _candidate_rows, _auto_row, _reason = _choose_ligand_candidates(_lig_rows)
+
+            _opt_col1, _opt_col2, _opt_col3 = st.columns(3)
+            with _opt_col1:
+                _remove_water = st.checkbox(
+                    "Remove waters", value=True, key=pfx + "het_remove_water",
+                    help="Remove crystallographic water molecules from the docking receptor."
+                )
+            with _opt_col2:
+                _keep_metals = st.checkbox(
+                    "Keep metal ions", value=True, key=pfx + "het_keep_metals",
+                    help="Keep metal ions such as Zn, Mg, Fe, Cu in the receptor when present."
+                )
+            with _opt_col3:
+                _keep_cofactors = st.checkbox(
+                    "Keep cofactors", value=True, key=pfx + "het_keep_cofactors",
+                    help="Keep cofactors such as HEM, FAD, NAD unless you intentionally remove them."
+                )
+
+            _selected_ref_key = ""
+            if _auto_row is not None:
+                _selected_ref_key = str(_auto_row["key"])
+                if _reason == "single_ligand":
+                    st.success(f"Auto-selected co-crystal ligand: **{_lig_label(_auto_row)}**")
+                elif _reason == "homo_multimer_chain_a":
+                    st.success(
+                        "Homo-multimer-like repeated ligand detected. "
+                        f"ACD will use the chain-A copy: **{_lig_label(_auto_row)}**"
+                    )
+                else:
+                    st.success(f"Auto-selected reference ligand: **{_lig_label(_auto_row)}**")
+            elif _candidate_rows:
+                _labels = [_lig_label(r) for r in _candidate_rows]
+                _idx = st.selectbox(
+                    "Co-crystal ligand for auto-detect binding site",
+                    options=list(range(len(_candidate_rows))),
+                    format_func=lambda i: _labels[i],
+                    key=pfx + "reference_ligand_dropdown",
+                    help=(
+                        "Only ligand-like HETATM residues are shown here. "
+                        "Buffers, water, metals, and common cofactors are handled by the options above."
+                    ),
+                )
+                _sel_row = _candidate_rows[int(_idx)]
+                _selected_ref_key = str(_sel_row["key"])
+                st.info(f"Grid center will use: **{_lig_label(_sel_row)}**")
+            else:
+                st.warning(
+                    "No ligand-like HETATM candidate was detected. "
+                    "Auto-detect will fall back to the previous receptor-centroid behavior if no ligand is found."
+                )
+
+            _policy = {}
+            for _r in _het_rows:
+                _k = str(_r.get("key", ""))
+                _tg = str(_r.get("type_guess", "")).lower()
+                if not _k:
+                    continue
+                if _k == _selected_ref_key:
+                    _policy[_k] = "reference"
+                elif _tg == "ligand":
+                    # Other small molecules are removed by default to avoid accidental docking against a bound ligand copy.
+                    _policy[_k] = "remove"
+                elif _tg == "water":
+                    _policy[_k] = "remove" if _remove_water else "keep"
+                elif _tg == "metal":
+                    _policy[_k] = "keep" if _keep_metals else "remove"
+                elif "cofactor" in _tg:
+                    _policy[_k] = "keep" if _keep_cofactors else "remove"
+                else:
+                    # Buffers/additives/ions such as GOL, EDO, SO4, PO4 are removed by default.
+                    _policy[_k] = "remove"
+
+            st.session_state[pfx + "hetatm_policy"] = _policy
+            st.session_state[pfx + "reference_hetatm_key"] = _selected_ref_key
+
+            _keep_n = sum(1 for v in _policy.values() if v == "keep")
+            _remove_n = sum(1 for v in _policy.values() if v == "remove")
+            st.caption(
+                f"Detected HETATM residues: {len(_het_rows)} total; "
+                f"small-molecule candidates: {len(_lig_rows)}; keep: {_keep_n}; remove: {_remove_n}."
+            )
+        else:
+            if src == "Download from RCSB":
+                _token_msg = (pdb_id or "").strip().upper()
+                if len(_token_msg) == 4:
+                    st.warning(
+                        f"Could not automatically scan ligands for **{_token_msg}**. "
+                        "The receptor can still be prepared, but ligand auto-detection may fall back to the previous behavior."
+                    )
+                else:
+                    st.info("Enter a 4-character PDB ID to automatically inspect co-crystal ligand candidates.")
+            else:
+                st.info("Upload a PDB/CIF file to automatically inspect co-crystal ligand candidates.")
+            st.session_state.setdefault(pfx + "hetatm_policy", {})
+            st.session_state.setdefault(pfx + "reference_hetatm_key", "")
+        # ─────────────────────────────────────────────────────────────
         if center_mode == "Enter XYZ manually":
             c1, c2, c3 = st.columns(3)
             c1.number_input("X", value=0.0, key=pfx + "mx")
@@ -3850,27 +4006,13 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
     if blind:
         st.caption("⚠️ Blind docking — box will cover entire protein extent.")
 
-    with st.expander("⚗️ Cofactor options", expanded=False):
-        keep_cofactors = st.checkbox(
-            "Keep cofactors in receptor", value=True, key=pfx + "keep_cofactors",
-            help="ATP, FAD, NAD, CoA, SAM, etc. Uncheck to dock into a cofactor-free pocket.",
+    with st.expander("⚗️ HETATM action guide", expanded=False):
+        st.markdown(
+            "Use the **Receptor setup panel** above to control non-protein residues:\n\n"
+            "- **reference**: use this co-crystal ligand/cofactor to define the grid center, then remove it from the receptor.\n"
+            "- **keep**: retain the residue in the receptor, e.g., catalytic metal, structural ion, heme/FAD/NAD cofactor, or conserved water.\n"
+            "- **remove**: strip buffer/solvent/additive molecules such as GOL, EDO, SO4, or irrelevant waters.\n"
         )
-        keep_metals = st.checkbox(
-            "Keep metal ions in receptor", value=True, key=pfx + "keep_metals",
-            help="ZN, MG, CA, MN, FE, CU, etc. Uncheck to remove metals before docking.",
-        )
-        _strip_set = _COFACTOR_NAMES | _HEME_RESNAMES
-        from core import METAL_RESNAMES as _METAL_RESNAMES
-        _strip_sorted_cof   = ", ".join(sorted(_strip_set))
-        _strip_sorted_metal = ", ".join(sorted(_METAL_RESNAMES))
-        if keep_cofactors:
-            st.caption(f"✅ Cofactors **kept**: {_strip_sorted_cof}")
-        else:
-            st.caption(f"⚠️ Cofactors **stripped**: {_strip_sorted_cof}")
-        if keep_metals:
-            st.caption(f"✅ Metal ions **kept**: {_strip_sorted_metal}")
-        else:
-            st.caption(f"⚠️ Metal ions **stripped**: {_strip_sorted_metal}")
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
 
@@ -3949,73 +4091,13 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         except Exception:
             pass
 
-        # ── Pre-filter cofactors / heme / metals ──────────────────────────
-        _keep        = st.session_state.get(pfx + "keep_cofactors", True)
-        _keep_metals = st.session_state.get(pfx + "keep_metals", True)
-        _cofactor_strip = _COFACTOR_NAMES if not _keep else set()
-
-        # Import metal resnames for optional stripping
-        try:
-            from core import METAL_RESNAMES as _MRNS
-        except ImportError:
-            _MRNS = {"MG","ZN","CA","MN","FE","CU","CO","NI","CD","HG","NA","K"}
-        _metal_strip = _MRNS if not _keep_metals else set()
-
-        _filtered_path = str(wdir / "raw_prefiltered.pdb")
-        _heme_lines    = []
-        _n_cofactor    = 0
-        _n_metal       = 0
-
-        with open(raw_path) as _fin, open(_filtered_path, "w") as _fout:
-            for _line in _fin:
-                _field = _line[:6].strip()
-                if _field in ("ATOM", "HETATM"):
-                    _rn = _line[17:20].strip().upper()
-                    if _rn in _HEME_RESNAMES:
-                        _heme_lines.append(_line)
-                        continue
-                    if _rn in _cofactor_strip:
-                        _n_cofactor += 1
-                        continue
-                    # Strip metals if user unchecked "Keep metal ions"
-                    # (they won't be re-injected → not scored by Vina)
-                    if _rn in _metal_strip:
-                        _n_metal += 1
-                        continue
-                _fout.write(_line)
-
-        raw_path = _filtered_path
-
-        # ── Compute heme center for auto-detect fallback ───────────────────
-        # If heme is the only notable feature (no drug-like ligand present),
-        # use the Fe atom (or heme centroid) as the auto-detected grid center.
+        # HETATM filtering is now handled inside core.prepare_receptor() using
+        # the explicit per-residue policy from the Receptor setup panel.
+        # Keep these variables for downstream heme fallback compatibility.
+        _heme_lines = []
         _heme_center = None
-        if _heme_lines:
-            try:
-                _fe_lines = [l for l in _heme_lines
-                             if l[12:16].strip().upper() == "FE"]
-                _ref_lines = _fe_lines if _fe_lines else _heme_lines
-                _hxs = [float(l[30:38]) for l in _ref_lines]
-                _hys = [float(l[38:46]) for l in _ref_lines]
-                _hzs = [float(l[46:54]) for l in _ref_lines]
-                _heme_center = (
-                    sum(_hxs) / len(_hxs),
-                    sum(_hys) / len(_hys),
-                    sum(_hzs) / len(_hzs),
-                )
-            except Exception:
-                pass
-
-        if _heme_lines:
-            _heme_names = ", ".join(sorted({l[17:20].strip() for l in _heme_lines}))
-            st.info(
-                f"Heme ({_heme_names}, {len(_heme_lines)} atoms) stripped before "
-                f"OpenBabel — will be re-injected with AD4 atom types."
-            )
-        if _n_cofactor:
-            st.info(f"Stripped {_n_cofactor} cofactor atom(s) from receptor.")
-        if _n_metal:
-            st.info(f"Stripped {_n_metal} metal ion atom(s) from receptor (will not be re-injected).")
+        _n_cofactor = 0
+        _n_metal = 0
 
         _mode_map = {
             "Auto-detect co-crystal ligand":      "auto",
@@ -4063,6 +4145,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 prody_sel        = _prody_sel,
                 box_size         = (sx, sy, sz),
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
+                hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
+                reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
             )
 
         if result["success"]:
@@ -4457,14 +4541,14 @@ with tab_basic:
     _prot_mode_ui = st.radio(
         "Protonation mode",
         [
-            "🧬 pKaNET Cloud",
+            "🧪 pKaNET Cloud+",
             "🔬 Neutral (add H only)",
         ],
         horizontal=True,
         key="prot_mode",
         help=(
             "How to determine the ligand's protonation state at the target pH.\n\n"
-            "📖 🧬 pKaNET Cloud : tautomer-aware microstate ranking, PubChem pKa evidence.\n"
+            "📖 🧪 pKaNET Cloud+ : tautomer-aware microstate ranking, PubChem pKa evidence.\n"
             "                    Best for all drug-like molecules, polyphenols, zwitterions.\n"
             "   🔬 Neutral      : keep input charge state, add H only — use with pre-prepared files.\n"
             "⚠️ pKaNET requires pKaNET.py in the same folder as core.py."
@@ -4472,14 +4556,14 @@ with tab_basic:
     )
     _prot_mode_key = {
         "🔬 Neutral (add H only)": "neutral",
-        "🧬 pKaNET Cloud":         "pkanet",
+        "🧪 pKaNET Cloud+":         "pkanet",
     }.get(_prot_mode_ui, "pkanet")
 
     # pKaNET advanced options (always visible when pKaNET is selected, i.e. by default)
     _use_pubchem    = True
     _pkanet_max_tau = 8
     _pkanet_ph_win  = 1.0
-    if _prot_mode_ui == "🧬 pKaNET Cloud":
+    if _prot_mode_ui == "🧪 pKaNET Cloud+":
         with st.expander("⚙️ pKaNET options", expanded=False):
             _use_pubchem    = st.checkbox(
                 "Query PubChem for experimental pKa",
@@ -4493,6 +4577,57 @@ with tab_basic:
             _pkanet_ph_win  = st.slider(
                 "pH window", 0.2, 2.0, 1.0, 0.1, key="pkanet_ph_win",
                 help="pH window used during Dimorphite-DL enumeration inside pKaNET: [pH − window/2, pH + window/2].",
+            )
+            _pkanet_sel_ui = st.radio(
+                "Microstate selection for docking",
+                [
+                    "Auto recommended (conservative when ambiguous)",
+                    "Highest-scoring microstate",
+                    "Manual rank",
+                ],
+                index=0,
+                key="pkanet_selection_ui",
+                help=(
+                    "Auto uses the pKaNET recommendation. For heuristic-only polyphenol/coumarin/flavonoid-like "
+                    "molecules, ACD may choose a conservative near-score state instead of the highest score."
+                ),
+            )
+            if _pkanet_sel_ui == "Manual rank":
+                _prev_rows = st.session_state.get("pkanet_ranked_microstates", []) or []
+                if _prev_rows:
+                    def _fmt_prev_microstate(_r):
+                        _rank = _r.get("microstate_rank", _r.get("rank", "?"))
+                        _chg  = _r.get("net_charge", _r.get("formal_charge", "?"))
+                        _score = _r.get("selection_score", _r.get("score", ""))
+                        _rec = _r.get("recommendation", "")
+                        _tag = " | recommended" if _r.get("recommended_default") else ""
+                        try:
+                            _score_txt = f" | score {_score:.3f}"
+                        except Exception:
+                            _score_txt = f" | score {_score}" if _score != "" else ""
+                        return f"Rank {_rank} | charge {_chg:+d}{_score_txt} | {_rec}{_tag}" if isinstance(_chg, int) else f"Rank {_rank} | charge {_chg}{_score_txt} | {_rec}{_tag}"
+
+                    _rank_options = [int(r.get("microstate_rank", r.get("rank", i + 1))) for i, r in enumerate(_prev_rows)]
+                    _current_rank = int(st.session_state.get("pkanet_manual_rank", 1) or 1)
+                    _default_idx = _rank_options.index(_current_rank) if _current_rank in _rank_options else 0
+                    _chosen_rank = st.selectbox(
+                        "Manual microstate rank to use",
+                        options=_rank_options,
+                        index=_default_idx,
+                        format_func=lambda rr: _fmt_prev_microstate(_prev_rows[_rank_options.index(rr)]),
+                        key="pkanet_manual_rank_dropdown",
+                        help="Choose from the ranked microstates from the previous preparation/preview, then click Prepare Ligand again.",
+                    )
+                    st.session_state["pkanet_manual_rank"] = int(_chosen_rank)
+                else:
+                    st.number_input(
+                        "Manual microstate rank to use",
+                        min_value=1, max_value=50, value=1, step=1,
+                        key="pkanet_manual_rank",
+                        help="After the first pKaNET run, ranked microstates will appear here as a dropdown.",
+                    )
+            st.caption(
+                "ACD will export `*_pkanet_ranked_microstates.csv` and `*_pkanet_decision_log.txt` with the prepared ligand."
             )
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -4511,17 +4646,27 @@ with tab_basic:
             "ligand_charged_atoms": [],
             "ligand_is_zwitterion": False,
             "ligand_prep_mode": st.session_state.get("ligand_state_mode", "pkanet"),
+            "pkanet_ranked_microstates": [],
+            "pkanet_ambiguous": False,
+            "pkanet_ranked_csv": "",
         })
         with st.spinner("Preparing ligand…"):
             _mode = st.session_state.get("lig_input_mode", "SMILES string")
             # ✅ Use the actual radio selection — pKaNET is default
             _prot_mode_key = {
                 "🔬 Neutral (add H only)": "neutral",
-                "🧬 pKaNET Cloud":         "pkanet",
-            }.get(st.session_state.get("prot_mode", "🧬 pKaNET Cloud"), "pkanet")
+                "🧪 pKaNET Cloud+":         "pkanet",
+            }.get(st.session_state.get("prot_mode", "🧪 pKaNET Cloud+"), "pkanet")
             _use_pubchem    = st.session_state.get("pkanet_use_pubchem", True)
             _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
+            _pkanet_sel_ui  = st.session_state.get("pkanet_selection_ui", "Auto recommended (conservative when ambiguous)")
+            _pkanet_sel_key = {
+                "Auto recommended (conservative when ambiguous)": "auto_recommended",
+                "Highest-scoring microstate": "highest_score",
+                "Manual rank": "manual_rank",
+            }.get(_pkanet_sel_ui, "auto_recommended")
+            _pkanet_manual_rank = int(st.session_state.get("pkanet_manual_rank", 1) or 1)
 
             if "Upload" in _mode:
                 _sfobj = st.session_state.get("lig_struct_file")
@@ -4541,18 +4686,24 @@ with tab_basic:
                         st.error(f"❌ Could not read structure: {e}"); st.stop()
                     result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
                                             mode=_prot_mode_key, use_pubchem=_use_pubchem,
-                                            max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
+                                            max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
+                                            pkanet_selection_mode=_pkanet_sel_key,
+                                            pkanet_manual_rank=_pkanet_manual_rank)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
                     st.error("No molecule drawn in Ketcher."); st.stop()
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
                                         mode=_prot_mode_key, use_pubchem=_use_pubchem,
-                                        max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
+                                        max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
+                                        pkanet_selection_mode=_pkanet_sel_key,
+                                        pkanet_manual_rank=_pkanet_manual_rank)
             else:
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
                                         mode=_prot_mode_key, use_pubchem=_use_pubchem,
-                                        max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win)
+                                        max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
+                                        pkanet_selection_mode=_pkanet_sel_key,
+                                        pkanet_manual_rank=_pkanet_manual_rank)
 
         if result["success"]:
             st.session_state.update({
@@ -4566,6 +4717,9 @@ with tab_basic:
                 "ligand_charged_atoms": result.get("charged_atoms", []),
                 "ligand_is_zwitterion": result.get("is_zwitterion", False),
                 "ligand_prep_mode":    result.get("protonation_mode", _prot_mode_key),
+                "pkanet_ranked_microstates": result.get("pkanet_ranked_microstates", []),
+                "pkanet_ambiguous":          result.get("pkanet_ambiguous", False),
+                "pkanet_ranked_csv":         result.get("pkanet_ranked_csv", ""),
                 "ligand_done":         True,
                 "ligand_log":          "\n".join(result["log"]),
             })
@@ -4595,9 +4749,87 @@ with tab_basic:
             f"**Charged atoms:** `{_charged_atoms_txt}`  \n"
             f"**Zwitterion:** `{'YES' if st.session_state.get('ligand_is_zwitterion') else 'NO'}`"
         )
+        _rank_rows = st.session_state.get("pkanet_ranked_microstates", []) or []
+        if _rank_rows:
+            st.markdown("#### 🧪 pKaNET Cloud+ ranked microstates")
+
+            def _fmt_ranked_microstate(_r):
+                _rank = _r.get("microstate_rank", _r.get("rank", "?"))
+                _chg  = _r.get("net_charge", _r.get("formal_charge", "?"))
+                _score = _r.get("selection_score", _r.get("score", ""))
+                _delta = _r.get("delta_from_best", "")
+                _rec = _r.get("recommendation", "")
+                _tag = " | recommended" if _r.get("recommended_default") else ""
+                try:
+                    _score_txt = f" | score {_score:.3f}"
+                except Exception:
+                    _score_txt = f" | score {_score}" if _score != "" else ""
+                try:
+                    _delta_txt = f" | Δ {_delta:.3f}"
+                except Exception:
+                    _delta_txt = f" | Δ {_delta}" if _delta != "" else ""
+                try:
+                    _chg_txt = f"{int(_chg):+d}"
+                except Exception:
+                    _chg_txt = str(_chg)
+                return f"Rank {_rank} | charge {_chg_txt}{_score_txt}{_delta_txt} | {_rec}{_tag}"
+
+            _rank_options = list(range(len(_rank_rows)))
+            _recommended_idx = next((i for i, r in enumerate(_rank_rows) if r.get("recommended_default")), 0)
+            _selected_idx = st.selectbox(
+                "Select pKaNET microstate to inspect",
+                options=_rank_options,
+                index=_recommended_idx,
+                format_func=lambda i: _fmt_ranked_microstate(_rank_rows[i]),
+                key="pkanet_ranked_microstate_inspect_dropdown",
+                help="This dropdown replaces the full ranked table. To dock another microstate, choose Manual rank in pKaNET options and prepare the ligand again.",
+            )
+            _sel_row = _rank_rows[_selected_idx]
+            _sel_rank = int(_sel_row.get("microstate_rank", _sel_row.get("rank", _selected_idx + 1)))
+            st.session_state["pkanet_manual_rank"] = _sel_rank
+
+            _detail_cols = st.columns([1, 1, 1, 2])
+            with _detail_cols[0]:
+                st.metric("Rank", _sel_rank)
+            with _detail_cols[1]:
+                try:
+                    st.metric("Charge", f"{int(_sel_row.get('net_charge', _sel_row.get('formal_charge', 0))):+d}")
+                except Exception:
+                    st.metric("Charge", str(_sel_row.get("net_charge", _sel_row.get("formal_charge", "?"))))
+            with _detail_cols[2]:
+                _score_val = _sel_row.get("selection_score", _sel_row.get("score", ""))
+                try:
+                    st.metric("Score", f"{float(_score_val):.3f}")
+                except Exception:
+                    st.metric("Score", str(_score_val) if _score_val != "" else "—")
+            with _detail_cols[3]:
+                st.metric("Recommendation", str(_sel_row.get("recommendation", "—")))
+
+            _sel_smiles = _sel_row.get("microstate_smiles", _sel_row.get("smiles", ""))
+            if _sel_smiles:
+                st.markdown(f"**Selected microstate SMILES:** `{_sel_smiles}`")
+            # Keep detailed pKaNET diagnostic notes inside the Preparation log
+            # instead of showing extra text/warning blocks in the main ligand panel.
+            _pkanet_log_lines = []
+            _sel_reason = _sel_row.get("recommendation_reason", "")
+            if _sel_reason:
+                _pkanet_log_lines.append(f"pKaNET reason: {_sel_reason}")
+            _sel_atoms = _sel_row.get("charged_atoms", "")
+            if _sel_atoms:
+                _pkanet_log_lines.append(f"pKaNET charged atoms: {_sel_atoms}")
+            if st.session_state.get("pkanet_ambiguous"):
+                _pkanet_log_lines.append(
+                    "pKaNET warning: ambiguous protonation/tautomer assignment; "
+                    "ACD used the recommended state for docking. To dock a different state, "
+                    "select Manual rank above and prepare again."
+                )
+
         with st.expander("📋 Preparation log", expanded=False):
+            _log_html = st.session_state.ligand_log
+            if '_pkanet_log_lines' in locals() and _pkanet_log_lines:
+                _log_html = _log_html + "<br>" + "<br>".join(_pkanet_log_lines)
             st.markdown(
-                f'<div class="log-box">{st.session_state.ligand_log}</div>',
+                f'<div class="log-box">{_log_html}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -4730,10 +4962,10 @@ with tab_basic:
             rd_smi = pts[0]
             rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             ph_val = st.session_state.get("ph_in", 7.4)
-            _rd_prot_mode = st.session_state.get("prot_mode", "🧬 pKaNET Cloud")
+            _rd_prot_mode = st.session_state.get("prot_mode", "🧪 pKaNET Cloud+")
             _rd_prot_mode = {
                 "🔬 Neutral (add H only)": "neutral",
-                "🧬 pKaNET Cloud":         "pkanet",
+                "🧪 pKaNET Cloud+":         "pkanet",
             }.get(_rd_prot_mode, "pkanet")
             _rd_use_pubchem = st.session_state.get("pkanet_use_pubchem", True)
             _rd_max_tau = st.session_state.get("pkanet_max_tau", 8)
@@ -5336,7 +5568,7 @@ with tab_batch:
         # ── Protonation mode ─────────────────────────────────────────────────
         _b_prot_mode_ui = st.radio(
             "Protonation mode",
-            ["🧬 pKaNET Cloud", "🔬 Neutral (keep input)"],
+            ["🧪 pKaNET Cloud+", "🔬 Neutral (keep input)"],
             horizontal=True,
             key="b_prot_mode_ui",
             help=(
@@ -5347,7 +5579,7 @@ with tab_batch:
         )
         _b_pkanet_max_tau = 8
         _b_pkanet_ph_win  = 1.0
-        if _b_prot_mode_ui == "🧬 pKaNET Cloud":
+        if _b_prot_mode_ui == "🧪 pKaNET Cloud+":
             _bc1, _bc2 = st.columns(2)
             with _bc1:
                 _b_pkanet_max_tau = st.slider("Max tautomers", 1, 20, 8, key="b_pkanet_max_tau")
@@ -5403,9 +5635,9 @@ with tab_batch:
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
         _b_prot_mode  = {
-            "🧬 pKaNET Cloud":          "pkanet",
+            "🧪 pKaNET Cloud+":          "pkanet",
             "🔬 Neutral (keep input)":  "neutral",
-        }.get(st.session_state.get("b_prot_mode_ui", "🧬 pKaNET Cloud"), "pkanet")
+        }.get(st.session_state.get("b_prot_mode_ui", "🧪 pKaNET Cloud+"), "pkanet")
         _b_use_pubchem  = st.session_state.get("pkanet_use_pubchem", True)
         _b_pkanet_max_tau = st.session_state.get("b_pkanet_max_tau", 8)
         _b_pkanet_ph_win  = st.session_state.get("b_pkanet_ph_win", 1.0)
