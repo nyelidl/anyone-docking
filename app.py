@@ -5550,7 +5550,7 @@ with tab_batch:
                        "CN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1O[C@H]1CCOC1 Afatinib\n"
                        "O=c1c(O)c(-c2ccccc2)oc2cc(O)cc(O)c12 Galangin\n"
                        "Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1 Imatinib"
-                       )
+                       ),
 
                 height=300, key="b_smiles_text")
         elif b_input_mode == "Upload .smi file":
