@@ -4593,12 +4593,39 @@ with tab_basic:
                 ),
             )
             if _pkanet_sel_ui == "Manual rank":
-                st.number_input(
-                    "Manual microstate rank to use",
-                    min_value=1, max_value=50, value=1, step=1,
-                    key="pkanet_manual_rank",
-                    help="Use the rank shown in the ranked microstates table after a preview/previous preparation run.",
-                )
+                _prev_rows = st.session_state.get("pkanet_ranked_microstates", []) or []
+                if _prev_rows:
+                    def _fmt_prev_microstate(_r):
+                        _rank = _r.get("microstate_rank", _r.get("rank", "?"))
+                        _chg  = _r.get("net_charge", _r.get("formal_charge", "?"))
+                        _score = _r.get("selection_score", _r.get("score", ""))
+                        _rec = _r.get("recommendation", "")
+                        _tag = " | recommended" if _r.get("recommended_default") else ""
+                        try:
+                            _score_txt = f" | score {_score:.3f}"
+                        except Exception:
+                            _score_txt = f" | score {_score}" if _score != "" else ""
+                        return f"Rank {_rank} | charge {_chg:+d}{_score_txt} | {_rec}{_tag}" if isinstance(_chg, int) else f"Rank {_rank} | charge {_chg}{_score_txt} | {_rec}{_tag}"
+
+                    _rank_options = [int(r.get("microstate_rank", r.get("rank", i + 1))) for i, r in enumerate(_prev_rows)]
+                    _current_rank = int(st.session_state.get("pkanet_manual_rank", 1) or 1)
+                    _default_idx = _rank_options.index(_current_rank) if _current_rank in _rank_options else 0
+                    _chosen_rank = st.selectbox(
+                        "Manual microstate rank to use",
+                        options=_rank_options,
+                        index=_default_idx,
+                        format_func=lambda rr: _fmt_prev_microstate(_prev_rows[_rank_options.index(rr)]),
+                        key="pkanet_manual_rank_dropdown",
+                        help="Choose from the ranked microstates from the previous preparation/preview, then click Prepare Ligand again.",
+                    )
+                    st.session_state["pkanet_manual_rank"] = int(_chosen_rank)
+                else:
+                    st.number_input(
+                        "Manual microstate rank to use",
+                        min_value=1, max_value=50, value=1, step=1,
+                        key="pkanet_manual_rank",
+                        help="After the first pKaNET run, ranked microstates will appear here as a dropdown.",
+                    )
             st.caption(
                 "ACD will export `*_pkanet_ranked_microstates.csv` and `*_pkanet_decision_log.txt` with the prepared ligand."
             )
@@ -4725,19 +4752,73 @@ with tab_basic:
         _rank_rows = st.session_state.get("pkanet_ranked_microstates", []) or []
         if _rank_rows:
             st.markdown("#### 🧬 pKaNET ranked microstates")
-            _rank_df = pd.DataFrame(_rank_rows)
-            _cols = [
-                "microstate_rank", "recommended_default", "recommendation", "selection_score",
-                "delta_from_best", "net_charge", "microstate_smiles", "charged_atoms",
-                "flag_heuristic_only", "flag_polyphenol_like", "flag_coumarin_like",
-                "flag_possible_overdeprotonation", "flag_borderline_pka", "recommendation_reason",
-            ]
-            _cols = [c for c in _cols if c in _rank_df.columns]
-            st.dataframe(_rank_df[_cols].head(20), use_container_width=True, hide_index=True)
+
+            def _fmt_ranked_microstate(_r):
+                _rank = _r.get("microstate_rank", _r.get("rank", "?"))
+                _chg  = _r.get("net_charge", _r.get("formal_charge", "?"))
+                _score = _r.get("selection_score", _r.get("score", ""))
+                _delta = _r.get("delta_from_best", "")
+                _rec = _r.get("recommendation", "")
+                _tag = " | recommended" if _r.get("recommended_default") else ""
+                try:
+                    _score_txt = f" | score {_score:.3f}"
+                except Exception:
+                    _score_txt = f" | score {_score}" if _score != "" else ""
+                try:
+                    _delta_txt = f" | Δ {_delta:.3f}"
+                except Exception:
+                    _delta_txt = f" | Δ {_delta}" if _delta != "" else ""
+                try:
+                    _chg_txt = f"{int(_chg):+d}"
+                except Exception:
+                    _chg_txt = str(_chg)
+                return f"Rank {_rank} | charge {_chg_txt}{_score_txt}{_delta_txt} | {_rec}{_tag}"
+
+            _rank_options = list(range(len(_rank_rows)))
+            _recommended_idx = next((i for i, r in enumerate(_rank_rows) if r.get("recommended_default")), 0)
+            _selected_idx = st.selectbox(
+                "Select pKaNET microstate to inspect",
+                options=_rank_options,
+                index=_recommended_idx,
+                format_func=lambda i: _fmt_ranked_microstate(_rank_rows[i]),
+                key="pkanet_ranked_microstate_inspect_dropdown",
+                help="This dropdown replaces the full ranked table. To dock another microstate, choose Manual rank in pKaNET options and prepare the ligand again.",
+            )
+            _sel_row = _rank_rows[_selected_idx]
+            _sel_rank = int(_sel_row.get("microstate_rank", _sel_row.get("rank", _selected_idx + 1)))
+            st.session_state["pkanet_manual_rank"] = _sel_rank
+
+            _detail_cols = st.columns([1, 1, 1, 2])
+            with _detail_cols[0]:
+                st.metric("Rank", _sel_rank)
+            with _detail_cols[1]:
+                try:
+                    st.metric("Charge", f"{int(_sel_row.get('net_charge', _sel_row.get('formal_charge', 0))):+d}")
+                except Exception:
+                    st.metric("Charge", str(_sel_row.get("net_charge", _sel_row.get("formal_charge", "?"))))
+            with _detail_cols[2]:
+                _score_val = _sel_row.get("selection_score", _sel_row.get("score", ""))
+                try:
+                    st.metric("Score", f"{float(_score_val):.3f}")
+                except Exception:
+                    st.metric("Score", str(_score_val) if _score_val != "" else "—")
+            with _detail_cols[3]:
+                st.metric("Recommendation", str(_sel_row.get("recommendation", "—")))
+
+            _sel_smiles = _sel_row.get("microstate_smiles", _sel_row.get("smiles", ""))
+            if _sel_smiles:
+                st.markdown(f"**Selected microstate SMILES:** `{_sel_smiles}`")
+            _sel_reason = _sel_row.get("recommendation_reason", "")
+            if _sel_reason:
+                st.caption(f"Reason: {_sel_reason}")
+            _sel_atoms = _sel_row.get("charged_atoms", "")
+            if _sel_atoms:
+                st.caption(f"Charged atoms: {_sel_atoms}")
+
             if st.session_state.get("pkanet_ambiguous"):
                 st.warning(
                     "This ligand has ambiguous protonation/tautomer assignment. "
-                    "ACD used the recommended state for docking, but you may choose another rank and prepare again."
+                    "ACD used the recommended state for docking. To dock a different state, select Manual rank above and prepare again."
                 )
             _csv_path = st.session_state.get("pkanet_ranked_csv", "")
             if _csv_path and Path(_csv_path).exists():
