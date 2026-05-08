@@ -1,10 +1,13 @@
-# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> nyone can dock, everyone can do!
+# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> Anyone can dock, everyone can do!
 
 **Anyone docking: Browser-based molecular docking — no installation required.**
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://nyelidl.github.io/anyone-docking/)
 
 > Paste a SMILES, draw a structure, or upload a file. Pick a PDB or CIF. Dock in seconds.
+
+
+> Recent update: receptor setup now auto-scans ligand-like HETATM records and shows a reference-ligand dropdown only when needed. Ligand preparation now supports pKaNET-ranked microstates with manual rank selection for ambiguous protonation/tautomer cases.
 
 ---
 
@@ -17,12 +20,14 @@ Batch docking with 4 docking engines: [![Open In Colab](https://colab.research.g
 | | |
 |---|---|
 | 🔬 | **Single & batch docking** via AutoDock Vina 1.2.7 |
-| 🏗️ | **Automatic receptor prep** — download any PDB/CIF, strip solvent, add hydrogens |
+| 🏗️ | **Guided receptor prep** — download any PDB/CIF, review ligand candidates automatically, choose the co-crystal reference ligand when needed, strip solvent, add hydrogens |
 | 📄 | **PDB & mmCIF support** — upload `.pdb` or `.cif` files, or download either format from RCSB (auto-fallback to CIF for large/newer entries) |
-| 🎯 | **Smart grid detection** — auto-detects co-crystal ligand centroid; falls back to heme Fe position for P450/peroxidase structures; or set center manually / by ProDy selection |
+| 🎯 | **Smart grid detection with user control** — auto-detects ligand-like HETATM records, auto-selects clear single-ligand cases, shows a dropdown only when multiple ligand candidates exist, and uses the selected reference ligand centroid for the docking box |
 | ✏️ | **3-way ligand input** — SMILES text, file upload (`.pdb` / `.sdf` / `.mol2`), or **draw in Ketcher** |
+| 🧬 | **pKaNET-ranked ligand microstates** — ranks protonation/tautomer states at the target pH, recommends a docking-ready default, and allows manual rank selection from a dropdown for ambiguous cases |
+| ⚖️ | **Conservative docking-state selection** — for heuristic-only polyphenol, coumarin, flavonoid, and related systems, ACD avoids blindly choosing the highest-scoring over-deprotonated state |
 | 🧬 | **Heme-aware preparation** — HEM/HEC/HEA/HEB stripped before OpenBabel (avoids Fe-porphyrin failures), re-injected into PDBQT with correct AD4 atom types, and shown as orange sticks in all 3D viewers |
-| ⚗️ | **Cofactor & metal options** — keep or strip cofactors (ATP, FAD, NAD, CoA, SAM…) and metal ions (ZN, MG, CA, FE, MN…) independently via checkboxes before docking |
+| ⚗️ | **Water, cofactor & metal control** — remove waters, keep selected metal ions, and keep/strip cofactors such as HEM, FAD, NAD, ATP, CoA, or SAM through receptor-preparation options |
 | 🔗 | **Modified amino acid safety** — HETATM residues with full protein backbone (CYP, MSE, TPO…) are correctly kept in the receptor, not mistakenly removed as ligands |
 | ♻️ | **Redocking validation** in both single & batch mode — dock the co-crystal ligand as a reference with RMSD vs crystal, score comparison, and reference line in plots |
 | 🧪 | **Bond-order correction** — fixes PDBQT aromaticity artifacts before visualization |
@@ -31,7 +36,7 @@ Batch docking with 4 docking engines: [![Open In Colab](https://colab.research.g
 | 🔭 | **Binding pocket viewer** — interacting residues (orange sticks) around the docked ligand, with toggleable labels and adjustable distance cutoff |
 | 🤖 | **AI-ready prompt** — auto-filled context for GPT-4o, Claude, Gemini, or DeepSeek; adapts based on whether redocking was performed |
 | 📊 | **3D viewers** — animated multi-pose sweep, interactive pose selector, and dedicated binding pocket view |
-| 📁 | **One-click ZIP** — all poses, bond-order-corrected SDFs, 2D diagrams, and score plot |
+| 📁 | **One-click ZIP** — all poses, bond-order-corrected SDFs, 2D diagrams, score plot, receptor-preparation log, and pKaNET decision log when available |
 
 ---
 
@@ -85,14 +90,14 @@ Submits receptor + docked pose to the [proteins.plus](https://proteins.plus/help
 | Protein class | Support | Notes |
 |---|---|---|
 | Standard single-chain proteins | ✅ Full | Primary use case |
-| Multi-chain / homo-oligomers | ✅ Full | Duplicate chains auto-deduplicated; chain A kept |
+| Multi-chain / homo-oligomers | ✅ Full | Duplicate chains can be deduplicated; if the same ligand appears in equivalent chains, the chain A ligand is auto-selected without unnecessary dropdowns |
 | **Heme proteins** (CYP450, peroxidases, Hb, Mb) | ✅ Full | Fe-porphyrin handled separately; grid auto-centers on Fe; shown in all viewers |
 | Metal-binding proteins (zinc fingers, carbonic anhydrase) | ✅ Full | ZN, MG, CA, MN, FE, CU re-injected with correct charges |
 | MD simulation outputs (GROMACS, AMBER) | ✅ Full | Blank chain IDs auto-assigned to chain A |
 | Non-standard ligand names (MOL, LIG, UNL, INH) | ✅ Full | `hetatm` keyword bypasses ProDy misclassification |
 | Modified amino acids (CYP, MSE, TPO, SEP) | ✅ Full | Backbone atom check keeps them in receptor |
-| Multiple co-crystal ligands | ✅ Full | All removed; largest used for grid center |
-| Cofactor-binding proteins (FAD, NAD, ATP, CoA) | ✅ Full | Kept by default; optional strip checkbox |
+| Multiple co-crystal ligands | ✅ Full | Ligand-like HETATM records are auto-scanned; a dropdown appears only when multiple reference-ligand candidates exist; the selected ligand defines the grid center and is removed from the receptor |
+| Cofactor-binding proteins (FAD, NAD, ATP, CoA) | ✅ Full | Cofactors are classified separately from ligand candidates and can be kept or stripped independently |
 | Glycoproteins | ⚠️ Partial | Glycans kept in receptor (correct), but not shown in 2D interaction diagram |
 | Antibodies / very large proteins | ⚠️ Partial | Works; 3D viewer and interaction detection may be slow |
 | Membrane proteins | ⚠️ Partial | Dockable without lipids; lipids not auto-filtered |
@@ -144,26 +149,71 @@ CIF files are automatically converted to PDB using a multi-strategy cascade: **g
 
 ---
 
+
+## 🧫 Receptor setup and ligand-reference selection
+
+The receptor setup panel is designed to prevent blind automatic selection of the wrong HETATM record.
+
+| Step | Behavior |
+|---|---|
+| **Structure loading** | For RCSB mode, entering a valid 4-character PDB ID automatically downloads/scans the structure. Upload mode scans immediately after a structure file is provided. No extra scan button is required. |
+| **Ligand candidates** | Only ligand-like small molecules are shown as candidates for defining the binding site. Waters, buffer molecules, ions, metals, glycans, and cofactors are filtered or handled separately. |
+| **Single ligand case** | If only one ligand-like candidate is present, it is selected automatically. |
+| **Homo-multimer case** | If the same ligand appears in equivalent chains, the chain A ligand is selected automatically to avoid redundant choices. |
+| **Multiple ligand case** | If multiple ligand-like candidates are present in the relevant chain or assembly, a dropdown appears and the user selects the reference ligand. |
+| **Grid definition** | The selected reference ligand is removed from the docking receptor but its centroid is used to define the AutoDock Vina search box. |
+| **Waters / metals / cofactors** | Waters, metal ions, and cofactors are controlled separately through receptor-preparation options. |
+
+Example ligand-selection behavior:
+
+| Residue name | Chain | Residue ID | Atom count | Type guess | UI behavior |
+|---|---:|---:|---:|---|---|
+| ERL | A | 901 | 45 | ligand | shown as binding-site reference candidate |
+| GOL | A | 902 | 6 | buffer/additive | not shown in ligand dropdown; removed by default |
+| ZN | A | 903 | 1 | metal | controlled by metal-ion option |
+| FAD | A | 904 | 53 | cofactor | controlled by cofactor option |
+
+
 ## 🖥️ Ligand input modes
 
 | Mode | Description |
 |---|---|
-| **SMILES string** | Type or paste any valid SMILES — protonated at target pH via Dimorphite-DL |
-| **Upload file** | `.pdb`, `.sdf`, `.mol2` — use as-is or re-protonate at target pH |
+| **SMILES string** | Type or paste any valid SMILES — standardized and prepared at the target pH |
+| **Upload file** | `.pdb`, `.sdf`, `.mol2` — use as-is or re-protonate at the target pH |
 | **Draw in Ketcher** | Full 2D chemical sketcher in the browser → SMILES exported automatically |
+| **pKaNET microstate control** | Ranked protonation/tautomer states are available through a dropdown. Users can use the recommended state, the highest-scoring state, or manually select another rank before docking. |
 
 ---
 
-## ⚗️ Cofactor & metal options
 
-Accessible via the **⚗️ Cofactor options** expander in receptor preparation:
+## 🧬 pKaNET microstate selection
+
+For ligand preparation, ACD reports the selected protonation/tautomer state instead of silently forcing a single hidden form.
+
+| Mode | Meaning |
+|---|---|
+| **Auto recommended** | Uses the pKaNET-recommended docking state. For chemically ambiguous heuristic-only systems such as polyphenols, coumarins, flavonoids, catechols, and related scaffolds, this may select a conservative state rather than the highest score. |
+| **Highest-scoring microstate** | Uses the top-ranked pKaNET state directly. |
+| **Manual rank** | Lets the user choose a ranked microstate from a dropdown before preparing the ligand for docking. |
+
+The ligand panel displays the selected rank, formal charge, score, recommendation status, and selected microstate SMILES. Detailed reasoning, charged atoms, and ambiguity notes are stored in the **Preparation log** to keep the main interface clean.
+
+This design is intended for docking-relevant ligand preparation, not absolute microscopic pKa prediction. Ambiguous cases should be inspected manually when the predicted charge state may strongly affect docking.
+
+
+## ⚗️ Water, cofactor & metal options
+
+Accessible in receptor preparation:
 
 | Option | Default | Effect |
 |---|---|---|
-| **Keep cofactors in receptor** | ✅ On | ATP, ADP, FAD, FMN, NAD, CoA, SAM, GOL, PEG, SO4… remain in receptor and contribute to scoring |
-| **Keep metal ions in receptor** | ✅ On | ZN, MG, CA, MN, FE, CU, CO, NI, CD, HG, NA, K remain in receptor |
+| **Remove waters** | ✅ On | Removes crystallographic waters unless the user chooses to keep them |
+| **Keep metal ions in receptor** | ✅ On | Keeps common ions/metals such as ZN, MG, CA, MN, FE, CU, CO, NI, CD, HG, NA, and K when appropriate |
+| **Keep cofactors in receptor** | ✅ On | Keeps cofactors such as ATP, ADP, FAD, FMN, NAD, CoA, and SAM when appropriate |
 
-Heme (HEM/HEC/HEA/HEB/HDD/HDM) is always handled separately — stripped before OpenBabel and **re-injected** with AD4 atom types regardless of the cofactor setting.
+Buffer/additive molecules such as GOL, EDO, PEG, SO4, and PO4 are not treated as binding-site reference ligands. They are removed by default unless intentionally handled as part of the receptor setup.
+
+Heme (HEM/HEC/HEA/HEB/HDD/HDM) is handled separately — stripped before OpenBabel when needed and re-injected with AD4 atom types for docking/visualization.
 
 ---
 
@@ -185,7 +235,7 @@ Available in **both single and batch** docking modes:
 
 | Viewer | What you see |
 |---|---|
-| **Receptor prep** | Protein cartoon · co-crystal ligand (magenta) · heme (orange) · docking grid box (cyan wireframe) · XYZ axis arrows |
+| **Receptor prep** | Protein cartoon · selected reference ligand (magenta) · heme/metal context when present · docking grid box (cyan wireframe) · XYZ axis arrows |
 | **Animated pose viewer** | All poses swept as frames · protein surface · co-crystal overlay · heme (orange) |
 | **Interactive pose selector** | Single selected pose · protein cartoon + surface · co-crystal overlay · heme (orange) |
 | **Binding pocket view** | Faint full-protein cartoon · docked pose (cyan) · heme (orange) · interacting residues (orange sticks) · optional residue labels |
@@ -302,8 +352,7 @@ If you use this tool in research, please cite the relevant software and resource
 > DOI: https://doi.org/10.1186/s13321-019-0336-9
 
 > **pKaNET Cloud**
-> Hengphasatporn, K. et al., *J. Chem. Inf. Model.* 2026, **66** (4), 1955–1963
-> DOI: https://doi.org/10.1021/acs.jcim.5c02852
+> Please cite the corresponding pKaNET/ACD software paper or manuscript when available.
 
 > **gemmi** *(optional, for CIF support)*
 > Wojdyr, M., *Journal of Open Source Software*, 2022
