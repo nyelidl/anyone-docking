@@ -1607,8 +1607,7 @@ def _load_local_pkanet_module(log=None):
     file_hash = hashlib.md5(pkanet_path.read_bytes()).hexdigest()[:12]
 
     if log is not None:
-        log.append(f"DEBUG pKaNET file: {pkanet_path}")
-        log.append(f"DEBUG pKaNET md5: {file_hash}")
+        log.append(f"✓ pKaNET loaded from: {pkanet_path.name}  (md5: {file_hash})")
 
     return mod
 
@@ -1660,7 +1659,6 @@ def protonate_pkanet(
         raise ValueError(f"pKaNET standardization failed: {std_status}")
 
     log.append("✓ RDKit standardized (pKaNET)")
-    log.append(f"DEBUG pKaNET canonical SMILES: {canonical}")
 
     # ── Stage B: PubChem pKa lookup via pKaNET ──────────────────────────────
     pubchem_result = {}
@@ -1700,13 +1698,14 @@ def protonate_pkanet(
         log.append("❌ pKaNET returned no microstates")
         raise RuntimeError("pKaNET returned no microstates. No fallback was used.")
 
-    # Show ranks explicitly so we can verify whether rank-1 is 0 or -1.
-    for r in all_micro[:8]:
+    # Compact ranked summary (up to top 5) — visible in Preparation log
+    for r in all_micro[:5]:
+        marker = " ← selected" if r.get("recommended_default") else ""
         log.append(
-            f"DEBUG pKaNET rank {r.get('microstate_rank', '?')}: "
-            f"score={float(r.get('selection_score', 0.0)):.3f}, "
-            f"charge={int(r.get('net_charge', 0)):+d}, "
-            f"smiles={r.get('microstate_smiles', '')}"
+            f"  rank {r.get('microstate_rank','?')}: "
+            f"score={float(r.get('selection_score',0)):.3f}  "
+            f"charge={int(r.get('net_charge',0)):+d}  "
+            f"{r.get('microstate_smiles','')}{marker}"
         )
 
     # ── Stage D: choose microstate for docking ───────────────────────────────
@@ -1943,21 +1942,46 @@ def prepare_ligand(
                 log.append(f"⚠ pKaNET failed ({_pke}) — falling back to Dimorphite-DL")
                 try:
                     from dimorphite_dl import protonate_smiles
-                    vs = protonate_smiles(raw, ph_min=ph, ph_max=ph, max_variants=1)
+                    _win = ph_window * 0.5
+                    vs = protonate_smiles(
+                        raw,
+                        ph_min=ph - _win, ph_max=ph + _win,
+                        max_variants=16,
+                    )
                     if vs:
-                        prot = vs[0] if isinstance(vs, list) else vs
-                        log.append(f"✓ Dimorphite-DL fallback pH {ph:.1f}")
+                        _vs_list = vs if isinstance(vs, list) else [vs]
+                        # Prefer the state with the smallest absolute charge
+                        # (avoids the Dimorphite bug of listing [n-] before neutral)
+                        from rdkit import Chem as _Chem
+                        def _abs_charge(s):
+                            m = _Chem.MolFromSmiles(s)
+                            return abs(int(_Chem.GetFormalCharge(m))) if m else 99
+                        prot = min(_vs_list, key=_abs_charge)
+                        log.append(
+                            f"✓ Dimorphite-DL fallback pH {ph:.1f} "
+                            f"(picked charge {_abs_charge(prot):+d} from {len(_vs_list)} variants)"
+                        )
                     prot = _apply_ionizable_site_correction(raw, prot, ph, log)
                 except Exception as e2:
                     log.append(f"⚠ Dimorphite-DL fallback skipped: {e2}")
 
         else:
-            # dimorphite (default)
+            # dimorphite (legacy compatibility)
             try:
                 from dimorphite_dl import protonate_smiles
-                vs = protonate_smiles(prot, ph_min=ph, ph_max=ph, max_variants=1)
+                _win = ph_window * 0.5
+                vs = protonate_smiles(
+                    prot,
+                    ph_min=ph - _win, ph_max=ph + _win,
+                    max_variants=16,
+                )
                 if vs:
-                    prot = vs[0] if isinstance(vs, list) else vs
+                    _vs_list = vs if isinstance(vs, list) else [vs]
+                    from rdkit import Chem as _Chem
+                    def _abs_charge(s):
+                        m = _Chem.MolFromSmiles(s)
+                        return abs(int(_Chem.GetFormalCharge(m))) if m else 99
+                    prot = min(_vs_list, key=_abs_charge)
                     log.append(f"✓ Dimorphite-DL pH {ph:.1f}")
                 else:
                     log.append("⚠ Dimorphite-DL returned no variants — using input SMILES")
