@@ -4808,21 +4808,28 @@ with tab_basic:
             _sel_smiles = _sel_row.get("microstate_smiles", _sel_row.get("smiles", ""))
             if _sel_smiles:
                 st.markdown(f"**Selected microstate SMILES:** `{_sel_smiles}`")
+            # Keep detailed pKaNET diagnostic notes inside the Preparation log
+            # instead of showing extra text/warning blocks in the main ligand panel.
+            _pkanet_log_lines = []
             _sel_reason = _sel_row.get("recommendation_reason", "")
             if _sel_reason:
-                st.caption(f"Reason: {_sel_reason}")
+                _pkanet_log_lines.append(f"pKaNET reason: {_sel_reason}")
             _sel_atoms = _sel_row.get("charged_atoms", "")
             if _sel_atoms:
-                st.caption(f"Charged atoms: {_sel_atoms}")
-
+                _pkanet_log_lines.append(f"pKaNET charged atoms: {_sel_atoms}")
             if st.session_state.get("pkanet_ambiguous"):
-                st.warning(
-                    "This ligand has ambiguous protonation/tautomer assignment. "
-                    "ACD used the recommended state for docking. To dock a different state, select Manual rank above and prepare again."
+                _pkanet_log_lines.append(
+                    "pKaNET warning: ambiguous protonation/tautomer assignment; "
+                    "ACD used the recommended state for docking. To dock a different state, "
+                    "select Manual rank above and prepare again."
                 )
+
         with st.expander("📋 Preparation log", expanded=False):
+            _log_html = st.session_state.ligand_log
+            if '_pkanet_log_lines' in locals() and _pkanet_log_lines:
+                _log_html = _log_html + "<br>" + "<br>".join(_pkanet_log_lines)
             st.markdown(
-                f'<div class="log-box">{st.session_state.ligand_log}</div>',
+                f'<div class="log-box">{_log_html}</div>',
                 unsafe_allow_html=True,
             )
 
