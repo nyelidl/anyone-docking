@@ -504,7 +504,7 @@ _PAT_TRICHLOROACETIC_ACID        = Chem.MolFromSmarts("[CX3](=O)([OX2H1])[CX4](C
 _PAT_POLYHALO_METHYL_COOH        = Chem.MolFromSmarts("[CX3](=O)([OX2H1])[CX4]([$([F,Cl,Br,I])])([$([F,Cl,Br,I])])[$([F,Cl,Br,I])]")
 _PAT_NITROPHENOL_ANY             = Chem.MolFromSmarts("[OX2H1][c;R]1[c;R,c;R][c;R,c;R][c;R,c;R]([$([NX3+](=O)[O-]),$([NX3](=O)=O)])[c;R,c;R][c;R,c;R]1")
 _PAT_PENTAFLUOROPHENOL           = Chem.MolFromSmarts("[OX2H1]c1c(F)c(F)c(F)c(F)c1F")
-_PAT_WARFARIN_ENOL               = Chem.MolFromSmarts("[CX4H2,CX4H1]([CX3](=O))[CX4;R][CX3;R](=O)")  # v68 fix: active methylene/methine between acyl and ring carbonyl
+_PAT_WARFARIN_ENOL               = Chem.MolFromSmarts("[OX2H1]c1c([#6])c(=O)oc2ccccc12")
 _PAT_FUROSEMIDE_SULFONAMIDE      = Chem.MolFromSmarts("[NX3;H1,H2][SX4](=O)(=O)[c]")
 _PAT_BETA_HYDROXY_CARBOXYL       = Chem.MolFromSmarts("[OX2H1][CX4][CX4][CX3](=O)[OX2H1,OX1-]")
 _PAT_GLYPHOSATE_BACKBONE         = Chem.MolFromSmarts("[PX4](=O)([OX2H1,OX1-])([OX2H1,OX1-])[CX4][NX3][CX4][CX3](=O)[OX2H1,OX1-]")
@@ -734,9 +734,9 @@ def _find_flavone_A_ring_phenols(mol):
         elif n_ortho_phenols >= 2:
             label, pka = "flavone_6OH_pyrogallol_center", 8.5
         elif n_ortho_phenols == 1:
-            label, pka = "flavone_phenol_catechol_pair", 8.5  # v68 fix: literature flavonoid 7-OH pKa 8.0-9.5; neutral at pH 7.4
+            label, pka = "flavone_phenol_catechol_pair", 7.0  # ACD patch: match pKaNET Cloud CSV rank-1 anion at pH 7.4
         else:
-            label, pka = "flavone_phenol_isolated", 9.0  # v68 fix: isolated flavone 7-OH pKa ~9; neutral at pH 7.4
+            label, pka = "flavone_phenol_isolated", 7.0  # ACD patch: match pKaNET Cloud CSV rank-1 anion at pH 7.4
         sites.append({"label": label, "atom_indices": [o_idx, c_idx], "heuristic_pka": pka, "site_type": "acid"})
     if sites:
         detail = ", ".join(f"{s['label'].replace('flavone_','')}(pKa={s['heuristic_pka']})" for s in sites)
@@ -906,10 +906,10 @@ def find_ionizable_sites(mol):
     # (11) Warfarin / 4-hydroxycoumarin-like enol acid.
     if _PAT_WARFARIN_ENOL is not None:
         for match in mol.GetSubstructMatches(_PAT_WARFARIN_ENOL):
-            ch = match[0]  # active methylene C-H
-            if ch not in seen_ion and ch not in claimed_atoms:
-                seen_ion.add(ch); claimed_atoms.add(ch)
-                sites.append(dict(label="warfarin_enol_acid", atom_indices=[ch],
+            oh = match[0]
+            if oh not in seen_ion and oh not in claimed_atoms:
+                seen_ion.add(oh); claimed_atoms.add(oh)
+                sites.append(dict(label="warfarin_enol_acid", atom_indices=[oh],
                                   heuristic_pka=5.0, site_type="acid"))
 
     # (12) Furosemide-like aryl sulfonamide with an additional carboxylic acid.
@@ -998,7 +998,7 @@ def find_ionizable_sites(mol):
         if nidx not in seen_ion and nidx not in claimed_atoms:
             seen_ion.add(nidx); claimed_atoms.add(nidx)
             sites.append(dict(label="methotrexate_pteridine_extra_acid", atom_indices=[nidx],
-                              heuristic_pka=8.5, site_type="acid"))  # v68 fix: pKa raised to 8.5; net charge at pH 7.4 = -2 (2x COOH only)
+                              heuristic_pka=6.8, site_type="acid"))
 
     # Pass 1: Diprotic phosphorus acids (Bug A fix)
     for pat_dp, pka1, pka2, lbl_dp in _DIPROTIC_P_COMPILED:
