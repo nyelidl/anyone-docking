@@ -266,15 +266,6 @@ def _search_protein_rcsb(query: str, top_n: int = 30) -> list[dict]:
         method = ""
         protein_name = ""
         no_missing = None
-        ligand_ids: list = []   # drug-like HET codes (solvents/buffers excluded)
-
-        # Common solvents / buffer molecules / ions to suppress from display
-        _SOLVENT_CODES = {
-            "HOH","WAT","DOD","GOL","EDO","PEG","MPD","BME","SO4","PO4","NO3",
-            "CL","NA","MG","ZN","CA","K","MN","FE","CU","CO","NI","ACT","ACE",
-            "DMS","FMT","IMD","TRS","MES","HEP","EPE","MLI","EOH","MOH","IPA",
-            "BU3","PGE","P6G","1PE","BTB","SPM","SPK","PUT","DIO","TLA","CIT",
-        }
 
         try:
             r2 = _req.get(
@@ -296,13 +287,6 @@ def _search_protein_rcsb(query: str, top_n: int = 30) -> list[dict]:
                 if exptl and isinstance(exptl, list):
                     method = str((exptl[0] or {}).get("method", "") or "")
                 no_missing = _rcsb_entry_has_no_missing_residues(ej)
-
-                # ── Ligand IDs: filter out solvents/buffers/ions ──────────
-                _raw = info.get("nonpolymer_bound_components") or []
-                ligand_ids = [
-                    c.upper() for c in _raw
-                    if c and c.upper() not in _SOLVENT_CODES
-                ]
         except Exception:
             pass
 
@@ -319,13 +303,12 @@ def _search_protein_rcsb(query: str, top_n: int = 30) -> list[dict]:
             pass
 
         out.append({
-            "pdb_id":              pdb_id,
-            "title":               title,
-            "protein_name":        protein_name,
-            "resolution":          resolution,
-            "method":              method,
+            "pdb_id": pdb_id,
+            "title": title,
+            "protein_name": protein_name,
+            "resolution": resolution,
+            "method": method,
             "no_missing_residues": no_missing,
-            "ligand_ids":          ligand_ids,
         })
 
     def _sort_key(x):
@@ -3674,16 +3657,14 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 _hits = st.session_state.get(pfx + "rcsb_hits", [])
                 if _hits:
                     def _fmt_hit(h):
-                        _res  = f"{h['resolution']:.2f} Å" if isinstance(h.get("resolution"), (int, float)) else "n/a"
+                        _res = f"{h['resolution']:.2f} Å" if isinstance(h.get("resolution"), (int, float)) else "n/a"
                         _miss = (
                             "complete"
                             if h.get("no_missing_residues") is True
                             else ("missing?" if h.get("no_missing_residues") is None else "has missing")
                         )
-                        _name = (h.get("protein_name") or h.get("title") or "")[:50]
-                        _ligs = h.get("ligand_ids") or []
-                        _lig  = ", ".join(_ligs[:4]) if _ligs else "no ligand"
-                        return f"{h['pdb_id']}  |  {_res}  |  {_miss}  |  {_name}  |  {_lig}"
+                        _name = h.get("protein_name") or h.get("title") or ""
+                        return f"{h['pdb_id']}  |  {_res}  |  {_miss}  |  {_name[:90]}"
 
                     _labels = [_fmt_hit(h) for h in _hits]
                     _sel = st.selectbox(
@@ -3773,229 +3754,240 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 "⚠️ If no ligand is found, grid defaults to protein centroid."
             ),
         )
-        # ── Receptor setup panel: ligand-focused HETATM control ────────
-        st.markdown("#### Receptor setup panel")
-        st.caption(
-            "Select the co-crystal small molecule used to define the binding site. "
-            "The selected ligand is removed from the receptor but used to center the grid. "
-            "A dropdown is shown only when multiple plausible ligand candidates are present."
-        )
+        # ── Receptor setup panel + HETATM action guide (combined) ────────
+        with st.expander("⚗️ Receptor setup panel", expanded=True):
+            st.caption(
+                "Select the co-crystal small molecule used to define the binding site. "
+                "The selected ligand is removed from the receptor but used to center the grid. "
+                "A dropdown is shown only when multiple plausible ligand candidates are present."
+            )
 
-        _scan_path = None
-        if src == "Download from RCSB":
-            # Auto-download a lightweight raw structure for ligand scanning as soon as
-            # a valid PDB ID is available. No extra user click is required.
-            _token_scan = (pdb_id or "").strip().upper()
-            _fmt_scan = st.session_state.get(pfx + "rcsb_fmt", "PDB")
-            if len(_token_scan) == 4:
-                _scan_ext = "cif" if _fmt_scan == "CIF" else "pdb"
-                _scan_path_dl = str(wdir / f"raw_scan_{_token_scan}.{_scan_ext}")
-                _scan_key = f"{_token_scan}_{_fmt_scan}"
-                _cached_key = st.session_state.get(pfx + "ligand_scan_key", "")
-                _cached_path = st.session_state.get(pfx + "ligand_scan_path", "")
+            _scan_path = None
+            if src == "Download from RCSB":
+                # Auto-download a lightweight raw structure for ligand scanning as soon as
+                # a valid PDB ID is available. No extra user click is required.
+                _token_scan = (pdb_id or "").strip().upper()
+                _fmt_scan = st.session_state.get(pfx + "rcsb_fmt", "PDB")
+                if len(_token_scan) == 4:
+                    _scan_ext = "cif" if _fmt_scan == "CIF" else "pdb"
+                    _scan_path_dl = str(wdir / f"raw_scan_{_token_scan}.{_scan_ext}")
+                    _scan_key = f"{_token_scan}_{_fmt_scan}"
+                    _cached_key = st.session_state.get(pfx + "ligand_scan_key", "")
+                    _cached_path = st.session_state.get(pfx + "ligand_scan_path", "")
 
-                if (
-                    _cached_key == _scan_key
-                    and _cached_path
-                    and os.path.exists(_cached_path)
-                    and os.path.getsize(_cached_path) > 200
-                ):
-                    _scan_path = _cached_path
-                else:
-                    _url = f"https://files.rcsb.org/download/{_token_scan}.{_scan_ext}"
-                    with st.spinner(f"Scanning co-crystal ligands from RCSB entry {_token_scan}…"):
-                        rc, _ = _run_cmd(["curl", "-sf", _url, "-o", _scan_path_dl])
-
-                    # Some large/new structures may not be available as legacy PDB.
-                    # Fall back to CIF automatically for ligand scanning.
                     if (
-                        (rc != 0 or not os.path.exists(_scan_path_dl) or os.path.getsize(_scan_path_dl) < 200)
-                        and _fmt_scan == "PDB"
+                        _cached_key == _scan_key
+                        and _cached_path
+                        and os.path.exists(_cached_path)
+                        and os.path.getsize(_cached_path) > 200
                     ):
-                        _scan_path_cif = str(wdir / f"raw_scan_{_token_scan}.cif")
-                        _url_cif = f"https://files.rcsb.org/download/{_token_scan}.cif"
-                        with st.spinner(f"PDB scan unavailable; trying CIF for {_token_scan}…"):
-                            rc2, _ = _run_cmd(["curl", "-sf", _url_cif, "-o", _scan_path_cif])
-                        if rc2 == 0 and os.path.exists(_scan_path_cif) and os.path.getsize(_scan_path_cif) > 200:
-                            _scan_path_dl = _scan_path_cif
-                            _scan_key = f"{_token_scan}_CIF"
-
-                    if os.path.exists(_scan_path_dl) and os.path.getsize(_scan_path_dl) > 200:
-                        _scan_path = _scan_path_dl
-                        st.session_state[pfx + "ligand_scan_key"] = _scan_key
-                        st.session_state[pfx + "ligand_scan_path"] = _scan_path_dl
-                        st.session_state[pfx + "pdb_token"] = _token_scan
+                        _scan_path = _cached_path
                     else:
-                        st.session_state[pfx + "ligand_scan_key"] = ""
-                        st.session_state[pfx + "ligand_scan_path"] = ""
-        elif src != "Download from RCSB" and upload_file is not None:
-            _up_ext = Path(upload_file.name).suffix.lower()
-            _scan_path = str(wdir / ("raw_upload_prescan.cif" if _up_ext in (".cif", ".mmcif") else "raw_upload_prescan.pdb"))
-            with open(_scan_path, "wb") as _sf:
-                _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
+                        _url = f"https://files.rcsb.org/download/{_token_scan}.{_scan_ext}"
+                        with st.spinner(f"Scanning co-crystal ligands from RCSB entry {_token_scan}…"):
+                            rc, _ = _run_cmd(["curl", "-sf", _url, "-o", _scan_path_dl])
 
-        def _lig_label(_r):
-            _ch = _r.get("chain") or "—"
-            return f"{_r.get('resname')}  | chain {_ch} | resid {_r.get('resid')} | {_r.get('n_atoms')} atoms"
+                        # Some large/new structures may not be available as legacy PDB.
+                        # Fall back to CIF automatically for ligand scanning.
+                        if (
+                            (rc != 0 or not os.path.exists(_scan_path_dl) or os.path.getsize(_scan_path_dl) < 200)
+                            and _fmt_scan == "PDB"
+                        ):
+                            _scan_path_cif = str(wdir / f"raw_scan_{_token_scan}.cif")
+                            _url_cif = f"https://files.rcsb.org/download/{_token_scan}.cif"
+                            with st.spinner(f"PDB scan unavailable; trying CIF for {_token_scan}…"):
+                                rc2, _ = _run_cmd(["curl", "-sf", _url_cif, "-o", _scan_path_cif])
+                            if rc2 == 0 and os.path.exists(_scan_path_cif) and os.path.getsize(_scan_path_cif) > 200:
+                                _scan_path_dl = _scan_path_cif
+                                _scan_key = f"{_token_scan}_CIF"
 
-        def _choose_ligand_candidates(_ligs):
-            """Return (candidate_rows, auto_selected_row, reason).
+                        if os.path.exists(_scan_path_dl) and os.path.getsize(_scan_path_dl) > 200:
+                            _scan_path = _scan_path_dl
+                            st.session_state[pfx + "ligand_scan_key"] = _scan_key
+                            st.session_state[pfx + "ligand_scan_path"] = _scan_path_dl
+                            st.session_state[pfx + "pdb_token"] = _token_scan
+                        else:
+                            st.session_state[pfx + "ligand_scan_key"] = ""
+                            st.session_state[pfx + "ligand_scan_path"] = ""
+            elif src != "Download from RCSB" and upload_file is not None:
+                _up_ext = Path(upload_file.name).suffix.lower()
+                _scan_path = str(wdir / ("raw_upload_prescan.cif" if _up_ext in (".cif", ".mmcif") else "raw_upload_prescan.pdb"))
+                with open(_scan_path, "wb") as _sf:
+                    _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
 
-            UI rule:
-            - one small molecule → no dropdown
-            - homo-multimer-like repeated same ligand across chains → use chain A only, no dropdown
-            - multiple ligands in chain A, or distinct ligands across chains/heteromer-like entries → dropdown
-            """
-            if not _ligs:
-                return [], None, "no_ligand"
-            _chain_a = [r for r in _ligs if str(r.get("chain", "")).strip().upper() == "A"]
-            _resnames = {str(r.get("resname", "")).strip().upper() for r in _ligs}
-            _chains = [str(r.get("chain", "")).strip().upper() or "_" for r in _ligs]
-            _one_per_chain = all(_chains.count(c) == 1 for c in set(_chains))
+            def _lig_label(_r):
+                _ch = _r.get("chain") or "—"
+                return f"{_r.get('resname')}  | chain {_ch} | resid {_r.get('resid')} | {_r.get('n_atoms')} atoms"
 
-            if len(_ligs) == 1:
-                return _ligs, _ligs[0], "single_ligand"
+            def _choose_ligand_candidates(_ligs):
+                """Return (candidate_rows, auto_selected_row, reason).
 
-            # Homo-multimer-like case: same ligand repeated in multiple chains.
-            # ACD uses the chain-A copy as the reference and strips all copies from docking receptor.
-            if len(_resnames) == 1 and len(_chain_a) == 1 and _one_per_chain:
-                return _chain_a, _chain_a[0], "homo_multimer_chain_a"
+                UI rule:
+                - one small molecule → no dropdown
+                - homo-multimer-like repeated same ligand across chains → use chain A only, no dropdown
+                - multiple ligands in chain A, or distinct ligands across chains/heteromer-like entries → dropdown
+                """
+                if not _ligs:
+                    return [], None, "no_ligand"
+                _chain_a = [r for r in _ligs if str(r.get("chain", "")).strip().upper() == "A"]
+                _resnames = {str(r.get("resname", "")).strip().upper() for r in _ligs}
+                _chains = [str(r.get("chain", "")).strip().upper() or "_" for r in _ligs]
+                _one_per_chain = all(_chains.count(c) == 1 for c in set(_chains))
 
-            # Several ligand-like residues in chain A: user should choose.
-            if len(_chain_a) > 1:
-                return _chain_a, None, "multiple_chain_a_ligands"
+                if len(_ligs) == 1:
+                    return _ligs, _ligs[0], "single_ligand"
 
-            # Heteromer-like or chemically distinct ligands across chains: user should choose.
-            if len(_ligs) > 1:
-                return _ligs, None, "multiple_ligands"
+                # Homo-multimer-like case: same ligand repeated in multiple chains.
+                # ACD uses the chain-A copy as the reference and strips all copies from docking receptor.
+                if len(_resnames) == 1 and len(_chain_a) == 1 and _one_per_chain:
+                    return _chain_a, _chain_a[0], "homo_multimer_chain_a"
 
-            return _ligs, _ligs[0], "fallback_single"
+                # Several ligand-like residues in chain A: user should choose.
+                if len(_chain_a) > 1:
+                    return _chain_a, None, "multiple_chain_a_ligands"
 
-        if _scan_path and os.path.exists(_scan_path):
-            try:
-                _het_rows = scan_hetatm_residues(_scan_path)
-            except Exception:
-                _het_rows = []
+                # Heteromer-like or chemically distinct ligands across chains: user should choose.
+                if len(_ligs) > 1:
+                    return _ligs, None, "multiple_ligands"
 
-            _lig_rows = [r for r in _het_rows if str(r.get("type_guess", "")).lower() == "ligand"]
-            _candidate_rows, _auto_row, _reason = _choose_ligand_candidates(_lig_rows)
+                return _ligs, _ligs[0], "fallback_single"
 
-            _opt_col1, _opt_col2, _opt_col3 = st.columns(3)
-            with _opt_col1:
-                _remove_water = st.checkbox(
-                    "Remove waters", value=True, key=pfx + "het_remove_water",
-                    help="Remove crystallographic water molecules from the docking receptor."
-                )
-            with _opt_col2:
-                _keep_metals = st.checkbox(
-                    "Keep metal ions", value=True, key=pfx + "het_keep_metals",
-                    help="Keep metal ions such as Zn, Mg, Fe, Cu in the receptor when present."
-                )
-            with _opt_col3:
-                _keep_cofactors = st.checkbox(
-                    "Keep cofactors", value=True, key=pfx + "het_keep_cofactors",
-                    help="Keep cofactors such as HEM, FAD, NAD unless you intentionally remove them."
-                )
+            if _scan_path and os.path.exists(_scan_path):
+                try:
+                    _het_rows = scan_hetatm_residues(_scan_path)
+                except Exception:
+                    _het_rows = []
 
-            _selected_ref_key = ""
-            if _auto_row is not None:
-                _selected_ref_key = str(_auto_row["key"])
-                if _reason == "single_ligand":
-                    st.success(f"Auto-selected co-crystal ligand: **{_lig_label(_auto_row)}**")
-                elif _reason == "homo_multimer_chain_a":
-                    st.success(
-                        "Homo-multimer-like repeated ligand detected. "
-                        f"ACD will use the chain-A copy: **{_lig_label(_auto_row)}**"
+                _lig_rows = [r for r in _het_rows if str(r.get("type_guess", "")).lower() == "ligand"]
+                _candidate_rows, _auto_row, _reason = _choose_ligand_candidates(_lig_rows)
+
+                _opt_col1, _opt_col2, _opt_col3 = st.columns(3)
+                with _opt_col1:
+                    _remove_water = st.checkbox(
+                        "Remove waters", value=True, key=pfx + "het_remove_water",
+                        help="Remove crystallographic water molecules from the docking receptor."
                     )
+                with _opt_col2:
+                    _keep_metals = st.checkbox(
+                        "Keep metal ions", value=True, key=pfx + "het_keep_metals",
+                        help="Keep metal ions such as Zn, Mg, Fe, Cu in the receptor when present."
+                    )
+                with _opt_col3:
+                    _keep_cofactors = st.checkbox(
+                        "Keep cofactors", value=True, key=pfx + "het_keep_cofactors",
+                        help="Keep cofactors such as HEM, FAD, NAD unless you intentionally remove them."
+                    )
+
+                _selected_ref_key = ""
+                if _auto_row is not None:
+                    _selected_ref_key = str(_auto_row["key"])
+                    if _reason == "single_ligand":
+                        st.success(f"Auto-selected co-crystal ligand: **{_lig_label(_auto_row)}**")
+                    elif _reason == "homo_multimer_chain_a":
+                        st.success(
+                            "Homo-multimer-like repeated ligand detected. "
+                            f"ACD will use the chain-A copy: **{_lig_label(_auto_row)}**"
+                        )
+                    else:
+                        st.success(f"Auto-selected reference ligand: **{_lig_label(_auto_row)}**")
+                elif _candidate_rows:
+                    _labels = [_lig_label(r) for r in _candidate_rows]
+                    _idx = st.selectbox(
+                        "Co-crystal ligand for auto-detect binding site",
+                        options=list(range(len(_candidate_rows))),
+                        format_func=lambda i: _labels[i],
+                        key=pfx + "reference_ligand_dropdown",
+                        help=(
+                            "Only ligand-like HETATM residues are shown here. "
+                            "Buffers, water, metals, and common cofactors are handled by the options above."
+                        ),
+                    )
+                    _sel_row = _candidate_rows[int(_idx)]
+                    _selected_ref_key = str(_sel_row["key"])
+                    st.info(f"Grid center will use: **{_lig_label(_sel_row)}**")
                 else:
-                    st.success(f"Auto-selected reference ligand: **{_lig_label(_auto_row)}**")
-            elif _candidate_rows:
-                _labels = [_lig_label(r) for r in _candidate_rows]
-                _idx = st.selectbox(
-                    "Co-crystal ligand for auto-detect binding site",
-                    options=list(range(len(_candidate_rows))),
-                    format_func=lambda i: _labels[i],
-                    key=pfx + "reference_ligand_dropdown",
+                    st.warning(
+                        "No ligand-like HETATM candidate was detected. "
+                        "Auto-detect will fall back to the previous receptor-centroid behavior if no ligand is found."
+                    )
+
+                _policy = {}
+                for _r in _het_rows:
+                    _k = str(_r.get("key", ""))
+                    _tg = str(_r.get("type_guess", "")).lower()
+                    if not _k:
+                        continue
+                    if _k == _selected_ref_key:
+                        _policy[_k] = "reference"
+                    elif _tg == "ligand":
+                        # Other small molecules are removed by default to avoid accidental docking against a bound ligand copy.
+                        _policy[_k] = "remove"
+                    elif _tg == "water":
+                        _policy[_k] = "remove" if _remove_water else "keep"
+                    elif _tg == "metal":
+                        _policy[_k] = "keep" if _keep_metals else "remove"
+                    elif "cofactor" in _tg:
+                        _policy[_k] = "keep" if _keep_cofactors else "remove"
+                    else:
+                        # Buffers/additives/ions such as GOL, EDO, SO4, PO4 are removed by default.
+                        _policy[_k] = "remove"
+
+                st.session_state[pfx + "hetatm_policy"] = _policy
+                st.session_state[pfx + "reference_hetatm_key"] = _selected_ref_key
+
+                _keep_n = sum(1 for v in _policy.values() if v == "keep")
+                _remove_n = sum(1 for v in _policy.values() if v == "remove")
+                st.caption(
+                    f"Detected HETATM residues: {len(_het_rows)} total; "
+                    f"small-molecule candidates: {len(_lig_rows)}; keep: {_keep_n}; remove: {_remove_n}."
+                )
+            else:
+                if src == "Download from RCSB":
+                    _token_msg = (pdb_id or "").strip().upper()
+                    if len(_token_msg) == 4:
+                        st.warning(
+                            f"Could not automatically scan ligands for **{_token_msg}**. "
+                            "The receptor can still be prepared, but ligand auto-detection may fall back to the previous behavior."
+                        )
+                    else:
+                        st.info("Enter a 4-character PDB ID to automatically inspect co-crystal ligand candidates.")
+                else:
+                    st.info("Upload a PDB/CIF file to automatically inspect co-crystal ligand candidates.")
+                st.session_state.setdefault(pfx + "hetatm_policy", {})
+                st.session_state.setdefault(pfx + "reference_hetatm_key", "")
+            # ─────────────────────────────────────────────────────────────
+            if center_mode == "Enter XYZ manually":
+                c1, c2, c3 = st.columns(3)
+                c1.number_input("X", value=0.0, key=pfx + "mx")
+                c2.number_input("Y", value=0.0, key=pfx + "my")
+                c3.number_input("Z", value=0.0, key=pfx + "mz")
+            elif center_mode == "Select by atom selection (ProDy)":
+                st.text_input(
+                    "ProDy selection string",
+                    value="resid 702 820 and chain A",
+                    key=pfx + "mda_sel",
                     help=(
-                        "Only ligand-like HETATM residues are shown here. "
-                        "Buffers, water, metals, and common cofactors are handled by the options above."
+                        "ProDy atom selection — the centroid of selected atoms becomes the box center.\n\n"
+                        "📖 Examples:\n"
+                        "   resid 702 and chain A\n"
+                        "   resname ATP and chain B\n"
+                        "⚙️ Use residue numbers from literature or binding site databases.\n"
+                        "⚠️ Chain IDs must match exactly — check your PDB file header."
                     ),
                 )
-                _sel_row = _candidate_rows[int(_idx)]
-                _selected_ref_key = str(_sel_row["key"])
-                st.info(f"Grid center will use: **{_lig_label(_sel_row)}**")
-            else:
-                st.warning(
-                    "No ligand-like HETATM candidate was detected. "
-                    "Auto-detect will fall back to the previous receptor-centroid behavior if no ligand is found."
-                )
+                st.caption("💡 `resname LIG and chain A` · `resid 701 and chain A`")
 
-            _policy = {}
-            for _r in _het_rows:
-                _k = str(_r.get("key", ""))
-                _tg = str(_r.get("type_guess", "")).lower()
-                if not _k:
-                    continue
-                if _k == _selected_ref_key:
-                    _policy[_k] = "reference"
-                elif _tg == "ligand":
-                    # Other small molecules are removed by default to avoid accidental docking against a bound ligand copy.
-                    _policy[_k] = "remove"
-                elif _tg == "water":
-                    _policy[_k] = "remove" if _remove_water else "keep"
-                elif _tg == "metal":
-                    _policy[_k] = "keep" if _keep_metals else "remove"
-                elif "cofactor" in _tg:
-                    _policy[_k] = "keep" if _keep_cofactors else "remove"
-                else:
-                    # Buffers/additives/ions such as GOL, EDO, SO4, PO4 are removed by default.
-                    _policy[_k] = "remove"
 
-            st.session_state[pfx + "hetatm_policy"] = _policy
-            st.session_state[pfx + "reference_hetatm_key"] = _selected_ref_key
-
-            _keep_n = sum(1 for v in _policy.values() if v == "keep")
-            _remove_n = sum(1 for v in _policy.values() if v == "remove")
-            st.caption(
-                f"Detected HETATM residues: {len(_het_rows)} total; "
-                f"small-molecule candidates: {len(_lig_rows)}; keep: {_keep_n}; remove: {_remove_n}."
+            st.markdown(
+                "---\n\n"
+                "**HETATM action guide**\n\n"
+                "- **reference**: use this co-crystal ligand to define the grid center, "
+                  "then remove it from the receptor.\n"
+                "- **keep**: retain the residue — catalytic metal, structural ion, "
+                  "heme/FAD/NAD cofactor, or conserved water.\n"
+                "- **remove**: strip buffer/solvent/additive molecules "
+                  "such as GOL, EDO, SO4, or irrelevant waters.\n"
             )
-        else:
-            if src == "Download from RCSB":
-                _token_msg = (pdb_id or "").strip().upper()
-                if len(_token_msg) == 4:
-                    st.warning(
-                        f"Could not automatically scan ligands for **{_token_msg}**. "
-                        "The receptor can still be prepared, but ligand auto-detection may fall back to the previous behavior."
-                    )
-                else:
-                    st.info("Enter a 4-character PDB ID to automatically inspect co-crystal ligand candidates.")
-            else:
-                st.info("Upload a PDB/CIF file to automatically inspect co-crystal ligand candidates.")
-            st.session_state.setdefault(pfx + "hetatm_policy", {})
-            st.session_state.setdefault(pfx + "reference_hetatm_key", "")
-        # ─────────────────────────────────────────────────────────────
-        if center_mode == "Enter XYZ manually":
-            c1, c2, c3 = st.columns(3)
-            c1.number_input("X", value=0.0, key=pfx + "mx")
-            c2.number_input("Y", value=0.0, key=pfx + "my")
-            c3.number_input("Z", value=0.0, key=pfx + "mz")
-        elif center_mode == "Select by atom selection (ProDy)":
-            st.text_input(
-                "ProDy selection string",
-                value="resid 702 820 and chain A",
-                key=pfx + "mda_sel",
-                help=(
-                    "ProDy atom selection — the centroid of selected atoms becomes the box center.\n\n"
-                    "📖 Examples:\n"
-                    "   resid 702 and chain A\n"
-                    "   resname ATP and chain B\n"
-                    "⚙️ Use residue numbers from literature or binding site databases.\n"
-                    "⚠️ Chain IDs must match exactly — check your PDB file header."
-                ),
-            )
-            st.caption("💡 `resname LIG and chain A` · `resid 701 and chain A`")
-
     with col_b:
         st.markdown("**Search box size (Å)**")
         _box_help = (
@@ -4024,14 +4016,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
     )
     if blind:
         st.caption("⚠️ Blind docking — box will cover entire protein extent.")
-
-    with st.expander("⚗️ HETATM action guide", expanded=False):
-        st.markdown(
-            "Use the **Receptor setup panel** above to control non-protein residues:\n\n"
-            "- **reference**: use this co-crystal ligand/cofactor to define the grid center, then remove it from the receptor.\n"
-            "- **keep**: retain the residue in the receptor, e.g., catalytic metal, structural ion, heme/FAD/NAD cofactor, or conserved water.\n"
-            "- **remove**: strip buffer/solvent/additive molecules such as GOL, EDO, SO4, or irrelevant waters.\n"
-        )
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
 
