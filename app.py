@@ -3755,7 +3755,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             ),
         )
         # ── Receptor setup panel + HETATM action guide (combined) ────────
-        with st.expander("⚗️ Receptor setup panel", expanded=True):
+        with st.expander("⚗️ Receptor setup panel", expanded=False):
             st.caption(
                 "Select the co-crystal small molecule used to define the binding site. "
                 "The selected ligand is removed from the receptor but used to center the grid. "
