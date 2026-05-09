@@ -207,7 +207,7 @@ def _rcsb_entry_has_no_missing_residues(entry_json: dict):
     return None
 
 
-def _search_protein_rcsb(query: str, top_n: int = 25) -> list[dict]:
+def _search_protein_rcsb(query: str, top_n: int = 30) -> list[dict]:
     """
     Search RCSB by protein/keyword and return entry summaries.
     Uses Search API for IDs, then Data API for metadata.
