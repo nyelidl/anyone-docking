@@ -1,0 +1,66 @@
+test_id,group_id,group_label,compound_name,smiles,target_pH,expected_charge,must_not_contain,benchmark_type,comment
+T01,G1,Imidazole-type N-H,Imidazole,C1=CN=CN1,7.4,0,[n-],internal_regression,neutral imidazole N-H preferred at pH 7.4; pKa(N-H acid)=14
+T03,G1,Imidazole-type N-H,Pyrazole,C1=CC=NN1,7.4,0,[n-],internal_regression,neutral pyrazole N-H preferred at pH 7.4; pKa(N-H acid)~14
+T04,G1,Imidazole-type N-H,Indazole,C1=CC2=CC=CC=C2N1,7.4,0,[n-],internal_regression,neutral indazole N-H preferred at pH 7.4
+T05,G1,Imidazole-type N-H,Purine,C1=NC2=NC=NC=C2N1,7.4,0,[n-],internal_regression,neutral purine N-H preferred at pH 7.4
+T06,G1,Imidazole-type N-H,Adenine,Nc1ncnc2[nH]cnc12,7.4,0,[n-],internal_regression,neutral adenine N-H preferred at pH 7.4
+T07,G1,Imidazole-type N-H,1-Methylbenzimidazole,Cn1cnc2ccccc21,7.4,0,[n-],internal_regression,N-methylated; no ionizable N-H; neutral at pH 7.4
+T08,G1,Imidazole-type N-H,Clotrimazole,Clc1ccccc1C(c1ccccc1)(c1ccccc1)n1ccnc1,7.4,0,[n-],internal_regression,imidazole-containing antifungal; neutral N-H at pH 7.4
+T09,G1,Imidazole-type N-H,Omeprazole,COc1ccc2[nH]c(S(=O)Cc3ncc(C)c(OC)c3C)nc2c1,7.4,0,[n-],internal_regression,benzimidazole N-H neutral at pH 7.4
+T10,G1,Imidazole-type N-H,Metronidazole,Cc1ncc([N+](=O)[O-])n1CCO,7.4,0,[n-],internal_regression,imidazole ring neutral; NO2 group does not ionize at pH 7.4
+T02,G2,Phosphonate/Phosphate,Benzimidazole,C1=CC=C2C(=C1)NC=N2,7.4,0,[n-],internal_regression,benzimidazole N-H acid pKa=13; neutral at pH 7.4; PubChem base pKa 5.48 must not trigger [n-]
+T11,G2,Phosphonate/Phosphate,Methylphosphonic acid,CP(=O)(O)O,7.4,-2,,internal_regression,phosphonate pKa1=2.1 pKa2=6.5; both ionized at pH 7.4; charge -2
+T12,G2,Phosphonate/Phosphate,Phenylphosphonic acid,OP(=O)(O)c1ccccc1,7.4,-2,,internal_regression,phenylphosphonate; pKa1~1.8 pKa2~6.1; both ionized; charge -2
+T13,G2,Phosphonate/Phosphate,Fosfomycin,CC1OC1P(=O)(O)O,7.4,-2,,internal_regression,antibiotic phosphonate; pKa1~1.0 pKa2~5.8; charge -2 at pH 7.4
+T14,G2,Phosphonate/Phosphate,Alendronate,NCCCP(=O)(O)P(=O)(O)O,7.4,-2,,internal_regression,bisphosphonate; dominant docking charge -2 (amine not protonated in this context)
+T15,G2,Phosphonate/Phosphate,Tenofovir,Cc1cn([C@@H]2C[C@H](COP(=O)(O)O)O2)c(=O)nc1N,7.4,-2,,internal_regression,antiviral phosphonate; pKa1~1.9 pKa2~6.5; charge -2 at pH 7.4
+T16,G2,Phosphonate/Phosphate,Phosphate monoester,COP(=O)(O)O,7.4,-2,,internal_regression,phosphate monoester pKa1~1.5 pKa2~6.5; dianionic at pH 7.4
+T17,G2,Phosphonate/Phosphate,Glyphosate,OC(=O)CNCP(=O)(O)O,7.4,-3,,internal_regression,COOH pKa=2.6 + P-OH1 pKa=2.3 + P-OH2 pKa=5.6; all ionized at pH 7.4; charge -3
+T18,G3,Thiol ArSH/AlkSH,Thiophenol,Sc1ccccc1,7.4,-1,,internal_regression,aromatic thiol pKa~6.5; ionized at pH 7.4; charge -1
+T19,G3,Thiol ArSH/AlkSH,4-Chlorothiophenol,Sc1ccc(Cl)cc1,7.4,-1,,internal_regression,electron-withdrawing Cl lowers pKa further; ionized at pH 7.4
+T20,G3,Thiol ArSH/AlkSH,6-Mercaptopurine,S=c1[nH]cnc2nc[nH]c12,7.4,-1,,internal_regression,aromatic thiol tautomer; ionized at pH 7.4
+T21,G3,Thiol ArSH/AlkSH,Captopril,SC[C@@H]1N[C@@H](C(=O)O)CS1,7.4,-1,,internal_regression,ACE inhibitor; aliphatic thiol pKa~9.8 with alpha-amino effect; charge -1
+T22,G3,Thiol ArSH/AlkSH,Ethanethiol,CCS,7.4,0,,internal_regression,aliphatic thiol pKa~10.6; not ionized at pH 7.4; neutral
+T23,G4,Carboxylic acid,Acetic acid,CC(=O)O,7.4,-1,,internal_regression,carboxylate pKa=4.75; fully ionized at pH 7.4
+T24,G4,Carboxylic acid,Ibuprofen,CC(C)Cc1ccc(CC(C)C(=O)O)cc1,7.4,-1,,internal_regression,NSAID carboxylate pKa~4.9; ionized at pH 7.4
+T25,G4,Carboxylic acid,Aspirin,CC(=O)Oc1ccccc1C(=O)O,7.4,-1,,internal_regression,salicylate COOH pKa~3.5; ionized at pH 7.4
+T26,G4,Carboxylic acid,Diclofenac,OC(=O)Cc1ccccc1Nc1c(Cl)cccc1Cl,7.4,-1,,internal_regression,NSAID carboxylate pKa~4.0; ionized at pH 7.4
+T27,G4,Carboxylic acid,Trichloroacetic acid,OC(=O)C(Cl)(Cl)Cl,7.4,-1,,internal_regression,strong acid pKa=0.7; fully ionized at pH 7.4
+T28,G5,Phenol variants,Phenol,Oc1ccccc1,7.4,0,,internal_regression,phenol pKa=10.0; neutral at pH 7.4
+T29,G5,Phenol variants,4-Nitrophenol,Oc1ccc([N+](=O)[O-])cc1,7.4,-1,,internal_regression,EWG-activated phenol pKa=7.1; ionized at pH 7.4
+T30,G5,Phenol variants,Pentafluorophenol,Oc1c(F)c(F)c(F)c(F)c1F,7.4,-1,,internal_regression,highly activated phenol pKa=5.5; ionized at pH 7.4
+T31,G5,Phenol variants,Acetaminophen,CC(=O)Nc1ccc(O)cc1,7.4,0,,internal_regression,phenol pKa~9.5; neutral at pH 7.4
+T32,G5,Phenol variants,Catechol,Oc1ccccc1O,7.4,0,,internal_regression,catechol pKa1=9.2; neutral at pH 7.4
+T33,G5,Phenol variants,Warfarin,CC(=O)CC1C(=O)c2ccccc2OC1c1ccccc1,7.4,-1,,internal_regression,4-hydroxycoumarin enol acid pKa~5.0; ionized at pH 7.4; charge -1
+T34,G6,Amine bases,Aniline,Nc1ccccc1,7.4,0,,internal_regression,aniline pKaH=4.6; unprotonated at pH 7.4; neutral
+T35,G6,Amine bases,Pyridine,c1ccncc1,7.4,0,,internal_regression,pyridine pKaH=5.2; unprotonated at pH 7.4; neutral
+T36,G6,Amine bases,Methylamine,CN,7.4,+1,,internal_regression,aliphatic amine pKaH=10.6; protonated at pH 7.4; charge +1
+T37,G6,Amine bases,Metformin,CN(C)C(=N)NC(=N)N,7.4,+1,,internal_regression,biguanide pKaH~11.5; protonated at pH 7.4; charge +1
+T38,G6,Amine bases,Amlodipine,CCOC(=O)C1=C(CCl)NC(C)=C(C(=O)OCC)C1c1ccccc1Cl,7.4,+1,,internal_regression,calcium channel blocker; amine pKaH~9.0; protonated at pH 7.4
+T39,G7,Sulfonamide/Saccharin,Methanesulfonamide,CS(=O)(=O)N,7.4,0,,internal_regression,simple sulfonamide pKa~10; neutral at pH 7.4
+T40,G7,Sulfonamide/Saccharin,Saccharin,O=C1NS(=O)(=O)c2ccccc21,7.4,-1,,internal_regression,cyclic sulfonamide pKa~1.6; fully ionized at pH 7.4
+T41,G7,Sulfonamide/Saccharin,Chlorothiazide,NS(=O)(=O)c1cc2c(cc1Cl)NCNS2=O,7.4,-1,,internal_regression,thiazide diuretic; sulfonamide pKa~6.8; ionized at pH 7.4
+T42,G7,Sulfonamide/Saccharin,Furosemide,NS(=O)(=O)c1cc(C(=O)O)c(NCc2ccco2)cc1Cl,7.4,-2,,internal_regression,loop diuretic; COOH pKa~3.9 + sulfonamide pKa~6.5; charge -2
+T43,G8,Flavonoid regression,Baicalein,O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12,7.4,0,[O-],internal_regression,flavonoid A-ring phenols pKa>=8.5; neutral at pH 7.4; MUST NOT produce [O-]
+T44,G8,Flavonoid regression,Apigenin,O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,7.4,0,[O-],internal_regression,flavonoid 7-OH pKa~9.0; neutral at pH 7.4; MUST NOT produce [O-]
+T45,G8,Flavonoid regression,Luteolin,O=c1cc(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12,7.4,0,[O-],internal_regression,flavonoid 7-OH pKa~9.0; neutral at pH 7.4; MUST NOT produce [O-]
+T46,G8,Flavonoid regression,Kaempferol,O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,7.4,0,[O-],internal_regression,flavonol 3-OH pKa~9.0; neutral at pH 7.4; MUST NOT produce [O-]
+T47,G9,Zwitterion/Multi-site,Glycine,NCC(=O)O,7.4,0,,internal_regression,zwitterion: NH3+ + COO- at pH 7.4; net charge 0
+T48,G9,Zwitterion/Multi-site,Histidine,N[C@@H](Cc1c[nH]cn1)C(=O)O,7.4,0,[n-],internal_regression,amino acid zwitterion; imidazole ring neutral (pKaH=6.0); net charge 0
+T49,G9,Zwitterion/Multi-site,Glutamic acid,N[C@@H](CCC(=O)O)C(=O)O,7.4,-1,,internal_regression,2 COO- groups; NH3+ group; net charge -1 at pH 7.4
+T50,G9,Zwitterion/Multi-site,Lysine,NCCCC[C@@H](N)C(=O)O,7.4,+1,,internal_regression,2 NH3+ groups; 1 COO-; net charge +1 at pH 7.4
+T51,G9,Zwitterion/Multi-site,Cysteine,N[C@@H](CS)C(=O)O,7.4,0,,internal_regression,zwitterion; thiol neutral (pKa~8.3); net charge 0 at pH 7.4
+T52,G10,PubChem pKa guard,Benzimidazole+PubChem base pKa,C1=CC=C2C(=C1)NC=N2,7.4,0,[n-],internal_regression,PubChem reports base pKa=5.48; guard must prevent misuse as N-H acid pKa → neutral
+T53,G10,PubChem pKa guard,Imidazole+PubChem base pKa,C1=CN=CN1,7.4,0,[n-],internal_regression,PubChem base pKa=6.99; guard must prevent [n-] assignment → neutral
+T54,G10,PubChem pKa guard,Phenol+PubChem correct pKa,Oc1ccccc1,7.4,0,,internal_regression,PubChem phenol pKa=10.0 is correct acid pKa; neutral at pH 7.4
+T55,G11,Truly neutral,Caffeine,Cn1cnc2c1c(=O)n(C)c(=O)n2C,7.4,0,,internal_regression,no ionizable groups; neutral at all physiological pH
+T56,G11,Truly neutral,Cholesterol,C[C@H](CCCC(C)C)[C@H]1CC[C@@H]2[C@@H]3CC=C4C[C@@H](O)CC[C@]4(C)[C@H]3CC[C@]12C,7.4,0,,internal_regression,sterol with OH pKa>>14; neutral at pH 7.4
+T57,G11,Truly neutral,Glucose,OC[C@H]1OC(O)[C@H](O)[C@@H](O)[C@@H]1O,7.4,0,,internal_regression,sugar hydroxyl pKa>>12; neutral at pH 7.4
+T58,G11,Truly neutral,Benzene,c1ccccc1,7.4,0,,internal_regression,no heteroatoms; fully neutral
+T59,G12,Drug regression panel,Erlotinib,COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC,7.4,0,[n-],internal_regression,EGFR inhibitor; quinazoline N neutral at pH 7.4; no basic amine
+T60,G12,Drug regression panel,Gefitinib,COc1cc2c(cc1OCCCN1CCOCC1)ncnc2Nc1ccc(F)c(Cl)c1,7.4,+1,,internal_regression,EGFR inhibitor; morpholine pKaH~8.0; ~80% protonated at pH 7.4; charge +1
+T61,G12,Drug regression panel,Imatinib,Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1,7.4,+1,,internal_regression,BCR-ABL inhibitor; piperazine pKaH~8.1; ~83% protonated at pH 7.4; charge +1
+T62,G12,Drug regression panel,Osimertinib,C=CC(=O)Nc1cc(-c2cn(C)c3ncnc(Nc4ccc(F)c(Cl)c4)c23)ccn1,7.4,0,,internal_regression,3rd-gen EGFR inhibitor; no basic amine; neutral at pH 7.4
+T63,G12,Drug regression panel,Atorvastatin,CC(C)c1n(CC[C@@H](O)C[C@@H](O)CC(=O)O)c(-c2ccccc2)c(C(=O)Nc2ccccc2F)c1CC(=O)O,7.4,-2,,internal_regression,statin; 2 x COOH both ionized at pH 7.4; charge -2
+T64,G12,Drug regression panel,Methotrexate,CN(Cc1cnc2nc(N)nc(N)c2n1)c1ccc(C(=O)N[C@@H](CCC(=O)O)C(=O)O)cc1,7.4,-2,,internal_regression,antifolate; 2 x glutamate COOH ionized; pteridine pKa=8.5 not ionized at pH 7.4; charge -2
+T65,G12,Drug regression panel,Ciprofloxacin,O=C(O)c1cn(C2CC2)c2cc(N3CCNCC3)c(F)cc2c1=O,7.4,0,,internal_regression,fluoroquinolone; zwitterion COOH+piperazine; net charge 0 at pH 7.4
