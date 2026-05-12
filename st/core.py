@@ -2393,7 +2393,19 @@ def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
         try:
             fixed = _bo_fix_mol(mol, template)
             try:
-                fixed_h = Chem.AddHs(fixed, addCoords=True)
+                # Protect deprotonated atoms (formal charge != 0) from getting
+                # H added back by AddHs — e.g. [O-] on baicalein/flavonoids.
+                # Strategy: temporarily set noImplicit=True on charged atoms,
+                # call AddHs, then restore.
+                from rdkit.Chem import RWMol
+                rw = RWMol(fixed)
+                charged_idx = []
+                for atom in rw.GetAtoms():
+                    if atom.GetFormalCharge() != 0:
+                        atom.SetNoImplicit(True)
+                        charged_idx.append(atom.GetIdx())
+                fixed_protected = rw.GetMol()
+                fixed_h = Chem.AddHs(fixed_protected, addCoords=True)
                 conf    = fixed_h.GetConformer()
                 bad = any(
                     abs(conf.GetAtomPosition(j).x)
