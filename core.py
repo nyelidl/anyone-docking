@@ -449,13 +449,16 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
     rec_pdbqt = str(wdir / "rec.pdbqt")
     try:
         metal_lines = []
+        heme_lines  = []
         clean_lines = []
         with open(rec_raw) as f:
             for line in f:
                 field = line[:6].strip()
-                if (field in ("ATOM", "HETATM")
-                        and line[17:20].strip().upper() in METAL_RESNAMES):
+                rn    = line[17:20].strip().upper()
+                if field in ("ATOM", "HETATM") and rn in METAL_RESNAMES:
                     metal_lines.append(line)
+                elif field in ("ATOM", "HETATM") and rn in HEME_RESNAMES:
+                    heme_lines.append(line)
                 else:
                     clean_lines.append(line)
         rec_nometal = str(wdir / "receptor_atoms_nometal.pdb")
@@ -464,6 +467,9 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         if metal_lines:
             names = ", ".join(sorted({l[17:20].strip() for l in metal_lines}))
             log.append(f"⚠ Stripped {len(metal_lines)} metal atom(s) before OpenBabel: {names}")
+        if heme_lines:
+            hnames = ", ".join(sorted({l[17:20].strip() for l in heme_lines}))
+            log.append(f"⚠ Stripped {len(heme_lines)} heme atom(s) before OpenBabel: {hnames}")
         rc1, out1 = run_cmd(f'obabel "{rec_nometal}" -O "{rec_fh}" -h')
         if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
             raise ValueError(f"OpenBabel H-addition produced empty file (exit {rc1}). Output: {out1[:400]}")
@@ -476,19 +482,20 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         # Keep ions/metals in receptor.pdb for display/reference only.
         # This is done AFTER PDBQT generation so the docking PDBQT still follows
         # the dedicated reinjection logic below.
-        if metal_lines and os.path.exists(rec_fh):
+        if (metal_lines or heme_lines) and os.path.exists(rec_fh):
             try:
                 rec_lines = open(rec_fh).readlines()
                 rec_lines = [l for l in rec_lines if l.strip() != "END"]
                 rec_lines.extend(metal_lines)
+                rec_lines.extend(heme_lines)
                 rec_lines.append("END\n")
                 with open(rec_fh, "w") as f:
                     f.writelines(rec_lines)
-                log.append(f"✓ Re-added {len(metal_lines)} ion/metal atom(s) to receptor.pdb for display/reference")
+                log.append(f"✓ Re-added {len(metal_lines)} ion/metal + {len(heme_lines)} heme atom(s) to receptor.pdb for display/reference")
             except Exception as e:
-                log.append(f"⚠ Could not re-add ions/metals to receptor.pdb: {e}")
+                log.append(f"⚠ Could not re-add ions/metals/heme to receptor.pdb: {e}")
 
-        if metal_lines:
+        if metal_lines or heme_lines:
             pdbqt_lines = open(rec_pdbqt).readlines()
             pdbqt_lines = [l for l in pdbqt_lines if l.strip() != "END"]
             injected = 0
@@ -518,11 +525,49 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                     injected += 1
                 except Exception as e:
                     log.append(f"⚠ Could not re-inject metal line: {e}")
+
+            # Re-inject heme atoms into PDBQT with AD4 atom types
+            heme_injected = 0
+            for hl in heme_lines:
+                try:
+                    serial  = int(hl[6:11])
+                    name    = hl[12:16].strip()
+                    resname = hl[17:20].strip().upper()
+                    chain   = hl[21] if len(hl) > 21 else "A"
+                    resid   = int(hl[22:26])
+                    x       = float(hl[30:38])
+                    y       = float(hl[38:46])
+                    z       = float(hl[46:54])
+                    # Assign AD4 atom types for heme atoms
+                    if name.upper() in ("FE", "FE2", "FE3"):
+                        atype  = "Fe"
+                        charge = +3.0
+                    elif name.upper().startswith("N"):
+                        atype  = "NA"
+                        charge = -0.3
+                    elif name.upper().startswith("C"):
+                        atype  = "A"   # aromatic carbon
+                        charge = 0.0
+                    else:
+                        atype  = "C"
+                        charge = 0.0
+                    pdbqt_lines.append(
+                        f"HETATM{serial:5d} {name:<4s} {resname:<3s} "
+                        f"{chain}{resid:4d}    "
+                        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
+                        f"    {charge:+.3f} {atype}\n"
+                    )
+                    heme_injected += 1
+                except Exception as e:
+                    log.append(f"⚠ Could not re-inject heme line: {e}")
+
             pdbqt_lines.append("END\n")
             with open(rec_pdbqt, "w") as f:
                 f.writelines(pdbqt_lines)
             if injected:
                 log.append(f"✅ Re-injected {injected} metal atom(s) into PDBQT")
+            if heme_injected:
+                log.append(f"✅ Re-injected {heme_injected} heme atom(s) into PDBQT with AD4 atom types")
             if skipped_exotic:
                 log.append(
                     f"ℹ Skipped re-injection of {skipped_exotic} Ho/lanthanide ion(s) into docking PDBQT; "
