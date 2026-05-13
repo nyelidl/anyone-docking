@@ -534,11 +534,17 @@ def health() -> Dict[str, Any]:
     
 @app.get("/ping")
 def ping():
+    ob_ok, ob_msg = check_obabel()
+    vina_path, vina_msg = get_vina_binary()
+
     return {
         "ok": True,
         "api": "Anyone Can Dock API",
-        "openbabel_available": True,
-        "vina_available": True
+        "openbabel_available": bool(ob_ok),
+        "openbabel_message": str(ob_msg),
+        "vina_available": bool(vina_path),
+        "vina_message": str(vina_msg),
+        "auth_enabled": bool(API_KEY)
     }
 
 
