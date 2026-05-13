@@ -531,20 +531,28 @@ def health() -> Dict[str, Any]:
         "vina": {"available": bool(vina_path), "message": vina_msg},
         "auth_enabled": bool(API_KEY),
     }
-    
+
+
+
 @app.get("/ping")
-def ping():
+def ping() -> Dict[str, Any]:
+    """GPT-friendly flat health check.
+
+    This endpoint avoids nested response objects so GPT Actions can parse
+    the result more reliably than /health.
+    """
     ob_ok, ob_msg = check_obabel()
     vina_path, vina_msg = get_vina_binary()
 
     return {
         "ok": True,
         "api": "Anyone Can Dock API",
+        "version": "0.1.0",
         "openbabel_available": bool(ob_ok),
         "openbabel_message": str(ob_msg),
         "vina_available": bool(vina_path),
         "vina_message": str(vina_msg),
-        "auth_enabled": bool(API_KEY)
+        "auth_enabled": bool(API_KEY),
     }
 
 
