@@ -426,6 +426,94 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         JOBS[job_id].update(status="failed", error=err_text, traceback=tb)
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GPT-friendly compact job responses
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _restore_completed_job_from_disk(job_id: str) -> Optional[Dict[str, Any]]:
+    """Restore a completed job from metadata.json if in-memory JOBS was lost."""
+    wdir = BASE_WORKDIR / job_id
+    meta_path = wdir / "metadata.json"
+    if not meta_path.exists():
+        return None
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    zip_path = wdir / f"{job_id}_results.zip"
+    job = {
+        "job_id": job_id,
+        "status": meta.get("status", "completed"),
+        "request": {},
+        "result": meta,
+        "error": None,
+        "zip_path": str(zip_path) if zip_path.exists() else "",
+        "summary_csv": meta.get("summary_csv", ""),
+        "log_file": meta.get("log_file", ""),
+        "workdir": str(wdir),
+    }
+    JOBS[job_id] = job
+    return job
+
+
+def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a small JSON response suitable for GPT Actions.
+
+    The full metadata can be large because it may include HETATM tables,
+    pKaNET logs, file paths, and pose-level information. GPT Actions can reject
+    very large responses, so this endpoint returns only essential fields.
+    """
+    status = job.get("status", "unknown")
+    out: Dict[str, Any] = {
+        "job_id": job_id,
+        "status": status,
+        "message": "",
+        "download_url": f"/jobs/{job_id}/download",
+    }
+
+    if status in ("queued", "running"):
+        out["message"] = "Docking job is still running. Check again later."
+        return out
+
+    if status == "failed":
+        out["message"] = "Docking job failed."
+        out["error"] = job.get("error", "")
+        return out
+
+    result = job.get("result") or {}
+    receptor = result.get("receptor", {}) if isinstance(result, dict) else {}
+
+    compact_results = []
+    for r in result.get("results", []) if isinstance(result, dict) else []:
+        compact_results.append({
+            "name": r.get("name"),
+            "status": r.get("status"),
+            "top_score": r.get("top_score"),
+            "num_poses": r.get("num_poses"),
+            "charge": r.get("charge"),
+            "prepared_smiles": r.get("prepared_smiles"),
+            "scores": r.get("scores", [])[:10] if isinstance(r.get("scores", []), list) else [],
+            "error": r.get("error", ""),
+        })
+
+    out.update({
+        "message": "Docking job completed.",
+        "receptor": {
+            "pdb_id": receptor.get("pdb_id"),
+            "center": receptor.get("center"),
+            "size": receptor.get("size"),
+            "cocrystal_ligand_id": receptor.get("cocrystal_ligand_id"),
+        },
+        "results": compact_results,
+        "summary_csv": result.get("summary_csv") if isinstance(result, dict) else "",
+        "log_file": result.get("log_file") if isinstance(result, dict) else "",
+    })
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
@@ -480,10 +568,16 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
 
 @app.get("/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 def get_job(job_id: str) -> Dict[str, Any]:
-    job = JOBS.get(job_id)
+    job = JOBS.get(job_id) or _restore_completed_job_from_disk(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Job not found. The service may have restarted or the free instance "
+                "may have lost its in-memory job registry. Please resubmit the docking job."
+            ),
+        )
+    return _compact_job_response(job_id, job)
 
 
 @app.get("/jobs/{job_id}/download", dependencies=[Depends(require_api_key)])
