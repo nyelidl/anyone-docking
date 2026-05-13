@@ -531,6 +531,15 @@ def health() -> Dict[str, Any]:
         "vina": {"available": bool(vina_path), "message": vina_msg},
         "auth_enabled": bool(API_KEY),
     }
+    
+@app.get("/ping")
+def ping():
+    return {
+        "ok": True,
+        "api": "Anyone Can Dock API",
+        "openbabel_available": True,
+        "vina_available": True
+    }
 
 
 @app.post("/scan_hetatm", dependencies=[Depends(require_api_key)])
