@@ -3324,7 +3324,7 @@ def _poseview_ui(
                           <span>H-bond / polar</span></div>
                         <div style="display:flex;align-items:center;gap:7px;">
                           <div style="width:14px;height:14px;border-radius:50%;
-                               background:rgba(44,141,87,0.55);border:1px solid #2E8B57;"></div>
+                               background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;"></div>
                           <span>Hydrophobic</span></div>
                         <div style="display:flex;align-items:center;gap:7px;">
                           <div style="width:14px;height:14px;border-radius:50%;
