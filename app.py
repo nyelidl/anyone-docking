@@ -3454,10 +3454,26 @@ def _poseview_ui(
                 st.error("Pose SDF not found.")
             else:
                 with st.spinner("⏳ PoseView v1 — generating 2D diagram… (30–60 s)"):
-                    _svg, _err = call_poseview_v1(_rec, pose_sdf_path)
+                    _pv_result = call_poseview_v1(_rec, pose_sdf_path)
+                # Unpack 4-tuple (svg, err, was_neutralized, charge) or legacy 2-tuple
+                if len(_pv_result) == 4:
+                    _svg, _err, _pv_neutralized, _pv_orig_charge = _pv_result
+                else:
+                    _svg, _err = _pv_result
+                    _pv_neutralized, _pv_orig_charge = False, 0
                 if _err:
                     st.error(f"❌ PoseView v1 error:\n\n```\n{_err}\n```")
                 else:
+                    if _pv_neutralized:
+                        st.info(
+                            f"ℹ️ **PoseView note:** Your ligand has a net formal charge "
+                            f"(**{_pv_orig_charge:+d}**) at this pH. "
+                            f"proteins.plus cannot correctly render charged species "
+                            f"(e.g. phenolate O⁻ is misdrawn as C=O). "
+                            f"The diagram was generated using the **neutral form** so the "
+                            f"2D structure is correct — the docking itself used the charged form. "
+                            f"Use the **🧬 Anyone Can Dock 2D Diagram** tab for the exact charged structure."
+                        )
                     _png = svg_to_png(_svg)
                     st.session_state[img_png_key]  = _png
                     st.session_state[img_svg_key]  = _svg
