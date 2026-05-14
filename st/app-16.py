@@ -3184,8 +3184,8 @@ def _poseview_ui(
         _has_ref_rdkit2 = bool(_lig_pdb2 and os.path.exists(_lig_pdb2))
 
         st.caption(
-            "RDKit highlight-circle style — blue = H-bond/polar · "
-            "green = hydrophobic · pink = other. "
+            "RDKit highlight-circle style — green = H-bond/polar · "
+            "blue = hydrophobic · pink = other. "
             "Works locally with no server needed."
         )
 
@@ -3320,7 +3320,7 @@ def _poseview_ui(
                            border-top:1px solid #D0D7DE;font-size:13px;color:#333;">
                         <div style="display:flex;align-items:center;gap:7px;">
                           <div style="width:14px;height:14px;border-radius:50%;
-                               background:rgba(89,156,214,0.55);border:1px solid #5B9BD5;"></div>
+                               background:rgba(44,141,87,0.55);border:1px solid #2E8B57;"></div>
                           <span>H-bond / polar</span></div>
                         <div style="display:flex;align-items:center;gap:7px;">
                           <div style="width:14px;height:14px;border-radius:50%;
