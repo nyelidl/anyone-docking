@@ -251,6 +251,69 @@ def _job_url(job_id: str, endpoint: str) -> str:
     return f"/jobs/{job_id}"
 
 
+def _status_path(job_id: str) -> Path:
+    return BASE_WORKDIR / job_id / "status.json"
+
+
+def _write_status_file(job_id: str, payload: Dict[str, Any]) -> None:
+    """Write an ultra-compact persistent status file for GPT Actions."""
+    wdir = BASE_WORKDIR / job_id
+    wdir.mkdir(parents=True, exist_ok=True)
+    payload = dict(payload)
+    payload.setdefault("job_id", job_id)
+    payload.setdefault("download_url", f"/jobs/{job_id}/download")
+    _status_path(job_id).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _read_status_file(job_id: str) -> Optional[Dict[str, Any]]:
+    path = _status_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a tiny completed-result payload from metadata.json."""
+    receptor = meta.get("receptor", {}) if isinstance(meta, dict) else {}
+    results = []
+    for r in meta.get("results", []) if isinstance(meta, dict) else []:
+        scores = r.get("scores", [])
+        if not isinstance(scores, list):
+            scores = []
+        results.append({
+            "name": r.get("name", ""),
+            "status": r.get("status", ""),
+            "top_score": r.get("top_score", None),
+            "scores": scores[:10],
+            "num_poses": r.get("num_poses", None),
+            "charge": r.get("charge", None),
+            "prepared_smiles": r.get("prepared_smiles", ""),
+            "error": r.get("error", ""),
+        })
+    center = receptor.get("center", {})
+    size = receptor.get("size", {})
+    return {
+        "job_id": job_id,
+        "status": meta.get("status", "completed"),
+        "message": "Docking job completed.",
+        "receptor": {
+            "pdb_id": receptor.get("pdb_id"),
+            "center": center,
+            "size": size,
+            "cocrystal_ligand_id": receptor.get("cocrystal_ligand_id"),
+        },
+        "results": results,
+        "download_url": f"/jobs/{job_id}/download",
+    }
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Background workflow
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,6 +322,12 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
     wdir = BASE_WORKDIR / job_id
     wdir.mkdir(parents=True, exist_ok=True)
     JOBS[job_id].update(status="running", workdir=str(wdir), error=None)
+    _write_status_file(job_id, {
+        "job_id": job_id,
+        "status": "running",
+        "message": "Docking job is running.",
+        "download_url": f"/jobs/{job_id}/download",
+    })
 
     try:
         raw_receptor = _write_receptor_input(req, wdir)
@@ -407,6 +476,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         }
         meta_path = wdir / "metadata.json"
         meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+        _write_status_file(job_id, _ultra_compact_from_meta(job_id, meta))
 
         zip_path = wdir / f"{job_id}_results.zip"
         _make_zip(wdir, zip_path)
@@ -423,6 +493,13 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         err_text = str(e)
         tb = traceback.format_exc()
         (wdir / "error_traceback.txt").write_text(tb, encoding="utf-8")
+        _write_status_file(job_id, {
+            "job_id": job_id,
+            "status": "failed",
+            "message": "Docking job failed.",
+            "error": err_text,
+            "download_url": f"/jobs/{job_id}/download",
+        })
         JOBS[job_id].update(status="failed", error=err_text, traceback=tb)
 
 
@@ -579,6 +656,12 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
         "result": None,
         "error": None,
     }
+    _write_status_file(job_id, {
+        "job_id": job_id,
+        "status": "queued",
+        "message": "Docking job submitted. Poll status_url until status is completed or failed.",
+        "download_url": f"/jobs/{job_id}/download",
+    })
     background_tasks.add_task(_run_docking_job, job_id, req)
     return DockSubmitResponse(
         job_id=job_id,
@@ -591,6 +674,10 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
 
 @app.get("/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 def get_job(job_id: str) -> Dict[str, Any]:
+    status_payload = _read_status_file(job_id)
+    if status_payload:
+        return status_payload
+
     job = JOBS.get(job_id) or _restore_completed_job_from_disk(job_id)
     if not job:
         raise HTTPException(
@@ -600,12 +687,21 @@ def get_job(job_id: str) -> Dict[str, Any]:
                 "may have lost its in-memory job registry. Please resubmit the docking job."
             ),
         )
-    return _compact_job_response(job_id, job)
+
+    compact = _compact_job_response(job_id, job)
+    _write_status_file(job_id, compact)
+    return compact
+
+
+@app.get("/jobs/{job_id}/summary", dependencies=[Depends(require_api_key)])
+def get_job_summary(job_id: str) -> Dict[str, Any]:
+    """Alias for GPT Actions: always returns ultra-compact job status."""
+    return get_job(job_id)
 
 
 @app.get("/jobs/{job_id}/download", dependencies=[Depends(require_api_key)])
 def download_job(job_id: str) -> FileResponse:
-    job = JOBS.get(job_id)
+    job = JOBS.get(job_id) or _restore_completed_job_from_disk(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.get("status") != "completed":
