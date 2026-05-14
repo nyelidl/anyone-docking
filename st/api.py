@@ -269,8 +269,16 @@ def _make_zip(wdir: Path, zip_path: Path) -> None:
 def _job_url(job_id: str, endpoint: str) -> str:
     # Relative URLs are easier for GPT Actions and reverse proxies.
     if endpoint == "download":
-        return f"/jobs/{job_id}/download"
-    return f"/jobs/{job_id}"
+        return _public_url(f"/jobs/{job_id}/download")
+    return _public_url(f"/jobs/{job_id}")
+
+
+def _public_url(path: str) -> str:
+    """Return a full public URL when PUBLIC_BASE_URL is set."""
+    base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}" if base else path
 
 
 def _status_path(job_id: str) -> Path:
@@ -283,7 +291,7 @@ def _write_status_file(job_id: str, payload: Dict[str, Any]) -> None:
     wdir.mkdir(parents=True, exist_ok=True)
     payload = dict(payload)
     payload.setdefault("job_id", job_id)
-    payload.setdefault("download_url", f"/jobs/{job_id}/download")
+    payload.setdefault("download_url", _public_url(f"/jobs/{job_id}/download"))
     _status_path(job_id).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -345,7 +353,7 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "cocrystal_ligand_id": receptor.get("cocrystal_ligand_id"),
         },
         "results": results,
-        "download_url": f"/jobs/{job_id}/download",
+        "download_url": _public_url(f"/jobs/{job_id}/download"),
     }
 
 
@@ -548,8 +556,8 @@ def _generate_2d_interaction(
         except Exception as png_e:
             png_err = f"PNG conversion failed: {png_e}"
 
-        svg_url = f"/jobs/{job_id}/files/{svg_name}"
-        png_url = f"/jobs/{job_id}/files/{png_name}" if png_ok else ""
+        svg_url = _public_url(f"/jobs/{job_id}/files/{svg_name}")
+        png_url = _public_url(f"/jobs/{job_id}/files/{png_name}") if png_ok else ""
 
         out.update({
             "poseview_available": True,
@@ -587,7 +595,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         "job_id": job_id,
         "status": "running",
         "message": "Docking job is running.",
-        "download_url": f"/jobs/{job_id}/download",
+        "download_url": _public_url(f"/jobs/{job_id}/download"),
     })
 
     try:
@@ -812,7 +820,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
             "status": "failed",
             "message": "Docking job failed.",
             "error": err_text,
-            "download_url": f"/jobs/{job_id}/download",
+            "download_url": _public_url(f"/jobs/{job_id}/download"),
         })
         JOBS[job_id].update(status="failed", error=err_text, traceback=tb)
 
@@ -862,7 +870,7 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
         "job_id": job_id,
         "status": status,
         "message": "",
-        "download_url": f"/jobs/{job_id}/download",
+        "download_url": _public_url(f"/jobs/{job_id}/download"),
     }
 
     if status in ("queued", "running"):
@@ -1234,7 +1242,7 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
             "and ask DockGPT to check the status of this job_id. "
             "Do not report docking scores until the job status is completed."
         ),
-        "download_url": f"/jobs/{job_id}/download",
+        "download_url": _public_url(f"/jobs/{job_id}/download"),
     })
     background_tasks.add_task(_run_docking_job, job_id, req)
     return DockSubmitResponse(
