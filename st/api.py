@@ -1301,7 +1301,67 @@ def get_job_file(job_id: str, filename: str) -> FileResponse:
         media_type = "image/png"
     else:
         media_type = "application/octet-stream"
-    return FileResponse(str(file_path), media_type=media_type, filename=safe_filename)
+
+    # Browser preview mode:
+    # Do not pass filename=... because it can force download.
+    # Content-Disposition: inline asks the browser to display PNG/SVG directly.
+    return FileResponse(
+        str(file_path),
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{safe_filename}"'},
+    )
+
+
+
+@app.get("/jobs/{job_id}/view/{filename}", dependencies=[Depends(require_api_key)])
+def view_job_file(job_id: str, filename: str):
+    """Simple browser preview page for PNG/SVG job files."""
+    from fastapi.responses import HTMLResponse
+
+    safe_filename = Path(filename).name
+    file_url = _public_url(f"/jobs/{job_id}/files/{safe_filename}")
+    html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{safe_filename}</title>
+  <style>
+    body {{
+      margin: 0;
+      padding: 24px;
+      font-family: Arial, sans-serif;
+      background: #f7f7f7;
+    }}
+    .card {{
+      max-width: 1200px;
+      margin: auto;
+      background: white;
+      padding: 18px;
+      border-radius: 12px;
+      box-shadow: 0 2px 14px rgba(0,0,0,0.10);
+    }}
+    img {{
+      width: 100%;
+      height: auto;
+      display: block;
+      border: 1px solid #ddd;
+      background: white;
+    }}
+    a {{
+      color: #2563eb;
+      word-break: break-all;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>{safe_filename}</h2>
+    <p><a href="{file_url}" target="_blank">Open image directly</a></p>
+    <img src="{file_url}" alt="{safe_filename}">
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 @app.get("/jobs/{job_id}/download", dependencies=[Depends(require_api_key)])
