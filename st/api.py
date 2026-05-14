@@ -272,6 +272,17 @@ def _job_url(job_id: str, endpoint: str) -> str:
     return f"/jobs/{job_id}"
 
 
+def _public_url(path: str) -> str:
+    """Return a full public URL when PUBLIC_BASE_URL is set.
+
+    Keep relative URLs if PUBLIC_BASE_URL is not configured.
+    """
+    base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}" if base else path
+
+
 def _status_path(job_id: str) -> Path:
     return BASE_WORKDIR / job_id / "status.json"
 
@@ -321,6 +332,12 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "pose_selection_method": r.get("pose_selection_method", ""),
             "selected_pose_rmsd": r.get("selected_pose_rmsd", None),
             "pose_selection_warning": r.get("pose_selection_warning", ""),
+            "pose_selection_note": (
+                "selected by top docking score" if r.get("pose_selection_method") == "top_score"
+                else "selected by lowest RMSD vs co-crystal ligand" if r.get("pose_selection_method") == "lowest_rmsd_vs_cocrystal_ligand"
+                else "top score fallback because RMSD could not be computed" if r.get("pose_selection_method") == "top_score_fallback"
+                else r.get("pose_selection_method", "")
+            ),
             "two_d_interaction_available": bool(r.get("two_d_interaction_available", False)),
             "two_d_interaction_svg_url": r.get("two_d_interaction_svg_url", ""),
             "two_d_interaction_png_url": r.get("two_d_interaction_png_url", ""),
@@ -525,8 +542,8 @@ def _generate_2d_interaction(
 
         out.update({
             "two_d_interaction_available": True,
-            "two_d_interaction_svg_url": f"/jobs/{job_id}/files/{svg_name}",
-            "two_d_interaction_png_url": f"/jobs/{job_id}/files/{png_name}" if png_ok else "",
+            "two_d_interaction_svg_url": _public_url(f"/jobs/{job_id}/files/{svg_name}"),
+            "two_d_interaction_png_url": _public_url(f"/jobs/{job_id}/files/{png_name}") if png_ok else "",
             "two_d_interaction_svg_file": str(svg_path),
             "two_d_interaction_png_file": str(png_path) if png_ok else "",
             "two_d_interaction_error": png_err,
@@ -855,6 +872,12 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "pose_selection_method": r.get("pose_selection_method", ""),
             "selected_pose_rmsd": r.get("selected_pose_rmsd", None),
             "pose_selection_warning": r.get("pose_selection_warning", ""),
+            "pose_selection_note": (
+                "selected by top docking score" if r.get("pose_selection_method") == "top_score"
+                else "selected by lowest RMSD vs co-crystal ligand" if r.get("pose_selection_method") == "lowest_rmsd_vs_cocrystal_ligand"
+                else "top score fallback because RMSD could not be computed" if r.get("pose_selection_method") == "top_score_fallback"
+                else r.get("pose_selection_method", "")
+            ),
             "two_d_interaction_available": bool(r.get("two_d_interaction_available", False)),
             "two_d_interaction_svg_url": r.get("two_d_interaction_svg_url", ""),
             "two_d_interaction_png_url": r.get("two_d_interaction_png_url", ""),
