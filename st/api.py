@@ -40,6 +40,15 @@ from core import (
     scan_hetatm_residues,
 )
 
+# Optional 2D interaction / redocking utilities from core.py.
+# The API still works if these are unavailable.
+try:
+    from core import calc_rmsd_heavy, write_single_pose, draw_interaction_diagram
+except Exception:
+    calc_rmsd_heavy = None
+    write_single_pose = None
+    draw_interaction_diagram = None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -296,6 +305,13 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "prepared_smiles": r.get("prepared_smiles", ""),
             "protonation_mode_used": r.get("protonation_mode_used", ""),
             "protonation_fallback": r.get("protonation_fallback", ""),
+            "selected_pose_rank": r.get("selected_pose_rank", None),
+            "pose_selection_method": r.get("pose_selection_method", ""),
+            "selected_pose_rmsd": r.get("selected_pose_rmsd", None),
+            "pose_selection_warning": r.get("pose_selection_warning", ""),
+            "two_d_interaction_available": bool(r.get("two_d_interaction_available", False)),
+            "two_d_interaction_svg_url": r.get("two_d_interaction_svg_url", ""),
+            "two_d_interaction_error": r.get("two_d_interaction_error", ""),
             "error": r.get("error", ""),
         })
     center = receptor.get("center", {})
@@ -328,6 +344,165 @@ def _looks_like_protonation_valence_error(text: str) -> bool:
         "kekulize",
     ]
     return any(x in t for x in triggers)
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pose selection + 2D interaction helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_redocking_case(lig_name: str, rec: Dict[str, Any], req: DockRequest) -> bool:
+    """Best-effort redocking detector.
+
+    A true redocking case means the docked ligand is the same molecule as the
+    co-crystal/reference ligand. Robust structure-based matching is difficult
+    from PDB HETATM alone, so this API uses conservative explicit hints:
+    - ligand name equals the co-crystal ligand resname or ligand_id
+    - preferred_ligand/reference_hetatm_key matches ligand name
+    - future clients may pass the co-crystal ligand using the same resname
+    If uncertain, return False and use top-score pose.
+    """
+    name = (lig_name or "").strip().upper()
+    if not name:
+        return False
+
+    cocrystal_id = str(rec.get("cocrystal_ligand_id") or "").strip().upper()
+    cocrystal_resname = cocrystal_id.split("_")[0] if cocrystal_id else ""
+    preferred = (req.preferred_ligand or "").strip().upper()
+    ref_key = (req.reference_hetatm_key or "").strip().upper()
+
+    candidates = {x for x in [cocrystal_id, cocrystal_resname, preferred, ref_key] if x}
+    return name in candidates
+
+
+def _select_pose_for_interaction(
+    pose_sdf: str,
+    rec: Dict[str, Any],
+    req: DockRequest,
+    lig_name: str,
+) -> Dict[str, Any]:
+    """Select pose for 2D interaction.
+
+    Rule:
+    - Redocking/co-crystal ligand: lowest heavy-atom RMSD vs co-crystal ligand.
+    - Other ligands: top-ranked docking pose, i.e. first SDF pose.
+    """
+    pose_info: Dict[str, Any] = {
+        "selected_pose_rank": None,
+        "pose_selection_method": "",
+        "selected_pose_rmsd": None,
+        "warning": "",
+        "selected_pose_sdf": "",
+    }
+
+    mols = load_mols_from_sdf(pose_sdf, sanitize=False) if pose_sdf else []
+    if not mols:
+        pose_info["pose_selection_method"] = "unavailable"
+        pose_info["warning"] = "No readable docking poses were available for 2D interaction generation."
+        return pose_info
+
+    ligand_pdb_path = rec.get("ligand_pdb_path") or ""
+    is_redocking = _is_redocking_case(lig_name, rec, req)
+
+    selected_idx = 0
+    if is_redocking and calc_rmsd_heavy is not None and ligand_pdb_path and Path(ligand_pdb_path).exists():
+        rmsd_rows = []
+        for i, mol in enumerate(mols):
+            try:
+                rmsd = calc_rmsd_heavy(mol, ligand_pdb_path)
+            except Exception:
+                rmsd = None
+            if rmsd is not None:
+                rmsd_rows.append((float(rmsd), i))
+
+        if rmsd_rows:
+            rmsd_rows.sort(key=lambda x: x[0])
+            best_rmsd, selected_idx = rmsd_rows[0]
+            pose_info["pose_selection_method"] = "lowest_rmsd_vs_cocrystal_ligand"
+            pose_info["selected_pose_rmsd"] = round(float(best_rmsd), 4)
+        else:
+            selected_idx = 0
+            pose_info["pose_selection_method"] = "top_score_fallback"
+            pose_info["warning"] = "Redocking was detected, but RMSD to the co-crystal ligand could not be computed; top-ranked pose was used."
+    elif is_redocking:
+        selected_idx = 0
+        pose_info["pose_selection_method"] = "top_score_fallback"
+        pose_info["warning"] = "Redocking was detected, but RMSD utilities or co-crystal ligand coordinates were unavailable; top-ranked pose was used."
+    else:
+        selected_idx = 0
+        pose_info["pose_selection_method"] = "top_score"
+
+    selected_pose_sdf = str(Path(pose_sdf).with_name(f"{Path(pose_sdf).stem}_selected_for_2d.sdf"))
+    try:
+        if write_single_pose is not None:
+            write_single_pose(mols[selected_idx], selected_pose_sdf)
+        else:
+            # Minimal fallback writer
+            from rdkit import Chem
+            with Chem.SDWriter(selected_pose_sdf) as writer:
+                writer.write(mols[selected_idx])
+        pose_info["selected_pose_sdf"] = selected_pose_sdf
+    except Exception as e:
+        pose_info["warning"] = (pose_info.get("warning") + " " if pose_info.get("warning") else "") + f"Could not write selected pose SDF: {e}"
+
+    pose_info["selected_pose_rank"] = int(selected_idx + 1)
+    return pose_info
+
+
+def _generate_2d_interaction(
+    job_id: str,
+    wdir: Path,
+    rec: Dict[str, Any],
+    pose_info: Dict[str, Any],
+    smiles: str,
+    lig_name: str,
+) -> Dict[str, Any]:
+    """Generate a local SVG 2D interaction diagram for the selected pose.
+
+    Uses core.draw_interaction_diagram when available. Returns compact URL fields.
+    """
+    out: Dict[str, Any] = {
+        "two_d_interaction_available": False,
+        "two_d_interaction_svg_url": "",
+        "two_d_interaction_svg_file": "",
+        "two_d_interaction_error": "",
+    }
+
+    if draw_interaction_diagram is None:
+        out["two_d_interaction_error"] = "draw_interaction_diagram is not available in core.py."
+        return out
+
+    selected_pose_sdf = pose_info.get("selected_pose_sdf") or ""
+    receptor_pdb = rec.get("rec_fh") or ""
+    if not selected_pose_sdf or not Path(selected_pose_sdf).exists():
+        out["two_d_interaction_error"] = "Selected pose SDF is unavailable."
+        return out
+    if not receptor_pdb or not Path(receptor_pdb).exists():
+        out["two_d_interaction_error"] = "Prepared receptor PDB is unavailable."
+        return out
+
+    try:
+        safe = _safe_name(lig_name, "ligand")
+        svg_name = f"{safe}_interaction2d.svg"
+        svg_path = wdir / svg_name
+        svg_bytes = draw_interaction_diagram(
+            receptor_pdb=receptor_pdb,
+            pose_sdf=selected_pose_sdf,
+            smiles=smiles,
+            title=f"{safe} selected pose",
+        )
+        svg_path.write_bytes(svg_bytes)
+        out.update({
+            "two_d_interaction_available": True,
+            "two_d_interaction_svg_url": f"/jobs/{job_id}/files/{svg_name}",
+            "two_d_interaction_svg_file": str(svg_path),
+            "two_d_interaction_error": "",
+        })
+    except Exception as e:
+        out["two_d_interaction_error"] = str(e)
+
+    return out
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,8 +651,25 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                         pv_sdf = str(pv_path)
 
                 n_poses = len(load_mols_from_sdf(dock.get("out_sdf", ""), sanitize=False)) if dock.get("out_sdf") else 0
+
+                prepared_smiles = prep.get("prot_smiles") or prep.get("prepared_smiles") or lig.smiles
+                pose_info = _select_pose_for_interaction(
+                    pose_sdf=pv_sdf or dock.get("out_sdf", ""),
+                    rec=rec,
+                    req=req,
+                    lig_name=name,
+                )
+                interaction2d = _generate_2d_interaction(
+                    job_id=job_id,
+                    wdir=wdir,
+                    rec=rec,
+                    pose_info=pose_info,
+                    smiles=prepared_smiles,
+                    lig_name=name,
+                )
+
                 row.update(
-                    prepared_smiles=prep.get("prot_smiles") or prep.get("prepared_smiles") or lig.smiles,
+                    prepared_smiles=prepared_smiles,
                     charge=prep.get("charge"),
                     status="ok",
                     top_score=dock.get("top_score"),
@@ -491,6 +683,12 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     pkanet_ambiguous=prep.get("pkanet_ambiguous", False),
                     protonation_mode_used=("neutral" if row.get("protonation_fallback") == "neutral" else req.protonation_mode),
                     protonation_fallback=row.get("protonation_fallback", ""),
+                    selected_pose_rank=pose_info.get("selected_pose_rank"),
+                    pose_selection_method=pose_info.get("pose_selection_method", ""),
+                    selected_pose_rmsd=pose_info.get("selected_pose_rmsd"),
+                    pose_selection_warning=pose_info.get("warning", ""),
+                    selected_pose_sdf=pose_info.get("selected_pose_sdf", ""),
+                    **interaction2d,
                 )
             except Exception as lig_error:
                 row.update(status="failed", error=str(lig_error))
@@ -620,6 +818,13 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "prepared_smiles": r.get("prepared_smiles"),
             "protonation_mode_used": r.get("protonation_mode_used", ""),
             "protonation_fallback": r.get("protonation_fallback", ""),
+            "selected_pose_rank": r.get("selected_pose_rank", None),
+            "pose_selection_method": r.get("pose_selection_method", ""),
+            "selected_pose_rmsd": r.get("selected_pose_rmsd", None),
+            "pose_selection_warning": r.get("pose_selection_warning", ""),
+            "two_d_interaction_available": bool(r.get("two_d_interaction_available", False)),
+            "two_d_interaction_svg_url": r.get("two_d_interaction_svg_url", ""),
+            "two_d_interaction_error": r.get("two_d_interaction_error", ""),
             "scores": r.get("scores", [])[:10] if isinstance(r.get("scores", []), list) else [],
             "error": r.get("error", ""),
         })
@@ -949,7 +1154,11 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
     _write_status_file(job_id, {
         "job_id": job_id,
         "status": "queued",
-        "message": "Docking job submitted. Poll status_url until status is completed or failed.",
+        "message": (
+            "Docking job submitted. Please come back in about 1–2 minutes "
+            "and ask DockGPT to check the status of this job_id. "
+            "Do not report docking scores until the job status is completed."
+        ),
         "download_url": f"/jobs/{job_id}/download",
     })
     background_tasks.add_task(_run_docking_job, job_id, req)
@@ -991,6 +1200,20 @@ def get_job(job_id: str) -> Dict[str, Any]:
 def get_job_summary(job_id: str) -> Dict[str, Any]:
     """Alias for GPT Actions: always returns ultra-compact job status."""
     return get_job(job_id)
+
+
+
+@app.get("/jobs/{job_id}/files/{filename}", dependencies=[Depends(require_api_key)])
+def get_job_file(job_id: str, filename: str) -> FileResponse:
+    """Serve small generated job files such as selected 2D interaction SVG."""
+    safe_filename = Path(filename).name
+    file_path = BASE_WORKDIR / job_id / safe_filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    suffix = file_path.suffix.lower()
+    media_type = "image/svg+xml" if suffix == ".svg" else "application/octet-stream"
+    return FileResponse(str(file_path), media_type=media_type, filename=safe_filename)
 
 
 @app.get("/jobs/{job_id}/download", dependencies=[Depends(require_api_key)])
