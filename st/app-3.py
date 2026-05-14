@@ -4602,6 +4602,21 @@ with tab_basic:
                 "pH window", 0.2, 2.0, 1.0, 0.1, key="pkanet_ph_win",
                 help="pH window used during Dimorphite-DL enumeration inside pKaNET: [pH − window/2, pH + window/2].",
             )
+            _pkanet_stereo_ui = st.radio(
+                "Stereochemistry for undefined chiral center",
+                [
+                    "Keep input / auto",
+                    "Force R if undefined",
+                    "Force S if undefined",
+                ],
+                index=0,
+                horizontal=True,
+                key="pkanet_stereo_ui",
+                help=(
+                    "Used only when the SMILES has one undefined chiral center. "
+                    "If the SMILES already contains stereochemistry (@/@@), ACD keeps the input stereochemistry."
+                ),
+            )
             _pkanet_sel_ui = st.radio(
                 "Microstate selection for docking",
                 [
@@ -4685,6 +4700,12 @@ with tab_basic:
             _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
             _pkanet_sel_ui  = st.session_state.get("pkanet_selection_ui", "Auto recommended (conservative when ambiguous)")
+            _pkanet_stereo_ui = st.session_state.get("pkanet_stereo_ui", "Keep input / auto")
+            _pkanet_stereo_key = {
+                "Keep input / auto": "keep_input",
+                "Force R if undefined": "R",
+                "Force S if undefined": "S",
+            }.get(_pkanet_stereo_ui, "keep_input")
             _pkanet_sel_key = {
                 "Auto recommended (conservative when ambiguous)": "auto_recommended",
                 "Highest-scoring microstate": "highest_score",
@@ -4712,7 +4733,8 @@ with tab_basic:
                                             mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                             max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                             pkanet_selection_mode=_pkanet_sel_key,
-                                            pkanet_manual_rank=_pkanet_manual_rank)
+                                            pkanet_manual_rank=_pkanet_manual_rank,
+                                            pkanet_stereo_choice=_pkanet_stereo_key)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
@@ -4721,13 +4743,15 @@ with tab_basic:
                                         mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                         max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                         pkanet_selection_mode=_pkanet_sel_key,
-                                        pkanet_manual_rank=_pkanet_manual_rank)
+                                        pkanet_manual_rank=_pkanet_manual_rank,
+                                        pkanet_stereo_choice=_pkanet_stereo_key)
             else:
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
                                         mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                         max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                         pkanet_selection_mode=_pkanet_sel_key,
-                                        pkanet_manual_rank=_pkanet_manual_rank)
+                                        pkanet_manual_rank=_pkanet_manual_rank,
+                                        pkanet_stereo_choice=_pkanet_stereo_key)
 
         if result["success"]:
             st.session_state.update({
