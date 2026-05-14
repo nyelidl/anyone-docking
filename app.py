@@ -207,6 +207,58 @@ def _rcsb_entry_has_no_missing_residues(entry_json: dict):
     return None
 
 
+def _get_rcsb_ligands(_req, pdb_id: str, entry_json: dict | None = None) -> list[str]:
+    """Return likely co-crystal ligand/component IDs for an RCSB entry.
+
+    The RCSB entry may contain many non-polymer entities, including waters,
+    metal ions, salts, buffers, and crystallization additives. For search-result
+    display, keep likely ligand/cofactor IDs and hide common solvent/additive
+    components so the user can quickly identify dockable structures.
+    """
+    _exclude = {
+        "HOH", "WAT", "DOD", "SOL",
+        "NA", "CL", "K", "CA", "MG", "ZN", "MN", "FE", "CU", "CO", "NI", "CD", "HG",
+        "SO4", "PO4", "NO3", "SCN", "ACT", "ACY", "FMT",
+        "GOL", "EDO", "PEG", "PGE", "PG4", "MPD", "DMS", "DMSO", "IPA", "EOH", "MOH",
+        "TRS", "MES", "EPE", "BME", "ACE", "IOD", "BR",
+    }
+
+    ids = []
+    try:
+        entry_json = entry_json or {}
+        ids = (
+            (entry_json.get("rcsb_entry_container_identifiers", {}) or {})
+            .get("non_polymer_entity_ids", [])
+            or []
+        )
+    except Exception:
+        ids = []
+
+    ligands = []
+    seen = set()
+    for ent_id in ids:
+        try:
+            r = _req.get(
+                f"https://data.rcsb.org/rest/v1/core/nonpolymer_entity/{pdb_id}/{ent_id}",
+                timeout=8,
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json() or {}
+            comp_id = str(
+                ((data.get("pdbx_entity_nonpoly", {}) or {}).get("comp_id", ""))
+                or ((data.get("chem_comp", {}) or {}).get("id", ""))
+            ).strip().upper()
+            if not comp_id or comp_id in _exclude or comp_id in seen:
+                continue
+            seen.add(comp_id)
+            ligands.append(comp_id)
+        except Exception:
+            continue
+
+    return ligands
+
+
 def _search_protein_rcsb(query: str, top_n: int = 30) -> list[dict]:
     """
     Search RCSB by protein/keyword and return entry summaries.
@@ -266,6 +318,8 @@ def _search_protein_rcsb(query: str, top_n: int = 30) -> list[dict]:
         method = ""
         protein_name = ""
         no_missing = None
+        ligands = []
+        ligand_status = "No ligand"
 
         try:
             r2 = _req.get(
@@ -287,6 +341,8 @@ def _search_protein_rcsb(query: str, top_n: int = 30) -> list[dict]:
                 if exptl and isinstance(exptl, list):
                     method = str((exptl[0] or {}).get("method", "") or "")
                 no_missing = _rcsb_entry_has_no_missing_residues(ej)
+                ligands = _get_rcsb_ligands(_req, pdb_id, ej)
+                ligand_status = ", ".join(ligands) if ligands else "No ligand"
         except Exception:
             pass
 
@@ -309,6 +365,8 @@ def _search_protein_rcsb(query: str, top_n: int = 30) -> list[dict]:
             "resolution": resolution,
             "method": method,
             "no_missing_residues": no_missing,
+            "ligands": ligands,
+            "ligand_status": ligand_status,
         })
 
     def _sort_key(x):
@@ -3684,8 +3742,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                             if h.get("no_missing_residues") is True
                             else ("missing?" if h.get("no_missing_residues") is None else "has missing")
                         )
+                        _lig = h.get("ligand_status") or "No ligand"
                         _name = h.get("protein_name") or h.get("title") or ""
-                        return f"{h['pdb_id']}  |  {_res}  |  {_miss}  |  {_name[:90]}"
+                        return f"{h['pdb_id']}  |  {_res}  |  {_miss}  |  Ligand: {_lig}  |  {_name[:70]}"
 
                     _labels = [_fmt_hit(h) for h in _hits]
                     _sel = st.selectbox(
@@ -3701,8 +3760,10 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                         if _picked.get("no_missing_residues") is True
                         else ("Missing residues unknown" if _picked.get("no_missing_residues") is None else "Has missing residues")
                     )
+                    _meta_ligand = _picked.get("ligand_status") or "No ligand"
                     st.caption(
-                        f"**{_picked['pdb_id']}** · {_meta_res} · {_picked.get('method') or 'method n/a'} · {_meta_missing}"
+                        f"**{_picked['pdb_id']}** · {_meta_res} · {_picked.get('method') or 'method n/a'} · "
+                        f"{_meta_missing} · Ligand: {_meta_ligand}"
                     )
                     if _picked.get("title"):
                         st.caption(_picked["title"])
@@ -4602,21 +4663,6 @@ with tab_basic:
                 "pH window", 0.2, 2.0, 1.0, 0.1, key="pkanet_ph_win",
                 help="pH window used during Dimorphite-DL enumeration inside pKaNET: [pH − window/2, pH + window/2].",
             )
-            _pkanet_stereo_ui = st.radio(
-                "Stereochemistry for undefined chiral center",
-                [
-                    "Keep input / auto",
-                    "Force R if undefined",
-                    "Force S if undefined",
-                ],
-                index=0,
-                horizontal=True,
-                key="pkanet_stereo_ui",
-                help=(
-                    "Used only when the SMILES has one undefined chiral center. "
-                    "If the SMILES already contains stereochemistry (@/@@), ACD keeps the input stereochemistry."
-                ),
-            )
             _pkanet_sel_ui = st.radio(
                 "Microstate selection for docking",
                 [
@@ -4700,12 +4746,6 @@ with tab_basic:
             _pkanet_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _pkanet_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
             _pkanet_sel_ui  = st.session_state.get("pkanet_selection_ui", "Auto recommended (conservative when ambiguous)")
-            _pkanet_stereo_ui = st.session_state.get("pkanet_stereo_ui", "Keep input / auto")
-            _pkanet_stereo_key = {
-                "Keep input / auto": "keep_input",
-                "Force R if undefined": "R",
-                "Force S if undefined": "S",
-            }.get(_pkanet_stereo_ui, "keep_input")
             _pkanet_sel_key = {
                 "Auto recommended (conservative when ambiguous)": "auto_recommended",
                 "Highest-scoring microstate": "highest_score",
@@ -4733,8 +4773,7 @@ with tab_basic:
                                             mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                             max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                             pkanet_selection_mode=_pkanet_sel_key,
-                                            pkanet_manual_rank=_pkanet_manual_rank,
-                                            pkanet_stereo_choice=_pkanet_stereo_key)
+                                            pkanet_manual_rank=_pkanet_manual_rank)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
@@ -4743,15 +4782,13 @@ with tab_basic:
                                         mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                         max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                         pkanet_selection_mode=_pkanet_sel_key,
-                                        pkanet_manual_rank=_pkanet_manual_rank,
-                                        pkanet_stereo_choice=_pkanet_stereo_key)
+                                        pkanet_manual_rank=_pkanet_manual_rank)
             else:
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
                                         mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                         max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                         pkanet_selection_mode=_pkanet_sel_key,
-                                        pkanet_manual_rank=_pkanet_manual_rank,
-                                        pkanet_stereo_choice=_pkanet_stereo_key)
+                                        pkanet_manual_rank=_pkanet_manual_rank)
 
         if result["success"]:
             st.session_state.update({
