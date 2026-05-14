@@ -3678,7 +3678,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         )
         if src == "Download from RCSB":
             with st.expander("🔎 Search protein / target in RCSB", expanded=False):
-                _qs_col, _qb_col = st.columns([4, 1])
+                _qs_col, _qb_col = st.columns([5, 1])
                 with _qs_col:
                     _rcsb_query = st.text_input(
                         "Search protein / keyword",
