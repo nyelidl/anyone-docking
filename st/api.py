@@ -901,7 +901,7 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
     _write_status_file(job_id, {
         "job_id": job_id,
         "status": "queued",
-        message=(
+        "message": (
             "Docking job submitted. Please come back in about 1–2 minutes "
             "and ask DockGPT to check the status of this job_id. "
             "Do not report docking scores until the job status is completed."
