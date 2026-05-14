@@ -1657,6 +1657,67 @@ def _load_local_pkanet_module(log=None):
     return mod
 
 
+
+def _pkanet_stereo_status(smiles: str) -> dict:
+    """Detect whether a SMILES has assigned/undefined tetrahedral stereochemistry."""
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return {"valid": False, "assigned": 0, "unassigned": 0, "centers": []}
+    centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True, useLegacyImplementation=False)
+    assigned = [(i, lab) for i, lab in centers if lab in ("R", "S")]
+    unassigned = [(i, lab) for i, lab in centers if lab == "?"]
+    return {"valid": True, "assigned": len(assigned), "unassigned": len(unassigned), "centers": centers}
+
+
+def _select_pkanet_stereoisomer(smiles: str, stereo_choice: str = "keep_input") -> tuple[str, list[str], dict]:
+    """
+    Select R/S only when the input SMILES has one undefined chiral center.
+    If the input already contains assigned stereochemistry (@/@@; RDKit R/S), it is kept unchanged.
+    """
+    from rdkit import Chem
+    from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers, StereoEnumerationOptions
+
+    log = []
+    choice = (stereo_choice or "keep_input").strip().upper()
+    if choice in {"KEEP", "KEEP_INPUT", "AS_IS", "AUTO", ""}:
+        choice = "KEEP_INPUT"
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"RDKit could not parse SMILES: {smiles[:60]}")
+
+    status = _pkanet_stereo_status(smiles)
+    if status["assigned"] > 0:
+        log.append("✓ Stereochemistry already defined in input SMILES (@/@@); keeping input stereochemistry")
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
+    if choice not in {"R", "S"}:
+        if status["unassigned"] > 0:
+            log.append(f"ℹ Undefined stereocenter(s) detected: {status['unassigned']}; keeping input without forced R/S")
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
+    if status["unassigned"] == 0:
+        log.append(f"ℹ No undefined stereocenter detected; requested {choice} ignored")
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
+    if status["unassigned"] != 1:
+        log.append(f"⚠ {status['unassigned']} undefined stereocenters detected; R/S selector is only applied to single-center ligands. Keeping input.")
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
+    opts = StereoEnumerationOptions(onlyUnassigned=True, unique=True)
+    isomers = list(EnumerateStereoisomers(mol, options=opts))
+    for iso in isomers:
+        centers = Chem.FindMolChiralCenters(iso, includeUnassigned=True, useLegacyImplementation=False)
+        labels = [lab for _, lab in centers if lab in ("R", "S")]
+        if len(labels) == 1 and labels[0] == choice:
+            smi = Chem.MolToSmiles(iso, isomericSmiles=True, canonical=True)
+            log.append(f"✓ Undefined stereocenter resolved as {choice} for docking")
+            return smi, log, status
+
+    log.append(f"⚠ Could not generate requested {choice} stereoisomer; keeping input")
+    return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
 def protonate_pkanet(
     smiles: str,
     ph: float,
@@ -1665,6 +1726,7 @@ def protonate_pkanet(
     ph_window: float = 1.0,
     selection_mode: str = "auto_recommended",
     manual_rank: int | None = None,
+    stereo_choice: str = "keep_input",
     return_details: bool = False,
 ) -> tuple:
     """
@@ -1697,8 +1759,12 @@ def protonate_pkanet(
             "Please check that pKaNET.py is in the same folder as core.py."
         ) from e
 
+    # ── Stage 0: optional stereochemistry resolution ────────────────────────
+    stereo_input, stereo_log, stereo_status = _select_pkanet_stereoisomer(smiles.strip(), stereo_choice)
+    log.extend(stereo_log)
+
     # ── Stage A: Standardize via pKaNET ─────────────────────────────────────
-    canonical, std_status = _pkanet_standardize(smiles.strip())
+    canonical, std_status = _pkanet_standardize(stereo_input)
     if canonical is None:
         log.append(f"❌ Standardization failed ({std_status})")
         raise ValueError(f"pKaNET standardization failed: {std_status}")
@@ -1829,6 +1895,8 @@ def protonate_pkanet(
 
     details = {
         "selection_mode": selection_mode,
+        "stereo_choice": stereo_choice,
+        "stereo_status": stereo_status,
         "selected_rank": int(best.get("microstate_rank", 1)),
         "selected_microstate": {k: v for k, v in best.items() if k != "charged_atom_rows"},
         "ranked_microstates": [{k: v for k, v in r.items() if k != "charged_atom_rows"} for r in all_micro],
@@ -1907,6 +1975,7 @@ def prepare_ligand(
     ph_window: float = 1.0,
     pkanet_selection_mode: str = "auto_recommended",
     pkanet_manual_rank: int | None = None,
+    pkanet_stereo_choice: str = "keep_input",
 ) -> dict:
     """
     Ligand preparation — pKaNET Cloud is the default protonation mode.
@@ -1952,6 +2021,7 @@ def prepare_ligand(
                     ph_window=ph_window,
                     selection_mode=pkanet_selection_mode,
                     manual_rank=pkanet_manual_rank,
+                    stereo_choice=pkanet_stereo_choice,
                     return_details=True,
                 )
                 # Export ranked microstates and decision log for reproducibility/ESI.
@@ -2341,6 +2411,8 @@ def _bo_template(smiles: str):
     try:
         Chem.Kekulize(mol, clearAromaticFlags=True)
     except Exception:
+        # Kekulize fails for some tautomeric/charged aromatics (e.g. flavonoids with [O-])
+        # AssignBondOrdersFromTemplate still works without explicit Kekulization
         pass
     return mol
 
@@ -2362,221 +2434,68 @@ def _bo_fix_mol(probe, template):
         fixed = em.GetMol()
     Chem.SanitizeMol(fixed)
     for prop in probe.GetPropsAsDict():
-        try:
-            fixed.SetProp(prop, probe.GetProp(prop))
-        except Exception:
-            pass
+        fixed.SetProp(prop, probe.GetProp(prop))
     return fixed
 
 
-def _strip_rad_lines(sdf_text: str) -> str:
-    """Remove M  RAD lines from SDF text (OpenBabel artefact from PDBQT aromatic flags)."""
-    return "".join(
-        line for line in sdf_text.splitlines(keepends=True)
-        if not line.startswith("M  RAD")
-    )
-
-
-def _rebuild_pose_via_mcs(probe_raw, smiles: str) -> object:
-    """
-    Rebuild a docked pose mol with correct bond orders, formal charges, and zero radicals.
-
-    Strategy (handles charged/tautomeric aromatics like baicalein [O-]):
-      1. Parse correct SMILES → mol_correct  (charge & aromaticity guaranteed correct)
-      2. Find MCS between mol_correct and probe (element-only, bond-order-agnostic)
-      3. Copy 3D coordinates from probe → new conformer on mol_correct
-      4. Return mol_correct with docking coordinates
-
-    Falls back to AssignBondOrdersFromTemplate when MCS covers all atoms.
-    Returns None if rebuild is impossible.
-    """
-    from rdkit import Chem, RDLogger
-    from rdkit.Chem import AllChem, rdFMCS
-    RDLogger.DisableLog("rdApp.*")
-
-    try:
-        mol_correct = Chem.MolFromSmiles(smiles)
-        if mol_correct is None:
-            return None
-
-        probe_noH = Chem.RemoveHs(probe_raw, sanitize=False)
-        if probe_noH is None or probe_noH.GetNumConformers() == 0:
-            return None
-
-        n_correct = mol_correct.GetNumAtoms()
-
-        # ── MCS: element-only, any bond order ──────────────────────────────
-        mcs = rdFMCS.FindMCS(
-            [mol_correct, probe_noH],
-            atomCompare=rdFMCS.AtomCompare.CompareElements,
-            bondCompare=rdFMCS.BondCompare.CompareAny,
-            timeout=5,
-        )
-
-        if mcs.numAtoms < n_correct:
-            RDLogger.EnableLog("rdApp.error")
-            return None  # MCS incomplete — caller will fallback
-
-        mcs_mol    = Chem.MolFromSmarts(mcs.smartsString)
-        match_c    = mol_correct.GetSubstructMatch(mcs_mol)
-        match_p    = probe_noH.GetSubstructMatch(mcs_mol)
-
-        if len(match_c) != n_correct or len(match_p) != n_correct:
-            RDLogger.EnableLog("rdApp.error")
-            return None
-
-        # ── Copy 3D coords from probe → mol_correct ────────────────────────
-        # Need a conformer on mol_correct first (placeholder via EmbedMolecule)
-        AllChem.EmbedMolecule(mol_correct, randomSeed=42)
-        conf_probe = probe_noH.GetConformer()
-        conf_new   = mol_correct.GetConformer()
-
-        probe_idx_map = dict(zip(match_c, match_p))
-        for c_idx in range(n_correct):
-            p_idx = probe_idx_map.get(c_idx)
-            if p_idx is not None:
-                pos = conf_probe.GetAtomPosition(p_idx)
-                conf_new.SetAtomPosition(c_idx, pos)
-
-        # Clear any lingering radicals (safety)
-        rw = Chem.RWMol(mol_correct)
-        for atom in rw.GetAtoms():
-            atom.SetNumRadicalElectrons(0)
-        result = rw.GetMol()
-
-        RDLogger.EnableLog("rdApp.error")
-        return result
-
-    except Exception:
-        RDLogger.EnableLog("rdApp.error")
-        return None
-
-
 def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
-    """
-    Fix bond orders, formal charges, and M  RAD artefacts in a multi-pose SDF
-    from AutoDock Vina / OpenBabel.
-
-    Algorithm per pose (tries in order):
-      1. _rebuild_pose_via_mcs  — build from correct SMILES + copy 3D coords via MCS
-                                   handles charged/tautomeric aromatics (e.g. baicalein [O-])
-      2. _bo_fix_mol            — legacy AssignBondOrdersFromTemplate (neutral molecules)
-      3. raw pose (no H)        — last-resort fallback
-
-    Also strips M  RAD lines written by OpenBabel from PDBQT aromatic atoms.
-    """
-    import io
     import shutil
     from rdkit import Chem, RDLogger
+    from rdkit.Chem import AllChem
     RDLogger.DisableLog("rdApp.*")
     log = []
-
-    # ── Pre-process: strip M  RAD from entire file before reading ──────────
-    try:
-        with open(raw_sdf) as f:
-            raw_text = f.read()
-        cleaned_text = _strip_rad_lines(raw_text)
-        if cleaned_text != raw_text:
-            log.append("✓ Stripped M  RAD artefacts (OpenBabel/PDBQT aromatic flags)")
-    except Exception as e:
-        log.append(f"⚠ Could not pre-strip M  RAD: {e}")
-        cleaned_text = None
-
-    # ── Build legacy template (used as fallback) ───────────────────────────
-    template = None
     try:
         template = _bo_template(smiles)
     except Exception as e:
-        log.append(f"⚠ Could not build legacy template: {e}")
-
-    # ── Read supplier from cleaned text or original file ───────────────────
-    if cleaned_text is not None:
-        supplier = Chem.SDMolSupplier()
-        supplier.SetData(cleaned_text, sanitize=False, removeHs=False)
-    else:
-        supplier = Chem.SDMolSupplier(raw_sdf, sanitize=False, removeHs=False)
-
-    # ── Write output ────────────────────────────────────────────────────────
-    ok = err = mcs_used = legacy_used = 0
-    sdf_parts = []  # collect as strings so we can strip M  RAD after write too
-
+        log.append(f"⚠ Could not build template: {e} — skipping fix")
+        RDLogger.EnableLog("rdApp.error")
+        shutil.copy(raw_sdf, fixed_sdf)
+        return log
+    supplier = Chem.SDMolSupplier(raw_sdf, sanitize=False, removeHs=False)
+    writer   = Chem.SDWriter(fixed_sdf)
+    writer.SetKekulize(False)
+    ok = err = 0
     for i, mol in enumerate(supplier):
         if mol is None:
             log.append(f"⚠ Pose {i+1}: could not read — skipped")
             err += 1
             continue
-
-        result_mol = None
-        method = "raw"
-
-        # ── Strategy 1: MCS rebuild ──────────────────────────────────────
         try:
-            rebuilt = _rebuild_pose_via_mcs(mol, smiles)
-            if rebuilt is not None:
-                # Copy VINA RESULT and other properties from raw pose
-                for prop in mol.GetPropsAsDict():
-                    try:
-                        rebuilt.SetProp(prop, mol.GetProp(prop))
-                    except Exception:
-                        pass
-                result_mol = rebuilt
-                method = "mcs"
-                mcs_used += 1
-        except Exception as e:
-            log.append(f"  Pose {i+1} MCS rebuild error: {e}")
-
-        # ── Strategy 2: legacy AssignBondOrdersFromTemplate ──────────────
-        if result_mol is None and template is not None:
+            fixed = _bo_fix_mol(mol, template)
             try:
-                result_mol = _bo_fix_mol(mol, template)
-                method = "legacy"
-                legacy_used += 1
-            except Exception as e:
-                log.append(f"  Pose {i+1} legacy fix error: {e}")
-
-        # ── Strategy 3: raw fallback ─────────────────────────────────────
-        if result_mol is None:
-            log.append(f"⚠ Pose {i+1}: all fixes failed — writing raw (no H)")
-            result_mol = Chem.RemoveHs(mol, sanitize=False)
-            err += 1
-        else:
-            ok += 1
-
-        # ── Optionally add Hs with coords ────────────────────────────────
-        if method in ("legacy",):
-            try:
-                result_h = Chem.AddHs(result_mol, addCoords=True)
-                conf = result_h.GetConformer()
+                # Protect deprotonated atoms (formal charge != 0) from getting
+                # H added back by AddHs — e.g. [O-] on baicalein/flavonoids.
+                # Strategy: temporarily set noImplicit=True on charged atoms,
+                # call AddHs, then restore.
+                from rdkit.Chem import RWMol
+                rw = RWMol(fixed)
+                charged_idx = []
+                for atom in rw.GetAtoms():
+                    if atom.GetFormalCharge() != 0:
+                        atom.SetNoImplicit(True)
+                        charged_idx.append(atom.GetIdx())
+                fixed_protected = rw.GetMol()
+                fixed_h = Chem.AddHs(fixed_protected, addCoords=True)
+                conf    = fixed_h.GetConformer()
                 bad = any(
                     abs(conf.GetAtomPosition(j).x)
                     + abs(conf.GetAtomPosition(j).y)
                     + abs(conf.GetAtomPosition(j).z) < 0.01
-                    for j in range(result_h.GetNumAtoms())
-                    if result_h.GetAtomWithIdx(j).GetAtomicNum() == 1
+                    for j in range(fixed_h.GetNumAtoms())
+                    if fixed_h.GetAtomWithIdx(j).GetAtomicNum() == 1
                 )
-                if not bad:
-                    result_mol = result_h
+                writer.write(fixed if bad else fixed_h)
             except Exception:
-                pass
-
-        # ── Serialize to string, strip M  RAD again (safety) ────────────
-        sio = io.StringIO()
-        w = Chem.SDWriter(sio)
-        w.SetKekulize(False)
-        w.write(result_mol)
-        w.close()
-        pose_text = _strip_rad_lines(sio.getvalue())
-        sdf_parts.append(pose_text)
-
-    # ── Write final SDF ────────────────────────────────────────────────────
-    with open(fixed_sdf, "w") as f:
-        f.write("".join(sdf_parts))
-
+                writer.write(fixed)
+            ok += 1
+        except Exception as e:
+            log.append(f"⚠ Pose {i+1}: fix failed ({e}) — writing raw")
+            mol_noH = Chem.RemoveHs(mol, sanitize=False)
+            writer.write(mol_noH)
+            err += 1
+    writer.close()
     RDLogger.EnableLog("rdApp.error")
-    log.append(
-        f"Bond-order fix: {ok} OK ({mcs_used} MCS, {legacy_used} legacy), "
-        f"{err} fallback"
-    )
+    log.append(f"Bond-order fix: {ok} OK, {err} fallback")
     return log
 
 
@@ -2805,36 +2724,13 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
 
 
 def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
-    """
-    Strip H atoms, renumber serials, and write a clean PDB for PoseView upload.
-
-    Output is written to /tmp (not the source directory) so this works even
-    when the source is on a read-only filesystem (e.g. Streamlit uploads mount).
-    The cleaned file is also smaller, which helps stay within the proteins.plus
-    upload size limit.
-    """
-    import hashlib as _hl
     rec_dir = os.path.dirname(os.path.abspath(receptor_pdb))
-
-    # Prefer receptor_atoms.pdb (no solvent/cofactor) from same dir — but only
-    # if it exists and is writable-or-readable (do not require write access here).
     candidates = [
         os.path.join(rec_dir, "receptor_atoms.pdb"),
         receptor_pdb,
     ]
-    source = next(
-        (p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 100),
-        receptor_pdb,
-    )
-
-    # Always write to /tmp — works even when source dir is read-only
-    _hash = _hl.md5(source.encode()).hexdigest()[:8]
-    out = os.path.join(tempfile.gettempdir(), f"receptor_pv_clean_{_hash}.pdb")
-
-    # Return cached version if already prepared and still valid
-    if os.path.exists(out) and os.path.getsize(out) > 100:
-        return out
-
+    source = next((p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 100), receptor_pdb)
+    out = os.path.join(rec_dir, "receptor_pv_clean.pdb")
     try:
         kept   = []
         serial = 0
@@ -2864,187 +2760,15 @@ def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
     return receptor_pdb
 
 
-def _neutralize_for_poseview(pose_sdf: str, charged_smiles: str = "") -> tuple:
-    """
-    Prepare a ligand SDF for PoseView by neutralizing formal charges.
-
-    proteins.plus PoseView renderer does not handle charged species or aromatic
-    bond type 4 correctly — [O-] phenolate is misdrawn as C=O, and ring bond
-    type 4 produces tri-keto artefacts.
-
-    Strategy (robust for charged aromatics like baicalein [O-]):
-      1. Read the fixed SDF and detect net charge.
-      2. If charge != 0 AND charged_smiles is provided:
-           a. Derive neutral SMILES by canonicalizing a neutral-form mol.
-           b. Build a fresh mol from neutral SMILES (clean aromaticity).
-           c. Copy 3D docking coordinates via MCS.
-           d. Kekulize → write SDF with explicit 1/2 bond types.
-      3. If charge == 0: also re-write with explicit Kekulé bonds (fix type-4
-         artefacts that proteins.plus misrenderers even in neutral molecules).
-
-    Returns:
-        (sdf_path_to_send, was_neutralized, net_charge)
-    """
-    import tempfile, io, re as _re
-    from rdkit import Chem, RDLogger
-    from rdkit.Chem import AllChem, rdFMCS
-    RDLogger.DisableLog("rdApp.*")
-
-    original_net_charge_fallback = 0
-
-    def _write_kekule_sdf(mol, props=None) -> str:
-        """Write mol to SDF with explicit 1/2 bonds, no M  RAD, no M  CHG."""
-        rw = Chem.RWMol(mol)
-        # Clear any residual radicals
-        for atom in rw.GetAtoms():
-            atom.SetNumRadicalElectrons(0)
-        try:
-            Chem.Kekulize(rw, clearAromaticFlags=True)
-            kekulize = True
-        except Exception:
-            kekulize = False
-        mol_out = rw.GetMol()
-        if props:
-            for k, v in props.items():
-                try:
-                    mol_out.SetProp(k, str(v))
-                except Exception:
-                    pass
-        sio = io.StringIO()
-        w = Chem.SDWriter(sio)
-        w.SetKekulize(kekulize)
-        w.write(mol_out)
-        w.close()
-        # Strip M  RAD
-        clean = "".join(
-            line for line in sio.getvalue().splitlines(keepends=True)
-            if not line.startswith("M  RAD")
-        )
-        return clean
-
-    def _copy_coords_via_mcs(mol_target, mol_source_3d):
-        """Copy 3D coords from mol_source_3d → mol_target via MCS."""
-        try:
-            mcs = rdFMCS.FindMCS(
-                [mol_target, mol_source_3d],
-                atomCompare=rdFMCS.AtomCompare.CompareElements,
-                bondCompare=rdFMCS.BondCompare.CompareAny,
-                timeout=5,
-            )
-            if mcs.numAtoms < mol_target.GetNumAtoms():
-                return False
-            mcs_mol = Chem.MolFromSmarts(mcs.smartsString)
-            m_t = mol_target.GetSubstructMatch(mcs_mol)
-            m_s = mol_source_3d.GetSubstructMatch(mcs_mol)
-            conf_s = mol_source_3d.GetConformer()
-            conf_t = mol_target.GetConformer()
-            p_map = dict(zip(m_t, m_s))
-            for ti in range(mol_target.GetNumAtoms()):
-                si = p_map.get(ti)
-                if si is not None:
-                    conf_t.SetAtomPosition(ti, conf_s.GetAtomPosition(si))
-            return True
-        except Exception:
-            return False
-
-    try:
-        # ── Read fixed SDF ────────────────────────────────────────────────
-        supp = Chem.SDMolSupplier(pose_sdf, sanitize=True, removeHs=True)
-        mol_charged = next((m for m in supp if m is not None), None)
-        if mol_charged is None:
-            RDLogger.EnableLog("rdApp.error")
-            return pose_sdf, False, 0
-
-        net_charge = int(Chem.GetFormalCharge(mol_charged))
-        original_net_charge_fallback = net_charge
-        vina_props = mol_charged.GetPropsAsDict()
-
-        # ── Case A: charged molecule → rebuild from neutral SMILES ────────
-        if net_charge != 0 and charged_smiles:
-            # Derive neutral SMILES: strip charges from charged_smiles mol
-            mol_cs = Chem.MolFromSmiles(charged_smiles)
-            if mol_cs is None:
-                mol_cs = Chem.MolFromSmiles(charged_smiles, sanitize=False)
-                try:
-                    mol_cs.UpdatePropertyCache(strict=False)
-                    Chem.FastFindRings(mol_cs)
-                    Chem.SetAromaticity(mol_cs)
-                except Exception:
-                    pass
-            rw_n = Chem.RWMol(mol_cs)
-            for atom in rw_n.GetAtoms():
-                if atom.GetFormalCharge() != 0:
-                    atom.SetFormalCharge(0)
-                    atom.SetNoImplicit(False)
-            try:
-                Chem.SanitizeMol(rw_n)
-            except Exception:
-                pass
-            neutral_smi = Chem.MolToSmiles(rw_n.GetMol(), isomericSmiles=True, canonical=True)
-            mol_neutral = Chem.MolFromSmiles(neutral_smi)
-            if mol_neutral is None:
-                raise RuntimeError(f"Cannot build neutral mol from: {neutral_smi}")
-
-            # Embed placeholder 3D then copy docking coords
-            AllChem.EmbedMolecule(mol_neutral, randomSeed=42)
-            _copy_coords_via_mcs(mol_neutral, mol_charged)
-
-            sdf_text = _write_kekule_sdf(mol_neutral, vina_props)
-            tmp = tempfile.NamedTemporaryFile(suffix="_pv_neutral.sdf", delete=False, mode="w")
-            tmp.write(sdf_text)
-            tmp.close()
-            RDLogger.EnableLog("rdApp.error")
-            return tmp.name, True, net_charge
-
-        # ── Case B: neutral molecule → re-write with explicit Kekulé bonds ─
-        # proteins.plus misrenders aromatic bond type 4 even for neutral mols
-        AllChem.EmbedMolecule(mol_charged, randomSeed=42) if mol_charged.GetNumConformers() == 0 else None
-        sdf_text = _write_kekule_sdf(mol_charged, vina_props)
-
-        # Only write new file if the original had bond type 4
-        if "  4  0" in sdf_text or "  4  " in sdf_text:
-            tmp = tempfile.NamedTemporaryFile(suffix="_pv_kekule.sdf", delete=False, mode="w")
-            tmp.write(sdf_text)
-            tmp.close()
-            RDLogger.EnableLog("rdApp.error")
-            return tmp.name, False, 0
-
-        RDLogger.EnableLog("rdApp.error")
-        return pose_sdf, False, 0
-
-    except Exception:
-        RDLogger.EnableLog("rdApp.error")
-        return pose_sdf, False, original_net_charge_fallback
-
-
-def call_poseview_v1(receptor_pdb: str, pose_sdf: str, charged_smiles: str = "") -> tuple:
-    """
-    Submit a docked pose to proteins.plus PoseView v1 and return (svg_bytes, error).
-
-    charged_smiles: the prot_smiles used for docking (with [O-] etc.) so that
-      _neutralize_for_poseview can build the correct neutral form.
-
-    Charged ligands (e.g. phenolate [O-], carboxylate, ammonium):
-      proteins.plus renderer does not correctly display formal charges — it
-      misinterprets [O-] (phenolate) as C=O (keto) and breaks the ring system.
-      The function automatically neutralizes the SDF before upload so the
-      2D structure is rendered correctly.  The returned tuple includes a third
-      element (was_neutralized) so the caller can show an info note.
-    """
+def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     import requests
     last_error = "Unknown error"
-
-    # ── Neutralize / re-Kekulize if needed ───────────────────────────────
-    sdf_to_send, was_neutralized, original_charge = _neutralize_for_poseview(
-        pose_sdf, charged_smiles=charged_smiles
-    )
-
     rec_to_send = _prepare_pdb_for_poseview(receptor_pdb)
     for attempt in range(1, _PV_MAX_RETRIES + 1):
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
         try:
-            with open(rec_to_send) as rf, open(sdf_to_send) as lf:
+            with open(rec_to_send) as rf, open(pose_sdf) as lf:
                 r = requests.post(
                     _PP_POSEVIEW,
                     files={
@@ -3082,13 +2806,11 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str, charged_smiles: str = "")
         try:
             resp = requests.get(img_url, headers=_PP_HEADERS, timeout=20)
             resp.raise_for_status()
-            # Return (svg_bytes, error, was_neutralized, original_charge)
-            # Backward-compatible: callers that unpack (svg, err) still work
-            return resp.content, None, was_neutralized, original_charge
+            return resp.content, None
         except Exception as e:
             last_error = f"SVG download failed (attempt {attempt}): {e}"
             continue
-    return None, last_error, was_neutralized, original_charge
+    return None, last_error
 
 
 def warm_poseview_cache(receptor_pdb: str) -> tuple:
