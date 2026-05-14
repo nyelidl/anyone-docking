@@ -2341,8 +2341,6 @@ def _bo_template(smiles: str):
     try:
         Chem.Kekulize(mol, clearAromaticFlags=True)
     except Exception:
-        # Kekulize fails for some tautomeric/charged aromatics (e.g. flavonoids with [O-])
-        # AssignBondOrdersFromTemplate still works without explicit Kekulization
         pass
     return mol
 
@@ -2364,56 +2362,221 @@ def _bo_fix_mol(probe, template):
         fixed = em.GetMol()
     Chem.SanitizeMol(fixed)
     for prop in probe.GetPropsAsDict():
-        fixed.SetProp(prop, probe.GetProp(prop))
+        try:
+            fixed.SetProp(prop, probe.GetProp(prop))
+        except Exception:
+            pass
     return fixed
 
 
+def _strip_rad_lines(sdf_text: str) -> str:
+    """Remove M  RAD lines from SDF text (OpenBabel artefact from PDBQT aromatic flags)."""
+    return "".join(
+        line for line in sdf_text.splitlines(keepends=True)
+        if not line.startswith("M  RAD")
+    )
+
+
+def _rebuild_pose_via_mcs(probe_raw, smiles: str) -> object:
+    """
+    Rebuild a docked pose mol with correct bond orders, formal charges, and zero radicals.
+
+    Strategy (handles charged/tautomeric aromatics like baicalein [O-]):
+      1. Parse correct SMILES → mol_correct  (charge & aromaticity guaranteed correct)
+      2. Find MCS between mol_correct and probe (element-only, bond-order-agnostic)
+      3. Copy 3D coordinates from probe → new conformer on mol_correct
+      4. Return mol_correct with docking coordinates
+
+    Falls back to AssignBondOrdersFromTemplate when MCS covers all atoms.
+    Returns None if rebuild is impossible.
+    """
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import AllChem, rdFMCS
+    RDLogger.DisableLog("rdApp.*")
+
+    try:
+        mol_correct = Chem.MolFromSmiles(smiles)
+        if mol_correct is None:
+            return None
+
+        probe_noH = Chem.RemoveHs(probe_raw, sanitize=False)
+        if probe_noH is None or probe_noH.GetNumConformers() == 0:
+            return None
+
+        n_correct = mol_correct.GetNumAtoms()
+
+        # ── MCS: element-only, any bond order ──────────────────────────────
+        mcs = rdFMCS.FindMCS(
+            [mol_correct, probe_noH],
+            atomCompare=rdFMCS.AtomCompare.CompareElements,
+            bondCompare=rdFMCS.BondCompare.CompareAny,
+            timeout=5,
+        )
+
+        if mcs.numAtoms < n_correct:
+            RDLogger.EnableLog("rdApp.error")
+            return None  # MCS incomplete — caller will fallback
+
+        mcs_mol    = Chem.MolFromSmarts(mcs.smartsString)
+        match_c    = mol_correct.GetSubstructMatch(mcs_mol)
+        match_p    = probe_noH.GetSubstructMatch(mcs_mol)
+
+        if len(match_c) != n_correct or len(match_p) != n_correct:
+            RDLogger.EnableLog("rdApp.error")
+            return None
+
+        # ── Copy 3D coords from probe → mol_correct ────────────────────────
+        # Need a conformer on mol_correct first (placeholder via EmbedMolecule)
+        AllChem.EmbedMolecule(mol_correct, randomSeed=42)
+        conf_probe = probe_noH.GetConformer()
+        conf_new   = mol_correct.GetConformer()
+
+        probe_idx_map = dict(zip(match_c, match_p))
+        for c_idx in range(n_correct):
+            p_idx = probe_idx_map.get(c_idx)
+            if p_idx is not None:
+                pos = conf_probe.GetAtomPosition(p_idx)
+                conf_new.SetAtomPosition(c_idx, pos)
+
+        # Clear any lingering radicals (safety)
+        rw = Chem.RWMol(mol_correct)
+        for atom in rw.GetAtoms():
+            atom.SetNumRadicalElectrons(0)
+        result = rw.GetMol()
+
+        RDLogger.EnableLog("rdApp.error")
+        return result
+
+    except Exception:
+        RDLogger.EnableLog("rdApp.error")
+        return None
+
+
 def fix_sdf_bond_orders(raw_sdf: str, smiles: str, fixed_sdf: str) -> list:
+    """
+    Fix bond orders, formal charges, and M  RAD artefacts in a multi-pose SDF
+    from AutoDock Vina / OpenBabel.
+
+    Algorithm per pose (tries in order):
+      1. _rebuild_pose_via_mcs  — build from correct SMILES + copy 3D coords via MCS
+                                   handles charged/tautomeric aromatics (e.g. baicalein [O-])
+      2. _bo_fix_mol            — legacy AssignBondOrdersFromTemplate (neutral molecules)
+      3. raw pose (no H)        — last-resort fallback
+
+    Also strips M  RAD lines written by OpenBabel from PDBQT aromatic atoms.
+    """
+    import io
     import shutil
     from rdkit import Chem, RDLogger
-    from rdkit.Chem import AllChem
     RDLogger.DisableLog("rdApp.*")
     log = []
+
+    # ── Pre-process: strip M  RAD from entire file before reading ──────────
+    try:
+        with open(raw_sdf) as f:
+            raw_text = f.read()
+        cleaned_text = _strip_rad_lines(raw_text)
+        if cleaned_text != raw_text:
+            log.append("✓ Stripped M  RAD artefacts (OpenBabel/PDBQT aromatic flags)")
+    except Exception as e:
+        log.append(f"⚠ Could not pre-strip M  RAD: {e}")
+        cleaned_text = None
+
+    # ── Build legacy template (used as fallback) ───────────────────────────
+    template = None
     try:
         template = _bo_template(smiles)
     except Exception as e:
-        log.append(f"⚠ Could not build template: {e} — skipping fix")
-        RDLogger.EnableLog("rdApp.error")
-        shutil.copy(raw_sdf, fixed_sdf)
-        return log
-    supplier = Chem.SDMolSupplier(raw_sdf, sanitize=False, removeHs=False)
-    writer   = Chem.SDWriter(fixed_sdf)
-    writer.SetKekulize(False)
-    ok = err = 0
+        log.append(f"⚠ Could not build legacy template: {e}")
+
+    # ── Read supplier from cleaned text or original file ───────────────────
+    if cleaned_text is not None:
+        supplier = Chem.SDMolSupplier()
+        supplier.SetData(cleaned_text, sanitize=False, removeHs=False)
+    else:
+        supplier = Chem.SDMolSupplier(raw_sdf, sanitize=False, removeHs=False)
+
+    # ── Write output ────────────────────────────────────────────────────────
+    ok = err = mcs_used = legacy_used = 0
+    sdf_parts = []  # collect as strings so we can strip M  RAD after write too
+
     for i, mol in enumerate(supplier):
         if mol is None:
             log.append(f"⚠ Pose {i+1}: could not read — skipped")
             err += 1
             continue
+
+        result_mol = None
+        method = "raw"
+
+        # ── Strategy 1: MCS rebuild ──────────────────────────────────────
         try:
-            fixed = _bo_fix_mol(mol, template)
+            rebuilt = _rebuild_pose_via_mcs(mol, smiles)
+            if rebuilt is not None:
+                # Copy VINA RESULT and other properties from raw pose
+                for prop in mol.GetPropsAsDict():
+                    try:
+                        rebuilt.SetProp(prop, mol.GetProp(prop))
+                    except Exception:
+                        pass
+                result_mol = rebuilt
+                method = "mcs"
+                mcs_used += 1
+        except Exception as e:
+            log.append(f"  Pose {i+1} MCS rebuild error: {e}")
+
+        # ── Strategy 2: legacy AssignBondOrdersFromTemplate ──────────────
+        if result_mol is None and template is not None:
             try:
-                fixed_h = Chem.AddHs(fixed, addCoords=True)
-                conf    = fixed_h.GetConformer()
+                result_mol = _bo_fix_mol(mol, template)
+                method = "legacy"
+                legacy_used += 1
+            except Exception as e:
+                log.append(f"  Pose {i+1} legacy fix error: {e}")
+
+        # ── Strategy 3: raw fallback ─────────────────────────────────────
+        if result_mol is None:
+            log.append(f"⚠ Pose {i+1}: all fixes failed — writing raw (no H)")
+            result_mol = Chem.RemoveHs(mol, sanitize=False)
+            err += 1
+        else:
+            ok += 1
+
+        # ── Optionally add Hs with coords ────────────────────────────────
+        if method in ("legacy",):
+            try:
+                result_h = Chem.AddHs(result_mol, addCoords=True)
+                conf = result_h.GetConformer()
                 bad = any(
                     abs(conf.GetAtomPosition(j).x)
                     + abs(conf.GetAtomPosition(j).y)
                     + abs(conf.GetAtomPosition(j).z) < 0.01
-                    for j in range(fixed_h.GetNumAtoms())
-                    if fixed_h.GetAtomWithIdx(j).GetAtomicNum() == 1
+                    for j in range(result_h.GetNumAtoms())
+                    if result_h.GetAtomWithIdx(j).GetAtomicNum() == 1
                 )
-                writer.write(fixed if bad else fixed_h)
+                if not bad:
+                    result_mol = result_h
             except Exception:
-                writer.write(fixed)
-            ok += 1
-        except Exception as e:
-            log.append(f"⚠ Pose {i+1}: fix failed ({e}) — writing raw")
-            mol_noH = Chem.RemoveHs(mol, sanitize=False)
-            writer.write(mol_noH)
-            err += 1
-    writer.close()
+                pass
+
+        # ── Serialize to string, strip M  RAD again (safety) ────────────
+        sio = io.StringIO()
+        w = Chem.SDWriter(sio)
+        w.SetKekulize(False)
+        w.write(result_mol)
+        w.close()
+        pose_text = _strip_rad_lines(sio.getvalue())
+        sdf_parts.append(pose_text)
+
+    # ── Write final SDF ────────────────────────────────────────────────────
+    with open(fixed_sdf, "w") as f:
+        f.write("".join(sdf_parts))
+
     RDLogger.EnableLog("rdApp.error")
-    log.append(f"Bond-order fix: {ok} OK, {err} fallback")
+    log.append(
+        f"Bond-order fix: {ok} OK ({mcs_used} MCS, {legacy_used} legacy), "
+        f"{err} fallback"
+    )
     return log
 
 
