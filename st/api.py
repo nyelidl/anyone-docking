@@ -43,11 +43,12 @@ from core import (
 # Optional 2D interaction / redocking utilities from core.py.
 # The API still works if these are unavailable.
 try:
-    from core import calc_rmsd_heavy, write_single_pose, draw_interaction_diagram
+    from core import calc_rmsd_heavy, write_single_pose, draw_interaction_diagram, svg_to_png
 except Exception:
     calc_rmsd_heavy = None
     write_single_pose = None
     draw_interaction_diagram = None
+    svg_to_png = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -311,6 +312,7 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "pose_selection_warning": r.get("pose_selection_warning", ""),
             "two_d_interaction_available": bool(r.get("two_d_interaction_available", False)),
             "two_d_interaction_svg_url": r.get("two_d_interaction_svg_url", ""),
+            "two_d_interaction_png_url": r.get("two_d_interaction_png_url", ""),
             "two_d_interaction_error": r.get("two_d_interaction_error", ""),
             "error": r.get("error", ""),
         })
@@ -464,7 +466,9 @@ def _generate_2d_interaction(
     out: Dict[str, Any] = {
         "two_d_interaction_available": False,
         "two_d_interaction_svg_url": "",
+        "two_d_interaction_png_url": "",
         "two_d_interaction_svg_file": "",
+        "two_d_interaction_png_file": "",
         "two_d_interaction_error": "",
     }
 
@@ -484,7 +488,10 @@ def _generate_2d_interaction(
     try:
         safe = _safe_name(lig_name, "ligand")
         svg_name = f"{safe}_interaction2d.svg"
+        png_name = f"{safe}_interaction2d.png"
         svg_path = wdir / svg_name
+        png_path = wdir / png_name
+
         svg_bytes = draw_interaction_diagram(
             receptor_pdb=receptor_pdb,
             pose_sdf=selected_pose_sdf,
@@ -492,11 +499,26 @@ def _generate_2d_interaction(
             title=f"{safe} selected pose",
         )
         svg_path.write_bytes(svg_bytes)
+
+        png_ok = False
+        png_err = ""
+        try:
+            if svg_to_png is not None:
+                svg_to_png(str(svg_path), str(png_path))
+            else:
+                import cairosvg
+                cairosvg.svg2png(bytestring=svg_bytes, write_to=str(png_path), output_width=1200)
+            png_ok = png_path.exists() and png_path.stat().st_size > 100
+        except Exception as png_e:
+            png_err = f"PNG conversion failed: {png_e}"
+
         out.update({
             "two_d_interaction_available": True,
             "two_d_interaction_svg_url": f"/jobs/{job_id}/files/{svg_name}",
+            "two_d_interaction_png_url": f"/jobs/{job_id}/files/{png_name}" if png_ok else "",
             "two_d_interaction_svg_file": str(svg_path),
-            "two_d_interaction_error": "",
+            "two_d_interaction_png_file": str(png_path) if png_ok else "",
+            "two_d_interaction_error": png_err,
         })
     except Exception as e:
         out["two_d_interaction_error"] = str(e)
@@ -824,6 +846,7 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "pose_selection_warning": r.get("pose_selection_warning", ""),
             "two_d_interaction_available": bool(r.get("two_d_interaction_available", False)),
             "two_d_interaction_svg_url": r.get("two_d_interaction_svg_url", ""),
+            "two_d_interaction_png_url": r.get("two_d_interaction_png_url", ""),
             "two_d_interaction_error": r.get("two_d_interaction_error", ""),
             "scores": r.get("scores", [])[:10] if isinstance(r.get("scores", []), list) else [],
             "error": r.get("error", ""),
@@ -1212,7 +1235,12 @@ def get_job_file(job_id: str, filename: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="File not found")
 
     suffix = file_path.suffix.lower()
-    media_type = "image/svg+xml" if suffix == ".svg" else "application/octet-stream"
+    if suffix == ".svg":
+        media_type = "image/svg+xml"
+    elif suffix == ".png":
+        media_type = "image/png"
+    else:
+        media_type = "application/octet-stream"
     return FileResponse(str(file_path), media_type=media_type, filename=safe_filename)
 
 
