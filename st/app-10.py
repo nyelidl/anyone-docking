@@ -3371,6 +3371,27 @@ def _poseview_ui(
 
     # ── TAB 3: PoseView ───────────────────────────────────────────────────────
     with _tab_pv:
+        # ── PoseView charged-species warning ─────────────────────────────────
+        st.warning(
+            "⚠️ **PoseView Limitation — Charged Species Not Supported**\n\n"
+            "proteins.plus / PoseView does **not** support formally charged atoms "
+            "in the ligand. The diagram will always display the **neutral (protonated) "
+            "form** regardless of the ionisation state used during docking.\n\n"
+            "**Examples of affected ligands:**\n"
+            "- **Baicalein** at physiological pH: C6–O⁻ (phenoxide) is shown as C6–OH\n"
+            "- Carboxylate (–COO⁻) shown as –COOH\n"
+            "- Phosphate (–OPO₃²⁻) shown as neutral phosphoric acid\n"
+            "- Amine (–NH₃⁺) shown as –NH₂\n\n"
+            "**What this means:** hydrogen-bond donors/acceptors and ionic interactions "
+            "involving charged groups **may appear incorrect** in the PoseView diagram. "
+            "The docking itself (Vina score, 3D pose) is unaffected — only the 2D "
+            "depiction is misleading.\n\n"
+            "💡 For ligands with formal charges, use the **Anyone Can Dock 2D Diagram** "
+            "or **RDKit 2D Diagram** tabs instead — both honour the correct ionisation state.",
+            icon="⚠️",
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         _ci, _cb = st.columns([3, 1])
         with _ci:
             if _stale and st.session_state.get(img_svg_key):
