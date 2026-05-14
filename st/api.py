@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+# PATCHED VERSION — Anyone Can Dock API
+# Includes:
+# - persistent compact job status
+# - /ping endpoint for GPT Actions
+# - /compound/smiles lookup
+# - /pdb/search lookup
+# - pKaNET valence-error fallback to neutral
+# - pose selection for 2D interaction:
+#   co-crystal/redocking ligand -> lowest RMSD vs co-crystal ligand
+#   other ligand -> top-ranked docking pose
+# - 2D interaction diagram output as SVG and PNG
 """
 api.py — FastAPI wrapper for Anyone Can Dock / core.py.
 
