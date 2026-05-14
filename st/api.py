@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import requests
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -631,6 +631,248 @@ def ping() -> Dict[str, Any]:
         "vina_message": str(vina_msg),
         "auth_enabled": bool(API_KEY),
     }
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# External lookup helpers for DockGPT
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BUILTIN_LIGANDS: Dict[str, Dict[str, str]] = {
+    "gefitinib": {
+        "name": "Gefitinib",
+        "smiles": "COc1cc2c(cc1OCCCN1CCOCC1)ncnc2Nc1ccc(F)c(Cl)c1",
+        "source": "built-in example ligand list",
+    },
+    "erlotinib": {
+        "name": "Erlotinib",
+        "smiles": "C#Cc1cccc(Nc2ncnc3cc(OCCOC)c(OCCOC)cc23)c1",
+        "source": "built-in example ligand list",
+    },
+    "osimertinib": {
+        "name": "Osimertinib",
+        "smiles": "C=CC(=O)Nc1cc(Nc2nccc(-c3cn(C)c4ccccc34)n2)c(OC)cc1N(C)CCN(C)C",
+        "source": "built-in example ligand list",
+    },
+    "afatinib": {
+        "name": "Afatinib",
+        "smiles": "CN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1O[C@H]1CCOC1",
+        "source": "built-in example ligand list",
+    },
+}
+
+
+def _pick_smiles_from_pubchem_props(props: Dict[str, Any]) -> str:
+    for key in ("IsomericSMILES", "CanonicalSMILES", "ConnectivitySMILES", "SMILES"):
+        val = props.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+@app.get("/compound/smiles", dependencies=[Depends(require_api_key)])
+def compound_smiles(
+    name: str = Query(..., description="Compound name, e.g. gefitinib"),
+    prefer_builtin: bool = Query(True, description="Use built-in examples before PubChem lookup"),
+) -> Dict[str, Any]:
+    """Resolve a compound name to a compact SMILES record for GPT Actions."""
+    q = (name or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Compound name is required.")
+
+    key = q.lower().strip()
+    if prefer_builtin and key in _BUILTIN_LIGANDS:
+        item = _BUILTIN_LIGANDS[key]
+        return {
+            "found": True,
+            "query": q,
+            "name": item["name"],
+            "smiles": item["smiles"],
+            "source": item["source"],
+            "cid": None,
+            "formula": "",
+            "molecular_weight": None,
+            "url": "",
+            "warning": "Built-in example SMILES. Verify stereochemistry/salt form for research use.",
+        }
+
+    try:
+        from urllib.parse import quote
+
+        cid_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{quote(q)}/cids/JSON"
+        cid_resp = requests.get(cid_url, timeout=12)
+        if cid_resp.status_code != 200:
+            return {
+                "found": False,
+                "query": q,
+                "source": "PubChem",
+                "error": f"Compound not found in PubChem or PubChem returned HTTP {cid_resp.status_code}.",
+            }
+
+        cid = cid_resp.json().get("IdentifierList", {}).get("CID", [None])[0]
+        if cid is None:
+            return {"found": False, "query": q, "source": "PubChem", "error": "No CID found."}
+
+        prop_blocks = [
+            "IUPACName,MolecularFormula,MolecularWeight,IsomericSMILES,CanonicalSMILES,ConnectivitySMILES",
+            "IUPACName,MolecularFormula,MolecularWeight,CanonicalSMILES,ConnectivitySMILES",
+        ]
+        props: Dict[str, Any] = {}
+        for block in prop_blocks:
+            prop_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/{block}/JSON"
+            prop_resp = requests.get(prop_url, timeout=12)
+            if prop_resp.status_code == 200:
+                rows = prop_resp.json().get("PropertyTable", {}).get("Properties", [])
+                if rows:
+                    props = rows[0]
+                    if _pick_smiles_from_pubchem_props(props):
+                        break
+
+        smiles = _pick_smiles_from_pubchem_props(props)
+        if not smiles:
+            return {
+                "found": False,
+                "query": q,
+                "cid": cid,
+                "source": "PubChem",
+                "error": "PubChem CID found, but no usable SMILES was returned.",
+            }
+
+        return {
+            "found": True,
+            "query": q,
+            "name": props.get("IUPACName", q),
+            "smiles": smiles,
+            "canonical_smiles": props.get("CanonicalSMILES", smiles),
+            "source": "PubChem",
+            "cid": cid,
+            "formula": props.get("MolecularFormula", ""),
+            "molecular_weight": props.get("MolecularWeight", None),
+            "url": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
+            "warning": "Verify stereochemistry, salt form, tautomer, and protonation state before final docking.",
+        }
+
+    except Exception as e:
+        return {
+            "found": False,
+            "query": q,
+            "source": "PubChem",
+            "error": str(e),
+        }
+
+
+@app.get("/pdb/search", dependencies=[Depends(require_api_key)])
+def pdb_search(
+    query: str = Query(..., description="Protein/target search query, e.g. EGFR gefitinib"),
+    top_n: int = Query(10, ge=1, le=25, description="Maximum number of PDB entries to return"),
+) -> Dict[str, Any]:
+    """Search RCSB PDB and return compact entry metadata for GPT Actions."""
+    q = (query or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Search query is required.")
+
+    try:
+        payload = {
+            "query": {
+                "type": "terminal",
+                "service": "full_text",
+                "parameters": {"value": q},
+            },
+            "return_type": "entry",
+            "request_options": {
+                "paginate": {"start": 0, "rows": int(top_n)},
+                "results_verbosity": "compact",
+            },
+        }
+        r = requests.post("https://search.rcsb.org/rcsbsearch/v2/query", json=payload, timeout=15)
+        if r.status_code != 200:
+            return {
+                "query": q,
+                "found": False,
+                "results": [],
+                "error": f"RCSB search returned HTTP {r.status_code}.",
+            }
+
+        hits = r.json().get("result_set", []) or []
+        results: List[Dict[str, Any]] = []
+
+        for hit in hits[:top_n]:
+            pdb_id = ""
+            if isinstance(hit, dict):
+                pdb_id = str(hit.get("identifier", "") or hit.get("entry_id", "")).upper().strip()
+            else:
+                pdb_id = str(hit).upper().strip()
+            if not pdb_id or any(ch in pdb_id for ch in "{}[]:, "):
+                continue
+
+            title = ""
+            method = ""
+            resolution = None
+            deposited_ligands: List[str] = []
+            protein_name = ""
+
+            try:
+                e = requests.get(f"https://data.rcsb.org/rest/v1/core/entry/{pdb_id}", timeout=12)
+                if e.status_code == 200:
+                    ej = e.json()
+                    title = (ej.get("struct", {}) or {}).get("title", "") or ""
+                    exptl = ej.get("exptl") or []
+                    if isinstance(exptl, list) and exptl:
+                        method = str((exptl[0] or {}).get("method", "") or "")
+                    info = ej.get("rcsb_entry_info", {}) or {}
+                    res_comb = info.get("resolution_combined")
+                    if isinstance(res_comb, list) and res_comb:
+                        try:
+                            resolution = float(res_comb[0])
+                        except Exception:
+                            resolution = None
+            except Exception:
+                pass
+
+            try:
+                np = requests.get(f"https://data.rcsb.org/rest/v1/core/nonpolymer_entity/{pdb_id}/1", timeout=8)
+                if np.status_code == 200:
+                    nj = np.json()
+                    comp = (((nj.get("pdbx_entity_nonpoly", {}) or {}).get("comp_id", "")) or "").strip()
+                    if comp:
+                        deposited_ligands.append(comp)
+            except Exception:
+                pass
+
+            try:
+                pe = requests.get(f"https://data.rcsb.org/rest/v1/core/polymer_entity/{pdb_id}/1", timeout=8)
+                if pe.status_code == 200:
+                    pj = pe.json()
+                    protein_name = ((pj.get("rcsb_polymer_entity", {}) or {}).get("pdbx_description", "") or "").strip()
+            except Exception:
+                pass
+
+            results.append({
+                "pdb_id": pdb_id,
+                "title": title,
+                "method": method,
+                "resolution": resolution,
+                "protein_name": protein_name,
+                "example_ligands": deposited_ligands[:5],
+                "url": f"https://www.rcsb.org/structure/{pdb_id}",
+            })
+
+        return {
+            "query": q,
+            "found": bool(results),
+            "results": results,
+            "source": "RCSB PDB Search/Data API",
+            "warning": "Review biological relevance, ligand identity, mutations, missing residues, and resolution before docking.",
+        }
+
+    except Exception as e:
+        return {
+            "query": q,
+            "found": False,
+            "results": [],
+            "source": "RCSB PDB Search/Data API",
+            "error": str(e),
+        }
 
 
 @app.post("/scan_hetatm", dependencies=[Depends(require_api_key)])
