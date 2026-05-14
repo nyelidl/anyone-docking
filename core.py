@@ -2805,13 +2805,36 @@ def _pp_poll(job_id: str, poll_url: str, poll_interval: int = 2,
 
 
 def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
+    """
+    Strip H atoms, renumber serials, and write a clean PDB for PoseView upload.
+
+    Output is written to /tmp (not the source directory) so this works even
+    when the source is on a read-only filesystem (e.g. Streamlit uploads mount).
+    The cleaned file is also smaller, which helps stay within the proteins.plus
+    upload size limit.
+    """
+    import hashlib as _hl
     rec_dir = os.path.dirname(os.path.abspath(receptor_pdb))
+
+    # Prefer receptor_atoms.pdb (no solvent/cofactor) from same dir — but only
+    # if it exists and is writable-or-readable (do not require write access here).
     candidates = [
         os.path.join(rec_dir, "receptor_atoms.pdb"),
         receptor_pdb,
     ]
-    source = next((p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 100), receptor_pdb)
-    out = os.path.join(rec_dir, "receptor_pv_clean.pdb")
+    source = next(
+        (p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 100),
+        receptor_pdb,
+    )
+
+    # Always write to /tmp — works even when source dir is read-only
+    _hash = _hl.md5(source.encode()).hexdigest()[:8]
+    out = os.path.join(tempfile.gettempdir(), f"receptor_pv_clean_{_hash}.pdb")
+
+    # Return cached version if already prepared and still valid
+    if os.path.exists(out) and os.path.getsize(out) > 100:
+        return out
+
     try:
         kept   = []
         serial = 0
@@ -2841,134 +2864,165 @@ def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
     return receptor_pdb
 
 
-def _neutralize_for_poseview(pose_sdf: str) -> tuple:
+def _neutralize_for_poseview(pose_sdf: str, charged_smiles: str = "") -> tuple:
     """
     Prepare a ligand SDF for PoseView by neutralizing formal charges.
 
-    proteins.plus PoseView renderer does not correctly handle charged species
-    (e.g. phenolate [O-], carboxylate [COO-], ammonium [NH3+]).  When a net
-    charge is detected the function:
-      1. Strips all formal charges from the mol object.
-      2. Re-adds the missing H atoms (so O- → OH, NH3+ → NH2 geometry).
-      3. Writes the neutralized SDF to a temp file.
+    proteins.plus PoseView renderer does not handle charged species or aromatic
+    bond type 4 correctly — [O-] phenolate is misdrawn as C=O, and ring bond
+    type 4 produces tri-keto artefacts.
+
+    Strategy (robust for charged aromatics like baicalein [O-]):
+      1. Read the fixed SDF and detect net charge.
+      2. If charge != 0 AND charged_smiles is provided:
+           a. Derive neutral SMILES by canonicalizing a neutral-form mol.
+           b. Build a fresh mol from neutral SMILES (clean aromaticity).
+           c. Copy 3D docking coordinates via MCS.
+           d. Kekulize → write SDF with explicit 1/2 bond types.
+      3. If charge == 0: also re-write with explicit Kekulé bonds (fix type-4
+         artefacts that proteins.plus misrenderers even in neutral molecules).
 
     Returns:
         (sdf_path_to_send, was_neutralized, net_charge)
-        • sdf_path_to_send  – path of SDF to upload (original or neutralized)
-        • was_neutralized   – True if a charge was present and the mol was changed
-        • net_charge        – the original net formal charge (int)
     """
-    import tempfile, io
+    import tempfile, io, re as _re
     from rdkit import Chem, RDLogger
-    from rdkit.Chem import AllChem
+    from rdkit.Chem import AllChem, rdFMCS
     RDLogger.DisableLog("rdApp.*")
 
-    # Track charge before try so the except fallback can return it
     original_net_charge_fallback = 0
 
-    try:
-        supp = Chem.SDMolSupplier(pose_sdf, sanitize=True, removeHs=False)
-        mol  = next((m for m in supp if m is not None), None)
-        if mol is None:
-            RDLogger.EnableLog("rdApp.error")
-            return pose_sdf, False, 0
-
-        net_charge = int(Chem.GetFormalCharge(mol))
-        original_net_charge_fallback = net_charge  # save for except block
-        if net_charge == 0:
-            # No charge — send original SDF unchanged
-            RDLogger.EnableLog("rdApp.error")
-            return pose_sdf, False, 0
-
-        # ── Neutralize ────────────────────────────────────────────────────
-        rw = Chem.RWMol(Chem.RemoveHs(mol, sanitize=False))
+    def _write_kekule_sdf(mol, props=None) -> str:
+        """Write mol to SDF with explicit 1/2 bonds, no M  RAD, no M  CHG."""
+        rw = Chem.RWMol(mol)
+        # Clear any residual radicals
         for atom in rw.GetAtoms():
-            fc = atom.GetFormalCharge()
-            if fc != 0:
-                atom.SetFormalCharge(0)
-                atom.SetNumRadicalElectrons(0)
-                atom.SetNoImplicit(False)
+            atom.SetNumRadicalElectrons(0)
         try:
-            Chem.SanitizeMol(rw)
+            Chem.Kekulize(rw, clearAromaticFlags=True)
+            kekulize = True
         except Exception:
-            try:
-                rw.UpdatePropertyCache(strict=False)
-                Chem.FastFindRings(rw)
-                Chem.SetAromaticity(rw)
-            except Exception:
-                pass
-
-        # Add H to fill valence (O- → OH, etc.)
-        neutral_mol = Chem.AddHs(rw.GetMol(), addCoords=True)
-
-        # Copy 3D conformer from original (heavy atoms only) via MCS
-        try:
-            from rdkit.Chem import rdFMCS
-            mol_noH = Chem.RemoveHs(mol, sanitize=False)
-            neutral_noH = Chem.RemoveHs(neutral_mol, sanitize=False)
-            mcs = rdFMCS.FindMCS(
-                [neutral_noH, mol_noH],
-                atomCompare=rdFMCS.AtomCompare.CompareElements,
-                bondCompare=rdFMCS.BondCompare.CompareAny,
-                timeout=3,
-            )
-            if mcs.numAtoms >= neutral_noH.GetNumAtoms():
-                mcs_mol   = Chem.MolFromSmarts(mcs.smartsString)
-                m_n       = neutral_noH.GetSubstructMatch(mcs_mol)
-                m_o       = mol_noH.GetSubstructMatch(mcs_mol)
-                conf_orig = mol_noH.GetConformer()
-                conf_new  = neutral_noH.GetConformer()
-                p_map     = dict(zip(m_n, m_o))
-                for ni in range(neutral_noH.GetNumAtoms()):
-                    oi = p_map.get(ni)
-                    if oi is not None:
-                        pos = conf_orig.GetAtomPosition(oi)
-                        conf_new.SetAtomPosition(ni, pos)
-                neutral_mol = neutral_noH
-        except Exception:
-            pass
-
-        # Copy Vina properties
-        for prop in mol.GetPropsAsDict():
-            try:
-                neutral_mol.SetProp(prop, mol.GetProp(prop))
-            except Exception:
-                pass
-
-        # Write neutralized SDF (explicit single/double bonds preferred; fallback to aromatic)
+            kekulize = False
+        mol_out = rw.GetMol()
+        if props:
+            for k, v in props.items():
+                try:
+                    mol_out.SetProp(k, str(v))
+                except Exception:
+                    pass
         sio = io.StringIO()
         w = Chem.SDWriter(sio)
-        try:
-            Chem.Kekulize(neutral_mol, clearAromaticFlags=False)
-            w.SetKekulize(True)
-        except Exception:
-            w.SetKekulize(False)
-        w.write(neutral_mol)
+        w.SetKekulize(kekulize)
+        w.write(mol_out)
         w.close()
-        # Strip M  RAD inline (avoid cross-module call issues)
-        clean_text = "".join(
+        # Strip M  RAD
+        clean = "".join(
             line for line in sio.getvalue().splitlines(keepends=True)
             if not line.startswith("M  RAD")
         )
+        return clean
 
-        tmp = tempfile.NamedTemporaryFile(
-            suffix="_pv_neutral.sdf", delete=False, mode="w"
-        )
-        tmp.write(clean_text)
-        tmp.close()
+    def _copy_coords_via_mcs(mol_target, mol_source_3d):
+        """Copy 3D coords from mol_source_3d → mol_target via MCS."""
+        try:
+            mcs = rdFMCS.FindMCS(
+                [mol_target, mol_source_3d],
+                atomCompare=rdFMCS.AtomCompare.CompareElements,
+                bondCompare=rdFMCS.BondCompare.CompareAny,
+                timeout=5,
+            )
+            if mcs.numAtoms < mol_target.GetNumAtoms():
+                return False
+            mcs_mol = Chem.MolFromSmarts(mcs.smartsString)
+            m_t = mol_target.GetSubstructMatch(mcs_mol)
+            m_s = mol_source_3d.GetSubstructMatch(mcs_mol)
+            conf_s = mol_source_3d.GetConformer()
+            conf_t = mol_target.GetConformer()
+            p_map = dict(zip(m_t, m_s))
+            for ti in range(mol_target.GetNumAtoms()):
+                si = p_map.get(ti)
+                if si is not None:
+                    conf_t.SetAtomPosition(ti, conf_s.GetAtomPosition(si))
+            return True
+        except Exception:
+            return False
+
+    try:
+        # ── Read fixed SDF ────────────────────────────────────────────────
+        supp = Chem.SDMolSupplier(pose_sdf, sanitize=True, removeHs=True)
+        mol_charged = next((m for m in supp if m is not None), None)
+        if mol_charged is None:
+            RDLogger.EnableLog("rdApp.error")
+            return pose_sdf, False, 0
+
+        net_charge = int(Chem.GetFormalCharge(mol_charged))
+        original_net_charge_fallback = net_charge
+        vina_props = mol_charged.GetPropsAsDict()
+
+        # ── Case A: charged molecule → rebuild from neutral SMILES ────────
+        if net_charge != 0 and charged_smiles:
+            # Derive neutral SMILES: strip charges from charged_smiles mol
+            mol_cs = Chem.MolFromSmiles(charged_smiles)
+            if mol_cs is None:
+                mol_cs = Chem.MolFromSmiles(charged_smiles, sanitize=False)
+                try:
+                    mol_cs.UpdatePropertyCache(strict=False)
+                    Chem.FastFindRings(mol_cs)
+                    Chem.SetAromaticity(mol_cs)
+                except Exception:
+                    pass
+            rw_n = Chem.RWMol(mol_cs)
+            for atom in rw_n.GetAtoms():
+                if atom.GetFormalCharge() != 0:
+                    atom.SetFormalCharge(0)
+                    atom.SetNoImplicit(False)
+            try:
+                Chem.SanitizeMol(rw_n)
+            except Exception:
+                pass
+            neutral_smi = Chem.MolToSmiles(rw_n.GetMol(), isomericSmiles=True, canonical=True)
+            mol_neutral = Chem.MolFromSmiles(neutral_smi)
+            if mol_neutral is None:
+                raise RuntimeError(f"Cannot build neutral mol from: {neutral_smi}")
+
+            # Embed placeholder 3D then copy docking coords
+            AllChem.EmbedMolecule(mol_neutral, randomSeed=42)
+            _copy_coords_via_mcs(mol_neutral, mol_charged)
+
+            sdf_text = _write_kekule_sdf(mol_neutral, vina_props)
+            tmp = tempfile.NamedTemporaryFile(suffix="_pv_neutral.sdf", delete=False, mode="w")
+            tmp.write(sdf_text)
+            tmp.close()
+            RDLogger.EnableLog("rdApp.error")
+            return tmp.name, True, net_charge
+
+        # ── Case B: neutral molecule → re-write with explicit Kekulé bonds ─
+        # proteins.plus misrenders aromatic bond type 4 even for neutral mols
+        AllChem.EmbedMolecule(mol_charged, randomSeed=42) if mol_charged.GetNumConformers() == 0 else None
+        sdf_text = _write_kekule_sdf(mol_charged, vina_props)
+
+        # Only write new file if the original had bond type 4
+        if "  4  0" in sdf_text or "  4  " in sdf_text:
+            tmp = tempfile.NamedTemporaryFile(suffix="_pv_kekule.sdf", delete=False, mode="w")
+            tmp.write(sdf_text)
+            tmp.close()
+            RDLogger.EnableLog("rdApp.error")
+            return tmp.name, False, 0
 
         RDLogger.EnableLog("rdApp.error")
-        return tmp.name, True, net_charge
+        return pose_sdf, False, 0
 
     except Exception:
-        # Neutralization failed — send original SDF and let PoseView try
         RDLogger.EnableLog("rdApp.error")
         return pose_sdf, False, original_net_charge_fallback
 
 
-def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
+def call_poseview_v1(receptor_pdb: str, pose_sdf: str, charged_smiles: str = "") -> tuple:
     """
     Submit a docked pose to proteins.plus PoseView v1 and return (svg_bytes, error).
+
+    charged_smiles: the prot_smiles used for docking (with [O-] etc.) so that
+      _neutralize_for_poseview can build the correct neutral form.
 
     Charged ligands (e.g. phenolate [O-], carboxylate, ammonium):
       proteins.plus renderer does not correctly display formal charges — it
@@ -2980,8 +3034,10 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
     import requests
     last_error = "Unknown error"
 
-    # ── Neutralize if needed (proteins.plus cannot handle [O-] etc.) ──────
-    sdf_to_send, was_neutralized, original_charge = _neutralize_for_poseview(pose_sdf)
+    # ── Neutralize / re-Kekulize if needed ───────────────────────────────
+    sdf_to_send, was_neutralized, original_charge = _neutralize_for_poseview(
+        pose_sdf, charged_smiles=charged_smiles
+    )
 
     rec_to_send = _prepare_pdb_for_poseview(receptor_pdb)
     for attempt in range(1, _PV_MAX_RETRIES + 1):
