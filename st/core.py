@@ -1657,6 +1657,67 @@ def _load_local_pkanet_module(log=None):
     return mod
 
 
+
+def _pkanet_stereo_status(smiles: str) -> dict:
+    """Detect whether a SMILES has assigned/undefined tetrahedral stereochemistry."""
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return {"valid": False, "assigned": 0, "unassigned": 0, "centers": []}
+    centers = Chem.FindMolChiralCenters(mol, includeUnassigned=True, useLegacyImplementation=False)
+    assigned = [(i, lab) for i, lab in centers if lab in ("R", "S")]
+    unassigned = [(i, lab) for i, lab in centers if lab == "?"]
+    return {"valid": True, "assigned": len(assigned), "unassigned": len(unassigned), "centers": centers}
+
+
+def _select_pkanet_stereoisomer(smiles: str, stereo_choice: str = "keep_input") -> tuple[str, list[str], dict]:
+    """
+    Select R/S only when the input SMILES has one undefined chiral center.
+    If the input already contains assigned stereochemistry (@/@@; RDKit R/S), it is kept unchanged.
+    """
+    from rdkit import Chem
+    from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers, StereoEnumerationOptions
+
+    log = []
+    choice = (stereo_choice or "keep_input").strip().upper()
+    if choice in {"KEEP", "KEEP_INPUT", "AS_IS", "AUTO", ""}:
+        choice = "KEEP_INPUT"
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"RDKit could not parse SMILES: {smiles[:60]}")
+
+    status = _pkanet_stereo_status(smiles)
+    if status["assigned"] > 0:
+        log.append("✓ Stereochemistry already defined in input SMILES (@/@@); keeping input stereochemistry")
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
+    if choice not in {"R", "S"}:
+        if status["unassigned"] > 0:
+            log.append(f"ℹ Undefined stereocenter(s) detected: {status['unassigned']}; keeping input without forced R/S")
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
+    if status["unassigned"] == 0:
+        log.append(f"ℹ No undefined stereocenter detected; requested {choice} ignored")
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
+    if status["unassigned"] != 1:
+        log.append(f"⚠ {status['unassigned']} undefined stereocenters detected; R/S selector is only applied to single-center ligands. Keeping input.")
+        return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
+    opts = StereoEnumerationOptions(onlyUnassigned=True, unique=True)
+    isomers = list(EnumerateStereoisomers(mol, options=opts))
+    for iso in isomers:
+        centers = Chem.FindMolChiralCenters(iso, includeUnassigned=True, useLegacyImplementation=False)
+        labels = [lab for _, lab in centers if lab in ("R", "S")]
+        if len(labels) == 1 and labels[0] == choice:
+            smi = Chem.MolToSmiles(iso, isomericSmiles=True, canonical=True)
+            log.append(f"✓ Undefined stereocenter resolved as {choice} for docking")
+            return smi, log, status
+
+    log.append(f"⚠ Could not generate requested {choice} stereoisomer; keeping input")
+    return Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True), log, status
+
 def protonate_pkanet(
     smiles: str,
     ph: float,
@@ -1665,6 +1726,7 @@ def protonate_pkanet(
     ph_window: float = 1.0,
     selection_mode: str = "auto_recommended",
     manual_rank: int | None = None,
+    stereo_choice: str = "keep_input",
     return_details: bool = False,
 ) -> tuple:
     """
@@ -1697,8 +1759,12 @@ def protonate_pkanet(
             "Please check that pKaNET.py is in the same folder as core.py."
         ) from e
 
+    # ── Stage 0: optional stereochemistry resolution ────────────────────────
+    stereo_input, stereo_log, stereo_status = _select_pkanet_stereoisomer(smiles.strip(), stereo_choice)
+    log.extend(stereo_log)
+
     # ── Stage A: Standardize via pKaNET ─────────────────────────────────────
-    canonical, std_status = _pkanet_standardize(smiles.strip())
+    canonical, std_status = _pkanet_standardize(stereo_input)
     if canonical is None:
         log.append(f"❌ Standardization failed ({std_status})")
         raise ValueError(f"pKaNET standardization failed: {std_status}")
@@ -1829,6 +1895,8 @@ def protonate_pkanet(
 
     details = {
         "selection_mode": selection_mode,
+        "stereo_choice": stereo_choice,
+        "stereo_status": stereo_status,
         "selected_rank": int(best.get("microstate_rank", 1)),
         "selected_microstate": {k: v for k, v in best.items() if k != "charged_atom_rows"},
         "ranked_microstates": [{k: v for k, v in r.items() if k != "charged_atom_rows"} for r in all_micro],
@@ -1907,6 +1975,7 @@ def prepare_ligand(
     ph_window: float = 1.0,
     pkanet_selection_mode: str = "auto_recommended",
     pkanet_manual_rank: int | None = None,
+    pkanet_stereo_choice: str = "keep_input",
 ) -> dict:
     """
     Ligand preparation — pKaNET Cloud is the default protonation mode.
@@ -1952,6 +2021,7 @@ def prepare_ligand(
                     ph_window=ph_window,
                     selection_mode=pkanet_selection_mode,
                     manual_rank=pkanet_manual_rank,
+                    stereo_choice=pkanet_stereo_choice,
                     return_details=True,
                 )
                 # Export ranked microstates and decision log for reproducibility/ESI.
