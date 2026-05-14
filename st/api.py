@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PATCHED VERSION — Anyone Can Dock API
+# PATCHED VERSION — PoseView-return API
 # Includes:
 # - persistent compact job status
 # - /ping endpoint for GPT Actions
@@ -54,11 +54,12 @@ from core import (
 # Optional 2D interaction / redocking utilities from core.py.
 # The API still works if these are unavailable.
 try:
-    from core import calc_rmsd_heavy, write_single_pose, draw_interaction_diagram, svg_to_png
+    from core import calc_rmsd_heavy, write_single_pose, call_poseview_v1, call_poseview2_ref, svg_to_png
 except Exception:
     calc_rmsd_heavy = None
     write_single_pose = None
-    draw_interaction_diagram = None
+    call_poseview_v1 = None
+    call_poseview2_ref = None
     svg_to_png = None
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -272,17 +273,6 @@ def _job_url(job_id: str, endpoint: str) -> str:
     return f"/jobs/{job_id}"
 
 
-def _public_url(path: str) -> str:
-    """Return a full public URL when PUBLIC_BASE_URL is set.
-
-    Keep relative URLs if PUBLIC_BASE_URL is not configured.
-    """
-    base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
-    if not path.startswith("/"):
-        path = "/" + path
-    return f"{base}{path}" if base else path
-
-
 def _status_path(job_id: str) -> Path:
     return BASE_WORKDIR / job_id / "status.json"
 
@@ -332,16 +322,14 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "pose_selection_method": r.get("pose_selection_method", ""),
             "selected_pose_rmsd": r.get("selected_pose_rmsd", None),
             "pose_selection_warning": r.get("pose_selection_warning", ""),
-            "pose_selection_note": (
-                "selected by top docking score" if r.get("pose_selection_method") == "top_score"
-                else "selected by lowest RMSD vs co-crystal ligand" if r.get("pose_selection_method") == "lowest_rmsd_vs_cocrystal_ligand"
-                else "top score fallback because RMSD could not be computed" if r.get("pose_selection_method") == "top_score_fallback"
-                else r.get("pose_selection_method", "")
-            ),
             "two_d_interaction_available": bool(r.get("two_d_interaction_available", False)),
             "two_d_interaction_svg_url": r.get("two_d_interaction_svg_url", ""),
             "two_d_interaction_png_url": r.get("two_d_interaction_png_url", ""),
             "two_d_interaction_error": r.get("two_d_interaction_error", ""),
+            "poseview_available": bool(r.get("poseview_available", False)),
+            "poseview_svg_url": r.get("poseview_svg_url", ""),
+            "poseview_png_url": r.get("poseview_png_url", ""),
+            "poseview_error": r.get("poseview_error", ""),
             "error": r.get("error", ""),
         })
     center = receptor.get("center", {})
@@ -487,11 +475,24 @@ def _generate_2d_interaction(
     smiles: str,
     lig_name: str,
 ) -> Dict[str, Any]:
-    """Generate a local SVG 2D interaction diagram for the selected pose.
+    """Generate a local 2D interaction diagram using ProteinsPlus PoseView.
 
-    Uses core.draw_interaction_diagram when available. Returns compact URL fields.
+    Primary route: core.call_poseview_v1(receptor_pdb, selected_pose_sdf)
+    Output files: SVG always when successful; PNG when conversion succeeds.
+
+    For compatibility with older clients, this function returns both:
+    - poseview_* fields
+    - two_d_interaction_* alias fields
     """
     out: Dict[str, Any] = {
+        "poseview_available": False,
+        "poseview_svg_url": "",
+        "poseview_png_url": "",
+        "poseview_svg_file": "",
+        "poseview_png_file": "",
+        "poseview_error": "",
+        "poseview_source": "ProteinsPlus PoseView v1",
+        # backwards-compatible aliases
         "two_d_interaction_available": False,
         "two_d_interaction_svg_url": "",
         "two_d_interaction_png_url": "",
@@ -500,17 +501,23 @@ def _generate_2d_interaction(
         "two_d_interaction_error": "",
     }
 
-    if draw_interaction_diagram is None:
-        out["two_d_interaction_error"] = "draw_interaction_diagram is not available in core.py."
+    if call_poseview_v1 is None:
+        err = "call_poseview_v1 is not available in core.py."
+        out["poseview_error"] = err
+        out["two_d_interaction_error"] = err
         return out
 
     selected_pose_sdf = pose_info.get("selected_pose_sdf") or ""
     receptor_pdb = rec.get("rec_fh") or ""
     if not selected_pose_sdf or not Path(selected_pose_sdf).exists():
-        out["two_d_interaction_error"] = "Selected pose SDF is unavailable."
+        err = "Selected pose SDF is unavailable."
+        out["poseview_error"] = err
+        out["two_d_interaction_error"] = err
         return out
     if not receptor_pdb or not Path(receptor_pdb).exists():
-        out["two_d_interaction_error"] = "Prepared receptor PDB is unavailable."
+        err = "Prepared receptor PDB is unavailable."
+        out["poseview_error"] = err
+        out["two_d_interaction_error"] = err
         return out
 
     try:
@@ -520,36 +527,49 @@ def _generate_2d_interaction(
         svg_path = wdir / svg_name
         png_path = wdir / png_name
 
-        svg_bytes = draw_interaction_diagram(
-            receptor_pdb=receptor_pdb,
-            pose_sdf=selected_pose_sdf,
-            smiles=smiles,
-            title=f"{safe} selected pose",
-        )
+        svg_bytes, pv_err = call_poseview_v1(receptor_pdb=receptor_pdb, pose_sdf=selected_pose_sdf)
+        if not svg_bytes:
+            err = pv_err or "PoseView did not return an SVG diagram."
+            out["poseview_error"] = err
+            out["two_d_interaction_error"] = err
+            return out
+
         svg_path.write_bytes(svg_bytes)
 
         png_ok = False
         png_err = ""
         try:
-            if svg_to_png is not None:
-                svg_to_png(str(svg_path), str(png_path))
+            png_bytes = svg_to_png(svg_bytes) if svg_to_png is not None else None
+            if png_bytes:
+                png_path.write_bytes(png_bytes)
+                png_ok = png_path.exists() and png_path.stat().st_size > 100
             else:
-                import cairosvg
-                cairosvg.svg2png(bytestring=svg_bytes, write_to=str(png_path), output_width=1200)
-            png_ok = png_path.exists() and png_path.stat().st_size > 100
+                png_err = "PNG conversion failed for the interaction diagram."
         except Exception as png_e:
             png_err = f"PNG conversion failed: {png_e}"
 
+        svg_url = f"/jobs/{job_id}/files/{svg_name}"
+        png_url = f"/jobs/{job_id}/files/{png_name}" if png_ok else ""
+
         out.update({
+            "poseview_available": True,
+            "poseview_svg_url": svg_url,
+            "poseview_png_url": png_url,
+            "poseview_svg_file": str(svg_path),
+            "poseview_png_file": str(png_path) if png_ok else "",
+            "poseview_error": png_err,
+            # backwards-compatible aliases
             "two_d_interaction_available": True,
-            "two_d_interaction_svg_url": _public_url(f"/jobs/{job_id}/files/{svg_name}"),
-            "two_d_interaction_png_url": _public_url(f"/jobs/{job_id}/files/{png_name}") if png_ok else "",
+            "two_d_interaction_svg_url": svg_url,
+            "two_d_interaction_png_url": png_url,
             "two_d_interaction_svg_file": str(svg_path),
             "two_d_interaction_png_file": str(png_path) if png_ok else "",
             "two_d_interaction_error": png_err,
         })
     except Exception as e:
-        out["two_d_interaction_error"] = str(e)
+        err = str(e)
+        out["poseview_error"] = err
+        out["two_d_interaction_error"] = err
 
     return out
 
@@ -872,16 +892,14 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "pose_selection_method": r.get("pose_selection_method", ""),
             "selected_pose_rmsd": r.get("selected_pose_rmsd", None),
             "pose_selection_warning": r.get("pose_selection_warning", ""),
-            "pose_selection_note": (
-                "selected by top docking score" if r.get("pose_selection_method") == "top_score"
-                else "selected by lowest RMSD vs co-crystal ligand" if r.get("pose_selection_method") == "lowest_rmsd_vs_cocrystal_ligand"
-                else "top score fallback because RMSD could not be computed" if r.get("pose_selection_method") == "top_score_fallback"
-                else r.get("pose_selection_method", "")
-            ),
             "two_d_interaction_available": bool(r.get("two_d_interaction_available", False)),
             "two_d_interaction_svg_url": r.get("two_d_interaction_svg_url", ""),
             "two_d_interaction_png_url": r.get("two_d_interaction_png_url", ""),
             "two_d_interaction_error": r.get("two_d_interaction_error", ""),
+            "poseview_available": bool(r.get("poseview_available", False)),
+            "poseview_svg_url": r.get("poseview_svg_url", ""),
+            "poseview_png_url": r.get("poseview_png_url", ""),
+            "poseview_error": r.get("poseview_error", ""),
             "scores": r.get("scores", [])[:10] if isinstance(r.get("scores", []), list) else [],
             "error": r.get("error", ""),
         })
