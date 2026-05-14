@@ -294,6 +294,8 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "num_poses": r.get("num_poses", None),
             "charge": r.get("charge", None),
             "prepared_smiles": r.get("prepared_smiles", ""),
+            "protonation_mode_used": r.get("protonation_mode_used", ""),
+            "protonation_fallback": r.get("protonation_fallback", ""),
             "error": r.get("error", ""),
         })
     center = receptor.get("center", {})
@@ -312,6 +314,20 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
         "download_url": f"/jobs/{job_id}/download",
     }
 
+
+
+
+def _looks_like_protonation_valence_error(text: str) -> bool:
+    """Detect RDKit/OpenBabel valence failures commonly caused by over-protonation."""
+    t = (text or "").lower()
+    triggers = [
+        "explicit valence",
+        "greater than permitted",
+        "valence for atom",
+        "sanitize",
+        "kekulize",
+    ]
+    return any(x in t for x in triggers)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -403,8 +419,36 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 )
                 all_logs.append(f"\n===== {name}: ligand preparation =====")
                 all_logs.extend(prep.get("log", []))
+
+                # Safety fallback:
+                # pKa/protonation enumeration can occasionally create an invalid
+                # over-protonated molecule, which RDKit reports as an explicit
+                # valence error. In that case, retry once with the user/built-in
+                # SMILES unchanged and protonation_mode='neutral'.
                 if not prep.get("success"):
-                    raise RuntimeError(prep.get("error", "Ligand preparation failed"))
+                    prep_error = str(prep.get("error", "Ligand preparation failed"))
+                    if req.protonation_mode != "neutral" and _looks_like_protonation_valence_error(prep_error + "\n" + "\n".join(map(str, prep.get("log", [])))):
+                        all_logs.append(
+                            f"\n===== {name}: ligand preparation fallback =====\n"
+                            "pKa/protonation mode produced a valence/sanitization error. "
+                            "Retrying once with protonation_mode='neutral' using the input SMILES."
+                        )
+                        prep = prepare_ligand(
+                            smiles=lig.smiles,
+                            name=f"{name}_neutral_fallback",
+                            ph=req.ph,
+                            wdir=wdir,
+                            mode="neutral",
+                            use_pubchem=False,
+                            max_tautomers=1,
+                            ph_window=0.0,
+                            pkanet_selection_mode="auto_recommended",
+                            pkanet_manual_rank=None,
+                        )
+                        all_logs.extend(prep.get("log", []))
+                        row["protonation_fallback"] = "neutral"
+                    if not prep.get("success"):
+                        raise RuntimeError(prep.get("error", prep_error))
 
                 dock = run_vina(
                     receptor_pdbqt=rec["rec_pdbqt"],
@@ -445,6 +489,8 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     pkanet_ranked_csv=prep.get("pkanet_ranked_csv", ""),
                     pkanet_decision_log=prep.get("pkanet_decision_log", ""),
                     pkanet_ambiguous=prep.get("pkanet_ambiguous", False),
+                    protonation_mode_used=("neutral" if row.get("protonation_fallback") == "neutral" else req.protonation_mode),
+                    protonation_fallback=row.get("protonation_fallback", ""),
                 )
             except Exception as lig_error:
                 row.update(status="failed", error=str(lig_error))
@@ -572,6 +618,8 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "num_poses": r.get("num_poses"),
             "charge": r.get("charge"),
             "prepared_smiles": r.get("prepared_smiles"),
+            "protonation_mode_used": r.get("protonation_mode_used", ""),
+            "protonation_fallback": r.get("protonation_fallback", ""),
             "scores": r.get("scores", [])[:10] if isinstance(r.get("scores", []), list) else [],
             "error": r.get("error", ""),
         })
@@ -901,18 +949,18 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
     _write_status_file(job_id, {
         "job_id": job_id,
         "status": "queued",
-        "message": (
-            "Docking job submitted. Please come back in about 1–2 minutes "
-            "and ask DockGPT to check the status of this job_id. "
-            "Do not report docking scores until the job status is completed."
-        ),
+        "message": "Docking job submitted. Poll status_url until status is completed or failed.",
         "download_url": f"/jobs/{job_id}/download",
     })
     background_tasks.add_task(_run_docking_job, job_id, req)
     return DockSubmitResponse(
         job_id=job_id,
         status="queued",
-        message="Docking job submitted. Poll status_url until status is completed or failed.",
+        message=(
+            "Docking job submitted. Please come back in about 1–2 minutes "
+            "and ask DockGPT to check the status of this job_id. "
+            "Do not report docking scores until the job status is completed."
+        ),
         status_url=_job_url(job_id, "status"),
         download_url=_job_url(job_id, "download"),
     )
