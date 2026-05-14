@@ -3454,7 +3454,11 @@ def _poseview_ui(
                 st.error("Pose SDF not found.")
             else:
                 with st.spinner("⏳ PoseView v1 — generating 2D diagram… (30–60 s)"):
-                    _pv_result = call_poseview_v1(_rec, pose_sdf_path)
+                    # Pass lig_smiles (prot_smiles with [O-] etc.) so neutralization
+                    # rebuilds from correct neutral SMILES with proper bond orders
+                    _prot_smi_pv = lig_smiles or st.session_state.get(smiles_key, "")
+                    _pv_result = call_poseview_v1(_rec, pose_sdf_path,
+                                                  charged_smiles=_prot_smi_pv)
                 # Unpack 4-tuple (svg, err, was_neutralized, charge) or legacy 2-tuple
                 if len(_pv_result) == 4:
                     _svg, _err, _pv_neutralized, _pv_orig_charge = _pv_result
