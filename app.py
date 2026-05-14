@@ -3455,16 +3455,34 @@ def _poseview_ui(
             else:
                 with st.spinner("⏳ PoseView v1 — generating 2D diagram… (30–60 s)"):
                     # Pass lig_smiles (prot_smiles with [O-] etc.) so neutralization
-                    # rebuilds from correct neutral SMILES with proper bond orders
+                    # rebuilds from correct neutral SMILES with proper bond orders.
+                    # Use inspect for backward compat with older core.py versions.
                     _prot_smi_pv = lig_smiles or st.session_state.get(smiles_key, "")
-                    _pv_result = call_poseview_v1(_rec, pose_sdf_path,
-                                                  charged_smiles=_prot_smi_pv)
-                # Unpack 4-tuple (svg, err, was_neutralized, charge) or legacy 2-tuple
-                if len(_pv_result) == 4:
-                    _svg, _err, _pv_neutralized, _pv_orig_charge = _pv_result
-                else:
-                    _svg, _err = _pv_result
-                    _pv_neutralized, _pv_orig_charge = False, 0
+                    try:
+                        import inspect as _inspect
+                        _pv_sig = _inspect.signature(call_poseview_v1)
+                        if "charged_smiles" in _pv_sig.parameters:
+                            _pv_result = call_poseview_v1(
+                                _rec, pose_sdf_path,
+                                charged_smiles=_prot_smi_pv,
+                            )
+                        else:
+                            _pv_result = call_poseview_v1(_rec, pose_sdf_path)
+                    except Exception as _pv_call_err:
+                        _pv_result = (None, str(_pv_call_err), False, 0)
+                # Unpack result: (svg, err) or (svg, err, was_neutralized, charge)
+                _pv_neutralized, _pv_orig_charge = False, 0
+                try:
+                    if _pv_result is None:
+                        _svg, _err = None, "PoseView returned no result"
+                    elif len(_pv_result) >= 4:
+                        _svg, _err, _pv_neutralized, _pv_orig_charge = _pv_result[:4]
+                    elif len(_pv_result) == 3:
+                        _svg, _err, _pv_neutralized = _pv_result
+                    else:
+                        _svg, _err = _pv_result[:2]
+                except Exception:
+                    _svg, _err = None, f"Could not unpack PoseView result: {_pv_result}"
                 if _err:
                     st.error(f"❌ PoseView v1 error:\n\n```\n{_err}\n```")
                 else:
