@@ -39,6 +39,10 @@ from core import (
     scan_hetatm_residues,
 )
 
+# fix_sdf_bond_orders now internally uses MCS-based rebuild for charged/tautomeric
+# aromatics (e.g. baicalein [O-]) and strips M  RAD artefacts from OpenBabel/PDBQT.
+# All call sites in app.py use fix_sdf_bond_orders unchanged — no API change needed.
+
 try:
     from core import call_poseview2_ref
 except ImportError:
@@ -4986,7 +4990,9 @@ with tab_basic:
                     if rd_dock["success"] and rd_dock["top_score"] is not None:
                         redock_score = rd_dock["top_score"]
                         rd_pv_sdf    = str(WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
-                        fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
+                        # Use prot_smiles (has correct charge/tautomer) not raw rd_smi
+                        _rd_prot_smi = rd_prep.get("prot_smiles") or rd_smi
+                        fix_sdf_bond_orders(rd_dock["out_sdf"], _rd_prot_smi, rd_pv_sdf)
                         if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
                             rd_pv_sdf = rd_dock["out_sdf"]
                         rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
@@ -5023,6 +5029,8 @@ with tab_basic:
             st.session_state.docking_done = False
         else:
             pv_log = fix_sdf_bond_orders(dock["out_sdf"], st.session_state.prot_smiles, pv_sdf)
+            # prot_smiles carries correct charge (e.g. [O-] for baicalein at pH 7.4)
+            # fix_sdf_bond_orders now uses MCS rebuild + strips M  RAD artefacts
             if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
                 pv_sdf = dock["out_sdf"]
             if dock["scores"]:
@@ -5697,7 +5705,9 @@ with tab_batch:
                     if rd_dock["success"] and rd_dock["top_score"] is not None:
                         redock_score = rd_dock["top_score"]
                         rd_pv_sdf = str(BATCH_WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
-                        fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
+                        # Use prot_smiles (has correct charge/tautomer) not raw rd_smi
+                        _rd_b_prot_smi = rd_prep.get("prot_smiles") or rd_smi
+                        fix_sdf_bond_orders(rd_dock["out_sdf"], _rd_b_prot_smi, rd_pv_sdf)
                         if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
                             rd_pv_sdf = rd_dock["out_sdf"]
                         rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
@@ -5762,7 +5772,9 @@ with tab_batch:
                 continue
 
             pv_sdf = str(BATCH_WORKDIR / f"{name}_pv_ready.sdf")
-            fix_sdf_bond_orders(dock["out_sdf"], smi, pv_sdf)
+            # Use prot_smiles (has correct charge/tautomer from pKaNET) not raw input smi
+            _pv_smi = prep.get("prot_smiles") or smi
+            fix_sdf_bond_orders(dock["out_sdf"], _pv_smi, pv_sdf)
             if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
                 pv_sdf = dock["out_sdf"]
             n_poses = len(load_mols_from_sdf(dock["out_sdf"], sanitize=False)) if os.path.exists(dock["out_sdf"]) else 0
