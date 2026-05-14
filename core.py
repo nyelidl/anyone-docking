@@ -2841,15 +2841,154 @@ def _prepare_pdb_for_poseview(receptor_pdb: str) -> str:
     return receptor_pdb
 
 
+def _neutralize_for_poseview(pose_sdf: str) -> tuple:
+    """
+    Prepare a ligand SDF for PoseView by neutralizing formal charges.
+
+    proteins.plus PoseView renderer does not correctly handle charged species
+    (e.g. phenolate [O-], carboxylate [COO-], ammonium [NH3+]).  When a net
+    charge is detected the function:
+      1. Strips all formal charges from the mol object.
+      2. Re-adds the missing H atoms (so O- → OH, NH3+ → NH2 geometry).
+      3. Writes the neutralized SDF to a temp file.
+
+    Returns:
+        (sdf_path_to_send, was_neutralized, net_charge)
+        • sdf_path_to_send  – path of SDF to upload (original or neutralized)
+        • was_neutralized   – True if a charge was present and the mol was changed
+        • net_charge        – the original net formal charge (int)
+    """
+    import tempfile, io
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import AllChem
+    RDLogger.DisableLog("rdApp.*")
+
+    # Track charge before try so the except fallback can return it
+    original_net_charge_fallback = 0
+
+    try:
+        supp = Chem.SDMolSupplier(pose_sdf, sanitize=True, removeHs=False)
+        mol  = next((m for m in supp if m is not None), None)
+        if mol is None:
+            RDLogger.EnableLog("rdApp.error")
+            return pose_sdf, False, 0
+
+        net_charge = int(Chem.GetFormalCharge(mol))
+        original_net_charge_fallback = net_charge  # save for except block
+        if net_charge == 0:
+            # No charge — send original SDF unchanged
+            RDLogger.EnableLog("rdApp.error")
+            return pose_sdf, False, 0
+
+        # ── Neutralize ────────────────────────────────────────────────────
+        rw = Chem.RWMol(Chem.RemoveHs(mol, sanitize=False))
+        for atom in rw.GetAtoms():
+            fc = atom.GetFormalCharge()
+            if fc != 0:
+                atom.SetFormalCharge(0)
+                atom.SetNumRadicalElectrons(0)
+                atom.SetNoImplicit(False)
+        try:
+            Chem.SanitizeMol(rw)
+        except Exception:
+            try:
+                rw.UpdatePropertyCache(strict=False)
+                Chem.FastFindRings(rw)
+                Chem.SetAromaticity(rw)
+            except Exception:
+                pass
+
+        # Add H to fill valence (O- → OH, etc.)
+        neutral_mol = Chem.AddHs(rw.GetMol(), addCoords=True)
+
+        # Copy 3D conformer from original (heavy atoms only) via MCS
+        try:
+            from rdkit.Chem import rdFMCS
+            mol_noH = Chem.RemoveHs(mol, sanitize=False)
+            neutral_noH = Chem.RemoveHs(neutral_mol, sanitize=False)
+            mcs = rdFMCS.FindMCS(
+                [neutral_noH, mol_noH],
+                atomCompare=rdFMCS.AtomCompare.CompareElements,
+                bondCompare=rdFMCS.BondCompare.CompareAny,
+                timeout=3,
+            )
+            if mcs.numAtoms >= neutral_noH.GetNumAtoms():
+                mcs_mol   = Chem.MolFromSmarts(mcs.smartsString)
+                m_n       = neutral_noH.GetSubstructMatch(mcs_mol)
+                m_o       = mol_noH.GetSubstructMatch(mcs_mol)
+                conf_orig = mol_noH.GetConformer()
+                conf_new  = neutral_noH.GetConformer()
+                p_map     = dict(zip(m_n, m_o))
+                for ni in range(neutral_noH.GetNumAtoms()):
+                    oi = p_map.get(ni)
+                    if oi is not None:
+                        pos = conf_orig.GetAtomPosition(oi)
+                        conf_new.SetAtomPosition(ni, pos)
+                neutral_mol = neutral_noH
+        except Exception:
+            pass
+
+        # Copy Vina properties
+        for prop in mol.GetPropsAsDict():
+            try:
+                neutral_mol.SetProp(prop, mol.GetProp(prop))
+            except Exception:
+                pass
+
+        # Write neutralized SDF (explicit single/double bonds preferred; fallback to aromatic)
+        sio = io.StringIO()
+        w = Chem.SDWriter(sio)
+        try:
+            Chem.Kekulize(neutral_mol, clearAromaticFlags=False)
+            w.SetKekulize(True)
+        except Exception:
+            w.SetKekulize(False)
+        w.write(neutral_mol)
+        w.close()
+        # Strip M  RAD inline (avoid cross-module call issues)
+        clean_text = "".join(
+            line for line in sio.getvalue().splitlines(keepends=True)
+            if not line.startswith("M  RAD")
+        )
+
+        tmp = tempfile.NamedTemporaryFile(
+            suffix="_pv_neutral.sdf", delete=False, mode="w"
+        )
+        tmp.write(clean_text)
+        tmp.close()
+
+        RDLogger.EnableLog("rdApp.error")
+        return tmp.name, True, net_charge
+
+    except Exception:
+        # Neutralization failed — send original SDF and let PoseView try
+        RDLogger.EnableLog("rdApp.error")
+        return pose_sdf, False, original_net_charge_fallback
+
+
 def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
+    """
+    Submit a docked pose to proteins.plus PoseView v1 and return (svg_bytes, error).
+
+    Charged ligands (e.g. phenolate [O-], carboxylate, ammonium):
+      proteins.plus renderer does not correctly display formal charges — it
+      misinterprets [O-] (phenolate) as C=O (keto) and breaks the ring system.
+      The function automatically neutralizes the SDF before upload so the
+      2D structure is rendered correctly.  The returned tuple includes a third
+      element (was_neutralized) so the caller can show an info note.
+    """
     import requests
     last_error = "Unknown error"
+
+    # ── Neutralize if needed (proteins.plus cannot handle [O-] etc.) ──────
+    sdf_to_send, was_neutralized, original_charge = _neutralize_for_poseview(pose_sdf)
+
     rec_to_send = _prepare_pdb_for_poseview(receptor_pdb)
     for attempt in range(1, _PV_MAX_RETRIES + 1):
         if attempt > 1:
             time.sleep(_PV_RETRY_DELAY)
         try:
-            with open(rec_to_send) as rf, open(pose_sdf) as lf:
+            with open(rec_to_send) as rf, open(sdf_to_send) as lf:
                 r = requests.post(
                     _PP_POSEVIEW,
                     files={
@@ -2887,11 +3026,13 @@ def call_poseview_v1(receptor_pdb: str, pose_sdf: str) -> tuple:
         try:
             resp = requests.get(img_url, headers=_PP_HEADERS, timeout=20)
             resp.raise_for_status()
-            return resp.content, None
+            # Return (svg_bytes, error, was_neutralized, original_charge)
+            # Backward-compatible: callers that unpack (svg, err) still work
+            return resp.content, None, was_neutralized, original_charge
         except Exception as e:
             last_error = f"SVG download failed (attempt {attempt}): {e}"
             continue
-    return None, last_error
+    return None, last_error, was_neutralized, original_charge
 
 
 def warm_poseview_cache(receptor_pdb: str) -> tuple:
