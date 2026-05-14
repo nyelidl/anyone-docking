@@ -39,10 +39,6 @@ from core import (
     scan_hetatm_residues,
 )
 
-# fix_sdf_bond_orders now internally uses MCS-based rebuild for charged/tautomeric
-# aromatics (e.g. baicalein [O-]) and strips M  RAD artefacts from OpenBabel/PDBQT.
-# All call sites in app.py use fix_sdf_bond_orders unchanged — no API change needed.
-
 try:
     from core import call_poseview2_ref
 except ImportError:
@@ -3375,6 +3371,27 @@ def _poseview_ui(
 
     # ── TAB 3: PoseView ───────────────────────────────────────────────────────
     with _tab_pv:
+        # ── PoseView charged-species warning ─────────────────────────────────
+        st.warning(
+            "⚠️ **PoseView Limitation — Charged Species Not Supported**\n\n"
+            "proteins.plus / PoseView does **not** support formally charged atoms "
+            "in the ligand. The diagram will always display the **neutral (protonated) "
+            "form** regardless of the ionisation state used during docking.\n\n"
+            "**Examples of affected ligands:**\n"
+            "- **Baicalein** at physiological pH: C6–O⁻ (phenoxide) is shown as C6–OH\n"
+            "- Carboxylate (–COO⁻) shown as –COOH\n"
+            "- Phosphate (–OPO₃²⁻) shown as neutral phosphoric acid\n"
+            "- Amine (–NH₃⁺) shown as –NH₂\n\n"
+            "**What this means:** hydrogen-bond donors/acceptors and ionic interactions "
+            "involving charged groups **may appear incorrect** in the PoseView diagram. "
+            "The docking itself (Vina score, 3D pose) is unaffected — only the 2D "
+            "depiction is misleading.\n\n"
+            "💡 For ligands with formal charges, use the **Anyone Can Dock 2D Diagram** "
+            "or **RDKit 2D Diagram** tabs instead — both honour the correct ionisation state.",
+            icon="⚠️",
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         _ci, _cb = st.columns([3, 1])
         with _ci:
             if _stale and st.session_state.get(img_svg_key):
@@ -3454,48 +3471,10 @@ def _poseview_ui(
                 st.error("Pose SDF not found.")
             else:
                 with st.spinner("⏳ PoseView v1 — generating 2D diagram… (30–60 s)"):
-                    # Pass lig_smiles (prot_smiles with [O-] etc.) so neutralization
-                    # rebuilds from correct neutral SMILES with proper bond orders.
-                    # Use inspect for backward compat with older core.py versions.
-                    _prot_smi_pv = lig_smiles or st.session_state.get(smiles_key, "")
-                    try:
-                        import inspect as _inspect
-                        _pv_sig = _inspect.signature(call_poseview_v1)
-                        if "charged_smiles" in _pv_sig.parameters:
-                            _pv_result = call_poseview_v1(
-                                _rec, pose_sdf_path,
-                                charged_smiles=_prot_smi_pv,
-                            )
-                        else:
-                            _pv_result = call_poseview_v1(_rec, pose_sdf_path)
-                    except Exception as _pv_call_err:
-                        _pv_result = (None, str(_pv_call_err), False, 0)
-                # Unpack result: (svg, err) or (svg, err, was_neutralized, charge)
-                _pv_neutralized, _pv_orig_charge = False, 0
-                try:
-                    if _pv_result is None:
-                        _svg, _err = None, "PoseView returned no result"
-                    elif len(_pv_result) >= 4:
-                        _svg, _err, _pv_neutralized, _pv_orig_charge = _pv_result[:4]
-                    elif len(_pv_result) == 3:
-                        _svg, _err, _pv_neutralized = _pv_result
-                    else:
-                        _svg, _err = _pv_result[:2]
-                except Exception:
-                    _svg, _err = None, f"Could not unpack PoseView result: {_pv_result}"
+                    _svg, _err = call_poseview_v1(_rec, pose_sdf_path)
                 if _err:
                     st.error(f"❌ PoseView v1 error:\n\n```\n{_err}\n```")
                 else:
-                    if _pv_neutralized:
-                        st.info(
-                            f"ℹ️ **PoseView note:** Your ligand has a net formal charge "
-                            f"(**{_pv_orig_charge:+d}**) at this pH. "
-                            f"proteins.plus cannot correctly render charged species "
-                            f"(e.g. phenolate O⁻ is misdrawn as C=O). "
-                            f"The diagram was generated using the **neutral form** so the "
-                            f"2D structure is correct — the docking itself used the charged form. "
-                            f"Use the **🧬 Anyone Can Dock 2D Diagram** tab for the exact charged structure."
-                        )
                     _png = svg_to_png(_svg)
                     st.session_state[img_png_key]  = _png
                     st.session_state[img_svg_key]  = _svg
@@ -5028,9 +5007,7 @@ with tab_basic:
                     if rd_dock["success"] and rd_dock["top_score"] is not None:
                         redock_score = rd_dock["top_score"]
                         rd_pv_sdf    = str(WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
-                        # Use prot_smiles (has correct charge/tautomer) not raw rd_smi
-                        _rd_prot_smi = rd_prep.get("prot_smiles") or rd_smi
-                        fix_sdf_bond_orders(rd_dock["out_sdf"], _rd_prot_smi, rd_pv_sdf)
+                        fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
                         if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
                             rd_pv_sdf = rd_dock["out_sdf"]
                         rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
@@ -5067,8 +5044,6 @@ with tab_basic:
             st.session_state.docking_done = False
         else:
             pv_log = fix_sdf_bond_orders(dock["out_sdf"], st.session_state.prot_smiles, pv_sdf)
-            # prot_smiles carries correct charge (e.g. [O-] for baicalein at pH 7.4)
-            # fix_sdf_bond_orders now uses MCS rebuild + strips M  RAD artefacts
             if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
                 pv_sdf = dock["out_sdf"]
             if dock["scores"]:
@@ -5743,9 +5718,7 @@ with tab_batch:
                     if rd_dock["success"] and rd_dock["top_score"] is not None:
                         redock_score = rd_dock["top_score"]
                         rd_pv_sdf = str(BATCH_WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
-                        # Use prot_smiles (has correct charge/tautomer) not raw rd_smi
-                        _rd_b_prot_smi = rd_prep.get("prot_smiles") or rd_smi
-                        fix_sdf_bond_orders(rd_dock["out_sdf"], _rd_b_prot_smi, rd_pv_sdf)
+                        fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
                         if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
                             rd_pv_sdf = rd_dock["out_sdf"]
                         rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
@@ -5810,9 +5783,7 @@ with tab_batch:
                 continue
 
             pv_sdf = str(BATCH_WORKDIR / f"{name}_pv_ready.sdf")
-            # Use prot_smiles (has correct charge/tautomer from pKaNET) not raw input smi
-            _pv_smi = prep.get("prot_smiles") or smi
-            fix_sdf_bond_orders(dock["out_sdf"], _pv_smi, pv_sdf)
+            fix_sdf_bond_orders(dock["out_sdf"], smi, pv_sdf)
             if not os.path.exists(pv_sdf) or os.path.getsize(pv_sdf) < 10:
                 pv_sdf = dock["out_sdf"]
             n_poses = len(load_mols_from_sdf(dock["out_sdf"], sanitize=False)) if os.path.exists(dock["out_sdf"]) else 0
