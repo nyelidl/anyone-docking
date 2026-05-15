@@ -5427,7 +5427,7 @@ with tab_basic:
                 )
 
             try:
-                vbp = py3Dmol.view(width="100%", height=440)
+                vbp = py3Dmol.view(width="100%", height=640)
                 vbp.setBackgroundColor(_viewer_bg())
                 mbp = 0
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
