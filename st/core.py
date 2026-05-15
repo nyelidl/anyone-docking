@@ -461,46 +461,64 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                     heme_lines.append(line)
                 else:
                     clean_lines.append(line)
+
         rec_nometal = str(wdir / "receptor_atoms_nometal.pdb")
         with open(rec_nometal, "w") as f:
             f.writelines(clean_lines)
+
         if metal_lines:
             names = ", ".join(sorted({l[17:20].strip() for l in metal_lines}))
             log.append(f"⚠ Stripped {len(metal_lines)} metal atom(s) before OpenBabel: {names}")
         if heme_lines:
             hnames = ", ".join(sorted({l[17:20].strip() for l in heme_lines}))
             log.append(f"⚠ Stripped {len(heme_lines)} heme atom(s) before OpenBabel: {hnames}")
+
         rc1, out1 = run_cmd(f'obabel "{rec_nometal}" -O "{rec_fh}" -h')
         if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
             raise ValueError(f"OpenBabel H-addition produced empty file (exit {rc1}). Output: {out1[:400]}")
         log.append("✓ Hydrogens added")
+
         rc2, out2 = run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger')
         if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
             raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
         log.append("✓ PDBQT conversion complete")
 
-        # Keep ions/metals in receptor.pdb for display/reference only.
-        # This is done AFTER PDBQT generation so the docking PDBQT still follows
-        # the dedicated reinjection logic below.
-        if (metal_lines or heme_lines) and os.path.exists(rec_fh):
+        # ── Re-add metals + heme to rec.pdb for display / PoseView ──────────
+        # This is done AFTER PDBQT generation so the docking PDBQT still uses
+        # the dedicated re-injection logic below (with proper AD4 atom types).
+        # We ALWAYS attempt this, regardless of whether PDBQT re-injection works.
+        if metal_lines or heme_lines:
             try:
                 rec_lines = open(rec_fh).readlines()
+                # Remove any trailing END record so we can append cleanly
                 rec_lines = [l for l in rec_lines if l.strip() != "END"]
                 rec_lines.extend(metal_lines)
                 rec_lines.extend(heme_lines)
                 rec_lines.append("END\n")
                 with open(rec_fh, "w") as f:
                     f.writelines(rec_lines)
-                log.append(f"✓ Re-added {len(metal_lines)} ion/metal + {len(heme_lines)} heme atom(s) to receptor.pdb for display/reference")
+                log.append(
+                    f"✓ Re-added {len(metal_lines)} metal + {len(heme_lines)} heme "
+                    f"atom(s) to rec.pdb for display"
+                )
             except Exception as e:
-                log.append(f"⚠ Could not re-add ions/metals/heme to receptor.pdb: {e}")
+                log.append(f"⚠ Could not re-add metals/heme to rec.pdb: {e}")
 
+        # ── Re-inject metals + heme into PDBQT with AD4 atom types ──────────
         if metal_lines or heme_lines:
             pdbqt_lines = open(rec_pdbqt).readlines()
             pdbqt_lines = [l for l in pdbqt_lines if l.strip() != "END"]
-            injected = 0
-            skipped_exotic = 0
-            _no_reinject = {"HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU"}
+
+            injected        = 0
+            skipped_exotic  = 0
+            heme_injected   = 0
+
+            _no_reinject = {
+                "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU",
+                "GD", "TB", "DY", "ER", "TM", "YB", "LU",
+            }
+
+            # Metal atoms
             for ml in metal_lines:
                 try:
                     resname = ml[17:20].strip().upper()
@@ -526,8 +544,7 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 except Exception as e:
                     log.append(f"⚠ Could not re-inject metal line: {e}")
 
-            # Re-inject heme atoms into PDBQT with AD4 atom types
-            heme_injected = 0
+            # Heme atoms — assign AD4 atom types
             for hl in heme_lines:
                 try:
                     serial  = int(hl[6:11])
@@ -538,7 +555,6 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                     x       = float(hl[30:38])
                     y       = float(hl[38:46])
                     z       = float(hl[46:54])
-                    # Assign AD4 atom types for heme atoms
                     if name.upper() in ("FE", "FE2", "FE3"):
                         atype  = "Fe"
                         charge = +3.0
@@ -564,21 +580,23 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
             pdbqt_lines.append("END\n")
             with open(rec_pdbqt, "w") as f:
                 f.writelines(pdbqt_lines)
+
             if injected:
                 log.append(f"✅ Re-injected {injected} metal atom(s) into PDBQT")
             if heme_injected:
                 log.append(f"✅ Re-injected {heme_injected} heme atom(s) into PDBQT with AD4 atom types")
             if skipped_exotic:
                 log.append(
-                    f"ℹ Skipped re-injection of {skipped_exotic} Ho/lanthanide ion(s) into docking PDBQT; "
-                    f"kept only in source/display PDB"
+                    f"ℹ Skipped re-injection of {skipped_exotic} Ho/lanthanide ion(s) into "
+                    f"docking PDBQT; kept only in rec.pdb for display"
                 )
+
         log.append("✓ Receptor PDBQT ready")
         return {"success": True, "rec_fh": rec_fh, "rec_pdbqt": rec_pdbqt, "log": log}
+
     except Exception as e:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
-
 
 def write_box_pdb(filename: str, cx, cy, cz, sx, sy, sz):
     hx, hy, hz = sx / 2, sy / 2, sz / 2
