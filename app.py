@@ -1629,30 +1629,72 @@ def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
         pass
 
 
-def _add_heme_to_view(view, rec_fh, model_idx):
+def _add_metals_heme_to_view(view, rec_fh, model_idx):
     """
-    Add heme atoms from rec_fh as orange sticks to an existing py3Dmol view.
-    Returns updated model_idx (incremented if heme was added).
+    Add metal ions AND heme atoms from rec_fh as coloured sticks to an
+    existing py3Dmol view.
+
+    Metal ions  → gold/yellow spheres  (colorscheme: yellowCarbon)
+    Heme atoms  → orange sticks        (colorscheme: orangeCarbon)
+
+    Returns the updated model_idx (incremented once per group added).
     """
-    if rec_fh and os.path.exists(rec_fh):
-        _heme_lines = [
-            l for l in open(rec_fh)
-            if l[:6].strip() in ("ATOM", "HETATM")
-            and l[17:20].strip().upper() in _HEME_RESNAMES
-        ]
-        if _heme_lines:
-            view.addModel("".join(_heme_lines) + "END\n", "pdb")
+    from core import METAL_RESNAMES as _METAL_RN, HEME_RESNAMES as _HEME_RN
+
+    if not rec_fh or not os.path.exists(rec_fh):
+        return model_idx
+
+    try:
+        all_lines = open(rec_fh).readlines()
+    except Exception:
+        return model_idx
+
+    # ── Metal ions ────────────────────────────────────────────────────────
+    metal_lines = [
+        l for l in all_lines
+        if l[:6].strip() in ("ATOM", "HETATM")
+        and l[17:20].strip().upper() in _METAL_RN
+    ]
+    if metal_lines:
+        try:
+            view.addModel("".join(metal_lines) + "END\n", "pdb")
             view.setStyle({"model": model_idx}, {
-                "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}
+                "sphere": {"colorscheme": "Jmol", "radius": 0.6},
+            })
+            # Add a small label for each unique metal type found
+            metal_types = sorted({l[17:20].strip().upper() for l in metal_lines})
+            for mt in metal_types:
+                view.addLabel(mt, {
+                    "fontSize": 11, "fontColor": "gold",
+                    "backgroundColor": "black", "backgroundOpacity": 0.55,
+                    "inFront": True, "showBackground": True,
+                }, {"model": model_idx, "resn": mt})
+            model_idx += 1
+        except Exception:
+            pass   # viewer error — skip silently, don't crash
+
+    # ── Heme cofactor ─────────────────────────────────────────────────────
+    heme_lines = [
+        l for l in all_lines
+        if l[:6].strip() in ("ATOM", "HETATM")
+        and l[17:20].strip().upper() in _HEME_RN
+    ]
+    if heme_lines:
+        try:
+            view.addModel("".join(heme_lines) + "END\n", "pdb")
+            view.setStyle({"model": model_idx}, {
+                "stick": {"colorscheme": "orangeCarbon", "radius": 0.25},
             })
             view.addLabel("HEM", {
-                "fontSize": 12, "fontColor": "orange",
+                "fontSize": 11, "fontColor": "orange",
                 "backgroundColor": "black", "backgroundOpacity": 0.5,
                 "inFront": True, "showBackground": True,
             }, {"model": model_idx})
             model_idx += 1
-    return model_idx
+        except Exception:
+            pass
 
+    return model_idx
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  POSEVIEW LEGEND HTML
@@ -1782,7 +1824,7 @@ def _render_binding_pocket_panel(
             if show_surface:
                 v.addSurface(py3Dmol.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
             mi += 1
-        mi = _add_heme_to_view(v, heme_rec_fh or rec_fh, mi)
+        mi = _add_metals_heme_to_view(v, heme_rec_fh or rec_fh, mi)
         # Co-crystal only in normal app mode, never in figure panel
         if show_cryst and cryst_pdb and os.path.exists(cryst_pdb):
             v.addModel(open(cryst_pdb).read(), "pdb")
@@ -2718,7 +2760,7 @@ def _ready_figure_section(
             if show_surf:
                 v.addSurface(_py3d.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
             mi += 1
-        mi = _add_heme_to_view(v, rec, mi)
+        mi = _add_metals_heme_to_view(v, rec, mi)
         v.addModel(_Chem_fig.MolToMolBlock(mol), "mol")
         lig_m = mi
         v.setStyle({"model": lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
@@ -2800,7 +2842,7 @@ def _ready_figure_section(
                     _vb.addModel(open(b_rec_fh).read(), "pdb")
                     _vb.setStyle({"model": _vbi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
                     _vbi += 1
-                _vbi = _add_heme_to_view(_vb, b_rec_fh, _vbi)
+                _vbi = _add_metals_heme_to_view(_vb, b_rec_fh, _vbi)
                 if b_cryst_pdb and os.path.exists(b_cryst_pdb):
                     _vb.addModel(open(b_cryst_pdb).read(), "pdb")
                     _vb.setStyle({"model": _vbi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.20}})
@@ -4176,14 +4218,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         except Exception:
             pass
 
-        # HETATM filtering is now handled inside core.prepare_receptor() using
-        # the explicit per-residue policy from the Receptor setup panel.
-        # Keep these variables for downstream heme fallback compatibility.
-        _heme_lines = []
-        _heme_center = None
-        _n_cofactor = 0
-        _n_metal = 0
-
         _mode_map = {
             "Auto-detect co-crystal ligand":      "auto",
             "Enter XYZ manually":                 "manual",
@@ -4235,78 +4269,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             )
 
         if result["success"]:
-            # ── Heme center fallback ────────────────────────────────────────
-            # If auto-detect found no drug-like ligand but heme was present,
-            # re-center the grid on the Fe atom (substrate binding site).
-            if (_core_mode == "auto"
-                    and not result.get("cocrystal_ligand_id")
-                    and _heme_center is not None):
-                from core import write_vina_config as _wvc, write_box_pdb as _wbp
-                _hcx, _hcy, _hcz = _heme_center
-                _wbp(result["box_pdb"],    _hcx, _hcy, _hcz, result["sx"], result["sy"], result["sz"])
-                _wvc(result["config_txt"], _hcx, _hcy, _hcz, result["sx"], result["sy"], result["sz"])
-                result["cx"] = _hcx; result["cy"] = _hcy; result["cz"] = _hcz
-                _fe_found = any(l[12:16].strip().upper() == "FE" for l in _heme_lines)
-                st.info(
-                    f"🧲 No co-crystal ligand found — grid auto-centered at "
-                    f"{'Fe' if _fe_found else 'heme centroid'} "
-                    f"({_hcx:.2f}, {_hcy:.2f}, {_hcz:.2f})"
-                )
-            # ── Re-inject heme ─────────────────────────────────────────────
-            _heme_log = []
-            if _heme_lines:
-                _AD4_TYPE = {"FE": "Fe", "N": "NA", "O": "OA", "C": "A", "S": "SA"}
-                _AD4_CHG  = {"FE": 2.0, "N": -0.4, "C": 0.1, "O": -0.4, "S": 0.0}
-                try:
-                    _pdbqt_path  = result["rec_pdbqt"]
-                    _pdbqt_lines = [
-                        l for l in open(_pdbqt_path).readlines()
-                        if l.strip() != "END"
-                    ]
-                    _injected = 0
-                    for _hl in _heme_lines:
-                        try:
-                            _serial  = int(_hl[6:11])
-                            _aname   = _hl[12:16].strip()
-                            _resname = _hl[17:20].strip().upper()
-                            _chain   = _hl[21] if len(_hl) > 21 else "A"
-                            _resid   = int(_hl[22:26])
-                            _x       = float(_hl[30:38])
-                            _y       = float(_hl[38:46])
-                            _z       = float(_hl[46:54])
-                            _el_raw  = (
-                                _hl[76:78].strip().upper()
-                                if len(_hl) > 76 and _hl[76:78].strip()
-                                else _aname[:2].strip().upper()
-                            )
-                            _el      = _el_raw.upper()
-                            _atype   = _AD4_TYPE.get(_el, "C")
-                            _charge  = _AD4_CHG.get(_el, 0.0)
-                            # Right-justify atom type in 2 chars for valid PDBQT
-                            _vina_type = f"{_atype:>2s}"
-                            _pdbqt_lines.append(
-                                f"HETATM{_serial:5d} {_aname:<4s} {_resname:<3s} "
-                                f"{_chain}{_resid:4d}    "
-                                f"{_x:8.3f}{_y:8.3f}{_z:8.3f}  1.00  0.00"
-                                f"    {_charge:+.3f} {_vina_type}\n"
-                            )
-                            _injected += 1
-                        except Exception as _he:
-                            _heme_log.append(f"  Could not re-inject heme line: {_he}")
-                    _pdbqt_lines.append("END\n")
-                    with open(_pdbqt_path, "w") as _pf:
-                        _pf.writelines(_pdbqt_lines)
+            _full_log = result["log"]
 
-                    with open(result["rec_fh"], "a") as _rf:
-                        _rf.writelines(_heme_lines)
-
-                    _heme_log.append(
-                        f"Re-injected {_injected} heme atom(s) into PDBQT and rec.pdb"
-                    )
-                except Exception as _he2:
-                    _heme_log.append(f"Heme re-injection failed: {_he2}")
-
-            _full_log = result["log"] + _heme_log
             st.session_state.update({
                 pfx + "receptor_fh":         result["rec_fh"],
                 pfx + "receptor_pdbqt":      result["rec_pdbqt"],
@@ -4400,7 +4364,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 mi += 1
 
             # ── Heme cofactor ─────────────────────────────────────────────
-            mi = _add_heme_to_view(v3, st.session_state.get(pfx + "receptor_fh"), mi)
+            mi = _add_metals_heme_to_view(v3, st.session_state.get(pfx + "receptor_fh"), mi)
 
             _add_box_to_view(v3, cx_v, cy_v, cz_v, _sx, _sy, _sz)
             try:
@@ -5258,7 +5222,7 @@ with tab_basic:
                             _vrd.setStyle({"model": _mrd}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.2}})
                             _mrd += 1
                         # Heme
-                        _mrd = _add_heme_to_view(_vrd, st.session_state.get("receptor_fh"), _mrd)
+                        _mrd = _add_metals_heme_to_view(_vrd, st.session_state.get("receptor_fh"), _mrd)
                         _vrd.addModel(Chem.MolToMolBlock(_rd_mols[_rd_pose_i]), "mol")
                         _vrd.setStyle({"model": _mrd}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                         _vrd.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": _mrd})
@@ -5336,7 +5300,7 @@ with tab_basic:
                 va.setStyle({"model": mai}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.22}})
                 mai += 1
             # ── Heme ──────────────────────────────────────────────────────
-            mai = _add_heme_to_view(va, st.session_state.get("receptor_fh"), mai)
+            mai = _add_metals_heme_to_view(va, st.session_state.get("receptor_fh"), mai)
             # ─────────────────────────────────────────────────────────────
             va.addModelsAsFrames(sdf_txt)
             va.setStyle({"model": mai}, {"stick": {"colorscheme": "greenCarbon", "radius": 0.25}})
@@ -5392,7 +5356,7 @@ with tab_basic:
                         v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.2}})
                         mi2 += 1
                     # ── Heme ──────────────────────────────────────────────
-                    mi2 = _add_heme_to_view(v2, st.session_state.get("receptor_fh"), mi2)
+                    mi2 = _add_metals_heme_to_view(v2, st.session_state.get("receptor_fh"), mi2)
                     # ─────────────────────────────────────────────────────
                     v2.addModel(Chem.MolToMolBlock(sel_mol), "mol")
                     v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
@@ -5473,7 +5437,7 @@ with tab_basic:
                         vbp.addSurface(py3Dmol.SAS, {"opacity": 0.55, "color": "white"}, {"model": mbp})
                     mbp += 1
                 # ── Heme ──────────────────────────────────────────────────
-                mbp = _add_heme_to_view(vbp, st.session_state.get("receptor_fh"), mbp)
+                mbp = _add_metals_heme_to_view(vbp, st.session_state.get("receptor_fh"), mbp)
                 # ─────────────────────────────────────────────────────────
                 vbp.addModel(Chem.MolToMolBlock(sel_mol), "mol")
                 _lig_m = mbp
@@ -5950,7 +5914,7 @@ with tab_batch:
                             vb.setStyle({"model": bmi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.2}})
                             bmi += 1
                         # Heme
-                        bmi = _add_heme_to_view(vb, st.session_state.get("b_receptor_fh"), bmi)
+                        bmi = _add_metals_heme_to_view(vb, st.session_state.get("b_receptor_fh"), bmi)
                         vb.addModel(Chem.MolToMolBlock(b_mols[b_pose_i]), "mol")
                         vb.setStyle({"model": bmi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                         vb.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": bmi})
