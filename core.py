@@ -1029,6 +1029,7 @@ _IONIZABLE_SITE_DEF = [
     ("tetrazole",          "c1nn[nH]n1",                                        4.9,  "acid"),
     ("imidazole_acid",     "c1cn[nH]c1",                                        6.0,  "acid"),
     ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                 5.5,  "acid"),
+    ("sulfonamide_heteroaryl_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1)]",  5.5, "acid"),
     ("sulfonamide_NH",     "[SX4](=O)(=O)[NX3;H1]",                           10.1,  "acid"),
     ("imide_NH",           "[CX3](=O)[NX3;H1][CX3]=O",                         9.6,  "acid"),
     ("acylhydrazone_NH",   "[CX3](=O)[NX3;H1][NX2]=[CX3]",                   10.5,  "acid"),
