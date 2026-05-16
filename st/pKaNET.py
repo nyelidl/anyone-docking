@@ -391,6 +391,7 @@ _IONIZABLE_SITE_DEF = [
     ("phosphate_monoester_fb",     "[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",           6.1,  "acid"),
     # ── N-H acids ─────────────────────────────────────────────────────────────
     # Aryl sulfonamide N-H: benzenesulfonamide pKa=10.1 but aryl avg ~9.7 (bias +0.29 → lower by 0.3)
+    ("sulfonamide_heteroaryl_NH",  "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1)]", 5.5, "acid"),
     ("sulfonamide_aryl_NH",        "[SX4](=O)(=O)[NX3;H1,H2][c]",                        9.7,  "acid"),
     ("sulfonamide_NH",             "[SX4](=O)(=O)[NX3;H1,H2]",                           10.1, "acid"),  # H2 for primary sulfonamide
     ("imide_NH",                   "[CX3](=O)[NX3;H1][CX3]=O",                            9.6,  "acid"),
@@ -1063,7 +1064,9 @@ def _best_pka_for_site(site, ml_predictions, pubchem_result):
             # Prevents base-site pKa values (e.g. benzimidazolium pKa≈5.5) from
             # being assigned to the wrong event (N-H acid pKa≈13), which would
             # incorrectly score the deprotonated form as dominant at pH 7.4.
-            if abs(best - site["heuristic_pka"]) <= 3.0:
+            if abs(best - site["heuristic_pka"]) <= 3.0 or \
+               (best < site["heuristic_pka"] and
+                abs(best - site["heuristic_pka"]) <= 5.0):
                 return best, "pubchem"
     return site["heuristic_pka"], "heuristic"
 
