@@ -371,9 +371,15 @@ def hh_ph_match_score(pka, ph, site_type, actual_charge):
 _IONIZABLE_SITE_DEF = [
     # ── Ultra-strong acids ────────────────────────────────────────────────────
     ("sulfonic_acid",              "[SX4](=O)(=O)[OX2H1]",                                1.0,  "acid"),
-    # NEW: sulfonyl-imide N-H (saccharin pKa=1.6, acesulfame-K pKa~2).
-    # N between C=O AND SO2 — far more acidic than plain sulfonamide (pKa=10.1).
-    # MUST precede sulfonamide_NH so seen_ion dedup assigns the correct pKa.
+    # NEW: sulfonyl-imide N-H — split into two cases by ring vs acyclic context.
+    # (a) Cyclic sulfonyl-imide (saccharin pKa=1.6, acesulfame-K pKa~2): N is in
+    #     a ring fused/adjacent to both C=O and SO2.
+    # (b) Acyclic sulfonyl-urea-imide (sulfonylurea drugs glipizide/glyburide
+    #     pKa~5.0-6.5): acyclic Ar-SO2-NH-C(=O)-NHR. Less acidic due to lack
+    #     of ring strain and additional NH on the carbonyl side.
+    # Both MUST precede sulfonamide_NH so seen_ion dedup assigns the correct pKa.
+    ("sulfonyl_imide_NH_cyclic",   "[CX3;R](=O)[NX3;H1;R][SX4;R](=O)(=O)",                2.0,  "acid"),
+    ("sulfonylurea_NH",            "[NX3;H0,H1][CX3;!R](=O)[NX3;H1;!R][SX4;!R](=O)(=O)",  5.5,  "acid"),
     ("sulfonyl_imide_NH",          "[CX3](=O)[NX3;H1][SX4](=O)(=O)",                      2.0,  "acid"),
     # ── Carboxylic / aromatic hetero-acid ─────────────────────────────────────
     # Alpha-amino acid carboxyl: primary alpha-NH2 suppresses COOH pKa to ~2.3 (Gly=2.35, Ala=2.35)
@@ -390,10 +396,39 @@ _IONIZABLE_SITE_DEF = [
     ("phosphonate_fallback",       "[PX4](=O)([OX2H1])[OX1-,OX2;!$([OX2H1])]",           6.5,  "acid"),
     ("phosphate_monoester_fb",     "[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",           6.1,  "acid"),
     # ── N-H acids ─────────────────────────────────────────────────────────────
+    # Heteroaryl sulfonamide N-H: N attached to electron-poor heteroaromatic ring.
+    # The heterocyclic ring strongly inductively withdraws electron density,
+    # depressing pKa to ~5-7 (vs ~9.7 for plain aryl sulfonamide).
+    #   sulfisoxazole (isoxazole)    pKa 5.0
+    #   sulfamethoxazole (isoxazole) pKa 5.6
+    #   sulfadoxine (pyrimidine)     pKa 6.1
+    #   sulfadiazine (pyrimidine)    pKa 6.5
+    #   sulfathiazole (thiazole)     pKa 7.1
+    #   sulfamerazine (pyrimidine)   pKa 7.1
+    #   sulfamethazine (pyrimidine)  pKa 7.4
+    # Average ~6.0 across the sulfa-drug class.  MUST precede sulfonamide_aryl_NH.
+    # 5-membered heteroaromatic ring (isoxazole, oxazole, thiazole, pyrazole, etc.)
+    ("sulfonamide_5het_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1),$([c]1[c,n][c,n][o,n,s][c,n]1)]",  5.7, "acid"),
+    # Thiazol-2-yl sulfonamide (sulfathiazole pKa 7.1): C2 attached, S adjacent
+    ("sulfonamide_thiazole_NH",    "[SX4](=O)(=O)[NX3;H1]c1nccs1",                       7.0, "acid"),
+    # Oxazol-2-yl sulfonamide (less common but same motif as thiazole)
+    ("sulfonamide_oxazole_NH",     "[SX4](=O)(=O)[NX3;H1]c1ncco1",                       6.5, "acid"),
+    # 6-membered electron-poor heteroaromatic ring (pyrimidine, pyrazine, pyridazine).
+    # Must have >=2 ring nitrogens (excludes plain pyridine, which has milder effect).
+    # Enumerate the 3 possible attachment isomers per diazine ring system.
+    ("sulfonamide_pyrim2_NH",      "[SX4](=O)(=O)[NX3;H1]c1ncccn1",                     6.5,  "acid"),  # 2-aminopyrimidine
+    ("sulfonamide_pyrim4_NH",      "[SX4](=O)(=O)[NX3;H1]c1ccncn1",                     6.5,  "acid"),  # 4-aminopyrimidine
+    ("sulfonamide_pyrim5_NH",      "[SX4](=O)(=O)[NX3;H1]c1cncnc1",                     6.5,  "acid"),  # 5-aminopyrimidine
+    ("sulfonamide_pyrazin_NH",     "[SX4](=O)(=O)[NX3;H1]c1cnccn1",                     7.0,  "acid"),  # aminopyrazine
+    ("sulfonamide_pyridazin_NH",   "[SX4](=O)(=O)[NX3;H1]c1ccnnc1",                     7.0,  "acid"),  # aminopyridazine
     # Aryl sulfonamide N-H: benzenesulfonamide pKa=10.1 but aryl avg ~9.7 (bias +0.29 → lower by 0.3)
-    ("sulfonamide_heteroaryl_NH",  "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1)]", 5.5, "acid"),
     ("sulfonamide_aryl_NH",        "[SX4](=O)(=O)[NX3;H1,H2][c]",                        9.7,  "acid"),
     ("sulfonamide_NH",             "[SX4](=O)(=O)[NX3;H1,H2]",                           10.1, "acid"),  # H2 for primary sulfonamide
+    # Barbiturate ring N-H: malonimide-like 6-ring with TWO C=O flanking N-H AND
+    # a third C=O on the opposite side of the ring. pKa ~7.4 (phenobarbital),
+    # depressed vs simple imide (9.6) by the additional ring carbonyl.
+    # MUST precede generic imide_NH.
+    ("barbiturate_NH",             "[NX3;H1;R]1[CX3;R](=O)[NX3;H1,H0;R][CX3;R](=O)[CX4;R][CX3;R]1=O",                            7.4,  "acid"),
     ("imide_NH",                   "[CX3](=O)[NX3;H1][CX3]=O",                            9.6,  "acid"),
     ("acylhydrazone_NH",           "[CX3](=O)[NX3;H1][NX2]=[CX3]",                        10.5, "acid"),
     ("hydrazide_NH",               "[CX3](=O)[NX3;H1][NX3;H2]",                           10.5, "acid"),
@@ -440,6 +475,10 @@ _IONIZABLE_SITE_DEF = [
     # ── Bases ─────────────────────────────────────────────────────────────────
     # Aniline with EWG: strongly depressed pKa (4-nitroaniline=1.0, 4-CN=1.7 → avg ~2.5)
     ("aniline_EWG",                "c[NX3;H1,H2;!$(N~[!#6])][$([NX3+](=O)[O-]),$([NX3](=O)=O),$(C#N),$([SX4](=O)(=O))]", 2.5, "base"),
+    # Aniline with para-EWG on the SAME aromatic ring (through-ring resonance withdrawal).
+    # Examples: sulfanilamide (para-SO2NHR) pKa~1.9, p-nitroaniline pKa~1.0, p-cyanoaniline pKa~1.7
+    # SMARTS: c1ccc(EWG)cc1-NH2  — uses recursive atom selector on the ring's para C.
+    ("aniline_para_EWG",           "[NX3;H1,H2;!$(N~[!#6])][c]1[c][c][c]([$([NX3+](=O)[O-]),$([NX3](=O)=O),$(C#N),$([SX4](=O)(=O))])[c][c]1", 2.0, "base"),
     # Aniline with EDG: pKa elevated (4-methoxyaniline=5.3, 4-methylaniline=5.1 → avg ~5.1)
     ("aniline_EDG",                "c[NX3;H1,H2;!$(N~[!#6])][$([OX2][#6]),$([CX4H3]),$([CX4H2])]", 5.1, "base"),
     ("aniline",                    "c[NX3;H1,H2;!$(N~[!#6])]",                            4.6,  "base"),
@@ -511,7 +550,12 @@ _PAT_BETA_HYDROXY_CARBOXYL       = Chem.MolFromSmarts("[OX2H1][CX4][CX4][CX3](=O
 _PAT_GLYPHOSATE_BACKBONE         = Chem.MolFromSmarts("[PX4](=O)([OX2H1,OX1-])([OX2H1,OX1-])[CX4][NX3][CX4][CX3](=O)[OX2H1,OX1-]")
 _PAT_MORPHOLINE_TERTIARY_N       = Chem.MolFromSmarts("[NX3;R;!$(NC=O);!$(Nc)]1CCOCC1")
 # Tertiary cyclic amine with adjacent EWG: pKa suppressed to ~5.5-6.5
-_PAT_CYCLIC_N_ALPHA_EWG          = Chem.MolFromSmarts("[NX3;R;!$(NC=O)][CX4][$([CX3](=O)),$([CX3]=S),$(C#N),$([SX4](=O)(=O))]")
+# Restriction: alpha-C connected to a STRONG EWG only — ring/aromatic ketone,
+# sulfonyl, nitrile, thioketone. Esters (–C(=O)OR) and amides (–C(=O)NR2) are
+# excluded because they do not suppress amine pKa enough to match this rule
+# (tropane alkaloids like atropine, cocaine, scopolamine have ester groups
+# alpha to the bridgehead N but still have pKa ~9-10, not 6.0).
+_PAT_CYCLIC_N_ALPHA_EWG          = Chem.MolFromSmarts("[NX3;R;!$(NC=O)][CX4][$([CX3;!$(C(=O)[OX2H0,N])](=O)),$([CX3]=S),$(C#N),$([SX4](=O)(=O))]")
 # Piperazine secondary N (weaker due to inductive effect from first protonated N): ~5.1
 _PAT_PIPERAZINE                  = Chem.MolFromSmarts("[NX3;R;!$(NC=O)]1CC[NX3;R]CC1")
 # Aromatic-fused cyclic amine (tetrahydroisoquinoline, indoline etc.): ~9.0
@@ -1060,13 +1104,19 @@ def _best_pka_for_site(site, ml_predictions, pubchem_result):
         vals = pubchem_result.get("pka_values", [])
         if vals:
             best = min(vals, key=lambda v: abs(v - site["heuristic_pka"]))
-            # Guard: skip pubchem pKa if it differs from heuristic by > 3 pKa units.
-            # Prevents base-site pKa values (e.g. benzimidazolium pKa≈5.5) from
-            # being assigned to the wrong event (N-H acid pKa≈13), which would
-            # incorrectly score the deprotonated form as dominant at pH 7.4.
-            if abs(best - site["heuristic_pka"]) <= 3.0 or \
-               (best < site["heuristic_pka"] and
-                abs(best - site["heuristic_pka"]) <= 5.0):
+            # Guard: prevent PubChem pKa from being assigned to the wrong event
+            # (e.g. benzimidazolium base pKa~5.5 attaching to N-H acid heuristic
+            # pKa~13). Allow:
+            #   (a) symmetric correction within ±3.0 units
+            #   (b) downward correction (best < heuristic) up to 5.0 units —
+            #       needed when heuristic over-estimates pKa due to missing
+            #       substituent rule (e.g. heteroaryl sulfonamides where the
+            #       heteroaryl ring suppresses pKa from 9.7 to ~5.6).
+            #       Only allowed when site_type and PubChem pKa direction agree.
+            diff = best - site["heuristic_pka"]
+            within_symmetric = abs(diff) <= 3.0
+            within_downward  = (diff < 0 and abs(diff) <= 5.0)
+            if within_symmetric or within_downward:
                 return best, "pubchem"
     return site["heuristic_pka"], "heuristic"
 
