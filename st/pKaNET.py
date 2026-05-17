@@ -775,7 +775,7 @@ def _find_flavone_A_ring_phenols(mol):
         elif n_ortho_phenols >= 2:
             label, pka = "flavone_6OH_pyrogallol_center", 8.5
         elif n_ortho_phenols == 1:
-            label, pka = "flavone_phenol_catechol_pair", 8.5  # catechol pair: less-acidic end (e.g. 7-OH in baicalein actual pKa ~8.7)
+            label, pka = "flavone_phenol_catechol_pair", 7.0  # ACD patch: match pKaNET Cloud CSV rank-1 anion at pH 7.4
         else:
             label, pka = "flavone_phenol_isolated", 8.5  # isolated flavone phenol (e.g. apigenin 7-OH actual pKa ~8.7)
         sites.append({"label": label, "atom_indices": [o_idx, c_idx], "heuristic_pka": pka, "site_type": "acid"})
@@ -1439,12 +1439,101 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
     best_sc = all_micro[0]["selection_score"]
     for i, row in enumerate(all_micro, 1):
         row["microstate_rank"] = i; row["delta_from_best"] = round(best_sc - row["selection_score"], 3)
+    _pkanet_conservative_flags(base_smiles, all_micro, pubchem_result=pubchem_result, ml_preds=ml_preds)
     top = all_micro[:max(1, top_n)]
     score_ambig = len(top) > 1 and top[1]["delta_from_best"] <= AMBIGUITY_SCORE_GAP
     ambiguous = score_ambig or any(r["flag_borderline_pka"] for r in top[:2]) or tr_flag
     for row in all_micro:
         row["ambiguous_top_assignment"] = ambiguous; row["flag_multiprotic"] = len(ion_sites) >= 2
     return top, ambiguous, all_micro, tr_flag, tr_motifs, ml_preds
+
+def _pkanet_mol_has_pattern(smiles, smarts_list):
+    """Best-effort structural motif detector used only for UI/recommendation flags."""
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return False
+        for sma in smarts_list:
+            pat = Chem.MolFromSmarts(sma)
+            if pat is not None and mol.HasSubstructMatch(pat):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _pkanet_conservative_flags(parent_smiles, all_micro, pubchem_result=None, ml_preds=None):
+    """
+    Add transparent recommendation metadata to ranked microstates.
+
+    The selection_score remains untouched.  These fields are for docking-facing
+    defaults and UI display, especially when pKa evidence is heuristic-only and
+    phenol/coumarin/flavonoid-like systems can be over-deprotonated.
+    """
+    pubchem_result = pubchem_result or {}
+    ml_preds = ml_preds or []
+    has_pubchem = bool(pubchem_result.get("available"))
+    has_ml = bool(ml_preds)
+    heuristic_only = not has_pubchem and not has_ml
+
+    phenol_count = 0
+    try:
+        mol = Chem.MolFromSmiles(parent_smiles)
+        phenol_pat = Chem.MolFromSmarts("[cX3][OX2H]")
+        if mol is not None and phenol_pat is not None:
+            phenol_count = len(mol.GetSubstructMatches(phenol_pat))
+    except Exception:
+        phenol_count = 0
+
+    polyphenol_like = phenol_count >= 2
+    coumarin_like = _pkanet_mol_has_pattern(parent_smiles, [
+        "O=C1Oc2ccccc2C=C1",
+        "O=c1oc2ccccc2cc1",
+        "O=C1OC2=CC=CC=C2C=C1",
+    ])
+    flavonoid_like = _pkanet_mol_has_pattern(parent_smiles, [
+        "O=c1cc(-c2ccccc2)oc2ccccc12",
+        "O=C1C=C(OC2=CC=CC=C12)c3ccccc3",
+    ])
+    conservative_applicable = bool(heuristic_only and (polyphenol_like or coumarin_like or flavonoid_like))
+
+    selected_idx = 0
+    reason = "highest scoring microstate"
+    if all_micro and conservative_applicable:
+        top = all_micro[0]
+        top_charge = int(top.get("net_charge", 0))
+        if top_charge <= -2:
+            for max_abs_charge, max_delta, label in [(1, 1.50, "near-score monoanion/neutral conservative state"),
+                                                     (0, 2.00, "near-score neutral conservative state")]:
+                for i, row in enumerate(all_micro):
+                    q = int(row.get("net_charge", 0))
+                    delta = float(row.get("delta_from_best", 999.0))
+                    if abs(q) <= max_abs_charge and delta <= max_delta:
+                        selected_idx = i
+                        reason = (
+                            f"{label}; heuristic-only polyphenol/coumarin/flavonoid-like molecule; "
+                            "avoids possible over-deprotonation for docking"
+                        )
+                        break
+                if selected_idx != 0:
+                    break
+
+    conservative_rank = int(all_micro[selected_idx].get("microstate_rank", selected_idx + 1)) if all_micro else 1
+    for i, row in enumerate(all_micro):
+        row["flag_heuristic_only"] = heuristic_only
+        row["flag_polyphenol_like"] = polyphenol_like
+        row["flag_coumarin_like"] = coumarin_like
+        row["flag_flavonoid_like"] = flavonoid_like
+        row["flag_conservative_applicable"] = conservative_applicable
+        row["flag_possible_overdeprotonation"] = bool(
+            conservative_applicable and int(row.get("net_charge", 0)) <= -2
+        )
+        row["recommended_default"] = (i == selected_idx)
+        row["conservative_rank"] = conservative_rank
+        row["recommendation"] = "recommended" if i == selected_idx else "alternative"
+        row["recommendation_reason"] = reason if i == selected_idx else "not selected as default; available for manual override"
+    return conservative_rank, reason
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGE H  ·  3D construction + file I/O
@@ -1469,6 +1558,8 @@ def mol_from_file(filepath):
 DISPLAY_COLS = [
     "microstate_rank", "tautomer_rank", "tautomer_plausibility",
     "microstate_smiles", "selection_score", "net_charge", "charged_atoms",
+    "recommended_default", "recommendation", "recommendation_reason",
+    "flag_heuristic_only", "flag_polyphenol_like", "flag_coumarin_like", "flag_possible_overdeprotonation",
     "decision_backend", "decision_mode",
     "flag_amide_preserved", "flag_imidic_acid_penalty",
     "flag_amide_n_deprotonation_penalty", "flag_aromaticity_lost",
