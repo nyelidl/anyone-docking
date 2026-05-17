@@ -371,9 +371,14 @@ def hh_ph_match_score(pka, ph, site_type, actual_charge):
 _IONIZABLE_SITE_DEF = [
     # ── Ultra-strong acids ────────────────────────────────────────────────────
     ("sulfonic_acid",              "[SX4](=O)(=O)[OX2H1]",                                1.0,  "acid"),
-    # NEW: sulfonyl-imide N-H (saccharin pKa=1.6, acesulfame-K pKa~2).
-    # N between C=O AND SO2 — far more acidic than plain sulfonamide (pKa=10.1).
-    # MUST precede sulfonamide_NH so seen_ion dedup assigns the correct pKa.
+    # Split sulfonyl-imide N-H into 2 contexts:
+    # (a) Cyclic sulfonyl-imide (saccharin pKa=1.6, acesulfame-K pKa~2): N in
+    #     ring with adjacent C=O and SO2.
+    # (b) Acyclic sulfonylurea (glipizide, glyburide, glimepiride pKa~5.0-6.5):
+    #     Ar-SO2-NH-C(=O)-NHR. Less acidic — no ring strain, additional NH side.
+    # Both MUST precede sulfonamide_NH (seen_ion dedup gives correct pKa).
+    ("sulfonyl_imide_NH_cyclic",   "[CX3;R](=O)[NX3;H1;R][SX4;R](=O)(=O)",                2.0,  "acid"),
+    ("sulfonylurea_NH",            "[NX3;H0,H1][CX3;!R](=O)[NX3;H1;!R][SX4;!R](=O)(=O)",  5.5,  "acid"),
     ("sulfonyl_imide_NH",          "[CX3](=O)[NX3;H1][SX4](=O)(=O)",                      2.0,  "acid"),
     # ── Carboxylic / aromatic hetero-acid ─────────────────────────────────────
     # Alpha-amino acid carboxyl: primary alpha-NH2 suppresses COOH pKa to ~2.3 (Gly=2.35, Ala=2.35)
@@ -390,9 +395,36 @@ _IONIZABLE_SITE_DEF = [
     ("phosphonate_fallback",       "[PX4](=O)([OX2H1])[OX1-,OX2;!$([OX2H1])]",           6.5,  "acid"),
     ("phosphate_monoester_fb",     "[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",           6.1,  "acid"),
     # ── N-H acids ─────────────────────────────────────────────────────────────
-    # Aryl sulfonamide N-H: benzenesulfonamide pKa=10.1 but aryl avg ~9.7 (bias +0.29 → lower by 0.3)
+    # Heteroaryl sulfonamide N-H: N attached to electron-poor heteroaromatic ring.
+    # Heterocycle strongly inductively withdraws electron density,
+    # depressing pKa to ~5-7 (vs ~9.7 for plain aryl sulfonamide).
+    #   sulfisoxazole (isoxazole)    pKa 5.0
+    #   sulfamethoxazole (isoxazole) pKa 5.6
+    #   sulfadoxine (pyrimidine)     pKa 6.1
+    #   sulfadiazine (pyrimidine)    pKa 6.5
+    #   sulfathiazole (thiazole)     pKa 7.1
+    #   sulfamerazine (pyrimidine)   pKa 7.1
+    #   sulfamethazine (pyrimidine)  pKa 7.4
+    # MUST precede sulfonamide_aryl_NH (first-match-wins).
+    # 5-membered heteroaromatic (isoxazole/oxazole/thiazole/pyrazole etc.)
+    ("sulfonamide_5het_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1),$([c]1[c,n][c,n][o,n,s][c,n]1)]",  5.7, "acid"),
+    # Thiazol-2-yl (sulfathiazole pKa 7.1)
+    ("sulfonamide_thiazole_NH",    "[SX4](=O)(=O)[NX3;H1]c1nccs1",                       7.0, "acid"),
+    # Oxazol-2-yl
+    ("sulfonamide_oxazole_NH",     "[SX4](=O)(=O)[NX3;H1]c1ncco1",                       6.5, "acid"),
+    # 6-membered electron-poor heteroaromatic (pyrimidine, pyrazine, pyridazine)
+    ("sulfonamide_pyrim2_NH",      "[SX4](=O)(=O)[NX3;H1]c1ncccn1",                     6.5,  "acid"),  # 2-aminopyrimidine
+    ("sulfonamide_pyrim4_NH",      "[SX4](=O)(=O)[NX3;H1]c1ccncn1",                     6.5,  "acid"),  # 4-aminopyrimidine
+    ("sulfonamide_pyrim5_NH",      "[SX4](=O)(=O)[NX3;H1]c1cncnc1",                     6.5,  "acid"),  # 5-aminopyrimidine
+    ("sulfonamide_pyrazin_NH",     "[SX4](=O)(=O)[NX3;H1]c1cnccn1",                     7.0,  "acid"),  # aminopyrazine
+    ("sulfonamide_pyridazin_NH",   "[SX4](=O)(=O)[NX3;H1]c1ccnnc1",                     7.0,  "acid"),  # aminopyridazine
+    # Aryl sulfonamide N-H: benzenesulfonamide pKa=10.1 but aryl avg ~9.7
     ("sulfonamide_aryl_NH",        "[SX4](=O)(=O)[NX3;H1,H2][c]",                        9.7,  "acid"),
     ("sulfonamide_NH",             "[SX4](=O)(=O)[NX3;H1,H2]",                           10.1, "acid"),  # H2 for primary sulfonamide
+    # Barbiturate ring N-H: 6-ring with two C=O flanking N-H + a third C=O on
+    # opposite side. pKa ~7.4 (phenobarbital), much more acidic than simple imide.
+    # MUST precede imide_NH.
+    ("barbiturate_NH",             "[NX3;H1;R]1[CX3;R](=O)[NX3;H1,H0;R][CX3;R](=O)[CX4;R][CX3;R]1=O",                            7.4,  "acid"),
     ("imide_NH",                   "[CX3](=O)[NX3;H1][CX3]=O",                            9.6,  "acid"),
     ("acylhydrazone_NH",           "[CX3](=O)[NX3;H1][NX2]=[CX3]",                        10.5, "acid"),
     ("hydrazide_NH",               "[CX3](=O)[NX3;H1][NX3;H2]",                           10.5, "acid"),
@@ -439,6 +471,9 @@ _IONIZABLE_SITE_DEF = [
     # ── Bases ─────────────────────────────────────────────────────────────────
     # Aniline with EWG: strongly depressed pKa (4-nitroaniline=1.0, 4-CN=1.7 → avg ~2.5)
     ("aniline_EWG",                "c[NX3;H1,H2;!$(N~[!#6])][$([NX3+](=O)[O-]),$([NX3](=O)=O),$(C#N),$([SX4](=O)(=O))]", 2.5, "base"),
+    # Aniline with para-EWG on the SAME aromatic ring (through-ring resonance withdrawal).
+    # sulfanilamide (para-SO2NHR) pKa~1.9, p-nitroaniline pKa~1.0, p-cyanoaniline pKa~1.7
+    ("aniline_para_EWG",           "[NX3;H1,H2;!$(N~[!#6])][c]1[c][c][c]([$([NX3+](=O)[O-]),$([NX3](=O)=O),$(C#N),$([SX4](=O)(=O))])[c][c]1", 2.0, "base"),
     # Aniline with EDG: pKa elevated (4-methoxyaniline=5.3, 4-methylaniline=5.1 → avg ~5.1)
     ("aniline_EDG",                "c[NX3;H1,H2;!$(N~[!#6])][$([OX2][#6]),$([CX4H3]),$([CX4H2])]", 5.1, "base"),
     ("aniline",                    "c[NX3;H1,H2;!$(N~[!#6])]",                            4.6,  "base"),
@@ -510,7 +545,13 @@ _PAT_BETA_HYDROXY_CARBOXYL       = Chem.MolFromSmarts("[OX2H1][CX4][CX4][CX3](=O
 _PAT_GLYPHOSATE_BACKBONE         = Chem.MolFromSmarts("[PX4](=O)([OX2H1,OX1-])([OX2H1,OX1-])[CX4][NX3][CX4][CX3](=O)[OX2H1,OX1-]")
 _PAT_MORPHOLINE_TERTIARY_N       = Chem.MolFromSmarts("[NX3;R;!$(NC=O);!$(Nc)]1CCOCC1")
 # Tertiary cyclic amine with adjacent EWG: pKa suppressed to ~5.5-6.5
-_PAT_CYCLIC_N_ALPHA_EWG          = Chem.MolFromSmarts("[NX3;R;!$(NC=O)][CX4][$([CX3](=O)),$([CX3]=S),$(C#N),$([SX4](=O)(=O))]")
+# Tertiary cyclic amine with adjacent EWG: pKa suppressed to ~5.5-6.5
+# Restriction: alpha-C connected to a STRONG EWG only — ring/aromatic ketone,
+# sulfonyl, nitrile, thioketone. Esters (–C(=O)OR) and amides (–C(=O)NR2) are
+# excluded because they do not suppress amine pKa enough to match this rule
+# (tropane alkaloids like atropine, cocaine, scopolamine have ester groups
+# alpha to the bridgehead N but still have pKa ~9-10, not 6.0).
+_PAT_CYCLIC_N_ALPHA_EWG          = Chem.MolFromSmarts("[NX3;R;!$(NC=O)][CX4][$([CX3;!$(C(=O)[OX2H0,N])](=O)),$([CX3]=S),$(C#N),$([SX4](=O)(=O))]")
 # Piperazine secondary N (weaker due to inductive effect from first protonated N): ~5.1
 _PAT_PIPERAZINE                  = Chem.MolFromSmarts("[NX3;R;!$(NC=O)]1CC[NX3;R]CC1")
 # Aromatic-fused cyclic amine (tetrahydroisoquinoline, indoline etc.): ~9.0
@@ -728,7 +769,7 @@ def _find_flavone_A_ring_phenols(mol):
         ortho_to_ring_O = ring_oxygen_idx is not None and ring_oxygen_idx in chromone_nbrs
         n_ortho_phenols = sum(1 for n in ortho_carbons if _has_phenolic_OH(n))
         if ortho_to_carbonyl:
-            label, pka = ("flavone_3OH_flavonol", 9.0) if carbonyl_direct else ("flavone_5OH_chelated", 11.0)
+            label, pka = ("flavone_3OH_flavonol", 7.0) if carbonyl_direct else ("flavone_5OH_chelated", 11.0)
         elif ortho_to_ring_O:
             label, pka = "flavone_8OH_ortho_pyranO", 8.5
         elif n_ortho_phenols >= 2:
@@ -736,7 +777,7 @@ def _find_flavone_A_ring_phenols(mol):
         elif n_ortho_phenols == 1:
             label, pka = "flavone_phenol_catechol_pair", 7.0  # ACD patch: match pKaNET Cloud CSV rank-1 anion at pH 7.4
         else:
-            label, pka = "flavone_phenol_isolated", 7.0  # ACD patch: match pKaNET Cloud CSV rank-1 anion at pH 7.4
+            label, pka = "flavone_phenol_isolated", 8.5  # isolated flavone phenol (e.g. apigenin 7-OH actual pKa ~8.7)
         sites.append({"label": label, "atom_indices": [o_idx, c_idx], "heuristic_pka": pka, "site_type": "acid"})
     if sites:
         detail = ", ".join(f"{s['label'].replace('flavone_','')}(pKa={s['heuristic_pka']})" for s in sites)
@@ -1059,11 +1100,18 @@ def _best_pka_for_site(site, ml_predictions, pubchem_result):
         vals = pubchem_result.get("pka_values", [])
         if vals:
             best = min(vals, key=lambda v: abs(v - site["heuristic_pka"]))
-            # Guard: skip pubchem pKa if it differs from heuristic by > 3 pKa units.
-            # Prevents base-site pKa values (e.g. benzimidazolium pKa≈5.5) from
-            # being assigned to the wrong event (N-H acid pKa≈13), which would
-            # incorrectly score the deprotonated form as dominant at pH 7.4.
-            if abs(best - site["heuristic_pka"]) <= 3.0:
+            # Guard: prevent PubChem pKa from being assigned to the wrong event
+            # (e.g. benzimidazolium base pKa~5.5 attaching to N-H acid heuristic
+            # pKa~13). Allow:
+            #   (a) symmetric correction within ±3.0 units
+            #   (b) downward correction (best < heuristic) up to 5.0 units —
+            #       needed when heuristic over-estimates due to missing
+            #       substituent rule (e.g. heteroaryl sulfonamides where the
+            #       heteroaryl ring suppresses pKa from 9.7 to ~5.6).
+            diff = best - site["heuristic_pka"]
+            within_symmetric = abs(diff) <= 3.0
+            within_downward  = (diff < 0 and abs(diff) <= 5.0)
+            if within_symmetric or within_downward:
                 return best, "pubchem"
     return site["heuristic_pka"], "heuristic"
 
@@ -1180,19 +1228,6 @@ def score_microstate_full(microstate_smiles, tautomer_smiles, taut_plausibility,
         s_multi -= 2.5 * (n_pos - 1)
     if n_pos >= 4 and n_neg == 0:
         s_multi -= 4.0
-
-    # ACD docking-conservative patch (2026-05): avoid over-ionizing
-    # polyphenol / bis-coumarin systems when only heuristic pKa evidence is
-    # available.  Without experimental/ML pKa, the old score could select
-    # simultaneous multi-anions (-2/-3) too aggressively for docking.
-    # Keep strong inorganic/polyacid cases possible, but penalize extra
-    # phenol/enol/coumarin deprotonations so the top state remains a
-    # plausible monoanion when pKaNET marks the assignment as ambiguous.
-    if n_neg >= 2 and n_pos == 0 and not pubchem_result.get("available") and not ml_predictions:
-        acid_labels = " ".join(str(s.get("label", "")).lower() for s in ion_sites if s.get("site_type") == "acid")
-        soft_acid_keys = ("phenol", "catechol", "flavone", "warfarin", "enol", "coumarin")
-        if any(k in acid_labels for k in soft_acid_keys):
-            s_multi -= 7.0 * (n_neg - 1)
 
     expected_net = _expected_net_charge_from_sites(ion_sites, target_ph)
     s_target_net = 0.0
@@ -1412,8 +1447,6 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
         row["ambiguous_top_assignment"] = ambiguous; row["flag_multiprotic"] = len(ion_sites) >= 2
     return top, ambiguous, all_micro, tr_flag, tr_motifs, ml_preds
 
-
-
 def _pkanet_mol_has_pattern(smiles, smarts_list):
     """Best-effort structural motif detector used only for UI/recommendation flags."""
     try:
@@ -1454,8 +1487,8 @@ def _pkanet_conservative_flags(parent_smiles, all_micro, pubchem_result=None, ml
 
     polyphenol_like = phenol_count >= 2
     coumarin_like = _pkanet_mol_has_pattern(parent_smiles, [
-        "O=C1Oc2ccccc2C=C1",      # coumarin-like lactone scaffold, permissive
-        "O=c1oc2ccccc2cc1",       # aromatic lowercase variant
+        "O=C1Oc2ccccc2C=C1",
+        "O=c1oc2ccccc2cc1",
         "O=C1OC2=CC=CC=C2C=C1",
     ])
     flavonoid_like = _pkanet_mol_has_pattern(parent_smiles, [
@@ -1469,8 +1502,6 @@ def _pkanet_conservative_flags(parent_smiles, all_micro, pubchem_result=None, ml
     if all_micro and conservative_applicable:
         top = all_micro[0]
         top_charge = int(top.get("net_charge", 0))
-        # Avoid an extreme multi-deprotonated default when a chemically plausible
-        # monoanion/neutral state is close in score.  The score is still shown.
         if top_charge <= -2:
             for max_abs_charge, max_delta, label in [(1, 1.50, "near-score monoanion/neutral conservative state"),
                                                      (0, 2.00, "near-score neutral conservative state")]:
@@ -1502,6 +1533,7 @@ def _pkanet_conservative_flags(parent_smiles, all_micro, pubchem_result=None, ml
         row["recommendation"] = "recommended" if i == selected_idx else "alternative"
         row["recommendation_reason"] = reason if i == selected_idx else "not selected as default; available for manual override"
     return conservative_rank, reason
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGE H  ·  3D construction + file I/O
