@@ -897,7 +897,7 @@ def _find_flavone_A_ring_phenols(mol):
     Position-aware pKa assignment for chromone A-ring phenolic OHs.
 
     Classification (Fixes 1-4):
-      carbonyl_direct=True   -> flavone_3OH_flavonol   pKa  9.0  (FIX 3)
+      carbonyl_direct=True   -> flavone_3OH_flavonol   pKa  7.0  (FIX 3)
       carbonyl_direct=False  -> flavone_5OH_chelated   pKa 11.0  (FIX 1)
       ortho_to_ring_O        -> flavone_8OH            pKa  8.5
       n_ortho_phenols >= 2   -> flavone_6OH_pyrogallol pKa  8.5  (FIX 4a)
@@ -989,7 +989,7 @@ def _find_flavone_A_ring_phenols(mol):
 
         if ortho_to_carbonyl:
             if carbonyl_direct:
-                label, pka = "flavone_3OH_flavonol", 9.0    # FIX 3
+                label, pka = "flavone_3OH_flavonol", 7.0    # FIX 3 (quercetin 3-OH actual pKa ~7.0)
             else:
                 label, pka = "flavone_5OH_chelated", 11.0   # FIX 1
         elif ortho_to_ring_O:
@@ -999,7 +999,7 @@ def _find_flavone_A_ring_phenols(mol):
         elif n_ortho_phenols == 1:
             label, pka = "flavone_phenol_catechol_pair", 7.0   # FIX 4b
         else:
-            label, pka = "flavone_phenol_isolated", 7.0         # FIX 2
+            label, pka = "flavone_phenol_isolated", 8.5         # FIX 2 (apigenin 7-OH actual pKa ~8.7)
 
         sites.append({
             "label":         label,
@@ -1033,11 +1033,27 @@ _IONIZABLE_SITE_DEF = [
     # benzimidazole: pKa 5.5 is also the BASE pKa (ring N protonation), not N-H acid
     # (~13). Changed to base so it is correctly neutral at pH 7.4 (e.g. omeprazole).
     ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                 5.5,  "base"),
-    ("sulfonamide_heteroaryl_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1)]",  5.5, "acid"),
-    # 1,2,4-thiadiazol-5-yl: sulfamethizole pKa 5.45. Must precede sulfonamide_NH.
-    ("sulfonamide_thiadiazole_NH", "[SX4](=O)(=O)[NX3;H1]c1nncs1",                               5.5,  "acid"),
-    ("sulfonamide_NH",     "[SX4](=O)(=O)[NX3;H1]",                           10.1,  "acid"),
-    ("imide_NH",           "[CX3](=O)[NX3;H1][CX3]=O",                         9.6,  "acid"),
+    # ── N-H acids (patched 2026-05): heteroaryl sulfonamides + barbiturate ──
+    # NEW: sulfonyl-imide N-H split into cyclic vs sulfonylurea contexts.
+    ("sulfonyl_imide_NH_cyclic",   "[CX3;R](=O)[NX3;H1;R][SX4;R](=O)(=O)",       2.0,  "acid"),
+    ("sulfonylurea_NH",            "[NX3;H0,H1][CX3;!R](=O)[NX3;H1;!R][SX4;!R](=O)(=O)", 5.5,  "acid"),
+    ("sulfonyl_imide_NH",          "[CX3](=O)[NX3;H1][SX4](=O)(=O)",             2.0,  "acid"),
+    # Heteroaryl sulfonamide N-H (sulfa-antibiotics) pKa ~5-7 — MUST precede sulfonamide_NH
+    ("sulfonamide_5het_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1),$([c]1[c,n][c,n][o,n,s][c,n]1)]",  5.7, "acid"),
+    ("sulfonamide_thiazole_NH",    "[SX4](=O)(=O)[NX3;H1]c1nccs1",               7.0,  "acid"),
+    ("sulfonamide_oxazole_NH",     "[SX4](=O)(=O)[NX3;H1]c1ncco1",               6.5,  "acid"),
+    ("sulfonamide_pyrim2_NH",      "[SX4](=O)(=O)[NX3;H1]c1ncccn1",              6.5,  "acid"),
+    ("sulfonamide_pyrim4_NH",      "[SX4](=O)(=O)[NX3;H1]c1ccncn1",              6.5,  "acid"),
+    ("sulfonamide_pyrim5_NH",      "[SX4](=O)(=O)[NX3;H1]c1cncnc1",              6.5,  "acid"),
+    ("sulfonamide_pyrazin_NH",     "[SX4](=O)(=O)[NX3;H1]c1cnccn1",              7.0,  "acid"),
+    ("sulfonamide_pyridazin_NH",   "[SX4](=O)(=O)[NX3;H1]c1ccnnc1",              7.0,  "acid"),
+    # 1,2,4-thiadiazol-5-yl: sulfamethizole pKa 5.45
+    ("sulfonamide_thiadiazole_NH", "[SX4](=O)(=O)[NX3;H1]c1nncs1",               5.5,  "acid"),
+    # Generic sulfonamide: H1,H2 to catch both secondary AND primary (-SO2-NH2)
+    ("sulfonamide_NH",             "[SX4](=O)(=O)[NX3;H1,H2]",                  10.1,  "acid"),
+    # Barbiturate ring N-H: pKa ~7.4 (phenobarbital). MUST precede imide_NH.
+    ("barbiturate_NH",             "[NX3;H1;R]1[CX3;R](=O)[NX3;H1,H0;R][CX3;R](=O)[CX4;R][CX3;R]1=O", 7.4, "acid"),
+    ("imide_NH",                   "[CX3](=O)[NX3;H1][CX3]=O",                   9.6,  "acid"),
     ("acylhydrazone_NH",   "[CX3](=O)[NX3;H1][NX2]=[CX3]",                   10.5,  "acid"),
     ("hydrazide_NH",       "[CX3](=O)[NX3;H1][NX3;H2]",                       10.5,  "acid"),
     ("urea_NH",            "[NX3;H1][CX3](=O)[NX3;H1,H2]",                    13.0,  "acid"),
@@ -1055,18 +1071,12 @@ _IONIZABLE_SITE_DEF = [
     ("morpholine_N",       "[NX3;H0;R;$(N1CC[O,S]CC1)]",                       4.9,  "base"),
     ("piperazine_NH",      "[NX3;H1;R;$(N1CCNCC1)]",                           8.1,  "base"),
     ("piperazine_N_sub",   "[NX3;H0;R;$(N1CCNCC1)]",                           3.5,  "base"),
-    # amidine and guanidine MUST precede aliphatic_amine.
-    # They are GROUP_SITE_LABELS: _find_ionizable_sites claims all N atoms in
-    # the full match tuple in a single pass, blocking aliphatic_amine from
-    # re-firing on the remaining NH/NH2 atoms of the same resonance group.
-    # amidine: exclude guanidine motif to prevent double-counting.
+    # amidine and guanidine MUST precede aliphatic_amine (GROUP_SITE_LABELS claim all N atoms).
     ("amidine",            "[CX3](=[NX2;H0,H1])[NX3;H1,H2;"
                            "!$([NX3][CX3](=[NX2])[NX3])]",                    12.4,  "base"),
-    # guanidine: full match tuple (NX3,C,=NX2,NX3). pKa 13.0→12.5 (bias
-    # correction, pKaNET sync). Excludes cyanoguanidine (=N~C#N, pKa~0.4).
     ("guanidine",          "[NX3][CX3](=[NX2;!$(N~C#N)])[NX3]",               12.5,  "base"),
     ("aliphatic_amine",    "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);"
-                           "!$(Nc);!$([NX3][CX3](=[NX2]))]",               9.5,  "base"),
+                           "!$(Nc);!$([NX3][CX3](=[NX2]))]",                  9.5,  "base"),
     ("aliphatic_amine_t",  "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);"
                            "!$([N;R]1CC[O,S]CC1);!$([N;R]1CCNCC1)]",          9.0,  "base"),
 ]
