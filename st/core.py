@@ -1027,9 +1027,15 @@ _IONIZABLE_SITE_DEF = [
     ("phosphonate",       "[PX4](=O)([OX2H1])[OX2H1]",                         2.1,  "acid"),  # gamma-P (2 OH)
     ("carboxylic_acid",    "[CX3](=O)[OX2H1]",                                 4.5,  "acid"),
     ("tetrazole",          "c1nn[nH]n1",                                        4.9,  "acid"),
-    ("imidazole_acid",     "c1cn[nH]c1",                                        6.0,  "acid"),
-    ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                 5.5,  "acid"),
-    ("sulfonamide_heteroaryl_NH",     "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1)]",      5.5, "acid"),
+    # imidazole_acid removed: pKa 6.0 is the BASE (imidazolium) pKa, not N-H acid pKa
+    # (~14). Treating it as acid caused false deprotonation at pH 7.4. The
+    # protonatable ring N is already captured by pyridine_like (pKa=5.2, base).
+    # benzimidazole: pKa 5.5 is also the BASE pKa (ring N protonation), not N-H acid
+    # (~13). Changed to base so it is correctly neutral at pH 7.4 (e.g. omeprazole).
+    ("benzimidazole",      "c1ccc2[nH]cnc2c1",                                 5.5,  "base"),
+    ("sulfonamide_heteroaryl_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1)]",  5.5, "acid"),
+    # 1,2,4-thiadiazol-5-yl: sulfamethizole pKa 5.45. Must precede sulfonamide_NH.
+    ("sulfonamide_thiadiazole_NH", "[SX4](=O)(=O)[NX3;H1]c1nncs1",                               5.5,  "acid"),
     ("sulfonamide_NH",     "[SX4](=O)(=O)[NX3;H1]",                           10.1,  "acid"),
     ("imide_NH",           "[CX3](=O)[NX3;H1][CX3]=O",                         9.6,  "acid"),
     ("acylhydrazone_NH",   "[CX3](=O)[NX3;H1][NX2]=[CX3]",                   10.5,  "acid"),
@@ -1038,23 +1044,31 @@ _IONIZABLE_SITE_DEF = [
     ("amide_NH",           "[CX3](=O)[NX3;H1,H2;!$([N]~N)]",                  15.0,  "acid"),
     ("phenol_diacyl",      "[OX2H1][c;R]1[c;R][c;R](=O)[c;R][c;R][c;R]1=O",   3.5,  "acid"),
     ("phenol_ortho_CO",    "[OX2H1][c;R]:[c;R][CX3;R](=O)",                    7.8,  "acid"),
-    ("catechol_OH",        "[OX2H1][c;R]:[c;R][OX2H1]",                        9.4,  "acid"),
+    ("catechol_OH",        "[OX2H1][c;R]:[c;R][OX2H1]",                        9.2,  "acid"),
     ("phenol_EWG",         "[OX2H1][c;R]:[c;R][$([NX3](=O)=O),$([CX3]=O),"
                            "$(C#N),$([SX4](=O)(=O))]",                         7.2,  "acid"),
     ("phenol",             "c[OX2H1]",                                         10.0,  "acid"),
     ("thiol_arom",         "c[SX2H1]",                                          6.5,  "acid"),
-    ("thiol_aliph",        "[CX4][SX2H1]",                                     10.5,  "acid"),
+    ("thiol_aliph",        "[CX4][SX2H1]",                                      9.8,  "acid"),
     ("aniline",            "c[NX3;H1,H2;!$(N~[!#6])]",                         4.6,  "base"),
     ("pyridine_like",      "[$([nX2]1:[c,n]:c:[c,n]:c1),$([nX2]:c:n)]",        5.2,  "base"),
     ("morpholine_N",       "[NX3;H0;R;$(N1CC[O,S]CC1)]",                       4.9,  "base"),
     ("piperazine_NH",      "[NX3;H1;R;$(N1CCNCC1)]",                           8.1,  "base"),
     ("piperazine_N_sub",   "[NX3;H0;R;$(N1CCNCC1)]",                           3.5,  "base"),
+    # amidine and guanidine MUST precede aliphatic_amine.
+    # They are GROUP_SITE_LABELS: _find_ionizable_sites claims all N atoms in
+    # the full match tuple in a single pass, blocking aliphatic_amine from
+    # re-firing on the remaining NH/NH2 atoms of the same resonance group.
+    # amidine: exclude guanidine motif to prevent double-counting.
+    ("amidine",            "[CX3](=[NX2;H0,H1])[NX3;H1,H2;"
+                           "!$([NX3][CX3](=[NX2])[NX3])]",                    12.4,  "base"),
+    # guanidine: full match tuple (NX3,C,=NX2,NX3). pKa 13.0→12.5 (bias
+    # correction, pKaNET sync). Excludes cyanoguanidine (=N~C#N, pKa~0.4).
+    ("guanidine",          "[NX3][CX3](=[NX2;!$(N~C#N)])[NX3]",               12.5,  "base"),
     ("aliphatic_amine",    "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);"
-                           "!$(Nc)]",                                           9.5,  "base"),
+                           "!$(Nc);!$([NX3][CX3](=[NX2]))]",               9.5,  "base"),
     ("aliphatic_amine_t",  "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);"
                            "!$([N;R]1CC[O,S]CC1);!$([N;R]1CCNCC1)]",          9.0,  "base"),
-    ("amidine",            "[CX3](=[NX2;H0,H1])[NX3;H1,H2]",                 12.4,  "base"),
-    ("guanidine",          "[NX3][CX3](=[NX2])[NX3]",                         13.0,  "base"),
 ]
 
 
@@ -1096,6 +1110,14 @@ def _find_ionizable_sites(mol):
     # Each ionizable atom (O/S/N with H) in a match becomes its own site.
     # This correctly handles multi-OH groups (e.g. gamma-phosphate in ATP/ADP)
     # where a single SMARTS match covers 2 ionizable oxygens.
+    #
+    # GROUP_SITES: entries that represent a resonance-delocalized ionization
+    # event spanning multiple N atoms (guanidine, amidine). After one site is
+    # recorded, ALL nitrogen atoms in the match are added to seen_ion so that
+    # aliphatic_amine cannot claim the remaining NH/NH2 atoms in the same group
+    # and produce spurious extra charges (e.g. arginine +3 instead of +1).
+    _GROUP_SITE_LABELS = frozenset({"guanidine", "amidine"})
+
     for lbl, pat, pka, stype in _IONIZABLE_SITES_COMPILED:
         for match in mol.GetSubstructMatches(pat):
             if any(a in claimed_atoms for a in match):
@@ -1117,6 +1139,15 @@ def _find_ionizable_sites(mol):
                     "heuristic_pka": pka,
                     "site_type":     stype,
                 })
+                # For group sites (guanidine/amidine), record only the first
+                # ionizable atom as the site, then claim all remaining N atoms
+                # in the match so they cannot be re-fired by aliphatic_amine.
+                if lbl in _GROUP_SITE_LABELS:
+                    for other_idx in match:
+                        if (other_idx != ion_idx
+                                and mol.GetAtomWithIdx(other_idx).GetAtomicNum() == 7):
+                            seen_ion.add(other_idx)
+                    break  # only one site per guanidine/amidine group
     return sites
 
 
