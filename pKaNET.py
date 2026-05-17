@@ -394,9 +394,27 @@ _IONIZABLE_SITE_DEF = [
     # 2-Pyridylsulfonamide: sulfapyridine pKa=8.43. Pyridine N at ortho
     # withdraws electron density → pKa lowered vs plain aryl (9.7) but
     # still > 7.4 → neutral dominates at pH 7.4.  Must precede aryl_NH.
-    ("sulfonamide_2pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1ccccn1",               8.4,  "acid"),
-    ("sulfonamide_3pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1cnccc1",               9.0,  "acid"),
-    ("sulfonamide_4pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1ccncc1",               9.0,  "acid"),
+    # ── Heteroaryl sulfonamide N-H (2026-05 patch) ─────────────────────────
+    # N-H adjacent to N-containing heteroaromatic → pKa 5–7 vs 9.7 for plain aryl.
+    # Literature: sulfamethoxazole(isoxazole)=5.6, sulfathiazole=7.1, sulfadiazine=6.5
+    # MUST precede sulfonamide_aryl_NH so first-match-wins gives correct pKa.
+    ("sulfonyl_imide_NH_cyclic",   "[CX3;R](=O)[NX3;H1;R][SX4;R](=O)(=O)",              2.0,  "acid"),
+    ("sulfonylurea_NH",            "[NX3;H0,H1][CX3;!R](=O)[NX3;H1;!R][SX4;!R](=O)(=O)", 5.5, "acid"),
+    ("sulfonyl_imide_NH",          "[CX3](=O)[NX3;H1][SX4](=O)(=O)",                     2.0,  "acid"),
+    ("sulfonamide_5het_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1),$([c]1[c,n][c,n][o,n,s][c,n]1)]", 5.7, "acid"),
+    ("sulfonamide_thiazole_NH",    "[SX4](=O)(=O)[NX3;H1]c1nccs1",                       7.0,  "acid"),
+    ("sulfonamide_thiadiazole_NH", "[SX4](=O)(=O)[NX3;H1]c1nncs1",                       5.5,  "acid"),
+    ("sulfonamide_pyrim2_NH",      "[SX4](=O)(=O)[NX3;H1]c1ncccn1",                      7.0,  "acid"),
+    ("sulfonamide_pyrim4_NH",      "[SX4](=O)(=O)[NX3;H1]c1ccncn1",                      6.5,  "acid"),
+    ("sulfonamide_pyrim5_NH",      "[SX4](=O)(=O)[NX3;H1]c1cncnc1",                      6.5,  "acid"),
+    ("sulfonamide_pyrazin_NH",     "[SX4](=O)(=O)[NX3;H1]c1cnccn1",                      7.0,  "acid"),
+    ("sulfonamide_pyridazin_NH",   "[SX4](=O)(=O)[NX3;H1]c1ccnnc1",                      7.0,  "acid"),
+    # Barbiturate ring N-H: pKa ~7.4 (phenobarbital). MUST precede imide_NH.
+    ("barbiturate_NH",             "[NX3;H1;R]1[CX3;R](=O)[NX3;H1,H0;R][CX3;R](=O)[CX4;R][CX3;R]1=O", 7.4, "acid"),
+    # 2-Pyridylsulfonamide: sulfapyridine pKa=8.43
+    ("sulfonamide_2pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1ccccn1",                      6.4,  "acid"),
+    ("sulfonamide_3pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1cnccc1",                      9.0,  "acid"),
+    ("sulfonamide_4pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1ccncc1",                      9.0,  "acid"),
     ("sulfonamide_aryl_NH",        "[SX4](=O)(=O)[NX3;H1,H2][c]",                        9.7,  "acid"),
     ("sulfonamide_NH",             "[SX4](=O)(=O)[NX3;H1,H2]",                           10.1, "acid"),  # H2 for primary sulfonamide
     ("imide_NH",                   "[CX3](=O)[NX3;H1][CX3]=O",                            9.6,  "acid"),
