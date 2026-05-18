@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PATCHED VERSION — PoseView-return API
 # Includes:
 # - persistent compact job status
 # - /ping endpoint for GPT Actions
@@ -28,7 +29,6 @@ import json
 import os
 import shutil
 import tempfile
-import time
 import traceback
 import uuid
 import zipfile
@@ -54,12 +54,20 @@ from core import (
 # Optional 2D interaction / redocking utilities from core.py.
 # The API still works if these are unavailable.
 try:
-    from core import calc_rmsd_heavy, write_single_pose, call_poseview_v1, call_poseview2_ref, svg_to_png
+    from core import (
+        calc_rmsd_heavy,
+        write_single_pose,
+        call_poseview_v1,
+        call_poseview2_ref,
+        draw_interaction_diagram,
+        svg_to_png,
+    )
 except Exception:
     calc_rmsd_heavy = None
     write_single_pose = None
     call_poseview_v1 = None
     call_poseview2_ref = None
+    draw_interaction_diagram = None
     svg_to_png = None
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,76 +84,6 @@ API_KEY = os.getenv("DOCKGPT_API_KEY", "").strip()
 
 # In-memory job registry. For production, replace this with Redis/DB/object storage.
 JOBS: Dict[str, Dict[str, Any]] = {}
-
-# Optional Google Analytics 4 Measurement Protocol tracking.
-# Configure only through Render Environment Variables:
-#   GA_MEASUREMENT_ID = G-XXXXXXXXXX
-#   GA_API_SECRET     = your Measurement Protocol API secret
-GA_MEASUREMENT_ID = os.getenv("GA_MEASUREMENT_ID", "").strip()
-GA_API_SECRET = os.getenv("GA_API_SECRET", "").strip()
-GA_ENDPOINT = "https://www.google-analytics.com/mp/collect"
-
-
-def _ga_param_value(value: Any) -> Any:
-    """Keep GA4 params compact and safe for Measurement Protocol."""
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float)):
-        return value
-    if isinstance(value, (list, tuple, set)):
-        return ",".join(str(x) for x in list(value)[:10])[:100]
-    if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False)[:100]
-    return str(value)[:100]
-
-
-def send_ga_event(
-    event_name: str,
-    params: Optional[Dict[str, Any]] = None,
-    client_id: Optional[str] = None,
-) -> None:
-    """Send a server-side event to GA4.
-
-    This is designed for GPT Store -> Render API usage, where there is no
-    browser Google tag and no GA client cookie. The client_id is therefore a
-    pseudonymous technical ID. Use job_id when available to connect job
-    lifecycle events without collecting personal information.
-    """
-    if not GA_MEASUREMENT_ID or not GA_API_SECRET:
-        return
-
-    clean_name = "".join(c if c.isalnum() or c == "_" else "_" for c in event_name.lower())[:40]
-    clean_params = {
-        "source": "gpt_store",
-        "service": "anyone_can_dock_api",
-        "api_version": API_VERSION,
-    }
-    if params:
-        clean_params.update({str(k)[:40]: _ga_param_value(v) for k, v in params.items()})
-
-    # GA4 Measurement Protocol requires client_id or app_instance_id.
-    cid = str(client_id or clean_params.get("job_id") or "dockgpt_server")[:100]
-
-    payload = {
-        "client_id": cid,
-        "timestamp_micros": int(time.time() * 1_000_000),
-        "events": [
-            {
-                "name": clean_name,
-                "params": clean_params,
-            }
-        ],
-    }
-    url = f"{GA_ENDPOINT}?measurement_id={GA_MEASUREMENT_ID}&api_secret={GA_API_SECRET}"
-
-    try:
-        requests.post(url, json=payload, timeout=3)
-    except Exception:
-        # Analytics must never break docking/API behavior.
-        pass
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -553,14 +491,16 @@ def _generate_2d_interaction(
     smiles: str,
     lig_name: str,
 ) -> Dict[str, Any]:
-    """Generate a local 2D interaction diagram using ProteinsPlus PoseView.
+    """Generate a local 2D interaction diagram.
 
-    Primary route: core.call_poseview_v1(receptor_pdb, selected_pose_sdf)
-    Output files: SVG always when successful; PNG when conversion succeeds.
+    Logic:
+    1. Try ProteinsPlus PoseView first.
+    2. If PoseView fails, fall back to Anyone Can Dock 2D Diagram
+       (core.draw_interaction_diagram).
+    3. Save SVG always when successful; save PNG when conversion succeeds.
 
-    For compatibility with older clients, this function returns both:
-    - poseview_* fields
-    - two_d_interaction_* alias fields
+    Returned fields include both poseview_* and two_d_interaction_* keys for
+    backward compatibility.
     """
     out: Dict[str, Any] = {
         "poseview_available": False,
@@ -569,7 +509,7 @@ def _generate_2d_interaction(
         "poseview_svg_file": "",
         "poseview_png_file": "",
         "poseview_error": "",
-        "poseview_source": "ProteinsPlus PoseView v1",
+        "poseview_source": "",
         # backwards-compatible aliases
         "two_d_interaction_available": False,
         "two_d_interaction_svg_url": "",
@@ -578,12 +518,6 @@ def _generate_2d_interaction(
         "two_d_interaction_png_file": "",
         "two_d_interaction_error": "",
     }
-
-    if call_poseview_v1 is None:
-        err = "call_poseview_v1 is not available in core.py."
-        out["poseview_error"] = err
-        out["two_d_interaction_error"] = err
-        return out
 
     selected_pose_sdf = pose_info.get("selected_pose_sdf") or ""
     receptor_pdb = rec.get("rec_fh") or ""
@@ -598,59 +532,90 @@ def _generate_2d_interaction(
         out["two_d_interaction_error"] = err
         return out
 
+    safe = _safe_name(lig_name, "ligand")
+    svg_name = f"{safe}_interaction2d.svg"
+    png_name = f"{safe}_interaction2d.png"
+    svg_path = wdir / svg_name
+    png_path = wdir / png_name
+
+    svg_bytes = None
+    source = ""
+    warnings: List[str] = []
+
+    # Primary route: PoseView
     try:
-        safe = _safe_name(lig_name, "ligand")
-        svg_name = f"{safe}_interaction2d.svg"
-        png_name = f"{safe}_interaction2d.png"
-        svg_path = wdir / svg_name
-        png_path = wdir / png_name
-
-        svg_bytes, pv_err = call_poseview_v1(receptor_pdb=receptor_pdb, pose_sdf=selected_pose_sdf)
-        if not svg_bytes:
-            err = pv_err or "PoseView did not return an SVG diagram."
-            out["poseview_error"] = err
-            out["two_d_interaction_error"] = err
-            return out
-
-        svg_path.write_bytes(svg_bytes)
-
-        png_ok = False
-        png_err = ""
-        try:
-            png_bytes = svg_to_png(svg_bytes) if svg_to_png is not None else None
-            if png_bytes:
-                png_path.write_bytes(png_bytes)
-                png_ok = png_path.exists() and png_path.stat().st_size > 100
+        if call_poseview_v1 is not None:
+            svg_bytes, pv_err = call_poseview_v1(receptor_pdb=receptor_pdb, pose_sdf=selected_pose_sdf)
+            if svg_bytes:
+                source = "ProteinsPlus PoseView v1"
             else:
-                png_err = "PNG conversion failed for the interaction diagram."
-        except Exception as png_e:
-            png_err = f"PNG conversion failed: {png_e}"
-
-        svg_url = _public_url(f"/jobs/{job_id}/files/{svg_name}")
-        png_url = _public_url(f"/jobs/{job_id}/files/{png_name}") if png_ok else ""
-
-        out.update({
-            "poseview_available": True,
-            "poseview_svg_url": svg_url,
-            "poseview_png_url": png_url,
-            "poseview_svg_file": str(svg_path),
-            "poseview_png_file": str(png_path) if png_ok else "",
-            "poseview_error": png_err,
-            # backwards-compatible aliases
-            "two_d_interaction_available": True,
-            "two_d_interaction_svg_url": svg_url,
-            "two_d_interaction_png_url": png_url,
-            "two_d_interaction_svg_file": str(svg_path),
-            "two_d_interaction_png_file": str(png_path) if png_ok else "",
-            "two_d_interaction_error": png_err,
-        })
+                warnings.append(pv_err or "PoseView did not return an SVG diagram.")
+        else:
+            warnings.append("PoseView helper is not available in core.py.")
     except Exception as e:
-        err = str(e)
+        warnings.append(f"PoseView failed: {e}")
+
+    # Fallback route: Anyone Can Dock 2D Diagram
+    if not svg_bytes:
+        try:
+            if draw_interaction_diagram is None:
+                warnings.append("Anyone Can Dock 2D Diagram helper is not available in core.py.")
+            else:
+                svg_bytes = draw_interaction_diagram(
+                    receptor_pdb=receptor_pdb,
+                    pose_sdf=selected_pose_sdf,
+                    smiles=smiles,
+                    title=f"{safe} selected pose",
+                )
+                if svg_bytes:
+                    source = "Anyone Can Dock 2D Diagram"
+        except Exception as e:
+            warnings.append(f"Anyone Can Dock 2D Diagram failed: {e}")
+
+    if not svg_bytes:
+        err = " ; ".join([w for w in warnings if w]) or "Could not generate any 2D interaction diagram."
         out["poseview_error"] = err
         out["two_d_interaction_error"] = err
+        return out
 
+    # Save SVG
+    svg_path.write_bytes(svg_bytes)
+
+    # Convert PNG if possible
+    png_ok = False
+    png_err = ""
+    try:
+        png_bytes = svg_to_png(svg_bytes) if svg_to_png is not None else None
+        if png_bytes:
+            png_path.write_bytes(png_bytes)
+            png_ok = png_path.exists() and png_path.stat().st_size > 100
+        else:
+            png_err = "PNG conversion failed for the interaction diagram."
+    except Exception as png_e:
+        png_err = f"PNG conversion failed: {png_e}"
+
+    combined_warning = " ; ".join([w for w in warnings if w] + ([png_err] if png_err else []))
+
+    svg_url = _public_url(f"/jobs/{job_id}/files/{svg_name}")
+    png_url = _public_url(f"/jobs/{job_id}/files/{png_name}") if png_ok else ""
+
+    out.update({
+        "poseview_available": True,
+        "poseview_svg_url": svg_url,
+        "poseview_png_url": png_url,
+        "poseview_svg_file": str(svg_path),
+        "poseview_png_file": str(png_path) if png_ok else "",
+        "poseview_error": combined_warning,
+        "poseview_source": source,
+        # backwards-compatible aliases
+        "two_d_interaction_available": True,
+        "two_d_interaction_svg_url": svg_url,
+        "two_d_interaction_png_url": png_url,
+        "two_d_interaction_svg_file": str(svg_path),
+        "two_d_interaction_png_file": str(png_path) if png_ok else "",
+        "two_d_interaction_error": combined_warning,
+    })
     return out
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -667,17 +632,6 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         "message": "Docking job is running.",
         "download_url": _public_url(f"/jobs/{job_id}/download"),
     })
-    send_ga_event(
-        "dock_job_started",
-        {
-            "job_id": job_id,
-            "pdb_id": req.pdb_id or "",
-            "ligand_count": len(req.ligands),
-            "center_mode": req.center_mode,
-            "protonation_mode": req.protonation_mode,
-        },
-        client_id=job_id,
-    )
 
     try:
         raw_receptor = _write_receptor_input(req, wdir)
@@ -849,29 +803,8 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     selected_pose_sdf=pose_info.get("selected_pose_sdf", ""),
                     **interaction2d,
                 )
-                send_ga_event(
-                    "dock_ligand_completed",
-                    {
-                        "job_id": job_id,
-                        "ligand_name": name,
-                        "top_score": dock.get("top_score"),
-                        "num_poses": n_poses,
-                        "charge": prep.get("charge"),
-                        "two_d_interaction_available": bool(interaction2d.get("two_d_interaction_available", False)),
-                    },
-                    client_id=job_id,
-                )
             except Exception as lig_error:
                 row.update(status="failed", error=str(lig_error))
-                send_ga_event(
-                    "dock_ligand_failed",
-                    {
-                        "job_id": job_id,
-                        "ligand_name": name,
-                        "error_type": type(lig_error).__name__,
-                    },
-                    client_id=job_id,
-                )
                 all_logs.append(f"\n===== {name}: ERROR =====\n{lig_error}")
             results.append(row)
 
@@ -905,23 +838,6 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         zip_path = wdir / f"{job_id}_results.zip"
         _make_zip(wdir, zip_path)
 
-        successful_ligands = sum(1 for r in results if r.get("status") == "ok")
-        failed_ligands = sum(1 for r in results if r.get("status") != "ok")
-        best_scores = [r.get("top_score") for r in results if isinstance(r.get("top_score"), (int, float))]
-        send_ga_event(
-            "dock_job_completed",
-            {
-                "job_id": job_id,
-                "pdb_id": req.pdb_id or "",
-                "ligand_count": len(results),
-                "successful_ligands": successful_ligands,
-                "failed_ligands": failed_ligands,
-                "best_score": min(best_scores) if best_scores else "",
-                "two_d_count": sum(1 for r in results if r.get("two_d_interaction_available")),
-            },
-            client_id=job_id,
-        )
-
         JOBS[job_id].update(
             status="completed",
             result=meta,
@@ -941,15 +857,6 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
             "error": err_text,
             "download_url": _public_url(f"/jobs/{job_id}/download"),
         })
-        send_ga_event(
-            "dock_job_failed",
-            {
-                "job_id": job_id,
-                "pdb_id": req.pdb_id or "",
-                "error_type": type(e).__name__,
-            },
-            client_id=job_id,
-        )
         JOBS[job_id].update(status="failed", error=err_text, traceback=tb)
 
 
@@ -1063,14 +970,6 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
 def health() -> Dict[str, Any]:
     ob_ok, ob_msg = check_obabel()
     vina_path, vina_msg = get_vina_binary()
-    send_ga_event(
-        "api_health_check",
-        {
-            "openbabel_available": bool(ob_ok),
-            "vina_available": bool(vina_path),
-            "auth_enabled": bool(API_KEY),
-        },
-    )
     return {
         "status": "ok",
         "api": API_TITLE,
@@ -1092,14 +991,6 @@ def ping() -> Dict[str, Any]:
     """
     ob_ok, ob_msg = check_obabel()
     vina_path, vina_msg = get_vina_binary()
-    send_ga_event(
-        "api_ping",
-        {
-            "openbabel_available": bool(ob_ok),
-            "vina_available": bool(vina_path),
-            "auth_enabled": bool(API_KEY),
-        },
-    )
 
     return {
         "ok": True,
@@ -1163,7 +1054,6 @@ def compound_smiles(
     key = q.lower().strip()
     if prefer_builtin and key in _BUILTIN_LIGANDS:
         item = _BUILTIN_LIGANDS[key]
-        send_ga_event("compound_smiles_lookup", {"found": True, "lookup_source": "builtin"})
         return {
             "found": True,
             "query": q,
@@ -1219,7 +1109,6 @@ def compound_smiles(
                 "error": "PubChem CID found, but no usable SMILES was returned.",
             }
 
-        send_ga_event("compound_smiles_lookup", {"found": True, "lookup_source": "pubchem", "cid": cid})
         return {
             "found": True,
             "query": q,
@@ -1235,7 +1124,6 @@ def compound_smiles(
         }
 
     except Exception as e:
-        send_ga_event("compound_smiles_lookup", {"found": False, "lookup_source": "pubchem", "error_type": type(e).__name__})
         return {
             "found": False,
             "query": q,
@@ -1340,7 +1228,6 @@ def pdb_search(
                 "url": f"https://www.rcsb.org/structure/{pdb_id}",
             })
 
-        send_ga_event("pdb_search", {"found": bool(results), "num_results": len(results)})
         return {
             "query": q,
             "found": bool(results),
@@ -1350,7 +1237,6 @@ def pdb_search(
         }
 
     except Exception as e:
-        send_ga_event("pdb_search", {"found": False, "error_type": type(e).__name__})
         return {
             "query": q,
             "found": False,
@@ -1368,26 +1254,8 @@ def scan_hetatm(req: ScanRequest) -> Dict[str, Any]:
     try:
         raw = _write_receptor_input(req, wdir)
         table = scan_hetatm_residues(raw)
-        send_ga_event(
-            "hetatm_scan_requested",
-            {
-                "success": True,
-                "pdb_id": req.pdb_id or "",
-                "num_hetatm_groups": len(table) if isinstance(table, list) else 0,
-            },
-            client_id=job_id,
-        )
         return {"success": True, "hetatm_table": table}
     except Exception as e:
-        send_ga_event(
-            "hetatm_scan_requested",
-            {
-                "success": False,
-                "pdb_id": req.pdb_id or "",
-                "error_type": type(e).__name__,
-            },
-            client_id=job_id,
-        )
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -1411,20 +1279,6 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
         ),
         "download_url": _public_url(f"/jobs/{job_id}/download"),
     })
-    send_ga_event(
-        "dock_job_submitted",
-        {
-            "job_id": job_id,
-            "pdb_id": req.pdb_id or "",
-            "ligand_count": len(req.ligands),
-            "center_mode": req.center_mode,
-            "protonation_mode": req.protonation_mode,
-            "exhaustiveness": req.exhaustiveness,
-            "num_modes": req.num_modes,
-            "energy_range": req.energy_range,
-        },
-        client_id=job_id,
-    )
     background_tasks.add_task(_run_docking_job, job_id, req)
     return DockSubmitResponse(
         job_id=job_id,
@@ -1443,11 +1297,6 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
 def get_job(job_id: str) -> Dict[str, Any]:
     status_payload = _read_status_file(job_id)
     if status_payload:
-        send_ga_event(
-            "dock_job_status_checked",
-            {"job_id": job_id, "status": status_payload.get("status", "unknown")},
-            client_id=job_id,
-        )
         return status_payload
 
     job = JOBS.get(job_id) or _restore_completed_job_from_disk(job_id)
@@ -1462,11 +1311,6 @@ def get_job(job_id: str) -> Dict[str, Any]:
 
     compact = _compact_job_response(job_id, job)
     _write_status_file(job_id, compact)
-    send_ga_event(
-        "dock_job_status_checked",
-        {"job_id": job_id, "status": compact.get("status", "unknown")},
-        client_id=job_id,
-    )
     return compact
 
 
@@ -1492,12 +1336,6 @@ def get_job_file(job_id: str, filename: str) -> FileResponse:
         media_type = "image/png"
     else:
         media_type = "application/octet-stream"
-
-    send_ga_event(
-        "dock_result_file_opened",
-        {"job_id": job_id, "file_type": suffix.lstrip(".") or "unknown"},
-        client_id=job_id,
-    )
 
     # Browser preview mode:
     # Do not pass filename=... because it can force download.
@@ -1558,11 +1396,6 @@ def view_job_file(job_id: str, filename: str):
   </div>
 </body>
 </html>"""
-    send_ga_event(
-        "dock_result_file_viewed",
-        {"job_id": job_id, "filename": safe_filename},
-        client_id=job_id,
-    )
     return HTMLResponse(content=html)
 
 
@@ -1576,11 +1409,6 @@ def download_job(job_id: str) -> FileResponse:
     zip_path = job.get("zip_path")
     if not zip_path or not Path(zip_path).exists():
         raise HTTPException(status_code=404, detail="Result zip not found")
-    send_ga_event(
-        "dock_result_downloaded",
-        {"job_id": job_id},
-        client_id=job_id,
-    )
     return FileResponse(zip_path, media_type="application/zip", filename=Path(zip_path).name)
 
 
@@ -1590,7 +1418,6 @@ def delete_job(job_id: str) -> Dict[str, Any]:
     wdir = BASE_WORKDIR / job_id
     if wdir.exists():
         shutil.rmtree(wdir, ignore_errors=True)
-    send_ga_event("dock_job_deleted", {"job_id": job_id, "deleted": bool(job)}, client_id=job_id)
     return {"success": True, "deleted": bool(job)}
 
 
