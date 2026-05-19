@@ -221,24 +221,8 @@ This benchmark is **not** a numerical pKa prediction benchmark. The reported agr
 
 | Version | Agreement | Agreement rate |
 |---|---:|---:|
-| pKaNET v67 | 18,298 / 27,218 | 67.23 % |
-| pKaNET Cloud+ v68 | 19,216 / 27,218 | 70.60 % |
+| pKaNET Cloud+ | 18,850 / 27,183 | 69.34 % |
 
-Version-level change from v67 to v68:
-
-| Category | Number of cases |
-|---|---:|
-| Improved | 1,124 |
-| Regressed | 206 |
-| Net gain | 918 |
-
-### Results by Molecular Complexity
-
-| Class | n | v68 agree | v68 agree % | v68 disagree % |
-|---|---:|---:|---:|---:|
-| Monoprotic | 19,537 | 14,652 | 75.00 % | 25.00 % |
-| Amphoteric | 1,914 | 1,485 | 77.58 % | 22.42 % |
-| Polyprotic / complex | 5,767 | 3,079 | 53.39 % | 46.61 % |
 
 ### Interpretation
 
@@ -328,11 +312,10 @@ minimisation → docking-ready output
 
 | Avoid | Use instead |
 |---|---|
-| "pKaNET pKa accuracy is 70.60 %" | "pKaNET net-charge agreement at pH 7.4 is 70.60 %" |
+| "pKaNET pKa accuracy is 69.34 %" | "pKaNET net-charge agreement at pH 7.4 is 69.34 %" |
 | "pKaNET predicts pKa correctly" | "pKaNET assigns the correct dominant net charge" |
 | "Fully validated against experimental data" | "Benchmarked against pKaHub-derived charge-state annotations" |
 | "All imidazole cases are fixed" | "The reported imidazole N-H deprotonation bug is resolved; residual failures may remain for complex imidazole-containing molecules" |
-| "All EGFR inhibitors are +1" | "EGFR inhibitors should be evaluated compound by compound" |
 
 ---
 
