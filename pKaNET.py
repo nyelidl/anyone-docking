@@ -1,4 +1,4 @@
-# core.py  —  pKaNET Cloud  (v70 corrected docking patch)
+# core.py  —  pKaNET Cloud+  (v80 — calibrated heuristic + fast predict API)
 #
 # ─────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
@@ -371,9 +371,14 @@ def hh_ph_match_score(pka, ph, site_type, actual_charge):
 _IONIZABLE_SITE_DEF = [
     # ── Ultra-strong acids ────────────────────────────────────────────────────
     ("sulfonic_acid",              "[SX4](=O)(=O)[OX2H1]",                                1.0,  "acid"),
-    # NEW: sulfonyl-imide N-H (saccharin pKa=1.6, acesulfame-K pKa~2).
-    # N between C=O AND SO2 — far more acidic than plain sulfonamide (pKa=10.1).
-    # MUST precede sulfonamide_NH so seen_ion dedup assigns the correct pKa.
+    # Split sulfonyl-imide N-H into 2 contexts:
+    # (a) Cyclic sulfonyl-imide (saccharin pKa=1.6, acesulfame-K pKa~2): N in
+    #     ring with adjacent C=O and SO2.
+    # (b) Acyclic sulfonylurea (glipizide, glyburide, glimepiride pKa~5.0-6.5):
+    #     Ar-SO2-NH-C(=O)-NHR. Less acidic — no ring strain, additional NH side.
+    # Both MUST precede sulfonamide_NH (seen_ion dedup gives correct pKa).
+    ("sulfonyl_imide_NH_cyclic",   "[CX3;R](=O)[NX3;H1;R][SX4;R](=O)(=O)",                2.0,  "acid"),
+    ("sulfonylurea_NH",            "[NX3;H0,H1][CX3;!R](=O)[NX3;H1;!R][SX4;!R](=O)(=O)",  5.5,  "acid"),
     ("sulfonyl_imide_NH",          "[CX3](=O)[NX3;H1][SX4](=O)(=O)",                      2.0,  "acid"),
     # ── Carboxylic / aromatic hetero-acid ─────────────────────────────────────
     # Alpha-amino acid carboxyl: primary alpha-NH2 suppresses COOH pKa to ~2.3 (Gly=2.35, Ala=2.35)
@@ -390,33 +395,42 @@ _IONIZABLE_SITE_DEF = [
     ("phosphonate_fallback",       "[PX4](=O)([OX2H1])[OX1-,OX2;!$([OX2H1])]",           6.5,  "acid"),
     ("phosphate_monoester_fb",     "[PX4](=O)([OX2H1])([OX2,OX1-])[OX2,OX1-]",           6.1,  "acid"),
     # ── N-H acids ─────────────────────────────────────────────────────────────
-    # Aryl sulfonamide N-H: benzenesulfonamide pKa=10.1 but aryl avg ~9.7 (bias +0.29 → lower by 0.3)
+    # Heteroaryl sulfonamide N-H: N attached to electron-poor heteroaromatic ring.
+    # Heterocycle strongly inductively withdraws electron density,
+    # depressing pKa to ~5-7 (vs ~9.7 for plain aryl sulfonamide).
+    #   sulfisoxazole (isoxazole)    pKa 5.0
+    #   sulfamethoxazole (isoxazole) pKa 5.6
+    #   sulfadoxine (pyrimidine)     pKa 6.1
+    #   sulfadiazine (pyrimidine)    pKa 6.5
+    #   sulfathiazole (thiazole)     pKa 7.1
+    #   sulfamerazine (pyrimidine)   pKa 7.1
+    #   sulfamethazine (pyrimidine)  pKa 7.4
+    # MUST precede sulfonamide_aryl_NH (first-match-wins).
+    # 5-membered heteroaromatic (isoxazole/oxazole/thiazole/pyrazole etc.)
+    ("sulfonamide_5het_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1),$([c]1[c,n][c,n][o,n,s][c,n]1)]",  5.7, "acid"),
+    # Thiazol-2-yl (sulfathiazole pKa 7.1)
+    ("sulfonamide_thiazole_NH",    "[SX4](=O)(=O)[NX3;H1]c1nccs1",                       7.0, "acid"),
+    # Oxazol-2-yl
+    ("sulfonamide_oxazole_NH",     "[SX4](=O)(=O)[NX3;H1]c1ncco1",                       6.5, "acid"),
+    # 6-membered electron-poor heteroaromatic (pyrimidine, pyrazine, pyridazine)
+    ("sulfonamide_pyrim2_NH",      "[SX4](=O)(=O)[NX3;H1]c1ncccn1",                     7.0,  "acid"),  # 2-aminopyrimidine
+    ("sulfonamide_pyrim4_NH",      "[SX4](=O)(=O)[NX3;H1]c1ccncn1",                     6.5,  "acid"),  # 4-aminopyrimidine
+    ("sulfonamide_pyrim5_NH",      "[SX4](=O)(=O)[NX3;H1]c1cncnc1",                     6.5,  "acid"),  # 5-aminopyrimidine
+    ("sulfonamide_pyrazin_NH",     "[SX4](=O)(=O)[NX3;H1]c1cnccn1",                     7.0,  "acid"),  # aminopyrazine
+    ("sulfonamide_pyridazin_NH",   "[SX4](=O)(=O)[NX3;H1]c1ccnnc1",                     7.0,  "acid"),  # aminopyridazine
+    # Aryl sulfonamide N-H: benzenesulfonamide pKa=10.1 but aryl avg ~9.7
     # 2-Pyridylsulfonamide: sulfapyridine pKa=8.43. Pyridine N at ortho
     # withdraws electron density → pKa lowered vs plain aryl (9.7) but
     # still > 7.4 → neutral dominates at pH 7.4.  Must precede aryl_NH.
-    # ── Heteroaryl sulfonamide N-H (2026-05 patch) ─────────────────────────
-    # N-H adjacent to N-containing heteroaromatic → pKa 5–7 vs 9.7 for plain aryl.
-    # Literature: sulfamethoxazole(isoxazole)=5.6, sulfathiazole=7.1, sulfadiazine=6.5
-    # MUST precede sulfonamide_aryl_NH so first-match-wins gives correct pKa.
-    ("sulfonyl_imide_NH_cyclic",   "[CX3;R](=O)[NX3;H1;R][SX4;R](=O)(=O)",              2.0,  "acid"),
-    ("sulfonylurea_NH",            "[NX3;H0,H1][CX3;!R](=O)[NX3;H1;!R][SX4;!R](=O)(=O)", 5.5, "acid"),
-    ("sulfonyl_imide_NH",          "[CX3](=O)[NX3;H1][SX4](=O)(=O)",                     2.0,  "acid"),
-    ("sulfonamide_5het_NH",        "[SX4](=O)(=O)[NX3;H1][c;$([c]1[c,n][o,n,s][c,n][c,n]1),$([c]1[c,n][c,n][o,n,s][c,n]1)]", 5.7, "acid"),
-    ("sulfonamide_thiazole_NH",    "[SX4](=O)(=O)[NX3;H1]c1nccs1",                       7.0,  "acid"),
-    ("sulfonamide_thiadiazole_NH", "[SX4](=O)(=O)[NX3;H1]c1nncs1",                       5.5,  "acid"),
-    ("sulfonamide_pyrim2_NH",      "[SX4](=O)(=O)[NX3;H1]c1ncccn1",                      7.0,  "acid"),
-    ("sulfonamide_pyrim4_NH",      "[SX4](=O)(=O)[NX3;H1]c1ccncn1",                      6.5,  "acid"),
-    ("sulfonamide_pyrim5_NH",      "[SX4](=O)(=O)[NX3;H1]c1cncnc1",                      6.5,  "acid"),
-    ("sulfonamide_pyrazin_NH",     "[SX4](=O)(=O)[NX3;H1]c1cnccn1",                      7.0,  "acid"),
-    ("sulfonamide_pyridazin_NH",   "[SX4](=O)(=O)[NX3;H1]c1ccnnc1",                      7.0,  "acid"),
-    # Barbiturate ring N-H: pKa ~7.4 (phenobarbital). MUST precede imide_NH.
-    ("barbiturate_NH",             "[NX3;H1;R]1[CX3;R](=O)[NX3;H1,H0;R][CX3;R](=O)[CX4;R][CX3;R]1=O", 7.4, "acid"),
-    # 2-Pyridylsulfonamide: sulfapyridine pKa=8.43
-    ("sulfonamide_2pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1ccccn1",                      6.4,  "acid"),
-    ("sulfonamide_3pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1cnccc1",                      9.0,  "acid"),
-    ("sulfonamide_4pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1ccncc1",                      9.0,  "acid"),
+    ("sulfonamide_2pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1ccccn1",               6.4,  "acid"),
+    ("sulfonamide_3pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1cnccc1",               9.0,  "acid"),
+    ("sulfonamide_4pyridyl_NH",    "[SX4](=O)(=O)[NX3;H1]c1ccncc1",               9.0,  "acid"),
     ("sulfonamide_aryl_NH",        "[SX4](=O)(=O)[NX3;H1,H2][c]",                        9.7,  "acid"),
     ("sulfonamide_NH",             "[SX4](=O)(=O)[NX3;H1,H2]",                           10.1, "acid"),  # H2 for primary sulfonamide
+    # Barbiturate ring N-H: 6-ring with two C=O flanking N-H + a third C=O on
+    # opposite side. pKa ~7.4 (phenobarbital), much more acidic than simple imide.
+    # MUST precede imide_NH.
+    ("barbiturate_NH",             "[NX3;H1;R]1[CX3;R](=O)[NX3;H1,H0;R][CX3;R](=O)[CX4;R][CX3;R]1=O",                            7.4,  "acid"),
     ("imide_NH",                   "[CX3](=O)[NX3;H1][CX3]=O",                            9.6,  "acid"),
     ("acylhydrazone_NH",           "[CX3](=O)[NX3;H1][NX2]=[CX3]",                        10.5, "acid"),
     ("hydrazide_NH",               "[CX3](=O)[NX3;H1][NX3;H2]",                           10.5, "acid"),
@@ -458,11 +472,20 @@ _IONIZABLE_SITE_DEF = [
     # ── Thiols ────────────────────────────────────────────────────────────────
     # Bug B fix: Cys-like thiol alpha to amine pKa~8.3; recursive SMARTS.
     ("thiol_alpha_amino",          "[SX2H1;$([SX2H1][CX4][CX4][NX3;!$(NC=O)])]",              8.3,  "acid"),
-    ("thiol_arom",                 "c[SX2H1]",                                            6.5,  "acid"),  # thiophenol 6.6, avg aryl thiol ~7.5 after validation correction
+    # Heteroaryl thiol (quinoline-8-thiol pKa~7.8): ring N withdraws electron density,
+    # raising pKa vs plain thiophenol (6.6). Must precede thiol_arom.
+    ("thiol_hetarom",              "[c;$([c]1[c,n][c,n][c,n][n,s,o]1)][SX2H1]",              7.9,  "acid"),
+    ("thiol_arom",                 "c[SX2H1]",                                            6.5,  "acid"),  # thiophenol 6.6
     ("thiol_aliph",                "[CX4][SX2H1]",                                        9.8,  "acid"),
     # ── Bases ─────────────────────────────────────────────────────────────────
+    # N-oxide: Ar-N(+)(-O-) — conjugate acid pKa ~ −1.5; neutral (zwitterion) at pH 7.4.
+    # Must precede pyridine_like so the ring N is not counted as a protonatable base.
+    ("n_oxide_neutral",            "[$([nX3+]~[OX1-]),$([NX3+](=O)[OX1-])]",               -1.5, "base"),
     # Aniline with EWG: strongly depressed pKa (4-nitroaniline=1.0, 4-CN=1.7 → avg ~2.5)
     ("aniline_EWG",                "c[NX3;H1,H2;!$(N~[!#6])][$([NX3+](=O)[O-]),$([NX3](=O)=O),$(C#N),$([SX4](=O)(=O))]", 2.5, "base"),
+    # Aniline with para-EWG on the SAME aromatic ring (through-ring resonance withdrawal).
+    # sulfanilamide (para-SO2NHR) pKa~1.9, p-nitroaniline pKa~1.0, p-cyanoaniline pKa~1.7
+    ("aniline_para_EWG",           "[NX3;H1,H2;!$(N~[!#6])][c]1[c][c][c]([$([NX3+](=O)[O-]),$([NX3](=O)=O),$(C#N),$([SX4](=O)(=O))])[c][c]1", 2.0, "base"),
     # Aniline with EDG: pKa elevated (4-methoxyaniline=5.3, 4-methylaniline=5.1 → avg ~5.1)
     ("aniline_EDG",                "c[NX3;H1,H2;!$(N~[!#6])][$([OX2][#6]),$([CX4H3]),$([CX4H2])]", 5.1, "base"),
     ("aniline",                    "c[NX3;H1,H2;!$(N~[!#6])]",                            4.6,  "base"),
@@ -482,9 +505,9 @@ _IONIZABLE_SITE_DEF = [
     # Fluoroalkyl-adjacent amine: strongly suppressed by induction
     ("amine_fluoroalkyl",          "[NX3;H1,H2;!$(NC=O);!$([nH]);$([NX3][CX4][$([CX4](F)(F)),$([CX4](F)(F)F)])]", 6.5, "base"),
     ("aliphatic_amine",            "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);!$([NX3][CX3](=[NX2])[NX3])]",        9.5,  "base"),
-    # Tertiary aliphatic amine: pKa ~8.8 (trimethylamine=9.8, but validation bias
-    # shows +0.10 over-protonation → reduce slightly from 9.0 to 8.8)
-    ("aliphatic_amine_t",          "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);!$([NX3]([CX4][CX3]=O)[CX4][CX3]=O)]",    8.8,  "base"),
+    # Tertiary aliphatic amine: pKa ~8.5 (v80 recalibrated; reduces false over-protonation
+    # of multi-substituted tertiary amines vs v70 value of 8.8)
+    ("aliphatic_amine_t",          "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);!$([NX3]([CX4][CX3]=O)[CX4][CX3]=O)]",    8.5,  "base"),
     ("amidine",                    "[CX3](=[NX2;H0,H1])[NX3;H1,H2;!$([NX3][CX3](=[NX2])[NX3])]",                     12.4, "base"),
     ("guanidine",                  "[NX2;H1;$([NX2]=[CX3]([NX3])[NX3])]",                  12.5, "base"),  # imine =NH only; was 13.0, bias +0.31→ lower to 12.5
 ]
@@ -529,12 +552,19 @@ _PAT_POLYHALO_METHYL_COOH        = Chem.MolFromSmarts("[CX3](=O)([OX2H1])[CX4]([
 _PAT_NITROPHENOL_ANY             = Chem.MolFromSmarts("[OX2H1][c;R]1[c;R,c;R][c;R,c;R][c;R,c;R]([$([NX3+](=O)[O-]),$([NX3](=O)=O)])[c;R,c;R][c;R,c;R]1")
 _PAT_PENTAFLUOROPHENOL           = Chem.MolFromSmarts("[OX2H1]c1c(F)c(F)c(F)c(F)c1F")
 _PAT_WARFARIN_ENOL               = Chem.MolFromSmarts("[OX2H1]c1c([#6])c(=O)oc2ccccc12")
+_PAT_CHROMANONE_ENOL_OH          = Chem.MolFromSmarts("[OX2H1][CX3;R]([c])=[CX3;R]")  # non-aromatic chromanone enol (warfarin keto path)
 _PAT_FUROSEMIDE_SULFONAMIDE      = Chem.MolFromSmarts("[NX3;H1,H2][SX4](=O)(=O)[c]")
 _PAT_BETA_HYDROXY_CARBOXYL       = Chem.MolFromSmarts("[OX2H1][CX4][CX4][CX3](=O)[OX2H1,OX1-]")
 _PAT_GLYPHOSATE_BACKBONE         = Chem.MolFromSmarts("[PX4](=O)([OX2H1,OX1-])([OX2H1,OX1-])[CX4][NX3][CX4][CX3](=O)[OX2H1,OX1-]")
 _PAT_MORPHOLINE_TERTIARY_N       = Chem.MolFromSmarts("[NX3;R;!$(NC=O);!$(Nc)]1CCOCC1")
 # Tertiary cyclic amine with adjacent EWG: pKa suppressed to ~5.5-6.5
-_PAT_CYCLIC_N_ALPHA_EWG          = Chem.MolFromSmarts("[NX3;R;!$(NC=O)][CX4][$([CX3](=O)),$([CX3]=S),$(C#N),$([SX4](=O)(=O))]")
+# Tertiary cyclic amine with adjacent EWG: pKa suppressed to ~5.5-6.5
+# Restriction: alpha-C connected to a STRONG EWG only — ring/aromatic ketone,
+# sulfonyl, nitrile, thioketone. Esters (–C(=O)OR) and amides (–C(=O)NR2) are
+# excluded because they do not suppress amine pKa enough to match this rule
+# (tropane alkaloids like atropine, cocaine, scopolamine have ester groups
+# alpha to the bridgehead N but still have pKa ~9-10, not 6.0).
+_PAT_CYCLIC_N_ALPHA_EWG          = Chem.MolFromSmarts("[NX3;R;!$(NC=O)][CX4][$([CX3;!$(C(=O)[OX2H0,N])](=O)),$([CX3]=S),$(C#N),$([SX4](=O)(=O))]")
 # Piperazine secondary N (weaker due to inductive effect from first protonated N): ~5.1
 _PAT_PIPERAZINE                  = Chem.MolFromSmarts("[NX3;R;!$(NC=O)]1CC[NX3;R]CC1")
 # Aromatic-fused cyclic amine (tetrahydroisoquinoline, indoline etc.): ~9.0
@@ -752,15 +782,15 @@ def _find_flavone_A_ring_phenols(mol):
         ortho_to_ring_O = ring_oxygen_idx is not None and ring_oxygen_idx in chromone_nbrs
         n_ortho_phenols = sum(1 for n in ortho_carbons if _has_phenolic_OH(n))
         if ortho_to_carbonyl:
-            label, pka = ("flavone_3OH_flavonol", 7.0) if carbonyl_direct else ("flavone_5OH_chelated", 11.0)
+            label, pka = ("flavone_3OH_flavonol", 7.8) if carbonyl_direct else ("flavone_5OH_chelated", 11.0)
         elif ortho_to_ring_O:
             label, pka = "flavone_8OH_ortho_pyranO", 8.5
         elif n_ortho_phenols >= 2:
             label, pka = "flavone_6OH_pyrogallol_center", 8.5
         elif n_ortho_phenols == 1:
-            label, pka = "flavone_phenol_catechol_pair", 7.0  # ACD patch: match pKaNET Cloud CSV rank-1 anion at pH 7.4
+            label, pka = "flavone_phenol_catechol_pair", 8.0  # v80: corrected 7.0→8.0; 6-OH stays neutral at pH 7.4
         else:
-            label, pka = "flavone_phenol_isolated", 8.5  # ACD patch: match pKaNET Cloud CSV rank-1 anion at pH 7.4
+            label, pka = "flavone_phenol_isolated", 8.5  # isolated flavone phenol (e.g. apigenin 7-OH actual pKa ~8.7)
         sites.append({"label": label, "atom_indices": [o_idx, c_idx], "heuristic_pka": pka, "site_type": "acid"})
     if sites:
         detail = ", ".join(f"{s['label'].replace('flavone_','')}(pKa={s['heuristic_pka']})" for s in sites)
@@ -927,13 +957,25 @@ def find_ionizable_sites(mol):
                 seen_ion.add(oh); claimed_atoms.add(oh)
                 sites.append(dict(label=lbl, atom_indices=[oh], heuristic_pka=pka, site_type="acid"))
 
-    # (11) Warfarin / 4-hydroxycoumarin-like enol acid.
+    # (11) Warfarin / 4-hydroxycoumarin-like enol acid (aromatic form).
     if _PAT_WARFARIN_ENOL is not None:
         for match in mol.GetSubstructMatches(_PAT_WARFARIN_ENOL):
             oh = match[0]
             if oh not in seen_ion and oh not in claimed_atoms:
                 seen_ion.add(oh); claimed_atoms.add(oh)
                 sites.append(dict(label="warfarin_enol_acid", atom_indices=[oh],
+                                  heuristic_pka=5.0, site_type="acid"))
+
+    # (11b) Non-aromatic chromanone enol (warfarin keto-form tautomer path).
+    # Fires on the enol tautomer of 4-chromanone when the input was provided
+    # as the keto form: C4(OH)=C3 in the benzo-fused ring.
+    # pKa ~5.0 matches the experimental warfarin enol pKa of 4.8–5.1.
+    if _PAT_CHROMANONE_ENOL_OH is not None:
+        for match in mol.GetSubstructMatches(_PAT_CHROMANONE_ENOL_OH):
+            oh = match[0]
+            if oh not in seen_ion and oh not in claimed_atoms:
+                seen_ion.add(oh); claimed_atoms.add(oh)
+                sites.append(dict(label="warfarin_chromanone_enol_acid", atom_indices=[oh],
                                   heuristic_pka=5.0, site_type="acid"))
 
     # (12) Furosemide-like aryl sulfonamide with an additional carboxylic acid.
@@ -956,13 +998,15 @@ def find_ionizable_sites(mol):
                 sites.append(dict(label="beta_hydroxy_carboxyl_conservative", atom_indices=[oh],
                                   heuristic_pka=13.5, site_type="acid"))
 
-    # (14) Glyphosate amine is weak/neutral in this validation model.
+    # (14) Glyphosate amine: pKa ~10.1 (protonated at pH 7.4).
+    # Glyphosate is a zwitterion: 3 acid sites (COOH + 2× P-OH) deprotonated (−3)
+    # plus the amine protonated (+1) giving net −2. Corrected from v70 (pKa=5.5 neutral).
     if _PAT_GLYPHOSATE_BACKBONE is not None and mol.HasSubstructMatch(_PAT_GLYPHOSATE_BACKBONE):
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 7 and atom.GetFormalCharge() == 0 and atom.GetIdx() not in seen_ion:
                 seen_ion.add(atom.GetIdx()); claimed_atoms.add(atom.GetIdx())
-                sites.append(dict(label="glyphosate_amine_weak", atom_indices=[atom.GetIdx()],
-                                  heuristic_pka=5.5, site_type="base"))
+                sites.append(dict(label="glyphosate_amine", atom_indices=[atom.GetIdx()],
+                                  heuristic_pka=10.1, site_type="base"))
                 break
 
     # (15) Tertiary cyclic amines — context-aware pKa assignment.
@@ -1022,7 +1066,7 @@ def find_ionizable_sites(mol):
         if nidx not in seen_ion and nidx not in claimed_atoms:
             seen_ion.add(nidx); claimed_atoms.add(nidx)
             sites.append(dict(label="methotrexate_pteridine_extra_acid", atom_indices=[nidx],
-                              heuristic_pka=6.8, site_type="acid"))
+                              heuristic_pka=8.5, site_type="acid"))  # v80: 6.8→8.5; was triggering false −3 at pH 7.4
 
     # Pass 1: Diprotic phosphorus acids (Bug A fix)
     for pat_dp, pka1, pka2, lbl_dp in _DIPROTIC_P_COMPILED:
@@ -1083,11 +1127,18 @@ def _best_pka_for_site(site, ml_predictions, pubchem_result):
         vals = pubchem_result.get("pka_values", [])
         if vals:
             best = min(vals, key=lambda v: abs(v - site["heuristic_pka"]))
-            # Guard: skip pubchem pKa if it differs from heuristic by > 3 pKa units.
-            # Prevents base-site pKa values (e.g. benzimidazolium pKa≈5.5) from
-            # being assigned to the wrong event (N-H acid pKa≈13), which would
-            # incorrectly score the deprotonated form as dominant at pH 7.4.
-            if abs(best - site["heuristic_pka"]) <= 3.0:
+            # Guard: prevent PubChem pKa from being assigned to the wrong event
+            # (e.g. benzimidazolium base pKa~5.5 attaching to N-H acid heuristic
+            # pKa~13). Allow:
+            #   (a) symmetric correction within ±3.0 units
+            #   (b) downward correction (best < heuristic) up to 5.0 units —
+            #       needed when heuristic over-estimates due to missing
+            #       substituent rule (e.g. heteroaryl sulfonamides where the
+            #       heteroaryl ring suppresses pKa from 9.7 to ~5.6).
+            diff = best - site["heuristic_pka"]
+            within_symmetric = abs(diff) <= 3.0
+            within_downward  = (diff < 0 and abs(diff) <= 5.0)
+            if within_symmetric or within_downward:
                 return best, "pubchem"
     return site["heuristic_pka"], "heuristic"
 
@@ -1204,26 +1255,25 @@ def score_microstate_full(microstate_smiles, tautomer_smiles, taut_plausibility,
         s_multi -= 2.5 * (n_pos - 1)
     if n_pos >= 4 and n_neg == 0:
         s_multi -= 4.0
-
     # Docking-conservative patch for soft-acid multi-anions:
     # Apply -7.0 penalty per extra charge ONLY when the 2nd-least-acidic soft
     # site is UNCERTAIN (pKa >= pH−1.0).  If ALL soft sites have pKa clearly
     # below pH (< pH−1.0), they are unambiguously deprotonated — no penalty.
     # Examples:
     #   bis-4-hydroxycoumarin (both pKa=5.0, pH=7.4): 5.0 < 6.4 → NO penalty → -2 ✓
-    #   apigenin (pKa=8.5/11.0): 11.0 ≥ 6.4 → penalty → -1 ✓
+    #   apigenin (pKa=8.5/11.0): 11.0 ≥ 6.4 → penalty → monoanion ✓
     if n_neg >= 2 and n_pos == 0 and not pubchem_result.get("available") and not ml_predictions:
-        acid_labels = " ".join(str(s.get("label", "")).lower() for s in ion_sites if s.get("site_type") == "acid")
-        soft_acid_keys = ("phenol", "catechol", "flavone", "warfarin", "enol", "coumarin")
-        if any(k in acid_labels for k in soft_acid_keys):
-            soft_pkas = sorted(
+        _acid_lbl = " ".join(str(s.get("label", "")).lower() for s in ion_sites if s.get("site_type") == "acid")
+        _soft_keys = ("phenol", "catechol", "flavone", "warfarin", "enol", "coumarin")
+        if any(k in _acid_lbl for k in _soft_keys):
+            _soft_pkas = sorted(
                 [float(s.get("heuristic_pka", 14)) for s in ion_sites
                  if s.get("site_type") == "acid"
-                 and any(k in str(s.get("label","")).lower() for k in soft_acid_keys)],
+                 and any(k in str(s.get("label","")).lower() for k in _soft_keys)],
                 reverse=True,
             )
-            second_pka = soft_pkas[0] if soft_pkas else 14.0
-            if second_pka >= target_ph - 1.0:
+            _second_pka = _soft_pkas[0] if _soft_pkas else 14.0
+            if _second_pka >= target_ph - 1.0:
                 s_multi -= 7.0 * (n_neg - 1)
 
     expected_net = _expected_net_charge_from_sites(ion_sites, target_ph)
@@ -1391,6 +1441,18 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
         print(f"   🔬  Discarded {len(disc)} implausible tautomers (e.g. score={disc[0]['score']:.1f}: {disc[0]['smiles'][:55]})")
     ml_preds  = unipka_predict(base_smiles)
     ion_sites = find_ionizable_sites(ref_mol) if ref_mol else []
+    # v80 tautomer fallback: if the parent SMILES has no ionizable sites detected
+    # (e.g. warfarin supplied in keto form — the enol OH only appears in a tautomer),
+    # scan kept tautomers and borrow their sites.  This ensures the full scoring
+    # pipeline sees the correct acidic event without needing to re-enumerate.
+    if not ion_sites:
+        for taut_entry in kept:
+            t_mol = Chem.MolFromSmiles(taut_entry["smiles"])
+            if t_mol:
+                t_sites = find_ionizable_sites(t_mol)
+                if t_sites:
+                    ion_sites = t_sites
+                    break
     all_micro = []; seen_smi = set()
     ph_lo = max(0.0, target_ph - ph_window / 2); ph_hi = min(14.0, target_ph + ph_window / 2)
     for ti, taut in enumerate(kept, 1):
@@ -1444,8 +1506,6 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
         row["ambiguous_top_assignment"] = ambiguous; row["flag_multiprotic"] = len(ion_sites) >= 2
     return top, ambiguous, all_micro, tr_flag, tr_motifs, ml_preds
 
-
-
 def _pkanet_mol_has_pattern(smiles, smarts_list):
     """Best-effort structural motif detector used only for UI/recommendation flags."""
     try:
@@ -1486,8 +1546,8 @@ def _pkanet_conservative_flags(parent_smiles, all_micro, pubchem_result=None, ml
 
     polyphenol_like = phenol_count >= 2
     coumarin_like = _pkanet_mol_has_pattern(parent_smiles, [
-        "O=C1Oc2ccccc2C=C1",      # coumarin-like lactone scaffold, permissive
-        "O=c1oc2ccccc2cc1",       # aromatic lowercase variant
+        "O=C1Oc2ccccc2C=C1",
+        "O=c1oc2ccccc2cc1",
         "O=C1OC2=CC=CC=C2C=C1",
     ])
     flavonoid_like = _pkanet_mol_has_pattern(parent_smiles, [
@@ -1501,8 +1561,6 @@ def _pkanet_conservative_flags(parent_smiles, all_micro, pubchem_result=None, ml
     if all_micro and conservative_applicable:
         top = all_micro[0]
         top_charge = int(top.get("net_charge", 0))
-        # Avoid an extreme multi-deprotonated default when a chemically plausible
-        # monoanion/neutral state is close in score.  The score is still shown.
         if top_charge <= -2:
             for max_abs_charge, max_delta, label in [(1, 1.50, "near-score monoanion/neutral conservative state"),
                                                      (0, 2.00, "near-score neutral conservative state")]:
@@ -1534,6 +1592,7 @@ def _pkanet_conservative_flags(parent_smiles, all_micro, pubchem_result=None, ml
         row["recommendation"] = "recommended" if i == selected_idx else "alternative"
         row["recommendation_reason"] = reason if i == selected_idx else "not selected as default; available for manual override"
     return conservative_rank, reason
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGE H  ·  3D construction + file I/O
@@ -1787,3 +1846,235 @@ def zip_all_outputs(out_dir, zip_path):
         for p in out.rglob("*"):
             if p.is_file(): z.write(p, arcname=p.relative_to(out))
     return str(zp)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v80  PUBLIC FAST-PREDICT API
+# Three new public helpers built on top of the existing pipeline.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def heuristic_net_charge(smiles: str, ph: float = 7.4) -> "int | None":
+    """Fast formal-charge estimate from the ionizable-site SMARTS table + H-H.
+
+    Uses the same SMARTS table as `find_ionizable_sites` but without tautomer
+    enumeration or Dimorphite calls (< 1 ms per molecule).  Two charge caps are
+    applied to suppress known systematic over-charging:
+
+    Cap 1 — polyamine: if no acid sites are present and multiple amines are all
+    protonated, cap at +1 (or +2 for 3+ very strong bases). Prevents spermine-
+    type over-charging.
+
+    Cap 2 — multi-acid: if no base sites are present and multiple acids are
+    deprotonated, cap at the number of sites whose pKa is *clearly* below ph
+    (pKa < ph − 1.5). Prevents over-deprotonation of symmetric diacids.
+
+    Returns the predicted integer formal charge, or None for an invalid SMILES.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+
+    sites = find_ionizable_sites(mol)
+    if not sites:
+        return 0
+
+    acid_charge = 0
+    base_charge = 0
+
+    for site in sites:
+        pka   = float(site.get("heuristic_pka", 7.4))
+        stype = site.get("site_type", "acid")
+        label = str(site.get("label", "")).lower()
+
+        # Skip conservative hydroxyl proxies that should not ionise at pH 7.4
+        if "hydroxy_carboxyl_conservative" in label and ph < 12.5:
+            continue
+
+        f_charged = (1.0 / (1.0 + 10.0 ** (pka - ph))   if stype == "acid"
+                     else 1.0 / (1.0 + 10.0 ** (ph - pka)))
+
+        if f_charged > 0.5:
+            if stype == "acid":
+                acid_charge -= 1
+            else:
+                base_charge += 1
+
+    # Cap 1: polyamine with no counterbalancing acid groups
+    if acid_charge == 0 and base_charge > 1:
+        n_strong_base = sum(
+            1 for s in sites
+            if s.get("site_type") == "base"
+            and float(s.get("heuristic_pka", 0)) - ph > 2.0
+        )
+        base_charge = min(base_charge, 2) if n_strong_base >= 3 else 1
+
+    # Cap 2: multi-acid with no counterbalancing base groups
+    if base_charge == 0 and acid_charge < -1:
+        n_clear_acid = sum(
+            1 for s in sites
+            if s.get("site_type") == "acid"
+            and (ph - float(s.get("heuristic_pka", 0))) > 1.5
+            and "hydroxy_carboxyl_conservative" not in str(s.get("label", ""))
+        )
+        acid_charge = max(acid_charge, -max(n_clear_acid, 1))
+
+    return max(-6, min(6, acid_charge + base_charge))
+
+
+def predict_charge(
+    smiles: str,
+    ph: float = 7.4,
+    mode: str = "auto",
+    pubchem_result: "dict | None" = None,
+    ph_window: float = 1.0,
+    max_tautomers: int = 8,
+    top_n: int = 5,
+) -> "tuple[int | None, str]":
+    """Predict formal charge at *ph* for a single molecule.
+
+    Parameters
+    ----------
+    smiles        : SMILES string
+    ph            : target pH (default 7.4)
+    mode          : ``'fast'``  — heuristic SMARTS + H-H only (< 1 ms)
+                    ``'full'``  — complete tautomer + Dimorphite + scoring pipeline
+                    ``'auto'``  — fast unless any detected site pKa is within 1.5 of
+                                  *ph* (borderline), **or** the molecule has rings but
+                                  no detectable ionizable sites (tautomeric enol risk,
+                                  e.g. warfarin keto form), in which case the full
+                                  pipeline is used automatically.
+    pubchem_result: pre-fetched PubChem pKa dict (optional, used only by full mode)
+    ph_window, max_tautomers, top_n : passed through to full pipeline
+
+    Returns
+    -------
+    ``(charge, mode_used)`` where *mode_used* is ``'fast'``, ``'full'``, or
+    ``'fast_fallback'`` (full pipeline failed, reverted to heuristic).
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None, "invalid"
+
+    if mode == "fast":
+        return heuristic_net_charge(smiles, ph), "fast"
+
+    if mode in ("auto", "full"):
+        sites = find_ionizable_sites(mol) if mode == "auto" else []
+
+        is_borderline = any(
+            abs(ph - float(s.get("heuristic_pka", ph + 99))) <= 1.5
+            for s in sites
+        )
+        # Tautomeric enol risk: ring molecule with zero detected sites on the
+        # parent (e.g. warfarin supplied as the keto form).
+        tautomeric_risk = (
+            mode == "auto"
+            and not sites
+            and mol.GetRingInfo().NumRings() > 0
+            and mol.GetNumHeavyAtoms() > 4
+        )
+
+        if mode == "auto" and not is_borderline and not tautomeric_risk:
+            return heuristic_net_charge(smiles, ph), "fast"
+
+        # Full pipeline
+        try:
+            top, _, _, _, _, _ = generate_ranked_microstates(
+                smiles,
+                target_ph=ph,
+                ph_window=ph_window,
+                max_tautomers=max_tautomers,
+                top_n=top_n,
+                pubchem_result=pubchem_result or {},
+            )
+            if top:
+                return top[0]["net_charge"], "full"
+        except Exception:
+            pass
+        return heuristic_net_charge(smiles, ph), "fast_fallback"
+
+    raise ValueError(f"Unknown mode: {mode!r}. Use 'fast', 'full', or 'auto'.")
+
+
+def batch_predict_charges(
+    records,
+    ph: float = 7.4,
+    mode: str = "auto",
+    pubchem_lookup_enabled: bool = False,
+    progress: bool = False,
+) -> "pd.DataFrame":
+    """Batch formal-charge prediction for a list of molecules.
+
+    Parameters
+    ----------
+    records      : iterable of SMILES strings **or** ``(smiles, name)`` tuples
+    ph           : target pH (default 7.4)
+    mode         : ``'fast'``, ``'full'``, or ``'auto'`` — see :func:`predict_charge`
+    pubchem_lookup_enabled : if True, queries PubChem for each molecule (slow)
+    progress     : print a progress dot every 1 000 molecules
+
+    Returns
+    -------
+    ``pandas.DataFrame`` with columns:
+        ``name``, ``smiles``, ``predicted_charge``, ``mode_used``,
+        ``n_ion_sites``, ``borderline_pka``, ``is_zwitterion``, ``error``
+    """
+    try:
+        import pandas as _pd
+    except ImportError:
+        raise ImportError("pandas is required for batch_predict_charges()")
+
+    rows = []
+    for i, rec in enumerate(records):
+        if isinstance(rec, str):
+            smi, name = rec, f"mol_{i+1:06d}"
+        else:
+            smi, name = rec[0], (rec[1] if len(rec) > 1 else f"mol_{i+1:06d}")
+
+        row: dict = {
+            "name": name, "smiles": smi, "predicted_charge": None,
+            "mode_used": "error", "n_ion_sites": 0,
+            "borderline_pka": False, "is_zwitterion": False, "error": None,
+        }
+        try:
+            mol = Chem.MolFromSmiles(smi)
+            if mol is None:
+                row["error"] = "invalid_smiles"
+            else:
+                sites = find_ionizable_sites(mol)
+                row["n_ion_sites"] = len(sites)
+                row["borderline_pka"] = any(
+                    abs(ph - float(s.get("heuristic_pka", ph + 99))) <= 1.5
+                    for s in sites
+                )
+                pc = pubchem_lookup(smi) if pubchem_lookup_enabled else {}
+                charge, mode_used = predict_charge(smi, ph=ph, mode=mode,
+                                                   pubchem_result=pc)
+                row["predicted_charge"] = charge
+                row["mode_used"]        = mode_used
+                # Zwitterion flag: at least one acid site AND one base site both charged
+                n_acid_ch = sum(
+                    1 for s in sites
+                    if s.get("site_type") == "acid"
+                    and (1.0 / (1.0 + 10 ** (float(s.get("heuristic_pka", 14)) - ph))) > 0.5
+                )
+                n_base_ch = sum(
+                    1 for s in sites
+                    if s.get("site_type") == "base"
+                    and (1.0 / (1.0 + 10 ** (ph - float(s.get("heuristic_pka", 0))))) > 0.5
+                )
+                row["is_zwitterion"] = bool(n_acid_ch > 0 and n_base_ch > 0)
+        except Exception as exc:
+            row["error"] = str(exc)[:120]
+
+        rows.append(row)
+        if progress and (i + 1) % 1000 == 0:
+            print(f"  batch_predict_charges: {i + 1} done …", flush=True)
+
+    return _pd.DataFrame(rows, columns=[
+        "name", "smiles", "predicted_charge", "mode_used",
+        "n_ion_sites", "borderline_pka", "is_zwitterion", "error",
+    ])
+
+
+# Backwards-compatibility alias
+pubchem_lookup_fn = pubchem_lookup
