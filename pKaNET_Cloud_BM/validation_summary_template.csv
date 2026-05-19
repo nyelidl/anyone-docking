@@ -1,0 +1,1 @@
+test_id,compound_name,smiles,target_pH,expected_charge,predicted_charge,agreement,pka_source,decision_backend,flag_borderline_pka,flag_tautomer_rich,notes
