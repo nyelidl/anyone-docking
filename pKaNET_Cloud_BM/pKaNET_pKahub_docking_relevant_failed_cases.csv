@@ -1,0 +1,6 @@
+test_id,group,name,smiles,target_pH,expected_charge,predicted_charge,agreement,fragment_guard,fragment_guard_pass,top_smiles,selection_score,pka_source,pubchem_mock
+T17,G2,Glyphosate,OC(=O)CNCP(=O)(O)O,7.4,-2,-3,FAIL,,True,,2.532,heuristic,no
+T33,G5,Warfarin,CC(=O)CC1C(=O)c2ccccc2OC1c1ccccc1,7.4,-1,0,FAIL,,True,,2.39,heuristic,no
+T43,G8,Baicalein,O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12,7.4,0,-1,FAIL,[O-],True,,4.167000000000001,heuristic,no
+T46,G8,Kaempferol,O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,7.4,0,-1,FAIL,[O-],True,,4.642,heuristic,no
+T64,G12,Methotrexate,CN(Cc1cnc2nc(N)nc(N)c2n1)c1ccc(C(=O)N[C@@H](CCC(=O)O)C(=O)O)cc1,7.4,-2,-3,FAIL,,True,,8.428,heuristic,no
