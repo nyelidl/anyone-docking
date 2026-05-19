@@ -1,4 +1,5 @@
 # 🧪 pKaNET Cloud+ — Reproducible Computational Chemistry Validation Report for Ligand Preparation in Anyone Can Dock
+***Tested on 19 May 2026***
 
 **pKaNET Cloud+** refers to the protonation engine with a corrected SMARTS-based pKa table, Dimorphite-DL-assisted microstate enumeration, pKaNET re-ranking, and pKaHub-derived benchmark validation.
 
