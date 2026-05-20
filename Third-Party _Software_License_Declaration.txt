@@ -1,7 +1,7 @@
 # Third-Party Software License Declaration
 
 **Project:** Molecular Docking Web Application (`app_poseview2.py`)  
-**Generated:** 2026-03-05  
+**Generated:** 2026-05-20  
 
 This document lists all Python packages, system tools, and external web services used in this application, together with their verified license types.
 
@@ -23,11 +23,13 @@ This document lists all Python packages, system tools, and external web services
 
 | Package / Tool | Version | License | Used For | Notes |
 |---|---|---|---|---|
-| RDKit | ≥2023.03 | BSD 3-Clause | Cheminformatics, SMILES, 2D depiction | Permissive |
-| ProDy | ≥2.4 | MIT | PDB parsing, ligand detection, grid center | Permissive |
+| RDKit | ≥2024.03 | BSD 3-Clause | Cheminformatics, SMILES, tautomer enumeration, 2D depiction, ETKDG/MMFF 3D generation | Permissive |
+| ProDy | ≥2.4 | MIT | PDB parsing, ligand detection, grid centre | Permissive |
 | Meeko | ≥0.5 | LGPL-2.1 | Ligand preparation for AutoDock Vina | Dynamic linking allowed |
-| Dimorphite-DL | ≥1.3 | Apache 2.0 | Protonation state prediction | Permissive |
-| pKaPredict | ≥0.2 | MIT | pKa-based protonation | Permissive |
+| Dimorphite-DL | ≥2.0 | Apache 2.0 | Initial ionisation-state enumeration; re-ranked by pKaNET Cloud+ | Permissive |
+| pKaNET Cloud+ | in-house | In-house / manuscript | Tautomer-aware protonation-state ranking; replaces standalone pKaPredict | Calibrated SMARTS pKa table + Henderson–Hasselbalch microstate scorer; see citation |
+| pkasolver | ≥0.3 | MIT | Optional ML-GNN pKa backend for pKaNET Cloud+ | Activated automatically when installed |
+| propka | ≥3.5 | BSD 3-Clause | Optional semi-empirical pKa backend / fallback for pKaNET Cloud+ | Activated automatically when installed |
 | gemmi | ≥0.6 | MPL-2.0 | mmCIF / PDB structure handling | File-level copyleft |
 | CairoSVG | ≥2.7 | LGPL-3.0 | SVG → PNG conversion | Dynamic linking allowed |
 
@@ -51,12 +53,14 @@ This document lists all Python packages, system tools, and external web services
 
 ---
 
-## External Web Services
+## External Web Services and Data Resources
 
 | Service | Access | License | Used For |
 |---|---|---|---|
 | proteins.plus (PoseView / PoseView2) | REST API | Free (academic & commercial) | 2D interaction diagrams |
 | RCSB Protein Data Bank | REST API | CC0 / Open Access | Protein structure retrieval |
+| PubChem (optional) | REST API | Public domain | Experimental dissociation-constant lookup for pKaNET Cloud+ |
+| pKaHub | Validation data only; not redistributed | CC-BY (academic) | External experimental pKa reference used to derive the 27,218-molecule docking-relevant benchmark subset |
 
 ---
 
@@ -94,32 +98,53 @@ Usage is free for academic and commercial purposes, but **citation is required**
 
 ---
 
+## pKaHub
+
+pKaHub is used solely as an external reference database for deriving and validating the docking-relevant benchmark subset. The raw pKaHub database is **not redistributed**; only curated validation outputs and disagreement summaries are included for reproducibility.  
+**Citation is required** (see below).
+
+---
+
 # Required Citations
 
 - **AutoDock Vina 1.2.7**  
   Eberhardt et al., *Journal of Chemical Information and Modeling*, 2021  
-  DOI: https://doi.org/10.1021/acs.jcim.1c00203  
+  DOI: https://doi.org/10.1021/acs.jcim.1c00203
 
 - **ProteinsPlus / PoseView**  
   Schöning-Stierand et al., *Nucleic Acids Research*, 2022  
-  DOI: https://doi.org/10.1093/nar/gkac258  
+  DOI: https://doi.org/10.1093/nar/gkac258
 
 - **RDKit**  
-  Landrum, G. (2023). RDKit: Open-source cheminformatics.  
-  https://www.rdkit.org  
+  Landrum, G. (2024). RDKit: Open-source cheminformatics.  
+  https://www.rdkit.org
 
 - **ProDy**  
   Bakan et al., *Bioinformatics*, 2011  
-  DOI: https://doi.org/10.1093/bioinformatics/btr168  
+  DOI: https://doi.org/10.1093/bioinformatics/btr168
 
 - **stmol**  
   Nápoles-Duarte et al., *Frontiers in Molecular Biosciences*, 2022  
-  DOI: https://doi.org/10.3389/fmolb.2022.990846  
+  DOI: https://doi.org/10.3389/fmolb.2022.990846
 
 - **Dimorphite-DL**  
   Ropp et al., *Journal of Cheminformatics*, 2019  
   DOI: https://doi.org/10.1186/s13321-019-0336-9
 
-- **pKaNET Cloud**
+- **pKaNET Cloud+ (protonation-state ranking engine)**  
   Hengphasatporn, K. et al., *J. Chem. Inf. Model.* 2026, **66** (4), 1955–1963  
   DOI: https://doi.org/10.1021/acs.jcim.5c02852
+
+- **pKaHub (benchmark reference dataset)**  
+  Sipos-Szabó, L.; Bajusz, D.; Balogh, G. T.; Keserű, G. M.  
+  Benchmarking pKa Prediction Algorithms against an Extensive, Public Data Set.  
+  *Journal of Chemical Information and Modeling* **2026**, 66, 4607–4619  
+  DOI: https://doi.org/10.1021/acs.jcim.6c00107
+
+- **pkasolver** *(if activated)*  
+  Mayr, F. et al., *Journal of Chemical Information and Modeling*, 2022  
+  DOI: https://doi.org/10.1021/acs.jcim.2c00929
+
+- **PROPKA** *(if activated)*  
+  Olsson et al., *Journal of Chemical Theory and Computation*, 2011  
+  DOI: https://doi.org/10.1021/ct100578z
