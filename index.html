@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 
-  <!-- PWA / App-like -->
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -15,7 +14,6 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-A.png" />
 
-  <!-- Google Analytics -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-DX3PNRV443"></script>
   <script>
     window.dataLayer = window.dataLayer || [];
@@ -165,6 +163,35 @@
       letter-spacing: 0.04em;
     }
 
+    .countdown {
+      font-size: 1.0rem;
+      font-weight: 600;
+      color: #777;
+      margin-top: 1.2rem;
+      margin-bottom: 0.2rem;
+      min-height: 2.4em;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.2rem;
+      letter-spacing: 0.01em;
+    }
+    .countdown-num {
+      display: inline-block;
+      font-size: 2.2rem;
+      font-weight: 800;
+      line-height: 1;
+      background: linear-gradient(90deg, var(--red), var(--purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: popIn 0.4s cubic-bezier(.22,1,.36,1) both;
+    }
+    @keyframes popIn {
+      from { transform: scale(1.6); opacity: 0; }
+      to   { transform: scale(1);   opacity: 1; }
+    }
+
     .fallback-btn {
       display: none;
       margin-top: 1.4rem;
@@ -181,6 +208,24 @@
       -webkit-tap-highlight-color: transparent;
     }
     .fallback-btn:hover { opacity: 0.9; }
+
+    .gpt-btn {
+      display: inline-block;
+      margin-top: 0.75rem;
+      padding: 0.6rem 1.6rem;
+      background: linear-gradient(90deg, #10a37f, #1a7f64);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      letter-spacing: 0.01em;
+      -webkit-tap-highlight-color: transparent;
+      text-decoration: none;
+    }
+    .gpt-btn:hover { opacity: 0.9; }
 
     /* ════════════════════════════════════════════
        iOS INSTALL HINT BANNER
@@ -415,9 +460,15 @@
     <div class="server-grid" id="serverGrid"></div>
     <p class="hint" id="hint">Connecting to the fastest available server <br>
       Powered by Streamlit</p>
+    <div class="countdown" id="countdown"></div>
     <button class="fallback-btn" id="fallbackBtn" onclick="redirectToFallback()">
       Open app manually →
     </button>
+    <a class="gpt-btn"
+       href="https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt"
+       target="_blank" rel="noopener noreferrer">
+      Anyone Can Dock GPT ↗
+    </a>
   </div>
 
   <!-- ── iOS install hint banner ── -->
@@ -536,10 +587,26 @@
       if (redirected) return;
       redirected = true;
       dots[idx].className = "server-dot selected";
-      setStatus(`Server ${idx + 1} is ready — redirecting…`);
-      setHint(`Server ${idx + 1} of ${n}`);
       setProgress(100);
-      setTimeout(() => { window.location.href = APPS[idx]; }, 300);
+
+      let count = 3;
+      const cdEl = document.getElementById("countdown");
+
+      function tick() {
+        if (count > 0) {
+          setStatus(`Server ${idx + 1} is ready — opening in…`);
+          // Re-create the span to re-trigger the popIn animation each tick
+          cdEl.innerHTML = `<span class="countdown-num">${count}</span>`;
+          count--;
+          setTimeout(tick, 1000);
+        } else {
+          setStatus("🚀 Launching…");
+          cdEl.textContent = "";
+          setHint(`Server ${idx + 1} of ${n}`);
+          setTimeout(() => { window.location.href = APPS[idx]; }, 300);
+        }
+      }
+      tick();
     }
 
     function redirectToFallback() {
@@ -559,7 +626,6 @@
       const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
       const elapsed = Date.now() - startTime;
       if ((done === n || elapsed >= MIN_DELAY_MS) && online.length > 0) {
-        setStatus(`${online.length} server(s) available`);
         doRedirect(getNextServer(online));
       }
     }
