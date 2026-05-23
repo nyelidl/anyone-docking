@@ -331,9 +331,9 @@ If you use this tool in research, please cite the relevant software and resource
 > Eberhardt et al., *Journal of Chemical Information and Modeling*, 2021
 > DOI: https://doi.org/10.1021/acs.jcim.1c00203
 
-> **Anyone Can Dock**
-> Hengphasatporn, K.; Bunchuay T.; Duan, L.; Shigeta, Y., *Journal of Chemical Information and Modeling*, 2026
-> https://github.com/nyelidl/anyone-docking/
+> **DFDD**
+> Hengphasatporn, K.; Duan, L.; Harada, R.; Shigeta, Y., *Journal of Chemical Information and Modeling*, 2026
+> DOI: https://doi.org/10.1021/acs.jcim.5c02852
 
 > **RDKit**
 > Landrum, G. (2023). RDKit: Open-source cheminformatics.
