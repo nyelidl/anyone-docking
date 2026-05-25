@@ -364,7 +364,7 @@ def is_cif_file(filepath: str) -> bool:
 def check_obabel():
     import shutil
     if shutil.which("obabel") is None:
-        return False, "obabel not found — add 'openbabel' to packages.txt"
+        return False, "obabel not found — install OpenBabel (https://openbabel.org) and ensure it is on PATH"
     _, out = run_cmd("obabel --version")
     return True, (out.splitlines()[0] if out else "ok")
 
@@ -374,6 +374,12 @@ def check_obabel():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_vina_binary(path: str = ""):
+    import shutil as _shutil
+    # ── Check if vina is already on PATH (common for local installs) ──────
+    _vina_in_path = _shutil.which("vina") or _shutil.which("vina_1.2.7") or _shutil.which("AutoDock-Vina")
+    if _vina_in_path and os.path.getsize(_vina_in_path) > 100_000:
+        return _vina_in_path, f"ok (found on PATH: {_vina_in_path})"
+
     import platform
     system  = platform.system().lower()
     machine = platform.machine().lower()
@@ -1264,7 +1270,7 @@ _IONIZABLE_SITE_DEF = [
                            "!$([NX3][CX3](=[NX2])[NX3])]",                    12.4,  "base"),
     ("guanidine",          "[NX3][CX3](=[NX2;!$(N~C#N)])[NX3]",               12.5,  "base"),
     ("aliphatic_amine",    "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);"
-                           "!$(Nc);!$([NX3][CX3](=[NX2])])",                  9.5,  "base"),
+                           "!$(Nc);!$([NX3][CX3](=[NX2]))]",                  9.5,  "base"),
     ("aliphatic_amine_t",  "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);"
                            "!$([N;R]1CC[O,S]CC1);!$([N;R]1CCNCC1)]",          9.0,  "base"),
 ]
@@ -2234,8 +2240,8 @@ def prepare_ligand(
         except Exception as e_meeko:
             log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
             subprocess.run(
-                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
-                shell=True, timeout=30,
+                ["obabel", out_sdf, "-O", out_pdbqt, "-xh"],
+                capture_output=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
@@ -2291,10 +2297,9 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
                 mol = mols[0]
         elif ext in (".mol2", ".pdb"):
             _ob_sdf = str(wdir / f"{name}_ob.sdf")
-            import subprocess
             subprocess.run(
-                f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
-                shell=True, timeout=30,
+                ["obabel", file_path, "-O", _ob_sdf],
+                capture_output=True, timeout=30,
             )
             if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
                 supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
@@ -2372,10 +2377,9 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             log.append("✓ PDBQT written (Meeko)")
         except Exception as e_meeko:
             log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
-            import subprocess
             subprocess.run(
-                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
-                shell=True, timeout=30,
+                ["obabel", out_sdf, "-O", out_pdbqt, "-xh"],
+                capture_output=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
@@ -2414,6 +2418,326 @@ def smiles_from_file(file_path: str, wdir) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  CO-CRYSTAL LIGAND  —  SMILES ACQUISITION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _rcsb_ccd_smiles(resname: str):
+    """
+    Fetch ideal isomeric SMILES for a PDB Chemical Component (3-letter code)
+    from the RCSB Chemical Component Dictionary (CCD) REST API.
+
+    Priority: SMILES_STEREO  >  SMILES  (isomeric before canonical).
+
+    Returns the SMILES string on success, None on any failure (network error,
+    unknown residue, missing descriptor field).
+    """
+    import requests
+    url = (
+        f"https://data.rcsb.org/rest/v1/core/chemcomp/"
+        f"{resname.strip().upper()}"
+    )
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        descriptors = data.get("rcsb_chem_comp_descriptor", [])
+        if isinstance(descriptors, dict):
+            descriptors = [descriptors]
+        smiles_by_type: dict = {}
+        for item in descriptors:
+            t = (item.get("type") or "").upper()
+            d = (item.get("descriptor") or "").strip()
+            if d and t in ("SMILES_STEREO", "SMILES"):
+                smiles_by_type.setdefault(t, d)
+        return smiles_by_type.get("SMILES_STEREO") or smiles_by_type.get("SMILES")
+    except Exception:
+        return None
+
+
+def _smiles_from_cif_block(cif_path: str, resname: str):
+    """
+    Extract SMILES from the ``_chem_comp.pdbx_smiles`` field of an mmCIF
+    structure file.
+
+    Handles three CIF layouts:
+
+    *  **loop_** block  — a table whose header contains ``_chem_comp.id`` and
+       ``_chem_comp.pdbx_smiles``.  We find the row whose ``id`` matches
+       *resname* (exact) **or** starts with ``resname + "_"`` (e.g. ``LIG_B``
+       for resname ``LIG``).
+    *  **Inline single-value** — ``_chem_comp.pdbx_smiles   <value>`` on the
+       same line (horizontal whitespace only between key and value).
+    *  **Two-line single-value** — key on one line, value token on the next
+       (but NOT another ``_``-key or a ``;``-block start).
+
+    Returns the SMILES string on success, None otherwise.
+    Ignores placeholder values ``"."`` and ``"?"``.
+    """
+    target = resname.strip().upper()
+    try:
+        with open(cif_path, errors="replace") as fh:
+            content = fh.read()
+
+        # ── Strategy A: loop_ containing _chem_comp columns ──────────────
+        loop_pat = _re.compile(
+            r"loop_\s*((?:_chem_comp\.\S+\s*)+)(.*?)(?=loop_|data_|\Z)",
+            _re.DOTALL,
+        )
+        for m in loop_pat.finditer(content):
+            header_block = m.group(1)
+            data_block   = m.group(2)
+            headers = header_block.split()
+            if "_chem_comp.id" not in headers:
+                continue
+            if "_chem_comp.pdbx_smiles" not in headers:
+                continue
+            id_idx  = headers.index("_chem_comp.id")
+            smi_idx = headers.index("_chem_comp.pdbx_smiles")
+            n       = len(headers)
+            tokens  = _re.findall(r"'[^']*'|\"[^\"]*\"|[^\s]+", data_block)
+            for i in range(0, len(tokens) - n + 1, n):
+                row = tokens[i : i + n]
+                if len(row) < n:
+                    break
+                comp_id = row[id_idx].strip("'\"").upper()
+                # Exact match OR prefix match: "LIG_B" → target "LIG"
+                if comp_id == target or comp_id.startswith(target + "_"):
+                    smi = row[smi_idx].strip("'\"")
+                    if smi and smi not in (".", "?"):
+                        return smi
+
+        # ── Strategy B: inline single-value (same line, no newline allowed) ──
+        # Use [ \t]+ (horizontal whitespace only) to stop at end of line so
+        # we never accidentally capture the next field name on the line below.
+        m = _re.search(
+            r"_chem_comp\.pdbx_smiles[ \t]+([^\s#][^\r\n]*)", content
+        )
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+
+        # ── Strategy C: two-line single-value  ────────────────────────────
+        # key on one line, plain value token on the very next non-empty line,
+        # but only if that line does NOT start with another key (_), a
+        # comment (#), or a semicolon-block (;).
+        m = _re.search(
+            r"_chem_comp\.pdbx_smiles\s*\r?\n[ \t]*([^_#;\s][^\r\n]*)",
+            content,
+        )
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+
+        # ── Strategy D: semicolon text block ─────────────────────────────
+        # _chem_comp.pdbx_smiles
+        # ;
+        # <value>
+        # ;
+        m = _re.search(
+            r"_chem_comp\.pdbx_smiles\s*\r?\n;\r?\n([^\n]+)\r?\n;",
+            content,
+        )
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+
+    except Exception:
+        pass
+    return None
+
+
+def get_cocrystal_smiles(
+    ligand_pdb_path: str,
+    cocrystal_ligand_id: str,
+    raw_pdb: str = "",
+) -> tuple:
+    """
+    Return ``(smiles, source, warning)`` for the extracted co-crystal ligand.
+
+    Acquisition strategy (in priority order):
+
+    1. **RCSB CCD REST API** — ideal, stereo-correct, curated SMILES.
+       Uses the 3-letter residue code parsed from *cocrystal_ligand_id*
+       (format ``RESNAME_CHAIN_RESID``).
+
+    2. **CIF _chem_comp.pdbx_smiles** — parsed directly from the structure
+       CIF if *raw_pdb* is a CIF file.  No network call required.
+
+    3. **3D → SMILES conversion** (last resort) — RDKit reads the extracted
+       ``LIG.pdb``.  PDB format carries no bond-order information, so
+       aromatic/double-bond assignment is heuristic and may be wrong for
+       complex ligands.  A warning is always attached to this source.
+
+    Returns
+    -------
+    smiles  : str — SMILES string, empty on total failure.
+    source  : str — ``"rcsb_ccd"`` | ``"cif_block"`` | ``"3d_conversion"`` | ``""``.
+    warning : str — non-empty when the result may be unreliable, or on failure.
+    """
+    resname = (
+        cocrystal_ligand_id.split("_")[0].upper()
+        if cocrystal_ligand_id
+        else ""
+    )
+
+    # ── 1. RCSB CCD ──────────────────────────────────────────────────────
+    if resname:
+        try:
+            smi = _rcsb_ccd_smiles(resname)
+            if smi:
+                return smi, "rcsb_ccd", ""
+        except Exception:
+            pass
+
+    # ── 2. CIF embedded block ────────────────────────────────────────────
+    if raw_pdb and is_cif_file(raw_pdb) and resname:
+        try:
+            smi = _smiles_from_cif_block(raw_pdb, resname)
+            if smi:
+                return smi, "cif_block", ""
+        except Exception:
+            pass
+
+    # ── 3. 3D → SMILES from extracted LIG.pdb (last resort) ─────────────
+    #
+    # Why this is hard:
+    #   Crystal PDB files carry no explicit bond-order information — bonds are
+    #   inferred from inter-atomic distances.  Without hydrogen atoms present,
+    #   valence clues are missing, so RDKit's sanitiser often assigns wrong
+    #   bond orders (e.g. all-single aromatic rings, missed double bonds).
+    #
+    # Fix:
+    #   A. Use OpenBabel to convert PDB → SDF *with hydrogen addition* (-h).
+    #      Obabel adds H first, then perceives bond orders — much more
+    #      reliable than reading the bare PDB.  Read the SDF with RDKit to
+    #      get a clean canonical SMILES.
+    #   B. RDKit fallback: read PDB with removeHs=False so H are present
+    #      during sanitisation; try DetermineBonds (RDKit ≥ 2022.09) before
+    #      falling back to standard SanitizeMol; only strip H for the final
+    #      SMILES step.
+
+    warn_3d = (
+        "SMILES was derived from 3D coordinates (PDB has no bond-order data). "
+        "Bond orders were inferred heuristically — verify the structure, "
+        "especially for aromatic rings or unusual valences, before trusting "
+        "docking scores."
+    )
+
+    if ligand_pdb_path and os.path.exists(ligand_pdb_path):
+        _rdkit_six_patch()
+        from rdkit import Chem
+
+        # ── A. OpenBabel PDB → SDF (adds H, then perceives bonds) ────────
+        # This is the most reliable path: obabel adds H before bond
+        # perception, so valence information guides the assignment.
+        try:
+            import tempfile, os as _os
+            with tempfile.NamedTemporaryFile(
+                suffix=".sdf", delete=False
+            ) as tf:
+                ob_sdf = tf.name
+            # -h  : add hydrogens
+            # -p 7.4 : at physiological pH so protonation state is sensible
+            rc, _ = run_cmd(
+                ["obabel", ligand_pdb_path, "-O", ob_sdf, "-h", "-p", "7.4"]
+            )
+            if rc == 0 and _os.path.exists(ob_sdf) and _os.path.getsize(ob_sdf) > 10:
+                supp = Chem.SDMolSupplier(ob_sdf, removeHs=False, sanitize=True)
+                mols = [m for m in supp if m is not None]
+                if not mols:
+                    supp = Chem.SDMolSupplier(ob_sdf, removeHs=False, sanitize=False)
+                    mols = [m for m in supp if m is not None]
+                if mols:
+                    mol = mols[0]
+                    try:
+                        mol_noh = Chem.RemoveHs(mol)
+                        smi = Chem.MolToSmiles(mol_noh, isomericSmiles=True)
+                    except Exception:
+                        smi = Chem.MolToSmiles(mol, isomericSmiles=True)
+                    if smi:
+                        return smi, "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+        # ── B. RDKit with H kept during sanitisation ──────────────────────
+        # Read with removeHs=False so H atoms provide valence clues.
+        # Try the modern DetermineBonds API first (RDKit >= 2022.09),
+        # which uses a distance+charge model and is far more accurate than
+        # the legacy distance-only sanitiser.
+        try:
+            mol = Chem.MolFromPDBFile(
+                ligand_pdb_path, removeHs=False, sanitize=False
+            )
+            if mol is not None:
+                bonded = False
+
+                # DetermineBonds (RDKit >= 2022.09)
+                try:
+                    from rdkit.Chem import DetermineBonds
+                    DetermineBonds(mol, charge=0)
+                    bonded = True
+                except (ImportError, Exception):
+                    pass
+
+                if not bonded:
+                    try:
+                        Chem.SanitizeMol(mol)
+                        bonded = True
+                    except Exception:
+                        # Partial sanitisation: keep going with what we have
+                        try:
+                            Chem.SanitizeMol(
+                                mol,
+                                Chem.SanitizeFlags.SANITIZE_ALL
+                                ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+                            )
+                            bonded = True
+                        except Exception:
+                            pass
+
+                if bonded or mol.GetNumAtoms() > 0:
+                    try:
+                        mol_noh = Chem.RemoveHs(mol, sanitize=False)
+                        Chem.SanitizeMol(mol_noh)
+                        smi = Chem.MolToSmiles(mol_noh, isomericSmiles=True)
+                    except Exception:
+                        smi = Chem.MolToSmiles(mol, isomericSmiles=True)
+                    if smi:
+                        return smi, "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+        # ── C. OpenBabel direct → SMILES (last-ditch) ────────────────────
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                suffix=".smi", delete=False
+            ) as tf:
+                smi_tmp = tf.name
+            rc, _ = run_cmd(
+                ["obabel", ligand_pdb_path, "-O", smi_tmp, "-h", "--canonical"]
+            )
+            if rc == 0 and os.path.exists(smi_tmp):
+                for line in open(smi_tmp):
+                    pts = line.strip().split(None, 1)
+                    if pts and pts[0]:
+                        return pts[0], "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+    return "", "", (
+        f"Could not obtain SMILES for co-crystal ligand "
+        f"'{resname or cocrystal_ligand_id}'. "
+        "All strategies failed: RCSB CCD, CIF block, "
+        "OpenBabel PDB→SDF, RDKit DetermineBonds, OpenBabel direct."
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  DOCKING  (unchanged from original)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2432,17 +2756,19 @@ def run_vina(
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
     out_sdf   = str(wdir / f"{out_name}_out.sdf")
 
+
     rc, vlog = run_cmd(
         f'"{vina_path}" '
-        f'--receptor "{receptor_pdbqt}" '
-        f'--ligand "{ligand_pdbqt}" '
-        f'--config "{config_txt}" '
+        f'--receptor "{os.path.abspath(receptor_pdbqt)}" '
+        f'--ligand "{os.path.abspath(ligand_pdbqt)}" '
+        f'--config "{os.path.abspath(config_txt)}" '
         f'--exhaustiveness {exhaustiveness} '
         f'--num_modes {n_modes} '
         f'--energy_range {energy_range} '
-        f'--out "{out_pdbqt}"',
+        f'--out "{os.path.abspath(out_pdbqt)}"',
         cwd=str(wdir),
     )
+
 
     if rc != 0 or not os.path.exists(out_pdbqt):
         return {"success": False, "error": f"Vina exit code {rc}", "log": vlog}
@@ -3044,11 +3370,22 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
         img  = Image.open(_io.BytesIO(png_bytes)).convert("RGBA")
         draw = ImageDraw.Draw(img)
         font = None
-        for fp, sz in [
+        _font_candidates = [
+            # Linux
             ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 28),
             ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28),
             ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 26),
-        ]:
+            # macOS (system + Homebrew)
+            ("/System/Library/Fonts/Supplemental/Arial.ttf", 28),
+            ("/System/Library/Fonts/Helvetica.ttc", 28),
+            ("/Library/Fonts/Arial.ttf", 28),
+            ("/opt/homebrew/share/fonts/liberation-fonts/LiberationSans-Regular.ttf", 28),
+            # Windows
+            ("C:/Windows/Fonts/arial.ttf", 28),
+            ("C:/Windows/Fonts/segoeui.ttf", 28),
+            ("C:/Windows/Fonts/calibri.ttf", 28),
+        ]
+        for fp, sz in _font_candidates:
             try:
                 font = ImageFont.truetype(fp, sz); break
             except Exception:
