@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field, model_validator
 # anyonecandock imports  (replaces local core.py / pKaNET.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
-from anyonecandock import (
+from anyonecandock.core import (
     check_obabel,
     fix_sdf_bond_orders,
     get_vina_binary,
@@ -61,7 +61,7 @@ from anyonecandock import (
 # Optional 2D interaction / redocking utilities.
 # The API still works if these are unavailable in the installed version.
 try:
-    from anyonecandock import (
+    from anyonecandock.core import (
         calc_rmsd_heavy,
         write_single_pose,
         call_poseview_v1,
