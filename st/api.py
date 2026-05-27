@@ -10,10 +10,14 @@
 #   co-crystal/redocking ligand -> lowest RMSD vs co-crystal ligand
 #   other ligand -> top-ranked docking pose
 # - 2D interaction diagram output as SVG and PNG
+# UPDATED: now uses `anyonecandock` package instead of local core.py / pKaNET.py
 """
-api.py — FastAPI wrapper for Anyone Can Dock / core.py.
+api.py — FastAPI wrapper for Anyone Can Dock.
 
-Place this file next to core.py and pKaNET.py, then run:
+Install dependencies:
+    pip install "anyonecandock[all]" fastapi "uvicorn[standard]" pydantic requests
+
+Run:
     uvicorn api:app --host 0.0.0.0 --port 8000
 
 Main GPT-friendly workflow:
@@ -28,7 +32,6 @@ import csv
 import json
 import os
 import shutil
-import tempfile
 import traceback
 import uuid
 import zipfile
@@ -40,7 +43,11 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
-from core import (
+# ─────────────────────────────────────────────────────────────────────────────
+# anyonecandock imports  (replaces local core.py / pKaNET.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from anyonecandock import (
     check_obabel,
     fix_sdf_bond_orders,
     get_vina_binary,
@@ -51,10 +58,10 @@ from core import (
     scan_hetatm_residues,
 )
 
-# Optional 2D interaction / redocking utilities from core.py.
-# The API still works if these are unavailable.
+# Optional 2D interaction / redocking utilities.
+# The API still works if these are unavailable in the installed version.
 try:
-    from core import (
+    from anyonecandock import (
         calc_rmsd_heavy,
         write_single_pose,
         call_poseview_v1,
@@ -95,7 +102,7 @@ app = FastAPI(
     version=API_VERSION,
     description=(
         "API wrapper for Anyone Can Dock. It prepares receptor/ligand inputs, "
-        "runs AutoDock Vina through core.py, and returns docking files and scores."
+        "runs AutoDock Vina through the anyonecandock package, and returns docking files and scores."
     ),
 )
 
@@ -275,7 +282,6 @@ def _make_zip(wdir: Path, zip_path: Path) -> None:
 
 
 def _job_url(job_id: str, endpoint: str) -> str:
-    # Relative URLs are easier for GPT Actions and reverse proxies.
     if endpoint == "download":
         return _public_url(f"/jobs/{job_id}/download")
     return _public_url(f"/jobs/{job_id}")
@@ -365,8 +371,6 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
     }
 
 
-
-
 def _looks_like_protonation_valence_error(text: str) -> bool:
     """Detect RDKit/OpenBabel valence failures commonly caused by over-protonation."""
     t = (text or "").lower()
@@ -380,31 +384,18 @@ def _looks_like_protonation_valence_error(text: str) -> bool:
     return any(x in t for x in triggers)
 
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Pose selection + 2D interaction helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_redocking_case(lig_name: str, rec: Dict[str, Any], req: DockRequest) -> bool:
-    """Best-effort redocking detector.
-
-    A true redocking case means the docked ligand is the same molecule as the
-    co-crystal/reference ligand. Robust structure-based matching is difficult
-    from PDB HETATM alone, so this API uses conservative explicit hints:
-    - ligand name equals the co-crystal ligand resname or ligand_id
-    - preferred_ligand/reference_hetatm_key matches ligand name
-    - future clients may pass the co-crystal ligand using the same resname
-    If uncertain, return False and use top-score pose.
-    """
     name = (lig_name or "").strip().upper()
     if not name:
         return False
-
     cocrystal_id = str(rec.get("cocrystal_ligand_id") or "").strip().upper()
     cocrystal_resname = cocrystal_id.split("_")[0] if cocrystal_id else ""
     preferred = (req.preferred_ligand or "").strip().upper()
     ref_key = (req.reference_hetatm_key or "").strip().upper()
-
     candidates = {x for x in [cocrystal_id, cocrystal_resname, preferred, ref_key] if x}
     return name in candidates
 
@@ -415,12 +406,6 @@ def _select_pose_for_interaction(
     req: DockRequest,
     lig_name: str,
 ) -> Dict[str, Any]:
-    """Select pose for 2D interaction.
-
-    Rule:
-    - Redocking/co-crystal ligand: lowest heavy-atom RMSD vs co-crystal ligand.
-    - Other ligands: top-ranked docking pose, i.e. first SDF pose.
-    """
     pose_info: Dict[str, Any] = {
         "selected_pose_rank": None,
         "pose_selection_method": "",
@@ -457,11 +442,11 @@ def _select_pose_for_interaction(
         else:
             selected_idx = 0
             pose_info["pose_selection_method"] = "top_score_fallback"
-            pose_info["warning"] = "Redocking was detected, but RMSD to the co-crystal ligand could not be computed; top-ranked pose was used."
+            pose_info["warning"] = "Redocking detected but RMSD could not be computed; top-ranked pose used."
     elif is_redocking:
         selected_idx = 0
         pose_info["pose_selection_method"] = "top_score_fallback"
-        pose_info["warning"] = "Redocking was detected, but RMSD utilities or co-crystal ligand coordinates were unavailable; top-ranked pose was used."
+        pose_info["warning"] = "Redocking detected but RMSD utilities unavailable; top-ranked pose used."
     else:
         selected_idx = 0
         pose_info["pose_selection_method"] = "top_score"
@@ -471,7 +456,6 @@ def _select_pose_for_interaction(
         if write_single_pose is not None:
             write_single_pose(mols[selected_idx], selected_pose_sdf)
         else:
-            # Minimal fallback writer
             from rdkit import Chem
             with Chem.SDWriter(selected_pose_sdf) as writer:
                 writer.write(mols[selected_idx])
@@ -491,17 +475,6 @@ def _generate_2d_interaction(
     smiles: str,
     lig_name: str,
 ) -> Dict[str, Any]:
-    """Generate a local 2D interaction diagram.
-
-    Logic:
-    1. Try ProteinsPlus PoseView first.
-    2. If PoseView fails, fall back to Anyone Can Dock 2D Diagram
-       (core.draw_interaction_diagram).
-    3. Save SVG always when successful; save PNG when conversion succeeds.
-
-    Returned fields include both poseview_* and two_d_interaction_* keys for
-    backward compatibility.
-    """
     out: Dict[str, Any] = {
         "poseview_available": False,
         "poseview_svg_url": "",
@@ -510,7 +483,6 @@ def _generate_2d_interaction(
         "poseview_png_file": "",
         "poseview_error": "",
         "poseview_source": "",
-        # backwards-compatible aliases
         "two_d_interaction_available": False,
         "two_d_interaction_svg_url": "",
         "two_d_interaction_png_url": "",
@@ -542,7 +514,7 @@ def _generate_2d_interaction(
     source = ""
     warnings: List[str] = []
 
-    # Primary route: PoseView
+    # Primary: PoseView
     try:
         if call_poseview_v1 is not None:
             svg_bytes, pv_err = call_poseview_v1(receptor_pdb=receptor_pdb, pose_sdf=selected_pose_sdf)
@@ -551,15 +523,15 @@ def _generate_2d_interaction(
             else:
                 warnings.append(pv_err or "PoseView did not return an SVG diagram.")
         else:
-            warnings.append("PoseView helper is not available in core.py.")
+            warnings.append("PoseView helper is not available in anyonecandock.")
     except Exception as e:
         warnings.append(f"PoseView failed: {e}")
 
-    # Fallback route: Anyone Can Dock 2D Diagram
+    # Fallback: Anyone Can Dock 2D Diagram
     if not svg_bytes:
         try:
             if draw_interaction_diagram is None:
-                warnings.append("Anyone Can Dock 2D Diagram helper is not available in core.py.")
+                warnings.append("draw_interaction_diagram is not available in anyonecandock.")
             else:
                 svg_bytes = draw_interaction_diagram(
                     receptor_pdb=receptor_pdb,
@@ -578,10 +550,8 @@ def _generate_2d_interaction(
         out["two_d_interaction_error"] = err
         return out
 
-    # Save SVG
     svg_path.write_bytes(svg_bytes)
 
-    # Convert PNG if possible
     png_ok = False
     png_err = ""
     try:
@@ -595,7 +565,6 @@ def _generate_2d_interaction(
         png_err = f"PNG conversion failed: {png_e}"
 
     combined_warning = " ; ".join([w for w in warnings if w] + ([png_err] if png_err else []))
-
     svg_url = _public_url(f"/jobs/{job_id}/files/{svg_name}")
     png_url = _public_url(f"/jobs/{job_id}/files/{png_name}") if png_ok else ""
 
@@ -607,7 +576,6 @@ def _generate_2d_interaction(
         "poseview_png_file": str(png_path) if png_ok else "",
         "poseview_error": combined_warning,
         "poseview_source": source,
-        # backwards-compatible aliases
         "two_d_interaction_available": True,
         "two_d_interaction_svg_url": svg_url,
         "two_d_interaction_png_url": png_url,
@@ -636,7 +604,6 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
     try:
         raw_receptor = _write_receptor_input(req, wdir)
 
-        # Resolve grid mode.
         center_mode = req.center_mode
         grid = req.grid
         manual_xyz = (0.0, 0.0, 0.0)
@@ -708,18 +675,13 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 all_logs.append(f"\n===== {name}: ligand preparation =====")
                 all_logs.extend(prep.get("log", []))
 
-                # Safety fallback:
-                # pKa/protonation enumeration can occasionally create an invalid
-                # over-protonated molecule, which RDKit reports as an explicit
-                # valence error. In that case, retry once with the user/built-in
-                # SMILES unchanged and protonation_mode='neutral'.
                 if not prep.get("success"):
                     prep_error = str(prep.get("error", "Ligand preparation failed"))
                     if req.protonation_mode != "neutral" and _looks_like_protonation_valence_error(prep_error + "\n" + "\n".join(map(str, prep.get("log", [])))):
                         all_logs.append(
                             f"\n===== {name}: ligand preparation fallback =====\n"
                             "pKa/protonation mode produced a valence/sanitization error. "
-                            "Retrying once with protonation_mode='neutral' using the input SMILES."
+                            "Retrying once with protonation_mode='neutral'."
                         )
                         prep = prepare_ligand(
                             smiles=lig.smiles,
@@ -764,8 +726,8 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                         pv_sdf = str(pv_path)
 
                 n_poses = len(load_mols_from_sdf(dock.get("out_sdf", ""), sanitize=False)) if dock.get("out_sdf") else 0
-
                 prepared_smiles = prep.get("prot_smiles") or prep.get("prepared_smiles") or lig.smiles
+
                 pose_info = _select_pose_for_interaction(
                     pose_sdf=pv_sdf or dock.get("out_sdf", ""),
                     rec=rec,
@@ -860,7 +822,6 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         JOBS[job_id].update(status="failed", error=err_text, traceback=tb)
 
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # GPT-friendly compact job responses
 # ─────────────────────────────────────────────────────────────────────────────
@@ -871,12 +832,10 @@ def _restore_completed_job_from_disk(job_id: str) -> Optional[Dict[str, Any]]:
     meta_path = wdir / "metadata.json"
     if not meta_path.exists():
         return None
-
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception:
         return None
-
     zip_path = wdir / f"{job_id}_results.zip"
     job = {
         "job_id": job_id,
@@ -894,12 +853,6 @@ def _restore_completed_job_from_disk(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a small JSON response suitable for GPT Actions.
-
-    The full metadata can be large because it may include HETATM tables,
-    pKaNET logs, file paths, and pose-level information. GPT Actions can reject
-    very large responses, so this endpoint returns only essential fields.
-    """
     status = job.get("status", "unknown")
     out: Dict[str, Any] = {
         "job_id": job_id,
@@ -981,28 +934,21 @@ def health() -> Dict[str, Any]:
     }
 
 
-
 @app.get("/ping")
 def ping() -> Dict[str, Any]:
-    """GPT-friendly flat health check.
-
-    This endpoint avoids nested response objects so GPT Actions can parse
-    the result more reliably than /health.
-    """
+    """GPT-friendly flat health check."""
     ob_ok, ob_msg = check_obabel()
     vina_path, vina_msg = get_vina_binary()
-
     return {
         "ok": True,
         "api": "Anyone Can Dock API",
-        "version": "0.1.0",
+        "version": API_VERSION,
         "openbabel_available": bool(ob_ok),
         "openbabel_message": str(ob_msg),
         "vina_available": bool(vina_path),
         "vina_message": str(vina_msg),
         "auth_enabled": bool(API_KEY),
     }
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1124,12 +1070,7 @@ def compound_smiles(
         }
 
     except Exception as e:
-        return {
-            "found": False,
-            "query": q,
-            "source": "PubChem",
-            "error": str(e),
-        }
+        return {"found": False, "query": q, "source": "PubChem", "error": str(e)}
 
 
 @app.get("/pdb/search", dependencies=[Depends(require_api_key)])
@@ -1201,9 +1142,9 @@ def pdb_search(
                 pass
 
             try:
-                np = requests.get(f"https://data.rcsb.org/rest/v1/core/nonpolymer_entity/{pdb_id}/1", timeout=8)
-                if np.status_code == 200:
-                    nj = np.json()
+                np_r = requests.get(f"https://data.rcsb.org/rest/v1/core/nonpolymer_entity/{pdb_id}/1", timeout=8)
+                if np_r.status_code == 200:
+                    nj = np_r.json()
                     comp = (((nj.get("pdbx_entity_nonpoly", {}) or {}).get("comp_id", "")) or "").strip()
                     if comp:
                         deposited_ligands.append(comp)
@@ -1320,7 +1261,6 @@ def get_job_summary(job_id: str) -> Dict[str, Any]:
     return get_job(job_id)
 
 
-
 @app.get("/jobs/{job_id}/files/{filename}", dependencies=[Depends(require_api_key)])
 def get_job_file(job_id: str, filename: str) -> FileResponse:
     """Serve small generated job files such as selected 2D interaction SVG."""
@@ -1337,15 +1277,11 @@ def get_job_file(job_id: str, filename: str) -> FileResponse:
     else:
         media_type = "application/octet-stream"
 
-    # Browser preview mode:
-    # Do not pass filename=... because it can force download.
-    # Content-Disposition: inline asks the browser to display PNG/SVG directly.
     return FileResponse(
         str(file_path),
         media_type=media_type,
         headers={"Content-Disposition": f'inline; filename="{safe_filename}"'},
     )
-
 
 
 @app.get("/jobs/{job_id}/view/{filename}", dependencies=[Depends(require_api_key)])
@@ -1361,31 +1297,10 @@ def view_job_file(job_id: str, filename: str):
   <meta charset="utf-8">
   <title>{safe_filename}</title>
   <style>
-    body {{
-      margin: 0;
-      padding: 24px;
-      font-family: Arial, sans-serif;
-      background: #f7f7f7;
-    }}
-    .card {{
-      max-width: 1200px;
-      margin: auto;
-      background: white;
-      padding: 18px;
-      border-radius: 12px;
-      box-shadow: 0 2px 14px rgba(0,0,0,0.10);
-    }}
-    img {{
-      width: 100%;
-      height: auto;
-      display: block;
-      border: 1px solid #ddd;
-      background: white;
-    }}
-    a {{
-      color: #2563eb;
-      word-break: break-all;
-    }}
+    body {{ margin: 0; padding: 24px; font-family: Arial, sans-serif; background: #f7f7f7; }}
+    .card {{ max-width: 1200px; margin: auto; background: white; padding: 18px; border-radius: 12px; box-shadow: 0 2px 14px rgba(0,0,0,0.10); }}
+    img {{ width: 100%; height: auto; display: block; border: 1px solid #ddd; background: white; }}
+    a {{ color: #2563eb; word-break: break-all; }}
   </style>
 </head>
 <body>
