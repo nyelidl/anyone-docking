@@ -728,6 +728,17 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 n_poses = len(load_mols_from_sdf(dock.get("out_sdf", ""), sanitize=False)) if dock.get("out_sdf") else 0
                 prepared_smiles = prep.get("prot_smiles") or prep.get("prepared_smiles") or lig.smiles
 
+                raw_scores = dock.get("scores", [])
+                if calc_rmsd_heavy is not None and ligand_pdb_path and Path(ligand_pdb_path).exists():
+                    all_mols = load_mols_from_sdf(pv_sdf or dock.get("out_sdf", ""), sanitize=False)
+                    for i, score_row in enumerate(raw_scores):
+                        if i < len(all_mols):
+                            try:
+                                rmsd = calc_rmsd_heavy(all_mols[i], ligand_pdb_path)
+                                score_row["rmsd_vs_crystal"] = round(float(rmsd), 2) if rmsd is not None else None
+                            except Exception:
+                                score_row["rmsd_vs_crystal"] = None
+
                 pose_info = _select_pose_for_interaction(
                     pose_sdf=pv_sdf or dock.get("out_sdf", ""),
                     rec=rec,
