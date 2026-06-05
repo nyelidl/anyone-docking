@@ -2,16 +2,25 @@
 """
 api.py — FastAPI wrapper for Anyone Can Dock.
 
-Fixed:
+Revision 0.1.2 changes (marked inline with `# [REV]`):
+- Escape user-controlled filename/URL in the /view HTML page (reflected-XSS fix).
+- Guarantee unique output file stems when ligands share the same name.
+- Build the result zip BEFORE flipping job status to "completed" (no download race).
+- _make_zip no longer embeds itself or the transient status.json.
+- _compute_blind_box now also parses mmCIF (RCSB fallback can return .cif).
+- RMSD-over-poses loop guards against empty SDF and non-dict score rows.
+
+Earlier fixes (retained):
 - Defines ligand_pdb_path before RMSD calculation.
-- RMSD calculation is guarded so it only runs for true redocking cases.
-- Keeps compact persistent job status.
-- Keeps PoseView / 2D interaction output support.
+- RMSD calculation only runs for true redocking cases.
+- Compact persistent job status.
+- PoseView / 2D interaction output support.
 """
 
 from __future__ import annotations
 
 import csv
+import html
 import json
 import os
 import shutil
@@ -56,7 +65,7 @@ except Exception:
 
 
 API_TITLE = "Anyone Can Dock API"
-API_VERSION = "0.1.1"
+API_VERSION = "0.1.2"  # [REV] bumped
 BASE_WORKDIR = Path(os.getenv("ACD_API_WORKDIR", "/tmp/anyone_can_dock_api")).resolve()
 BASE_WORKDIR.mkdir(parents=True, exist_ok=True)
 
@@ -228,9 +237,16 @@ def _write_receptor_input(req: DockRequest | ScanRequest, wdir: Path) -> str:
 
 
 def _compute_blind_box(raw_pdb: str, padding: float = 4.0) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
-    from prody import parsePDB
+    # [REV] Support mmCIF as well as PDB; _write_receptor_input may fall back to a .cif download.
+    if str(raw_pdb).lower().endswith(".cif"):
+        from prody import parseMMCIF
 
-    atoms = parsePDB(raw_pdb)
+        atoms = parseMMCIF(raw_pdb)
+    else:
+        from prody import parsePDB
+
+        atoms = parsePDB(raw_pdb)
+
     if atoms is None:
         raise ValueError("Could not parse receptor for blind docking box")
 
@@ -265,9 +281,11 @@ def _csv_from_scores(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 
 def _make_zip(wdir: Path, zip_path: Path) -> None:
+    # [REV] Never include the zip itself or the transient status.json.
+    skip = {zip_path.resolve()}
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in wdir.rglob("*"):
-            if p.is_file() and p != zip_path:
+            if p.is_file() and p.resolve() not in skip and p.name != "status.json":
                 zf.write(p, arcname=p.relative_to(wdir))
 
 
@@ -592,9 +610,17 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
 
         results: List[Dict[str, Any]] = []
         all_logs: List[str] = []
+        used_names: set = set()  # [REV] guarantee unique output stems for duplicate ligand names
 
-        for lig in req.ligands:
-            name = _safe_name(lig.name, f"lig_{len(results) + 1}")
+        for idx, lig in enumerate(req.ligands, start=1):
+            # [REV] Disambiguate duplicate/blank names so output files never collide.
+            base_name = _safe_name(lig.name, f"lig_{idx}")
+            name = base_name
+            _dup = 2
+            while name in used_names:
+                name = f"{base_name}_{_dup}"
+                _dup += 1
+            used_names.add(name)
 
             row: Dict[str, Any] = {
                 "name": name,
@@ -697,21 +723,23 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 prepared_smiles = prep.get("prot_smiles") or prep.get("prepared_smiles") or lig.smiles
 
                 # ------------------------------------------------------------------
-                # FIXED BUG:
                 # ligand_pdb_path must be defined before use.
-                # Also only calculate RMSD for redocking cases.
+                # RMSD over poses is only computed for true redocking cases.
                 # ------------------------------------------------------------------
                 ligand_pdb_path = rec.get("ligand_pdb_path") or ""
 
                 raw_scores = dock.get("scores", [])
                 if (
-                    _is_redocking_case(name, rec, req)
+                    pose_sdf_for_reading  # [REV] skip if no pose SDF was produced
+                    and _is_redocking_case(name, rec, req)
                     and calc_rmsd_heavy is not None
                     and ligand_pdb_path
                     and Path(ligand_pdb_path).exists()
                 ):
                     all_mols = load_mols_from_sdf(pose_sdf_for_reading, sanitize=False)
                     for i, score_row in enumerate(raw_scores):
+                        if not isinstance(score_row, dict):
+                            continue  # [REV] guard: score rows may not be mutable dicts
                         if i < len(all_mols):
                             try:
                                 rmsd = calc_rmsd_heavy(all_mols[i], ligand_pdb_path)
@@ -794,10 +822,12 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         meta_path = wdir / "metadata.json"
         meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        _write_status_file(job_id, _ultra_compact_from_meta(job_id, meta))
-
+        # [REV] Build the result zip BEFORE flipping status to "completed",
+        # so a client that sees "completed" is guaranteed a downloadable zip.
         zip_path = wdir / f"{job_id}_results.zip"
         _make_zip(wdir, zip_path)
+
+        _write_status_file(job_id, _ultra_compact_from_meta(job_id, meta))
 
         JOBS[job_id].update(
             status="completed",
@@ -1206,6 +1236,9 @@ def scan_hetatm(req: ScanRequest) -> Dict[str, Any]:
         return {"success": True, "hetatm_table": table}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        # [REV] scan jobs are throwaway; don't leak temp dirs on the free instance.
+        shutil.rmtree(wdir, ignore_errors=True)
 
 
 @app.post("/dock", response_model=DockSubmitResponse, dependencies=[Depends(require_api_key)])
@@ -1302,11 +1335,15 @@ def view_job_file(job_id: str, filename: str):
     safe_filename = Path(filename).name
     file_url = _public_url(f"/jobs/{job_id}/files/{safe_filename}")
 
-    html = f"""<!doctype html>
+    # [REV] Escape user-controlled values before embedding in HTML (reflected-XSS fix).
+    esc_name = html.escape(safe_filename)
+    esc_url = html.escape(file_url, quote=True)
+
+    html_doc = f"""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{safe_filename}</title>
+  <title>{esc_name}</title>
   <style>
     body {{ margin: 0; padding: 24px; font-family: Arial, sans-serif; background: #f7f7f7; }}
     .card {{ max-width: 1200px; margin: auto; background: white; padding: 18px; border-radius: 12px; box-shadow: 0 2px 14px rgba(0,0,0,0.10); }}
@@ -1316,14 +1353,14 @@ def view_job_file(job_id: str, filename: str):
 </head>
 <body>
   <div class="card">
-    <h2>{safe_filename}</h2>
-    <p><a href="{file_url}" target="_blank">Open image directly</a></p>
-    <img src="{file_url}" alt="{safe_filename}">
+    <h2>{esc_name}</h2>
+    <p><a href="{esc_url}" target="_blank">Open image directly</a></p>
+    <img src="{esc_url}" alt="{esc_name}">
   </div>
 </body>
 </html>"""
 
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html_doc)
 
 
 @app.get("/jobs/{job_id}/download", dependencies=[Depends(require_api_key)])
