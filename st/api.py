@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import html
 import json
+from datetime import date
 import os
 import shutil
 import traceback
@@ -70,6 +71,22 @@ BASE_WORKDIR = Path(os.getenv("ACD_API_WORKDIR", "/tmp/anyone_can_dock_api")).re
 BASE_WORKDIR.mkdir(parents=True, exist_ok=True)
 
 API_KEY = os.getenv("DOCKGPT_API_KEY", "").strip()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Usage limits / cost guard
+# ─────────────────────────────────────────────────────────────────────────────
+# Set these in Render → Environment.
+# Use 0 to disable a specific limit.
+MAX_JOBS_PER_DAY = int(os.getenv("MAX_JOBS_PER_DAY", "20"))
+MAX_LIGANDS_PER_JOB = int(os.getenv("MAX_LIGANDS_PER_JOB", "3"))
+MAX_EXHAUSTIVENESS = int(os.getenv("MAX_EXHAUSTIVENESS", "8"))
+MAX_NUM_MODES = int(os.getenv("MAX_NUM_MODES", "10"))
+MAX_ENERGY_RANGE = int(os.getenv("MAX_ENERGY_RANGE", "3"))
+MAX_BOX_SIZE = float(os.getenv("MAX_BOX_SIZE", "30.0"))
+
+_DAILY_COUNTER_DATE = ""
+_DAILY_JOB_COUNT = 0
+
 JOBS: Dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(
@@ -967,6 +984,14 @@ def health() -> Dict[str, Any]:
         "openbabel": {"available": ob_ok, "message": ob_msg},
         "vina": {"available": bool(vina_path), "message": vina_msg},
         "auth_enabled": bool(API_KEY),
+        "limits": {
+            "max_jobs_per_day": MAX_JOBS_PER_DAY,
+            "max_ligands_per_job": MAX_LIGANDS_PER_JOB,
+            "max_exhaustiveness": MAX_EXHAUSTIVENESS,
+            "max_num_modes": MAX_NUM_MODES,
+            "max_energy_range": MAX_ENERGY_RANGE,
+            "max_box_size": MAX_BOX_SIZE,
+        },
     }
 
 
@@ -984,6 +1009,10 @@ def ping() -> Dict[str, Any]:
         "vina_available": bool(vina_path),
         "vina_message": str(vina_msg),
         "auth_enabled": bool(API_KEY),
+        "max_jobs_per_day": MAX_JOBS_PER_DAY,
+        "max_ligands_per_job": MAX_LIGANDS_PER_JOB,
+        "max_exhaustiveness": MAX_EXHAUSTIVENESS,
+        "max_num_modes": MAX_NUM_MODES,
     }
 
 
@@ -1241,8 +1270,69 @@ def scan_hetatm(req: ScanRequest) -> Dict[str, Any]:
         shutil.rmtree(wdir, ignore_errors=True)
 
 
+
+def _check_request_limits(req: DockRequest) -> None:
+    """Hard request limits to control Render cost and prevent accidental heavy jobs."""
+    if MAX_LIGANDS_PER_JOB > 0 and len(req.ligands) > MAX_LIGANDS_PER_JOB:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many ligands in one job. Max allowed = {MAX_LIGANDS_PER_JOB}.",
+        )
+
+    if MAX_EXHAUSTIVENESS > 0 and req.exhaustiveness > MAX_EXHAUSTIVENESS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"exhaustiveness too high. Max allowed = {MAX_EXHAUSTIVENESS}.",
+        )
+
+    if MAX_NUM_MODES > 0 and req.num_modes > MAX_NUM_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"num_modes too high. Max allowed = {MAX_NUM_MODES}.",
+        )
+
+    if MAX_ENERGY_RANGE > 0 and req.energy_range > MAX_ENERGY_RANGE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"energy_range too high. Max allowed = {MAX_ENERGY_RANGE}.",
+        )
+
+    if MAX_BOX_SIZE > 0:
+        sx, sy, sz = req.grid.size_tuple()
+        if sx > MAX_BOX_SIZE or sy > MAX_BOX_SIZE or sz > MAX_BOX_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Docking box too large. Max allowed dimension = {MAX_BOX_SIZE} Å.",
+            )
+
+
+def _consume_daily_job_quota() -> int:
+    """Simple in-memory daily quota. Resets on service restart and every UTC date."""
+    global _DAILY_COUNTER_DATE, _DAILY_JOB_COUNT
+
+    if MAX_JOBS_PER_DAY <= 0:
+        return -1
+
+    today = date.today().isoformat()
+    if _DAILY_COUNTER_DATE != today:
+        _DAILY_COUNTER_DATE = today
+        _DAILY_JOB_COUNT = 0
+
+    if _DAILY_JOB_COUNT >= MAX_JOBS_PER_DAY:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily docking job limit reached. Max jobs per day = {MAX_JOBS_PER_DAY}.",
+        )
+
+    _DAILY_JOB_COUNT += 1
+    return MAX_JOBS_PER_DAY - _DAILY_JOB_COUNT
+
+
 @app.post("/dock", response_model=DockSubmitResponse, dependencies=[Depends(require_api_key)])
 def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockSubmitResponse:
+    _check_request_limits(req)
+    remaining_today = _consume_daily_job_quota()
+
     job_id = f"dock_{uuid.uuid4().hex[:12]}"
 
     JOBS[job_id] = {
@@ -1253,10 +1343,15 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
         "error": None,
     }
 
+    quota_note = ""
+    if remaining_today >= 0:
+        quota_note = f" Remaining docking jobs today: {remaining_today}."
+
     message = (
         "Docking job submitted. Please come back in about 1–2 minutes "
         "and ask DockGPT to check the status of this job_id. "
         "Do not report docking scores until the job status is completed."
+        + quota_note
     )
 
     _write_status_file(job_id, {
