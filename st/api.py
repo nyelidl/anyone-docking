@@ -24,9 +24,11 @@ import html
 import json
 import os
 import shutil
+import threading
 import traceback
 import uuid
 import zipfile
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -65,12 +67,135 @@ except Exception:
 
 
 API_TITLE = "Anyone Can Dock API"
-API_VERSION = "0.1.2"  # [REV] bumped
+API_VERSION = "0.1.3"  # [REV] env-configurable resource limits
 BASE_WORKDIR = Path(os.getenv("ACD_API_WORKDIR", "/tmp/anyone_can_dock_api")).resolve()
 BASE_WORKDIR.mkdir(parents=True, exist_ok=True)
 
 API_KEY = os.getenv("DOCKGPT_API_KEY", "").strip()
 JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+# ----------------------------------------------------------------------------
+# [REV] Runtime resource limits, configurable via Render environment variables.
+# A value of 0 / empty disables that particular limit (backward compatible).
+# ----------------------------------------------------------------------------
+def _env_int(name: str, default: int = 0) -> int:
+    try:
+        return int(float(os.getenv(name, "") or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float = 0.0) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_JOBS_PER_DAY = _env_int("MAX_JOBS_PER_DAY", 0)
+MAX_LIGANDS_PER_JOB = _env_int("MAX_LIGANDS_PER_JOB", 0)
+MAX_EXHAUSTIVENESS = _env_int("MAX_EXHAUSTIVENESS", 0)
+MAX_NUM_MODES = _env_int("MAX_NUM_MODES", 0)
+MAX_ENERGY_RANGE = _env_int("MAX_ENERGY_RANGE", 0)
+MAX_BOX_SIZE = _env_float("MAX_BOX_SIZE", 0.0)
+
+_USAGE_LOCK = threading.Lock()
+_USAGE_FILE = BASE_WORKDIR / "usage_counter.json"
+
+
+def _active_limits() -> Dict[str, Any]:
+    return {
+        "max_jobs_per_day": MAX_JOBS_PER_DAY or None,
+        "max_ligands_per_job": MAX_LIGANDS_PER_JOB or None,
+        "max_exhaustiveness": MAX_EXHAUSTIVENESS or None,
+        "max_num_modes": MAX_NUM_MODES or None,
+        "max_energy_range": MAX_ENERGY_RANGE or None,
+        "max_box_size": MAX_BOX_SIZE or None,
+    }
+
+
+def _clamp_box_size(size_xyz: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    if MAX_BOX_SIZE and MAX_BOX_SIZE > 0:
+        return tuple(min(float(s), MAX_BOX_SIZE) for s in size_xyz)  # type: ignore[return-value]
+    return tuple(float(s) for s in size_xyz)  # type: ignore[return-value]
+
+
+def _daily_jobs_used() -> int:
+    today = date.today().isoformat()
+    if _USAGE_FILE.exists():
+        try:
+            loaded = json.loads(_USAGE_FILE.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and loaded.get("date") == today:
+                return int(loaded.get("count", 0))
+        except Exception:
+            pass
+    return 0
+
+
+def _reserve_daily_job_slot() -> None:
+    """Best-effort per-day submission quota.
+
+    The counter lives on disk under BASE_WORKDIR. On an ephemeral filesystem
+    (e.g. Render free /tmp) it resets on restart/redeploy, which is acceptable
+    as a soft guard. Raises HTTP 429 once the daily cap is reached.
+    """
+    if MAX_JOBS_PER_DAY <= 0:
+        return
+
+    today = date.today().isoformat()
+    with _USAGE_LOCK:
+        count = 0
+        if _USAGE_FILE.exists():
+            try:
+                loaded = json.loads(_USAGE_FILE.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and loaded.get("date") == today:
+                    count = int(loaded.get("count", 0))
+            except Exception:
+                count = 0
+
+        if count >= MAX_JOBS_PER_DAY:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Daily docking limit reached ({MAX_JOBS_PER_DAY} jobs/day). "
+                    "Please try again tomorrow."
+                ),
+            )
+
+        try:
+            _USAGE_FILE.write_text(
+                json.dumps({"date": today, "count": count + 1}), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+
+def _apply_runtime_caps(req: "DockRequest") -> List[str]:
+    """Clamp cost-driving knobs down to the configured maxima. Returns notes."""
+    notes: List[str] = []
+
+    if MAX_EXHAUSTIVENESS and req.exhaustiveness > MAX_EXHAUSTIVENESS:
+        notes.append(f"exhaustiveness {req.exhaustiveness}->{MAX_EXHAUSTIVENESS}")
+        req.exhaustiveness = MAX_EXHAUSTIVENESS
+
+    if MAX_NUM_MODES and req.num_modes > MAX_NUM_MODES:
+        notes.append(f"num_modes {req.num_modes}->{MAX_NUM_MODES}")
+        req.num_modes = MAX_NUM_MODES
+
+    if MAX_ENERGY_RANGE and req.energy_range > MAX_ENERGY_RANGE:
+        notes.append(f"energy_range {req.energy_range}->{MAX_ENERGY_RANGE}")
+        req.energy_range = MAX_ENERGY_RANGE
+
+    if MAX_BOX_SIZE and MAX_BOX_SIZE > 0:
+        for axis in ("size_x", "size_y", "size_z"):
+            val = float(getattr(req.grid, axis))
+            if val > MAX_BOX_SIZE:
+                notes.append(f"grid.{axis} {val}->{MAX_BOX_SIZE}")
+                setattr(req.grid, axis, MAX_BOX_SIZE)
+
+    return notes
+
 
 app = FastAPI(
     title=API_TITLE,
@@ -584,7 +709,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         elif center_mode == "blind":
             blind_center, blind_size = _compute_blind_box(raw_receptor)
             manual_xyz = blind_center
-            box_size = blind_size
+            box_size = _clamp_box_size(blind_size)  # [REV] respect MAX_BOX_SIZE on blind boxes too
             core_center_mode = "manual"
         else:
             core_center_mode = "auto"
@@ -964,9 +1089,12 @@ def health() -> Dict[str, Any]:
         "api": API_TITLE,
         "version": API_VERSION,
         "workdir": str(BASE_WORKDIR),
+        "public_base_url": os.getenv("PUBLIC_BASE_URL", ""),
         "openbabel": {"available": ob_ok, "message": ob_msg},
         "vina": {"available": bool(vina_path), "message": vina_msg},
         "auth_enabled": bool(API_KEY),
+        "limits": _active_limits(),
+        "daily_jobs_used": _daily_jobs_used(),
     }
 
 
@@ -1243,6 +1371,16 @@ def scan_hetatm(req: ScanRequest) -> Dict[str, Any]:
 
 @app.post("/dock", response_model=DockSubmitResponse, dependencies=[Depends(require_api_key)])
 def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockSubmitResponse:
+    # [REV] Enforce env-configured resource limits before queueing.
+    if MAX_LIGANDS_PER_JOB and len(req.ligands) > MAX_LIGANDS_PER_JOB:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many ligands ({len(req.ligands)}). Maximum is {MAX_LIGANDS_PER_JOB} per job.",
+        )
+
+    cap_notes = _apply_runtime_caps(req)
+    _reserve_daily_job_slot()  # raises 429 if the daily cap is reached
+
     job_id = f"dock_{uuid.uuid4().hex[:12]}"
 
     JOBS[job_id] = {
@@ -1258,6 +1396,8 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
         "and ask DockGPT to check the status of this job_id. "
         "Do not report docking scores until the job status is completed."
     )
+    if cap_notes:
+        message += " Note: some parameters were capped to instance limits (" + "; ".join(cap_notes) + ")."
 
     _write_status_file(job_id, {
         "job_id": job_id,
