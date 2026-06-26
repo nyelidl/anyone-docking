@@ -36,11 +36,10 @@ Ask GPT-4o to dock molecules using natural language.
 ### Anyone Can Dock in Claude
 Connect Claude to the ACD API as a custom MCP connector — ask Claude to dock molecules, search PDB targets, and interpret results directly in the chat.
 
-[![Add to Claude](https://img.shields.io/badge/Claude-Add_Anyone_Can_Dock-cc7b4b?logo=anthropic&logoColor=white)](https://claude.ai/settings/connectors)
+[![Add to Claude](https://img.shields.io/badge/Claude-Add_Anyone_Can_Dock-cc7b4b?logo=anthropic&logoColor=white)](https://claude.ai/customize/connectors)
 
 **Example prompts after connecting:**
 ```
-"baicalein จับกับ SARS-CoV-2 main protease ได้ไหม docking มาที"
 "dock quercetin into JAK2 and report binding affinity"
 "compare erlotinib vs gefitinib binding to EGFR (1M17)"
 ```
