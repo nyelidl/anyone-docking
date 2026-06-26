@@ -3,13 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Anyone Docking" />
   <meta name="theme-color" content="#ffffff" />
-
   <title>Anyone can dock</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-A.png" />
@@ -209,9 +207,19 @@
     }
     .fallback-btn:hover { opacity: 0.9; }
 
-    .gpt-btn {
-      display: inline-block;
+    /* ── AI buttons group ── */
+    .ai-btns {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.6rem;
       margin-top: 0.75rem;
+    }
+
+    .gpt-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
       padding: 0.6rem 1.6rem;
       background: linear-gradient(90deg, #10a37f, #1a7f64);
       color: #fff;
@@ -226,6 +234,25 @@
       text-decoration: none;
     }
     .gpt-btn:hover { opacity: 0.9; }
+
+    .claude-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.6rem 1.6rem;
+      background: linear-gradient(90deg, #cc7b4b, #b85c2e);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      letter-spacing: 0.01em;
+      -webkit-tap-highlight-color: transparent;
+      text-decoration: none;
+    }
+    .claude-btn:hover { opacity: 0.9; }
 
     /* ════════════════════════════════════════════
        iOS INSTALL HINT BANNER
@@ -252,201 +279,62 @@
       transition: transform 0.4s cubic-bezier(.32,1.2,.6,1), opacity 0.35s;
       -webkit-tap-highlight-color: transparent;
     }
-    .install-hint.visible {
-      transform: translateY(0);
-      opacity: 1;
-    }
-    .install-hint .hint-icon {
-      font-size: 1.5rem;
-      line-height: 1;
-      flex-shrink: 0;
-      margin-top: 1px;
-    }
-    .install-hint .hint-text strong {
-      display: block;
-      font-size: 0.88rem;
-      font-weight: 700;
-      margin-bottom: 0.2rem;
-      color: #222;
-    }
-    .install-hint .hint-text span {
-      font-size: 0.75rem;
-      color: #888;
-      line-height: 1.45;
-    }
+    .install-hint.visible { transform: translateY(0); opacity: 1; }
+    .install-hint .hint-icon { font-size: 1.5rem; line-height: 1; flex-shrink: 0; margin-top: 1px; }
+    .install-hint .hint-text strong { display: block; font-size: 0.88rem; font-weight: 700; margin-bottom: 0.2rem; color: #222; }
+    .install-hint .hint-text span { font-size: 0.75rem; color: #888; line-height: 1.45; }
 
-    /* ════════════════════════════════════════════
-       SHEET OVERLAY
-    ════════════════════════════════════════════ */
     .sheet-overlay {
-      position: fixed;
-      inset: 0;
+      position: fixed; inset: 0;
       background: rgba(0,0,0,0.35);
       backdrop-filter: blur(2px);
       -webkit-backdrop-filter: blur(2px);
-      z-index: 20;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.3s;
+      z-index: 20; opacity: 0; pointer-events: none; transition: opacity 0.3s;
     }
-    .sheet-overlay.open {
-      opacity: 1;
-      pointer-events: all;
-    }
+    .sheet-overlay.open { opacity: 1; pointer-events: all; }
 
-    /* ════════════════════════════════════════════
-       BOTTOM SHEET
-    ════════════════════════════════════════════ */
     .sheet {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: #fff;
-      border-radius: 20px 20px 0 0;
+      position: fixed; left: 0; right: 0; bottom: 0;
+      background: #fff; border-radius: 20px 20px 0 0;
       padding: 0 1.25rem calc(1.75rem + env(safe-area-inset-bottom));
-      z-index: 30;
-      transform: translateY(100%);
+      z-index: 30; transform: translateY(100%);
       transition: transform 0.4s cubic-bezier(.32,1.2,.6,1);
       box-shadow: 0 -4px 32px rgba(0,0,0,0.10);
     }
     .sheet.open { transform: translateY(0); }
-
-    .sheet-handle {
-      width: 36px;
-      height: 4px;
-      background: #e0e0e0;
-      border-radius: 2px;
-      margin: 0.8rem auto 1.25rem;
-    }
-
-    .sheet-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 1.25rem;
-    }
-    .sheet-header h2 {
-      font-size: 1.05rem;
-      font-weight: 700;
-      color: #222;
-    }
-    .sheet-close {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      background: #f0f0f0;
-      border: none;
-      color: #555;
-      font-size: 0.85rem;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      -webkit-tap-highlight-color: transparent;
-    }
+    .sheet-handle { width: 36px; height: 4px; background: #e0e0e0; border-radius: 2px; margin: 0.8rem auto 1.25rem; }
+    .sheet-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
+    .sheet-header h2 { font-size: 1.05rem; font-weight: 700; color: #222; }
+    .sheet-close { width: 28px; height: 28px; border-radius: 50%; background: #f0f0f0; border: none; color: #555; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; justify-content: center; -webkit-tap-highlight-color: transparent; }
     .sheet-close:active { background: #e0e0e0; }
 
-    .step {
-      display: flex;
-      align-items: center;
-      gap: 0.9rem;
-      padding: 0.85rem 0;
-      border-bottom: 1px solid #f0f0f0;
-    }
+    .step { display: flex; align-items: center; gap: 0.9rem; padding: 0.85rem 0; border-bottom: 1px solid #f0f0f0; }
     .step:last-child { border-bottom: none; }
-
-    .step-num {
-      font-size: 1.5rem;
-      font-weight: 800;
-      color: #e8e8e8;
-      min-width: 24px;
-      line-height: 1;
-    }
-
-    .step-icon {
-      width: 44px;
-      height: 44px;
-      border-radius: 50%;
-      background: #f5f5f5;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-    .step-icon svg {
-      width: 19px;
-      height: 19px;
-      stroke: #333;
-      fill: none;
-      stroke-width: 2;
-      stroke-linecap: round;
-      stroke-linejoin: round;
-    }
+    .step-num { font-size: 1.5rem; font-weight: 800; color: #e8e8e8; min-width: 24px; line-height: 1; }
+    .step-icon { width: 44px; height: 44px; border-radius: 50%; background: #f5f5f5; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .step-icon svg { width: 19px; height: 19px; stroke: #333; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .step-icon.add-btn { background: #111; }
-    .step-icon.add-btn span {
-      font-size: 0.68rem;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: 0.03em;
-    }
-
-    .step-label {
-      font-size: 0.85rem;
-      color: #333;
-      line-height: 1.45;
-      flex: 1;
-      text-align: left;
-    }
+    .step-icon.add-btn span { font-size: 0.68rem; font-weight: 700; color: #fff; letter-spacing: 0.03em; }
+    .step-label { font-size: 0.85rem; color: #333; line-height: 1.45; flex: 1; text-align: left; }
     .step-label strong { font-weight: 600; }
 
-    /* ════════════════════════════════════════════
-       ANDROID INSTALL BANNER
-    ════════════════════════════════════════════ */
     #android-banner {
-      display: none;
-      position: fixed;
+      display: none; position: fixed;
       bottom: calc(0.85rem + env(safe-area-inset-bottom));
-      left: 0.85rem;
-      right: 0.85rem;
-      background: #fff;
-      border: 1px solid rgba(0,0,0,0.08);
-      border-radius: 14px;
-      padding: 0.85rem 1rem;
-      font-size: 0.85rem;
-      color: #333;
-      align-items: center;
-      gap: 0.75rem;
-      z-index: 10;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.10);
+      left: 0.85rem; right: 0.85rem;
+      background: #fff; border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 14px; padding: 0.85rem 1rem;
+      font-size: 0.85rem; color: #333;
+      align-items: center; gap: 0.75rem;
+      z-index: 10; box-shadow: 0 4px 20px rgba(0,0,0,0.10);
     }
     #android-banner.visible { display: flex; }
-    #android-banner .inst-btn {
-      background: linear-gradient(90deg, var(--red), var(--purple));
-      color: #fff;
-      border: none;
-      border-radius: 999px;
-      padding: 0.4rem 0.9rem;
-      font-weight: 600;
-      font-size: 0.82rem;
-      cursor: pointer;
-      white-space: nowrap;
-      -webkit-tap-highlight-color: transparent;
-    }
-    #android-banner .dismiss {
-      background: none;
-      border: none;
-      color: #aaa;
-      padding: 0.4rem;
-      font-size: 1.1rem;
-      cursor: pointer;
-      -webkit-tap-highlight-color: transparent;
-    }
+    #android-banner .inst-btn { background: linear-gradient(90deg, var(--red), var(--purple)); color: #fff; border: none; border-radius: 999px; padding: 0.4rem 0.9rem; font-weight: 600; font-size: 0.82rem; cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+    #android-banner .dismiss { background: none; border: none; color: #aaa; padding: 0.4rem; font-size: 1.1rem; cursor: pointer; -webkit-tap-highlight-color: transparent; }
   </style>
 </head>
 <body>
 
-  <!-- ── Original card ── -->
   <div class="card">
     <img class="logo"
       src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg"
@@ -464,14 +352,21 @@
     <button class="fallback-btn" id="fallbackBtn" onclick="redirectToFallback()">
       Open app manually
     </button>
-    <a class="gpt-btn"
-       href="https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt"
-       target="_blank" rel="noopener noreferrer">
-      Anyone Can Dock GPT
-    </a>
+
+    <div class="ai-btns">
+      <a class="gpt-btn"
+         href="https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt"
+         target="_blank" rel="noopener noreferrer">
+        Anyone Can Dock GPT
+      </a>
+      <a class="claude-btn"
+         href="https://claude.ai/add-mcp?url=https://anyone-can-dock-mcp.anyonecandock.workers.dev&name=Anyone+Can+Dock+in+Claude"
+         target="_blank" rel="noopener noreferrer">
+        Anyone Can Dock in Claude
+      </a>
+    </div>
   </div>
 
-  <!-- ── iOS install hint banner ── -->
   <div class="install-hint" id="ios-hint" role="button" tabindex="0" aria-label="Install to home screen">
     <div class="hint-icon">📲</div>
     <div class="hint-text">
@@ -480,17 +375,14 @@
     </div>
   </div>
 
-  <!-- ── Sheet overlay ── -->
   <div class="sheet-overlay" id="sheet-overlay"></div>
 
-  <!-- ── iOS install bottom sheet ── -->
   <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="How to install on iOS">
     <div class="sheet-handle"></div>
     <div class="sheet-header">
       <h2>Install on iOS</h2>
       <button class="sheet-close" id="sheet-close" aria-label="Close">✕</button>
     </div>
-
     <div class="step">
       <span class="step-num">1</span>
       <div class="step-icon">
@@ -498,7 +390,6 @@
       </div>
       <p class="step-label">Tap the <strong>Share</strong> button (box with arrow) at the bottom of Safari</p>
     </div>
-
     <div class="step">
       <span class="step-num">2</span>
       <div class="step-icon">
@@ -506,17 +397,13 @@
       </div>
       <p class="step-label">Select <strong>"Add to Home Screen"</strong> from the menu</p>
     </div>
-
     <div class="step">
       <span class="step-num">3</span>
-      <div class="step-icon add-btn">
-        <span>Add</span>
-      </div>
+      <div class="step-icon add-btn"><span>Add</span></div>
       <p class="step-label">Tap <strong>"Add"</strong> in the top right, then open the app from your Home Screen</p>
     </div>
   </div>
 
-  <!-- ── Android install banner ── -->
   <div id="android-banner">
     <span style="flex:1;font-size:0.82rem;color:#555">Add to home screen for the best experience</span>
     <button class="inst-btn" id="install-btn">Install</button>
@@ -524,7 +411,6 @@
   </div>
 
   <script>
-    /* ── Server list ── */
     const APPS = [
       "https://anyone-docking-01.streamlit.app/",
       "https://anyone-docking-02.streamlit.app/",
@@ -552,22 +438,16 @@
       "https://anyone-docking-24.streamlit.app/",
     ];
 
-    const TIMEOUT_MS   = 8000;
-    const MIN_DELAY_MS = 0;
-    const FALLBACK_MS  = 10000;
-
-    const n          = APPS.length;
-    const results    = new Array(n).fill(null);
-    let   redirected = false;
-    const startTime  = Date.now();
+    const TIMEOUT_MS = 8000, MIN_DELAY_MS = 0, FALLBACK_MS = 10000;
+    const n = APPS.length, results = new Array(n).fill(null);
+    let redirected = false;
+    const startTime = Date.now();
 
     const grid = document.getElementById("serverGrid");
     const dots = APPS.map((_, i) => {
       const d = document.createElement("div");
-      d.className = "server-dot";
-      d.title = `Server ${i + 1}`;
-      grid.appendChild(d);
-      return d;
+      d.className = "server-dot"; d.title = `Server ${i + 1}`;
+      grid.appendChild(d); return d;
     });
 
     function setStatus(msg)   { document.getElementById("status").textContent = msg; }
@@ -588,20 +468,15 @@
       redirected = true;
       dots[idx].className = "server-dot selected";
       setProgress(100);
-
       let count = 3;
       const cdEl = document.getElementById("countdown");
-
       function tick() {
         if (count > 0) {
           setStatus(`Server ${idx + 1} is ready — opening in…`);
-          // Re-create the span to re-trigger the popIn animation each tick
           cdEl.innerHTML = `<span class="countdown-num">${count}</span>`;
-          count--;
-          setTimeout(tick, 1000);
+          count--; setTimeout(tick, 1000);
         } else {
-          setStatus("🚀 Launching…");
-          cdEl.textContent = "";
+          setStatus("🚀 Launching…"); cdEl.textContent = "";
           setHint(`Server ${idx + 1} of ${n}`);
           setTimeout(() => { window.location.href = APPS[idx]; }, 300);
         }
@@ -622,12 +497,10 @@
 
     function tryRedirect() {
       if (redirected) return;
-      const done   = results.filter(r => r !== null).length;
+      const done = results.filter(r => r !== null).length;
       const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
       const elapsed = Date.now() - startTime;
-      if ((done === n || elapsed >= MIN_DELAY_MS) && online.length > 0) {
-        doRedirect(getNextServer(online));
-      }
+      if ((done === n || elapsed >= MIN_DELAY_MS) && online.length > 0) doRedirect(getNextServer(online));
     }
 
     APPS.forEach((url, i) => {
@@ -641,24 +514,21 @@
           const ms = Date.now() - t0;
           results[i] = { ok: true, ms };
           dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
-          checkProgress();
-          tryRedirect();
+          checkProgress(); tryRedirect();
         })
         .catch(() => {
           clearTimeout(timer);
           results[i] = { ok: false, ms: null };
           dots[i].className = "server-dot offline";
-          checkProgress();
-          tryRedirect();
+          checkProgress(); tryRedirect();
         });
     });
 
     setTimeout(() => {
       if (!redirected) {
         const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
-        if (online.length > 0) {
-          doRedirect(getNextServer(online));
-        } else {
+        if (online.length > 0) { doRedirect(getNextServer(online)); }
+        else {
           setStatus("All servers are starting up…");
           document.getElementById("fallbackBtn").style.display = "inline-block";
           doRedirect(Math.floor(Math.random() * n));
@@ -666,30 +536,17 @@
       }
     }, FALLBACK_MS);
 
-    /* ── iOS install sheet ── */
-    const isIOS        = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    const isStandalone = window.navigator.standalone === true
-                      || window.matchMedia('(display-mode: standalone)').matches;
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+    if (isIOS && !isStandalone) setTimeout(() => document.getElementById('ios-hint').classList.add('visible'), 1200);
 
-    if (isIOS && !isStandalone) {
-      setTimeout(() => document.getElementById('ios-hint').classList.add('visible'), 1200);
-    }
-
-    const hint     = document.getElementById('ios-hint');
-    const sheet    = document.getElementById('sheet');
-    const overlay  = document.getElementById('sheet-overlay');
+    const hint = document.getElementById('ios-hint');
+    const sheet = document.getElementById('sheet');
+    const overlay = document.getElementById('sheet-overlay');
     const closeBtn = document.getElementById('sheet-close');
 
-    function openSheet() {
-      sheet.classList.add('open');
-      overlay.classList.add('open');
-      hint.classList.remove('visible');
-    }
-    function closeSheet() {
-      sheet.classList.remove('open');
-      overlay.classList.remove('open');
-      setTimeout(() => hint.classList.add('visible'), 500);
-    }
+    function openSheet() { sheet.classList.add('open'); overlay.classList.add('open'); hint.classList.remove('visible'); }
+    function closeSheet() { sheet.classList.remove('open'); overlay.classList.remove('open'); setTimeout(() => hint.classList.add('visible'), 500); }
 
     hint.addEventListener('click', openSheet);
     hint.addEventListener('keydown', e => { if (e.key === 'Enter') openSheet(); });
@@ -698,27 +555,22 @@
 
     let startY = 0;
     sheet.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
-    sheet.addEventListener('touchend',   e => { if (e.changedTouches[0].clientY - startY > 60) closeSheet(); }, { passive: true });
+    sheet.addEventListener('touchend', e => { if (e.changedTouches[0].clientY - startY > 60) closeSheet(); }, { passive: true });
 
-    /* ── Android install prompt ── */
     let deferredPrompt;
     window.addEventListener('beforeinstallprompt', e => {
-      e.preventDefault();
-      deferredPrompt = e;
+      e.preventDefault(); deferredPrompt = e;
       if (!isStandalone) document.getElementById('android-banner').classList.add('visible');
     });
     document.getElementById('install-btn').addEventListener('click', async () => {
       if (!deferredPrompt) return;
-      deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
-      deferredPrompt = null;
-      document.getElementById('android-banner').classList.remove('visible');
+      deferredPrompt.prompt(); await deferredPrompt.userChoice;
+      deferredPrompt = null; document.getElementById('android-banner').classList.remove('visible');
     });
     document.getElementById('dismiss-btn').addEventListener('click', () => {
       document.getElementById('android-banner').classList.remove('visible');
     });
 
-    /* ── Service Worker ── */
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
   </script>
 </body>
