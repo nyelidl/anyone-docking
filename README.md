@@ -50,7 +50,6 @@ Connect Claude to the ACD API as a custom MCP connector — ask Claude to dock m
 
 **Example prompts after connecting:**
 ```
-"baicalein จับกับ SARS-CoV-2 main protease ได้ไหม docking มาที"
 "dock quercetin into JAK2 and report binding affinity"
 "compare erlotinib vs gefitinib binding to EGFR (1M17)"
 ```
