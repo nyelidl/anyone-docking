@@ -1,4 +1,4 @@
-# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> nyone can dock, everyone can do!
+# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> Anyone can dock, everyone can do!
 
 **Anyone docking: Browser-based molecular docking — no installation required.**
 
@@ -36,7 +36,7 @@ Ask GPT-4o to dock molecules using natural language.
 ### Anyone Can Dock in Claude
 Connect Claude to the ACD API as a custom MCP connector — ask Claude to dock molecules, search PDB targets, and interpret results directly in the chat.
 
-[![Add to Claude](https://img.shields.io/badge/Claude-Add_Anyone_Can_Dock-cc7b4b?logo=anthropic&logoColor=white)](https://claude.ai/add-mcp?url=https://anyone-can-dock-mcp.anyonecandock.workers.dev&name=Anyone+Can+Dock+in+Claude)
+[![Add to Claude](https://img.shields.io/badge/Claude-Add_Anyone_Can_Dock-cc7b4b?logo=anthropic&logoColor=white)](https://claude.ai/settings/connectors)
 
 **Example prompts after connecting:**
 ```
