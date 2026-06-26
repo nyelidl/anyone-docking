@@ -359,11 +359,24 @@
          target="_blank" rel="noopener noreferrer">
         Anyone Can Dock GPT
       </a>
-      <a class="claude-btn"
-         href="https://claude.ai/settings/connectors"
-         target="_blank" rel="noopener noreferrer">
+      <button class="claude-btn" onclick="toggleClaudeSteps()" type="button">
         Anyone Can Dock in Claude
+      </button>
+    </div>
+
+    <div id="claude-steps" style="display:none; margin-top:1rem; background:#fdf6f2; border:1px solid #e8c9b8; border-radius:14px; padding:1rem 1.2rem; text-align:left; max-width:320px; font-size:0.82rem; color:#444; line-height:1.6;">
+      <p style="font-weight:700; color:#b85c2e; margin-bottom:0.6rem;">Add to Claude (3 steps)</p>
+      <p style="margin-bottom:0.5rem;"><strong>1.</strong> Copy the MCP server URL:</p>
+      <div style="display:flex; align-items:center; gap:6px; background:#fff; border:1px solid #ddd; border-radius:8px; padding:0.4rem 0.7rem; margin-bottom:0.7rem;">
+        <code style="flex:1; font-size:0.75rem; color:#555; word-break:break-all;">https://anyone-can-dock-mcp.anyonecandock.workers.dev</code>
+        <button onclick="copyMCPUrl()" style="background:none; border:none; cursor:pointer; color:#b85c2e; font-size:0.75rem; font-weight:600; white-space:nowrap;" id="copy-btn">Copy</button>
+      </div>
+      <p style="margin-bottom:0.5rem;"><strong>2.</strong> Click below to open Claude Connectors settings:</p>
+      <a href="https://claude.ai/customize/connectors" target="_blank" rel="noopener noreferrer"
+         style="display:inline-block; background:linear-gradient(90deg,#cc7b4b,#b85c2e); color:#fff; border-radius:999px; padding:0.4rem 1rem; font-size:0.8rem; font-weight:500; text-decoration:none; margin-bottom:0.7rem;">
+        Open Claude Connectors ↗
       </a>
+      <p><strong>3.</strong> Click <strong>"Add custom connector"</strong>, paste the URL into <em>Remote MCP server URL</em>, then click <strong>Add</strong>.</p>
     </div>
   </div>
 
@@ -572,6 +585,19 @@
     });
 
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+
+    function toggleClaudeSteps() {
+      const el = document.getElementById('claude-steps');
+      el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function copyMCPUrl() {
+      navigator.clipboard.writeText('https://anyone-can-dock-mcp.anyonecandock.workers.dev').then(() => {
+        const btn = document.getElementById('copy-btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+      });
+    }
   </script>
 </body>
 </html>
