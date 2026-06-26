@@ -1,4 +1,4 @@
-# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> Anyone can dock, everyone can do!
+# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> nyone can dock, everyone can do!
 
 **Anyone docking: Browser-based molecular docking — no installation required.**
 
@@ -22,7 +22,32 @@
 | 📓 **Colab notebook** | Batch docking, scripting | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1e23e0145ja6zJi0HibA6_JBO7p78Xvyw?usp=sharing) |
 | ⌨️ **CLI (`acd`)** | Automation, pipelines, scripts | `pip install anyonecandock` then `acd dock ...` |
 | 🐍 **Python API** | Programmatic integration | `from anyonecandock import core` |
-| 🤖 **GPT / Claude plugin** | Natural-language docking | Ask your AI assistant with your structure [Open in browser →](https://nyelidl.github.io/anyone-docking/) |
+| 🤖 **GPT / Claude plugin** | Natural-language docking | See below ↓ |
+
+---
+
+## 🤖 AI Interfaces
+
+### Anyone Can Dock GPT
+Ask GPT-4o to dock molecules using natural language.
+
+[![ChatGPT](https://img.shields.io/badge/ChatGPT-Anyone_Can_Dock_GPT-10a37f?logo=openai&logoColor=white)](https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt)
+
+### Anyone Can Dock in Claude
+Connect Claude to the ACD API as a custom MCP connector — ask Claude to dock molecules, search PDB targets, and interpret results directly in the chat.
+
+[![Add to Claude](https://img.shields.io/badge/Claude-Add_Anyone_Can_Dock-cc7b4b?logo=anthropic&logoColor=white)](https://claude.ai/add-mcp?url=https://anyone-can-dock-mcp.anyonecandock.workers.dev&name=Anyone+Can+Dock+in+Claude)
+
+**Example prompts after connecting:**
+```
+"baicalein จับกับ SARS-CoV-2 main protease ได้ไหม docking มาที"
+"dock quercetin into JAK2 and report binding affinity"
+"compare erlotinib vs gefitinib binding to EGFR (1M17)"
+```
+
+**Powered by:** AutoDock Vina 1.2.7 · pKaNET protonation at pH 7.4 · MCP Streamable HTTP
+
+> MCP server URL: `https://anyone-can-dock-mcp.anyonecandock.workers.dev`
 
 ---
 
