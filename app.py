@@ -37,7 +37,6 @@ from core import (
     is_cif_file,
     convert_cif_to_pdb,
     scan_hetatm_residues,
-    get_cocrystal_smiles,
 )
 
 try:
@@ -73,7 +72,7 @@ except ImportError:
         "GOL", "PEG", "EDO", "MPD", "PGE", "PG4",
         "SO4", "PO4", "SUL", "PHO",
         "IHP", "TTP", "CTP", "UTP",
-        "COA", "SAM", "SAH",
+       #"COA", "SAM", "SAH",
         "EPE", "MES", "TRS", "ACT", "ACY",
         "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
     }
@@ -3721,7 +3720,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         )
         if src == "Download from RCSB":
             with st.expander("🔎 Search protein / target in RCSB", expanded=False):
-                _qs_col, _qb_col = st.columns([3.5, 1])
+                _qs_col, _qb_col = st.columns([5, 1])
                 with _qs_col:
                     _rcsb_query = st.text_input(
                         "Search protein / keyword",
@@ -4287,7 +4286,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 pfx + "cocrystal_ligand_id": result["cocrystal_ligand_id"],
                 pfx + "receptor_done":       True,
                 pfx + "receptor_log":        "\n".join(_full_log),
-                pfx + "_raw_pdb_for_redock": raw_path,
             })
             clear_poseview_cache()
         else:
@@ -4982,50 +4980,18 @@ with tab_basic:
             ),
         )
         if do_redock:
-            _cc_id_ui   = st.session_state.get("cocrystal_ligand_id", "")
-            _lig_pdb_ui = st.session_state.get("ligand_pdb_path", "")
-            _has_cc_ui  = bool(_cc_id_ui and _lig_pdb_ui and os.path.exists(_lig_pdb_ui))
-
-            if _has_cc_ui:
-                _rd_src_mode = st.radio(
-                    "Reference SMILES source",
-                    ["🔍 Auto-detect from structure", "✏️ Enter SMILES manually"],
-                    horizontal=True,
-                    key="redock_smiles_mode",
-                    help=(
-                        "How to obtain the SMILES for the co-crystal reference ligand.\n\n"
-                        "🔍 Auto-detect (recommended): queries RCSB Chemical Component\n"
-                        "   Dictionary → CIF _chem_comp.pdbx_smiles → 3D conversion.\n"
-                        "✏️ Manual: paste a SMILES string directly."
-                    ),
-                )
-                if _rd_src_mode.startswith("🔍"):
-                    _resname_ui = _cc_id_ui.split("_")[0]
-                    st.caption(
-                        f"Will auto-fetch SMILES for **{_cc_id_ui}** "
-                        f"(`{_resname_ui}`) at docking time — "
-                        "RCSB CCD → CIF _chem_comp.pdbx_smiles → 3D conversion."
-                    )
-                else:
-                    st.text_input(
-                        "Co-crystal SMILES [name]",
-                        value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
-                        key="redock_smiles",
-                        help="SMILES and optional name. Format: SMILES [name]",
-                    )
-            else:
-                st.text_input(
-                    "Co-crystal SMILES [name]",
-                    value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
-                    key="redock_smiles",
-                    help=(
-                        "SMILES and name for the redocking reference ligand.\n"
-                        "Format: SMILES LigandName (space-separated).\n\n"
-                        "📖 Name labels output files and score plots.\n"
-                        "⚙️ Copy SMILES from PubChem or ChEMBL.\n"
-                        "⚠️ SMILES must exactly match the PDB co-crystal ligand chemistry."
-                    ),
-                )
+            st.text_input(
+                "Co-crystal SMILES [name]",
+                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
+                key="redock_smiles",
+                help=(
+                    "SMILES and name for the redocking reference ligand.\n"
+                    "Format: SMILES LigandName (space-separated).\n\n"
+                    "📖 Name labels output files and score plots.\n"
+                    "⚙️ Copy SMILES from PubChem or ChEMBL.\n"
+                    "⚠️ SMILES must exactly match the PDB co-crystal ligand chemistry."
+                ),
+            )
             st.caption("Score shown as dashed reference line in plot.")
 
     if not st.session_state.ligand_done:
@@ -5040,52 +5006,10 @@ with tab_basic:
         redock_score  = None
         redock_result = None
         if st.session_state.get("do_redock"):
-            _cc_id_ex   = st.session_state.get("cocrystal_ligand_id", "")
-            _lig_pdb_ex = st.session_state.get("ligand_pdb_path", "")
-            _raw_pdb_ex = st.session_state.get("_raw_pdb_for_redock", "")
-            _rd_mode_ex = st.session_state.get("redock_smiles_mode", "✏️ Enter SMILES manually")
-            _has_cc_ex  = bool(_cc_id_ex and _lig_pdb_ex and os.path.exists(_lig_pdb_ex))
-
-            if _has_cc_ex and _rd_mode_ex.startswith("🔍"):
-                # ── Auto-detect SMILES from co-crystal ligand ─────────────
-                with st.spinner(f"Fetching SMILES for {_cc_id_ex}…"):
-                    try:
-                        rd_smi, _smi_src, _smi_warn = get_cocrystal_smiles(
-                            ligand_pdb_path=_lig_pdb_ex,
-                            cocrystal_ligand_id=_cc_id_ex,
-                            raw_pdb=_raw_pdb_ex,
-                        )
-                        rd_nm = _cc_id_ex.split("_")[0] if "_" in _cc_id_ex else _cc_id_ex
-                    except Exception as _ge:
-                        rd_smi = ""; _smi_src = ""; _smi_warn = str(_ge); rd_nm = "redock"
-
-                if not rd_smi:
-                    st.warning(
-                        f"⚠ Auto-detect failed ({_smi_warn}). "
-                        "Falling back to manual SMILES — add it in the redocking field."
-                    )
-                    raw_rd = st.session_state.get("redock_smiles", "").strip()
-                    pts    = raw_rd.split(None, 1)
-                    rd_smi = pts[0]; rd_nm = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
-                else:
-                    _src_labels = {
-                        "rcsb_ccd":      "✓ RCSB CCD (ideal / curated)",
-                        "cif_block":     "✓ CIF _chem_comp.pdbx_smiles",
-                        "3d_conversion": "⚠ 3D coordinate conversion — verify carefully",
-                    }
-                    _src_disp = _src_labels.get(_smi_src, _smi_src)
-                    st.info(
-                        f"Co-crystal SMILES ({_src_disp}):\n"
-                        f"`{rd_smi[:80]}{'…' if len(rd_smi) > 80 else ''}`"
-                    )
-                    if _smi_warn:
-                        st.warning(_smi_warn)
-            else:
-                raw_rd = st.session_state.get("redock_smiles", "").strip()
-                pts    = raw_rd.split(None, 1)
-                rd_smi = pts[0]
-                rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
-
+            raw_rd = st.session_state.get("redock_smiles", "").strip()
+            pts    = raw_rd.split(None, 1)
+            rd_smi = pts[0]
+            rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             ph_val = st.session_state.get("ph_in", 7.4)
             _rd_prot_mode = st.session_state.get("prot_mode", "🧪 pKaNET Cloud+")
             _rd_prot_mode = {
@@ -5503,7 +5427,7 @@ with tab_basic:
                 )
 
             try:
-                vbp = py3Dmol.view(width="100%", height=640)
+                vbp = py3Dmol.view(width="100%", height=440)
                 vbp.setBackgroundColor(_viewer_bg())
                 mbp = 0
                 if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
@@ -5724,39 +5648,11 @@ with tab_batch:
             ),
         )
         if b_do_redock:
-            _b_cc_id_ui   = st.session_state.get("b_cocrystal_ligand_id", "")
-            _b_lig_pdb_ui = st.session_state.get("b_ligand_pdb_path", "")
-            _b_has_cc_ui  = bool(_b_cc_id_ui and _b_lig_pdb_ui and os.path.exists(_b_lig_pdb_ui))
-
-            if _b_has_cc_ui:
-                _b_rd_src_mode = st.radio(
-                    "Reference SMILES source",
-                    ["🔍 Auto-detect from structure", "✏️ Enter SMILES manually"],
-                    horizontal=True,
-                    key="b_redock_smiles_mode",
-                    help=(
-                        "🔍 Auto-detect: RCSB CCD → CIF _chem_comp → 3D conversion.\n"
-                        "✏️ Manual: paste a SMILES string directly."
-                    ),
-                )
-                if _b_rd_src_mode.startswith("🔍"):
-                    _b_resname_ui = _b_cc_id_ui.split("_")[0]
-                    st.caption(
-                        f"Will auto-fetch SMILES for **{_b_cc_id_ui}** "
-                        f"(`{_b_resname_ui}`) at docking time."
-                    )
-                else:
-                    st.text_input(
-                        "Co-crystal SMILES [name]",
-                        value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
-                        key="b_redock_smiles",
-                    )
-            else:
-                st.text_input(
-                    "Co-crystal SMILES [name]",
-                    value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
-                    key="b_redock_smiles",
-                )
+            st.text_input(
+                "Co-crystal SMILES [name]",
+                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
+                key="b_redock_smiles",
+            )
         st.markdown("**Docking parameters**")
         b_exh = st.slider(
             "Exhaustiveness", 4, 32, 8, 2, key="b_exh",
@@ -5833,45 +5729,10 @@ with tab_batch:
         redock_score  = None
         redock_result = None
         if st.session_state.get("b_do_redock"):
-            _b_cc_id_ex   = st.session_state.get("b_cocrystal_ligand_id", "")
-            _b_lig_pdb_ex = st.session_state.get("b_ligand_pdb_path", "")
-            _b_raw_pdb_ex = st.session_state.get("b__raw_pdb_for_redock", "")
-            _b_rd_mode_ex = st.session_state.get("b_redock_smiles_mode", "✏️ Enter SMILES manually")
-            _b_has_cc_ex  = bool(_b_cc_id_ex and _b_lig_pdb_ex and os.path.exists(_b_lig_pdb_ex))
-
-            if _b_has_cc_ex and _b_rd_mode_ex.startswith("🔍"):
-                with st.spinner(f"Fetching SMILES for {_b_cc_id_ex}…"):
-                    try:
-                        rd_smi, _b_smi_src, _b_smi_warn = get_cocrystal_smiles(
-                            ligand_pdb_path=_b_lig_pdb_ex,
-                            cocrystal_ligand_id=_b_cc_id_ex,
-                            raw_pdb=_b_raw_pdb_ex,
-                        )
-                        rd_nm = _b_cc_id_ex.split("_")[0] if "_" in _b_cc_id_ex else _b_cc_id_ex
-                    except Exception as _bge:
-                        rd_smi = ""; _b_smi_src = ""; _b_smi_warn = str(_bge); rd_nm = "redock"
-                if not rd_smi:
-                    st.warning(f"⚠ Auto-detect failed ({_b_smi_warn}). Using manual SMILES.")
-                    raw_rd = st.session_state.get("b_redock_smiles", "").strip()
-                    pts    = raw_rd.split(None, 1)
-                    rd_smi = pts[0]; rd_nm = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
-                else:
-                    _b_src_labels = {
-                        "rcsb_ccd": "✓ RCSB CCD", "cif_block": "✓ CIF block",
-                        "3d_conversion": "⚠ 3D conversion",
-                    }
-                    st.info(
-                        f"Co-crystal SMILES ({_b_src_labels.get(_b_smi_src, _b_smi_src)}): "
-                        f"`{rd_smi[:70]}{'…' if len(rd_smi) > 70 else ''}`"
-                    )
-                    if _b_smi_warn:
-                        st.warning(_b_smi_warn)
-            else:
-                raw_rd = st.session_state.get("b_redock_smiles", "").strip()
-                pts    = raw_rd.split(None, 1)
-                rd_smi = pts[0]
-                rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
-
+            raw_rd = st.session_state.get("b_redock_smiles", "").strip()
+            pts    = raw_rd.split(None, 1)
+            rd_smi = pts[0]
+            rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
                 rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR,
                                          mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
