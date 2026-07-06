@@ -53,6 +53,30 @@ COFACTOR_NAMES = {
 
 HEME_RESNAMES = {"HEM", "HEC", "HEA", "HEB", "HDD", "HDM"}
 
+# ── Nucleotide / methyl-donor ligands used to DEFINE the grid box ─────────────
+# ATP, SAM, SAH and close analogs are usually the binding-site-defining ligand
+# (ATP-competitive kinase inhibitors, SAM/SAH-site methyltransferase inhibitors).
+# Treat them as co-crystal *reference* ligands for grid-box centering: removed
+# from the receptor and used to center the box, not kept as passive cofactors.
+#
+# NOTE: several of these (ATP, ADP, AMP, GTP, GDP, GMP) also appear in
+# COFACTOR_NAMES. Because _guess_hetatm_type checks this set BEFORE
+# COFACTOR_NAMES, and _collect_removable_ligands subtracts this set from its
+# exclusion list, membership here wins and they are classified as "ligand".
+REFERENCE_LIGAND_COFACTORS = {
+    "ATP", "ADP", "AMP",
+    "ANP",   # AMP-PNP (adenylyl-imidodiphosphate)
+    "AGS",   # ATP-gamma-S
+    "ACP",   # AMP-PCP (beta,gamma-methylene-ATP)
+    "APC",   # diphosphomethylphosphonic-acid adenosyl ester
+    "GTP", "GDP", "GMP",
+    "GNP",   # GMP-PNP (GppNHp)
+    "GSP",   # GTP-gamma-S
+    "GCP",   # GMP-PCP (GppCp)
+    "SAM",   # S-adenosyl-L-methionine
+    "SAH",   # S-adenosyl-L-homocysteine
+}
+
 _PV_MAX_RETRIES = 3
 _PV_RETRY_DELAY = 10
 _PV_POLL_ATTEMPTS = 60
@@ -267,6 +291,10 @@ def _guess_hetatm_type(resname, n_atoms):
         return "metal"
     if rn in HEME_RESNAMES:
         return "heme/cofactor"
+    # ATP/SAM/SAH-like: grid-defining ligand, not a passive cofactor.
+    # MUST precede COFACTOR_NAMES (ATP/ADP/GTP/... also live in that set).
+    if rn in REFERENCE_LIGAND_COFACTORS:
+        return "ligand"
     if rn in COFACTOR_NAMES:
         return "cofactor"
     if rn in BUFFER_RESNAMES or n_atoms <= 3:
@@ -359,7 +387,12 @@ def scan_hetatm_residues(raw_pdb: str) -> list:
 
 def _collect_removable_ligands(atoms) -> list:
     from prody import calcCenter
-    excl = EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES
+    # ATP/SAM/SAH-like reference ligands are intentionally NOT excluded here so
+    # they can be detected as grid-defining co-crystal ligands.
+    excl = (
+        (EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES)
+        - REFERENCE_LIGAND_COFACTORS
+    )
     het  = atoms.select("hetatm and not water")
     _BACKBONE = {"N", "CA", "C", "O"}
     if het is None:
@@ -2397,10 +2430,14 @@ def run_vina(
     energy_range: int = 3,
     wdir = ".",
     out_name: str = "out",
+    seed: int | None = None,
 ) -> dict:
     wdir      = Path(wdir)
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
     out_sdf   = str(wdir / f"{out_name}_out.sdf")
+
+    # --seed: when set, makes docking deterministic for the same input.
+    _seed_flag = f" --seed {int(seed)}" if seed is not None else ""
 
     rc, vlog = run_cmd(
         f'"{vina_path}" '
@@ -2409,7 +2446,8 @@ def run_vina(
         f'--config "{config_txt}" '
         f'--exhaustiveness {exhaustiveness} '
         f'--num_modes {n_modes} '
-        f'--energy_range {energy_range} '
+        f'--energy_range {energy_range}'
+        f'{_seed_flag} '
         f'--out "{out_pdbqt}"',
         cwd=str(wdir),
     )
@@ -2446,6 +2484,7 @@ def run_vina(
         "out_sdf":   out_sdf,
         "scores":    scores,
         "top_score": scores[0]["affinity"] if scores else None,
+        "seed":      int(seed) if seed is not None else None,
         "log":       vlog,
     }
 
