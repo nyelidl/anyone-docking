@@ -4955,6 +4955,20 @@ with tab_basic:
                 "⚠️ Large range + many poses can produce low-quality output."
             ),
         )
+        vina_seed = st.number_input(
+            "Random seed (0 = random)", min_value=0, value=0, step=1,
+            key="vina_seed",
+            help=(
+                "Random seed for Vina's stochastic search.\n\n"
+                "📖 Vina uses Monte Carlo sampling — the same input with\n"
+                "   different seeds can give slightly different poses.\n"
+                "⚙️ 0 = let Vina pick a new seed each run (default).\n"
+                "   Any positive integer = deterministic, reproducible result.\n"
+                "🔬 Set a fixed seed when benchmarking or debugging so that\n"
+                "   re-running gives identical poses and scores."
+            ),
+        )
+        _dock_seed = vina_seed if vina_seed != 0 else None
     with cd2:
         est = max(1, exh // 8)
         st.markdown(
@@ -5028,6 +5042,7 @@ with tab_basic:
                         st.session_state.receptor_pdbqt, rd_prep["pdbqt"],
                         st.session_state.config_txt,
                         VINA_PATH, exh, nm, er, WORKDIR, "redock_" + rd_nm,
+                        seed=_dock_seed,
                     )
                     if rd_dock["success"] and rd_dock["top_score"] is not None:
                         redock_score = rd_dock["top_score"]
@@ -5051,7 +5066,8 @@ with tab_basic:
                 else:
                     st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
 
-        with st.spinner(f"Running Vina (exhaustiveness={exh})… ⏳"):
+        _seed_label = f", seed={_dock_seed}" if _dock_seed is not None else ""
+        with st.spinner(f"Running Vina (exhaustiveness={exh}{_seed_label})… ⏳"):
             dock = run_vina(
                 receptor_pdbqt = st.session_state.receptor_pdbqt,
                 ligand_pdbqt   = st.session_state.ligand_pdbqt,
@@ -5062,6 +5078,7 @@ with tab_basic:
                 energy_range   = er,
                 wdir           = WORKDIR,
                 out_name       = base,
+                seed           = _dock_seed,
             )
 
         if not dock["success"]:
@@ -5676,6 +5693,15 @@ with tab_batch:
             ),
         )
         b_er  = st.slider("Energy range (kcal/mol)", 1, 5, 3, 1, key="b_er")
+        b_vina_seed = st.number_input(
+            "Random seed (0 = random)", min_value=0, value=0, step=1,
+            key="b_vina_seed",
+            help=(
+                "Random seed for Vina — set a fixed value for reproducible\n"
+                "batch results. 0 = random (default)."
+            ),
+        )
+        _b_dock_seed = b_vina_seed if b_vina_seed != 0 else None
 
     if not b_rec_done:
         st.caption("⚠ Complete Step B1 first.")
@@ -5739,7 +5765,8 @@ with tab_batch:
                                          max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
                 if rd_prep["success"]:
                     rd_dock = run_vina(rec_pdbqt, rd_prep["pdbqt"], config,
-                        VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm)
+                        VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm,
+                        seed=_b_dock_seed)
                     if rd_dock["success"] and rd_dock["top_score"] is not None:
                         redock_score = rd_dock["top_score"]
                         rd_pv_sdf = str(BATCH_WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
@@ -5799,7 +5826,8 @@ with tab_batch:
                 all_logs.append(f"[{name}] PREP ERROR: {prep['error']}"); continue
 
             smi = smi or prep.get("prot_smiles", "")
-            dock = run_vina(rec_pdbqt, prep["pdbqt"], config, VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, name)
+            dock = run_vina(rec_pdbqt, prep["pdbqt"], config, VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, name,
+                            seed=_b_dock_seed)
             all_logs.append(f"[{name}] score={dock.get('top_score')} | {dock.get('log','')[:100]}")
             log_slot.markdown(f'<div class="log-box">{"".join(all_logs[-5:])}</div>', unsafe_allow_html=True)
 
