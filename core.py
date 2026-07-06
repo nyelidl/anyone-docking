@@ -2430,10 +2430,14 @@ def run_vina(
     energy_range: int = 3,
     wdir = ".",
     out_name: str = "out",
+    seed: int | None = None,
 ) -> dict:
     wdir      = Path(wdir)
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
     out_sdf   = str(wdir / f"{out_name}_out.sdf")
+
+    # --seed: when set, makes docking deterministic for the same input.
+    _seed_flag = f" --seed {int(seed)}" if seed is not None else ""
 
     rc, vlog = run_cmd(
         f'"{vina_path}" '
@@ -2442,7 +2446,8 @@ def run_vina(
         f'--config "{config_txt}" '
         f'--exhaustiveness {exhaustiveness} '
         f'--num_modes {n_modes} '
-        f'--energy_range {energy_range} '
+        f'--energy_range {energy_range}'
+        f'{_seed_flag} '
         f'--out "{out_pdbqt}"',
         cwd=str(wdir),
     )
@@ -2479,6 +2484,7 @@ def run_vina(
         "out_sdf":   out_sdf,
         "scores":    scores,
         "top_score": scores[0]["affinity"] if scores else None,
+        "seed":      int(seed) if seed is not None else None,
         "log":       vlog,
     }
 
