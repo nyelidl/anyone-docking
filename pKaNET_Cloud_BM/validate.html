@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pKaNET Cloud+ — Validation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#fbfbfd;
+    --bg2:#eef1f5;
+    --ink:#1d1d1f;
+    --muted:#6e6e73;
+    --hair:rgba(0,0,0,.09);
+    --card:#ffffff;
+    --green:#34c759;
+    --teal:#16c0a0;
+    --blue:#0071e3;
+    --shadow:0 1px 2px rgba(0,0,0,.04), 0 18px 40px -20px rgba(20,30,50,.22);
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Helvetica Neue",Arial,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:var(--bg2);font-family:var(--font);
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  #viewport{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  #stage{
+    width:1280px;height:960px;transform-origin:center center;
+    background:radial-gradient(120% 120% at 78% -10%, #ffffff 0%, var(--bg) 42%, #f1f4f8 100%);
+    position:relative;overflow:hidden;
+  }
+  .slide{width:100%;height:100%;padding:56px 72px 48px;display:flex;flex-direction:column;}
+
+  /* header */
+  .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px;}
+  .brand{display:flex;align-items:center;gap:11px;font-size:21px;font-weight:600;color:var(--ink);letter-spacing:-.01em;}
+  .brand .dot{width:11px;height:11px;border-radius:50%;
+    background:linear-gradient(135deg,var(--green),var(--teal));box-shadow:0 0 0 4px rgba(52,199,89,.14);}
+  .meta{font-size:13.5px;color:var(--muted);font-weight:500;letter-spacing:.01em;}
+
+  /* hero band */
+  .band{display:grid;grid-template-columns:1.12fr 1fr;gap:44px;flex:0 0 auto;margin-bottom:26px;}
+
+  .hero{display:flex;flex-direction:column;justify-content:center;}
+  .kicker{display:inline-flex;align-items:center;gap:8px;font-size:16px;font-weight:600;
+    color:#1a9e46;letter-spacing:-.01em;margin-bottom:10px;}
+  .kicker svg{width:17px;height:17px}
+  .big{font-size:170px;font-weight:700;line-height:.86;letter-spacing:-.05em;
+    background:linear-gradient(140deg,var(--green) 8%,var(--teal) 92%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;}
+  .headline{font-size:31px;font-weight:650;color:var(--ink);letter-spacing:-.02em;margin-top:14px;}
+  .subline{font-size:18px;color:var(--muted);font-weight:450;margin-top:7px;letter-spacing:-.005em;}
+
+  /* benchmark card */
+  .bench{background:var(--card);border-radius:26px;box-shadow:var(--shadow);
+    padding:30px 34px 26px;display:flex;flex-direction:column;}
+  .bench .lbl{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);}
+  .bench .val{display:flex;align-items:baseline;gap:12px;margin-top:6px;}
+  .bench .val .num{font-size:70px;font-weight:680;color:var(--ink);letter-spacing:-.035em;line-height:1;}
+  .bench .val .ph{font-size:16px;font-weight:500;color:var(--muted);}
+  .bench .cap{font-size:15px;color:var(--muted);margin-top:8px;font-weight:450;}
+  .chip{align-self:flex-start;margin-top:13px;display:inline-flex;align-items:center;gap:6px;
+    background:rgba(52,199,89,.12);color:#178a3d;font-size:13.5px;font-weight:600;
+    padding:6px 12px;border-radius:100px;letter-spacing:-.005em;}
+  .chip svg{width:12px;height:12px}
+  .divide{height:1px;background:var(--hair);margin:20px 0 18px;}
+  .minis{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+  .mini .mlbl{font-size:12.5px;color:var(--muted);font-weight:550;letter-spacing:.005em;}
+  .mini .mval{font-size:29px;font-weight:680;color:var(--ink);letter-spacing:-.03em;margin-top:3px;line-height:1;}
+  .mini .mdel{font-size:12.5px;font-weight:600;margin-top:5px;}
+  .mdel.up{color:#178a3d}.mdel.flat{color:#8a8a8e}
+
+  /* groups */
+  .gwrap{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;}
+  .glabel{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin-bottom:13px;}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:1fr;gap:13px;flex:1 1 auto;min-height:0;}
+  .pill{background:var(--card);border-radius:15px;box-shadow:0 1px 2px rgba(0,0,0,.04),0 8px 22px -16px rgba(20,30,50,.28);
+    display:flex;align-items:center;gap:11px;padding:0 16px;}
+  .check{flex:0 0 auto;width:23px;height:23px;border-radius:50%;
+    background:linear-gradient(135deg,var(--green),var(--teal));display:flex;align-items:center;justify-content:center;}
+  .check svg{width:12px;height:12px;stroke:#fff;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;}
+  .pill .txt{display:flex;flex-direction:column;min-width:0;}
+  .pill .gname{font-size:14.5px;font-weight:560;color:var(--ink);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .pill .gcount{font-size:12px;color:var(--muted);font-weight:500;margin-top:1px;}
+
+  /* footer */
+  .foot{display:flex;justify-content:space-between;align-items:center;
+    border-top:1px solid var(--hair);margin-top:22px;padding-top:15px;}
+  .foot .pipe{font-size:13.5px;color:var(--muted);font-weight:500;letter-spacing:-.005em;}
+  .foot .pipe b{color:var(--ink);font-weight:600;}
+  .foot .rt{font-size:12.5px;color:#9a9aa0;font-weight:450;}
+
+  /* entrance */
+  .rise{opacity:0;transform:translateY(14px);}
+  .in .rise{opacity:1;transform:none;transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1);}
+  .in .rise.d1{transition-delay:.05s}.in .rise.d2{transition-delay:.13s}
+  .in .rise.d3{transition-delay:.22s}.in .rise.d4{transition-delay:.30s}
+  .pop{opacity:0;transform:scale(.92) translateY(8px);}
+  .in .pop{opacity:1;transform:none;transition:opacity .5s ease,transform .5s cubic-bezier(.2,.8,.2,1);}
+  .check svg path{stroke-dasharray:20;stroke-dashoffset:20;}
+  .in .check svg path{stroke-dashoffset:0;transition:stroke-dashoffset .45s ease .25s;}
+  @media (prefers-reduced-motion:reduce){
+    .rise,.pop{opacity:1!important;transform:none!important;transition:none!important}
+    .check svg path{stroke-dashoffset:0!important}
+  }
+</style>
+</head>
+<body>
+<div id="viewport">
+  <div id="stage">
+    <div class="slide" id="slide">
+
+      <div class="top rise d1">
+        <div class="brand"><span class="dot"></span>pKaNET&nbsp;Cloud+</div>
+        <div class="meta">Validation Report · 20 May 2026</div>
+      </div>
+
+      <div class="band">
+        <div class="hero">
+          <div class="kicker rise d1">
+            <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#1a9e46" stroke-width="2"/><path d="M8 12.5l2.5 2.5L16 9" stroke="#1a9e46" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Validation complete
+          </div>
+          <div class="big rise d2"><span data-count="100" data-suffix="%">0%</span></div>
+          <div class="headline rise d3">Every test passed.</div>
+          <div class="subline rise d3">65 of 65 cases · 12 functional groups</div>
+        </div>
+
+        <div class="bench rise d2">
+          <div class="lbl">Benchmark accuracy</div>
+          <div class="val">
+            <span class="num"><span data-count="69.34" data-dec="2">0.00</span>%</span>
+            <span class="ph">at pH 7.4</span>
+          </div>
+          <div class="cap">18,850 of 27,183 drug-like molecules correctly charged</div>
+          <div class="chip"><svg viewBox="0 0 24 24" fill="none"><path d="M12 19V6M6 12l6-6 6 6" stroke="#178a3d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>+2.64 pts vs. previous heuristic</div>
+          <div class="divide"></div>
+          <div class="minis">
+            <div class="mini">
+              <div class="mlbl">Cations · +1</div>
+              <div class="mval"><span data-count="77.1" data-dec="1">0.0</span>%</div>
+              <div class="mdel up">▲ +9.3 pts</div>
+            </div>
+            <div class="mini">
+              <div class="mlbl">Anions · −1</div>
+              <div class="mval"><span data-count="57.7" data-dec="1">0.0</span>%</div>
+              <div class="mdel up">▲ +2.9 pts</div>
+            </div>
+            <div class="mini">
+              <div class="mlbl">Neutral · 0</div>
+              <div class="mval"><span data-count="76.1" data-dec="1">0.0</span>%</div>
+              <div class="mdel flat">— held steady</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="gwrap">
+        <div class="glabel rise d3">All groups green · pass / total</div>
+        <div class="grid" id="grid"></div>
+      </div>
+
+      <div class="foot rise d4">
+        <div class="pipe"><b>Pipeline</b> &nbsp;Tautomer enumeration · Dimorphite-DL · Henderson–Hasselbalch</div>
+        <div class="rt">core.py — calibrated heuristic + fast predict API</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  // fit 1280x960 canvas to viewport, keep 4:3
+  const stage=document.getElementById('stage');
+  function fit(){
+    const s=Math.min(window.innerWidth/1280, window.innerHeight/960);
+    stage.style.transform='scale('+s+')';
+  }
+  window.addEventListener('resize',fit); fit();
+
+  // groups
+  const groups=[
+    ["Imidazole N–H","10 / 10"],["Phosphonate / Phosphate","7 / 7"],["Thiol","5 / 5"],["Carboxylic acid","5 / 5"],
+    ["Phenol variants","6 / 6"],["Amine bases","5 / 5"],["Sulfonamide","4 / 4"],["Flavonoid guard","4 / 4"],
+    ["Zwitterion","5 / 5"],["PubChem pKa guard","3 / 3"],["Neutral","4 / 4"],["Drug panel","7 / 7"]
+  ];
+  const grid=document.getElementById('grid');
+  groups.forEach((g,i)=>{
+    const el=document.createElement('div');
+    el.className='pill pop';
+    el.style.transitionDelay=(0.30+i*0.035)+'s';
+    el.innerHTML='<span class="check"><svg viewBox="0 0 24 24"><path d="M5 12.5l4 4L19 7"/></svg></span>'
+      +'<span class="txt"><span class="gname">'+g[0]+'</span><span class="gcount">'+g[1]+'</span></span>';
+    grid.appendChild(el);
+  });
+
+  // count-up
+  const reduce=window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+  function animateCount(el){
+    const target=parseFloat(el.dataset.count);
+    const dec=parseInt(el.dataset.dec||"0");
+    const suffix=el.dataset.suffix||"";
+    if(reduce){el.textContent=target.toFixed(dec)+suffix;return;}
+    const dur=1100, t0=performance.now();
+    function step(now){
+      let p=Math.min((now-t0)/dur,1);
+      p=1-Math.pow(1-p,3); // easeOutCubic
+      el.textContent=(target*p).toFixed(dec)+suffix;
+      if(p<1)requestAnimationFrame(step); else el.textContent=target.toFixed(dec)+suffix;
+    }
+    requestAnimationFrame(step);
+  }
+
+  window.addEventListener('load',()=>{
+    requestAnimationFrame(()=>{
+      document.getElementById('slide').classList.add('in');
+      setTimeout(()=>document.querySelectorAll('[data-count]').forEach(animateCount), 260);
+    });
+  });
+</script>
+</body>
+</html>
