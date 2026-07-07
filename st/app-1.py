@@ -72,7 +72,7 @@ except ImportError:
         "GOL", "PEG", "EDO", "MPD", "PGE", "PG4",
         "SO4", "PO4", "SUL", "PHO",
         "IHP", "TTP", "CTP", "UTP",
-       #"COA", "SAM", "SAH",
+        "COA", "SAM", "SAH",
         "EPE", "MES", "TRS", "ACT", "ACY",
         "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
     }
