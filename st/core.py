@@ -2265,6 +2265,32 @@ def prepare_ligand(
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
 
+def _repair_formal_charges(mol):
+    """MOL2->SDF conversion (via OpenBabel) often drops formal charges on
+    nitrogen (and sometimes oxygen). This leaves e.g. a protonated amine as a
+    neutral N with 4 bonds, which RDKit rejects with
+    'Explicit valence for atom N, 4, is greater than permitted'.
+    Reassign the missing charges from explicit valence so sanitization works.
+    """
+    if mol is None:
+        return None
+    from rdkit import Chem
+    mol.UpdatePropertyCache(strict=False)   # compute valences without raising
+    for atom in mol.GetAtoms():
+        n   = atom.GetAtomicNum()
+        chg = atom.GetFormalCharge()
+        val = atom.GetExplicitValence()
+        if chg != 0:
+            continue
+        if n == 7 and val == 4:
+            # ammonium / quaternary / pyridinium N+
+            atom.SetFormalCharge(1)
+        elif n == 8 and val == 1 and atom.GetTotalNumHs() == 0:
+            # terminal O with a single bond and no H -> carboxylate / phosphate O-
+            if any(b.GetBondType() == Chem.BondType.SINGLE for b in atom.GetBonds()):
+                atom.SetFormalCharge(-1)
+    return mol
+
 def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
     """
     Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
@@ -2326,10 +2352,12 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             mol = frags[0]
             log.append(f"⚠ {len(frags)} fragments — kept largest ({mol.GetNumAtoms()} atoms)")
 
+        mol = _repair_formal_charges(mol)   # fix dropped N+/O- charges first
         try:
             Chem.SanitizeMol(mol)
-        except Exception:
-            pass
+            log.append("✓ Sanitized after charge repair")
+        except Exception as e:
+            log.append(f"⚠ Sanitization still failing: {e}")
 
         log.append("✓ Loaded molecule from file (no protonation)")
 
