@@ -2265,6 +2265,101 @@ def prepare_ligand(
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
 
+def _repair_formal_charges(mol):
+    """MOL2->SDF conversion (via OpenBabel) often drops formal charges on
+    nitrogen (and sometimes oxygen). This leaves e.g. a protonated amine as a
+    neutral N with 4 bonds, which RDKit rejects with
+    'Explicit valence for atom N, 4, is greater than permitted'.
+    Reassign the missing charges from explicit valence so sanitization works.
+    """
+    if mol is None:
+        return None
+    from rdkit import Chem
+    mol.UpdatePropertyCache(strict=False)   # compute valences without raising
+
+    def _explicit_valence(a):
+        # RDKit >= 2025 deprecated GetExplicitValence() in favour of
+        # GetValence(Chem.ValenceType.EXPLICIT). Use the new API when present.
+        try:
+            return a.GetValence(Chem.ValenceType.EXPLICIT)
+        except (AttributeError, TypeError):
+            return a.GetExplicitValence()
+
+    for atom in mol.GetAtoms():
+        n   = atom.GetAtomicNum()
+        chg = atom.GetFormalCharge()
+        val = _explicit_valence(atom)
+        if chg != 0:
+            continue
+        if n == 7 and val == 4:
+            # ammonium / quaternary / pyridinium N+
+            atom.SetFormalCharge(1)
+        elif n == 8 and val == 1 and atom.GetTotalNumHs() == 0:
+            # terminal O with a single bond and no H -> carboxylate / phosphate O-
+            if any(b.GetBondType() == Chem.BondType.SINGLE for b in atom.GetBonds()):
+                atom.SetFormalCharge(-1)
+    return mol
+
+def _bad_valence_atoms(mol):
+    """Return [(idx, symbol, valence), ...] for atoms with a physically
+    impossible valence — e.g. a carbon with 5 bonds. Carbon and halogens are
+    never charged and never exceed these limits, so any violation means the
+    bond orders in the source file are wrong. Used to give a clear error."""
+    from rdkit import Chem
+    limits = {6: 4, 9: 1, 17: 1, 35: 1, 53: 1}   # C, F, Cl, Br, I
+    mol.UpdatePropertyCache(strict=False)
+
+    def _ev(a):
+        try:
+            return a.GetValence(Chem.ValenceType.EXPLICIT)
+        except (AttributeError, TypeError):
+            return a.GetExplicitValence()
+
+    bad = []
+    for a in mol.GetAtoms():
+        lim = limits.get(a.GetAtomicNum())
+        if lim is not None and _ev(a) > lim:
+            bad.append((a.GetIdx(), a.GetSymbol(), _ev(a)))
+    return bad
+
+def _reperceive_bonds_from_3d(mol, log):
+    """Best-effort last resort: if a structure has reliable 3D coordinates but
+    wrong bond orders, re-derive the bonds from geometry (RDKit's xyz2mol-style
+    DetermineBonds). Only called after normal sanitization fails. Returns the
+    original mol unchanged if re-perception isn't possible, so it can only help.
+    """
+    from rdkit import Chem
+    try:
+        conf = mol.GetConformer()
+    except Exception:
+        return mol
+    if not conf.Is3D():
+        return mol
+    try:
+        from rdkit.Chem import rdDetermineBonds
+    except ImportError:
+        log.append("⚠ rdDetermineBonds unavailable — cannot re-perceive bonds")
+        return mol
+    try:
+        try:
+            chg = Chem.GetFormalCharge(mol)
+        except Exception:
+            chg = 0
+        rw = Chem.RWMol(Chem.Mol(mol))
+        for b in list(rw.GetBonds()):
+            rw.RemoveBond(b.GetBeginAtomIdx(), b.GetEndAtomIdx())
+        for a in rw.GetAtoms():
+            a.SetFormalCharge(0)
+            a.SetNoImplicit(False)
+            a.SetNumExplicitHs(0)
+        newmol = rw.GetMol()
+        rdDetermineBonds.DetermineBonds(newmol, charge=chg)
+        log.append("✓ Re-perceived bonds from 3D coordinates")
+        return newmol
+    except Exception as e:
+        log.append(f"⚠ Bond re-perception failed: {e}")
+        return mol
+
 def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
     """
     Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
@@ -2291,31 +2386,58 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
                 mols = [m for m in supp if m]
             if mols:
                 mol = mols[0]
+            else:
+                # SDMolSupplier returned nothing — usually a malformed molblock
+                # ("CTAB version string invalid at line 4", broken counts line,
+                # V3000 quirks, or wrong line endings). OpenBabel is far more
+                # lenient: let it rewrite a clean V2000 SDF, then re-read.
+                _clean = str(wdir / f"{name}_obclean.sdf")
+                import subprocess
+                subprocess.run(f'obabel "{file_path}" -O "{_clean}" 2>/dev/null',
+                               shell=True, timeout=30)
+                if Path(_clean).exists() and Path(_clean).stat().st_size > 10:
+                    for _san in (True, False):
+                        supp = Chem.SDMolSupplier(_clean, removeHs=False, sanitize=_san)
+                        mols = [m for m in supp if m]
+                        if mols:
+                            mol = mols[0]
+                            log.append("✓ Recovered malformed SDF via OpenBabel")
+                            break
         elif ext in (".mol2", ".pdb"):
-            _ob_sdf = str(wdir / f"{name}_ob.sdf")
-            import subprocess
-            subprocess.run(
-                f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
-                shell=True, timeout=30,
-            )
-            if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
-                supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
-                mols = [m for m in supp if m]
-                if not mols:
-                    supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=False)
-                    mols = [m for m in supp if m]
-                if mols:
-                    mol = mols[0]
-                    log.append("✓ Converted via OpenBabel")
+            # For MOL2, read bond orders directly with RDKit first. The SYBYL
+            # @<TRIPOS>BOND records are explicit, so this avoids the spurious
+            # pentavalent-carbon bonds OpenBabel sometimes perceives (which
+            # break sanitization and produce a PDBQT that Vina rejects).
+            if ext == ".mol2":
+                mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+                if mol is None:
+                    mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
+                if mol is not None:
+                    log.append("✓ Read MOL2 directly (RDKit, SYBYL bonds)")
+
+            # Fallback (and primary path for PDB): OpenBabel -> SDF
             if mol is None:
-                if ext == ".mol2":
-                    mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
-                    if mol is None:
-                        mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
-                else:
-                    mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
-                    if mol is None:
-                        mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
+                _ob_sdf = str(wdir / f"{name}_ob.sdf")
+                import subprocess
+                subprocess.run(
+                    f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
+                    shell=True, timeout=30,
+                )
+                if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
+                    supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
+                    mols = [m for m in supp if m]
+                    if not mols:
+                        supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=False)
+                        mols = [m for m in supp if m]
+                    if mols:
+                        mol = mols[0]
+                        log.append("✓ Converted via OpenBabel")
+
+            # Last resort for PDB: RDKit's own PDB reader
+            if mol is None and ext == ".pdb":
+                mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
+                if mol is None:
+                    mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
 
         if mol is None:
             raise ValueError(f"Could not read molecule from {Path(file_path).name}")
@@ -2326,10 +2448,28 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             mol = frags[0]
             log.append(f"⚠ {len(frags)} fragments — kept largest ({mol.GetNumAtoms()} atoms)")
 
+        mol = _repair_formal_charges(mol)   # fix dropped N+/O- charges first
         try:
             Chem.SanitizeMol(mol)
-        except Exception:
-            pass
+            log.append("✓ Sanitized after charge repair")
+        except Exception as e:
+            log.append(f"⚠ Sanitize failed ({e}); trying bond re-perception from 3D…")
+            mol = _reperceive_bonds_from_3d(mol, log)
+            try:
+                Chem.SanitizeMol(mol)
+                log.append("✓ Sanitized after bond re-perception")
+            except Exception as e2:
+                bad = _bad_valence_atoms(mol)
+                if bad:
+                    detail = "; ".join(f"atom #{i} ({s}) has {v} bonds" for i, s, v in bad)
+                    raise ValueError(
+                        f"Structure has chemically impossible valences ({detail}). "
+                        f"The bond orders in the uploaded file are wrong — this is a "
+                        f"problem in the source structure, not the docking. Fix the "
+                        f"bonds in the source file, re-export it, or supply the ligand "
+                        f"as SMILES / a clean SDF instead."
+                    )
+                raise ValueError(f"Could not sanitize molecule: {e2}")
 
         log.append("✓ Loaded molecule from file (no protonation)")
 
@@ -2453,7 +2593,13 @@ def run_vina(
     )
 
     if rc != 0 or not os.path.exists(out_pdbqt):
-        return {"success": False, "error": f"Vina exit code {rc}", "log": vlog}
+        # Surface Vina's actual output (last lines) instead of a bare code, so
+        # real causes (bad atom types, parse errors, empty ligand) are visible.
+        _tail = "\n".join(vlog.strip().splitlines()[-15:]) if vlog else ""
+        _msg  = f"Vina exit code {rc}"
+        if _tail:
+            _msg += f"\n--- Vina output ---\n{_tail}"
+        return {"success": False, "error": _msg, "log": vlog}
 
     run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" 2>/dev/null')
 
