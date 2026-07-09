@@ -2285,6 +2285,7 @@ def _repair_formal_charges(mol):
         except (AttributeError, TypeError):
             return a.GetExplicitValence()
 
+    has_explicit_H = any(a.GetAtomicNum() == 1 for a in mol.GetAtoms())
     for atom in mol.GetAtoms():
         n   = atom.GetAtomicNum()
         chg = atom.GetFormalCharge()
@@ -2294,10 +2295,19 @@ def _repair_formal_charges(mol):
         if n == 7 and val == 4:
             # ammonium / quaternary / pyridinium N+
             atom.SetFormalCharge(1)
-        elif n == 8 and val == 1 and atom.GetTotalNumHs() == 0:
-            # terminal O with a single bond and no H -> carboxylate / phosphate O-
-            if any(b.GetBondType() == Chem.BondType.SINGLE for b in atom.GetBonds()):
+        elif n == 8 and has_explicit_H:
+            # In an all-atom structure every hydrogen is placed explicitly, so a
+            # terminal oxygen with ONE single bond and NO explicit H attached is
+            # a deprotonated carboxylate / phosphate O- (not a hydroxyl). Assign
+            # -1 and pin it with SetNoImplicit, otherwise sanitization silently
+            # adds an H back — turning COO- into COOH and changing net charge.
+            bonds = atom.GetBonds()
+            has_exp_H = any(nb.GetAtomicNum() == 1 for nb in atom.GetNeighbors())
+            if (len(bonds) == 1
+                    and bonds[0].GetBondType() == Chem.BondType.SINGLE
+                    and not has_exp_H):
                 atom.SetFormalCharge(-1)
+                atom.SetNoImplicit(True)
     return mol
 
 def _bad_valence_atoms(mol):
