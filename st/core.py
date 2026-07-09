@@ -2448,85 +2448,61 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             mol = frags[0]
             log.append(f"⚠ {len(frags)} fragments — kept largest ({mol.GetNumAtoms()} atoms)")
 
-        mol = _repair_formal_charges(mol)   # fix dropped N+/O- charges first
+        # ── Metadata only (SMILES + formal charge for display) ──────────────
+        # "Use the uploaded form" means we dock the structure exactly as given,
+        # so chemistry perception here is BEST-EFFORT: if it fails (e.g. odd
+        # bond orders in the source), we skip the metadata instead of aborting.
+        # The PDBQT below is built directly from the file regardless.
+        smi, charge = name, 0
         try:
-            Chem.SanitizeMol(mol)
-            log.append("✓ Sanitized after charge repair")
-        except Exception as e:
-            log.append(f"⚠ Sanitize failed ({e}); trying bond re-perception from 3D…")
-            mol = _reperceive_bonds_from_3d(mol, log)
+            _m = _repair_formal_charges(Chem.Mol(mol))
+            Chem.SanitizeMol(_m)
             try:
-                Chem.SanitizeMol(mol)
-                log.append("✓ Sanitized after bond re-perception")
-            except Exception as e2:
-                bad = _bad_valence_atoms(mol)
-                if bad:
-                    detail = "; ".join(f"atom #{i} ({s}) has {v} bonds" for i, s, v in bad)
-                    raise ValueError(
-                        f"Structure has chemically impossible valences ({detail}). "
-                        f"The bond orders in the uploaded file are wrong — this is a "
-                        f"problem in the source structure, not the docking. Fix the "
-                        f"bonds in the source file, re-export it, or supply the ligand "
-                        f"as SMILES / a clean SDF instead."
-                    )
-                raise ValueError(f"Could not sanitize molecule: {e2}")
-
-        log.append("✓ Loaded molecule from file (no protonation)")
-
-        try:
-            smi = Chem.MolToSmiles(Chem.RemoveHs(mol))
-        except Exception:
-            try:
-                smi = Chem.MolToSmiles(mol)
+                smi = Chem.MolToSmiles(Chem.RemoveHs(_m))
             except Exception:
-                smi = name
+                smi = Chem.MolToSmiles(_m)
+            charge = Chem.GetFormalCharge(_m)
+            log.append(f"✓ Parsed structure (formal charge {charge:+d})")
+        except Exception as e:
+            log.append(f"⚠ Chemistry not fully parsed ({e}) — docking uploaded form as-is")
+
+        # ── Display SDF: keep the uploaded coordinates & hydrogens exactly ──
+        # No AddHs, no re-embedding. If RDKit can't write it, copy via OpenBabel.
+        _sdf_ok = False
         try:
-            charge = Chem.GetFormalCharge(mol)
+            with Chem.SDWriter(out_sdf) as w:
+                w.write(mol)
+            _sdf_ok = Path(out_sdf).exists() and Path(out_sdf).stat().st_size > 10
         except Exception:
-            charge = 0
-        log.append(f"✓ Formal charge: {charge:+d}")
-
-        mol = Chem.AddHs(mol, addCoords=True)
-        log.append("✓ All hydrogens made explicit")
-
-        conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
-        if conf is None or conf.Is3D() is False:
-            try:
-                params = AllChem.ETKDGv3()
-            except AttributeError:
-                params = AllChem.ETKDG()
-            params.randomSeed = 42
-            if AllChem.EmbedMolecule(mol, params) == -1:
-                AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
-            if AllChem.MMFFHasAllMoleculeParams(mol):
-                AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
-            else:
-                AllChem.UFFOptimizeMolecule(mol, maxIters=500)
-            log.append("✓ 3D conformer generated (no coords in file)")
-        else:
-            log.append("✓ Using 3D coordinates from uploaded file")
-
-        with Chem.SDWriter(out_sdf) as w:
-            w.write(mol)
-
-        try:
-            _meeko_to_pdbqt(mol, out_pdbqt)
-            log.append("✓ PDBQT written (Meeko)")
-        except Exception as e_meeko:
-            log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
+            _sdf_ok = False
+        if not _sdf_ok:
             import subprocess
-            subprocess.run(
-                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
-                shell=True, timeout=30,
+            subprocess.run(f'obabel "{file_path}" -O "{out_sdf}" 2>/dev/null',
+                           shell=True, timeout=60)
+
+        # ── PDBQT: convert the ORIGINAL uploaded file directly ──────────────
+        # Preserve hydrogens and coordinates exactly — no protonation, no H
+        # merging, no coordinate changes. OpenBabel's PDBQT writer MERGES
+        # nonpolar hydrogens by default (AutoDock convention), so `-xh` is
+        # required to keep every hydrogen from the uploaded file. OpenBabel
+        # otherwise only adds atom types, Gasteiger charges and the rotatable-
+        # bond tree Vina needs. Building from the file (not an RDKit-rebuilt
+        # mol) also sidesteps valence errors — docking doesn't need chemically
+        # "perfect" bond orders.
+        import subprocess
+        subprocess.run(f'obabel "{file_path}" -O "{out_pdbqt}" -xh 2>/dev/null',
+                       shell=True, timeout=60)
+        if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
+            raise ValueError(
+                "Could not convert the uploaded ligand to PDBQT. Check that the "
+                "file is a valid MOL2/SDF/PDB containing 3D coordinates."
             )
-            if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
-                raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
-            log.append("✓ PDBQT written (OpenBabel fallback)")
+        log.append("✓ PDBQT written directly from uploaded file (hydrogens preserved)")
 
         return {
             "success":     True,
             "pdbqt":       out_pdbqt,
-            "sdf":         out_sdf,
+            "sdf":         out_sdf if Path(out_sdf).exists() else out_pdbqt,
             "prot_smiles": smi,
             "charge":      charge,
             "log":         log,
