@@ -2276,10 +2276,19 @@ def _repair_formal_charges(mol):
         return None
     from rdkit import Chem
     mol.UpdatePropertyCache(strict=False)   # compute valences without raising
+
+    def _explicit_valence(a):
+        # RDKit >= 2025 deprecated GetExplicitValence() in favour of
+        # GetValence(Chem.ValenceType.EXPLICIT). Use the new API when present.
+        try:
+            return a.GetValence(Chem.ValenceType.EXPLICIT)
+        except (AttributeError, TypeError):
+            return a.GetExplicitValence()
+
     for atom in mol.GetAtoms():
         n   = atom.GetAtomicNum()
         chg = atom.GetFormalCharge()
-        val = atom.GetExplicitValence()
+        val = _explicit_valence(atom)
         if chg != 0:
             continue
         if n == 7 and val == 4:
@@ -2318,30 +2327,40 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             if mols:
                 mol = mols[0]
         elif ext in (".mol2", ".pdb"):
-            _ob_sdf = str(wdir / f"{name}_ob.sdf")
-            import subprocess
-            subprocess.run(
-                f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
-                shell=True, timeout=30,
-            )
-            if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
-                supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
-                mols = [m for m in supp if m]
-                if not mols:
-                    supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=False)
-                    mols = [m for m in supp if m]
-                if mols:
-                    mol = mols[0]
-                    log.append("✓ Converted via OpenBabel")
+            # For MOL2, read bond orders directly with RDKit first. The SYBYL
+            # @<TRIPOS>BOND records are explicit, so this avoids the spurious
+            # pentavalent-carbon bonds OpenBabel sometimes perceives (which
+            # break sanitization and produce a PDBQT that Vina rejects).
+            if ext == ".mol2":
+                mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
+                if mol is None:
+                    mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
+                if mol is not None:
+                    log.append("✓ Read MOL2 directly (RDKit, SYBYL bonds)")
+
+            # Fallback (and primary path for PDB): OpenBabel -> SDF
             if mol is None:
-                if ext == ".mol2":
-                    mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=True)
-                    if mol is None:
-                        mol = Chem.MolFromMol2File(file_path, removeHs=False, sanitize=False)
-                else:
-                    mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
-                    if mol is None:
-                        mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
+                _ob_sdf = str(wdir / f"{name}_ob.sdf")
+                import subprocess
+                subprocess.run(
+                    f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
+                    shell=True, timeout=30,
+                )
+                if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
+                    supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
+                    mols = [m for m in supp if m]
+                    if not mols:
+                        supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=False)
+                        mols = [m for m in supp if m]
+                    if mols:
+                        mol = mols[0]
+                        log.append("✓ Converted via OpenBabel")
+
+            # Last resort for PDB: RDKit's own PDB reader
+            if mol is None and ext == ".pdb":
+                mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=True)
+                if mol is None:
+                    mol = Chem.MolFromPDBFile(file_path, removeHs=False, sanitize=False)
 
         if mol is None:
             raise ValueError(f"Could not read molecule from {Path(file_path).name}")
@@ -2481,7 +2500,13 @@ def run_vina(
     )
 
     if rc != 0 or not os.path.exists(out_pdbqt):
-        return {"success": False, "error": f"Vina exit code {rc}", "log": vlog}
+        # Surface Vina's actual output (last lines) instead of a bare code, so
+        # real causes (bad atom types, parse errors, empty ligand) are visible.
+        _tail = "\n".join(vlog.strip().splitlines()[-15:]) if vlog else ""
+        _msg  = f"Vina exit code {rc}"
+        if _tail:
+            _msg += f"\n--- Vina output ---\n{_tail}"
+        return {"success": False, "error": _msg, "log": vlog}
 
     run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" 2>/dev/null')
 
