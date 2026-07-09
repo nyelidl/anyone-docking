@@ -17,25 +17,6 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-
-def _render_html(html, height=None, scrolling=False, **kwargs):
-    """Render an HTML string inside a sandboxed iframe.
-
-    `st.components.v1.html` is deprecated (removal after 2026-06-01). Streamlit
-    >= 1.56 provides `st.iframe`, which accepts an HTML string directly and
-    keeps the same iframe sandbox (needed so embedded 3Dmol/py3Dmol <script>
-    and the JS save buttons still run). Falls back to the old API on older
-    Streamlit, and drops `scrolling` if a given st.iframe build doesn't take it.
-    """
-    _iframe = getattr(st, "iframe", None)
-    if _iframe is not None:
-        try:
-            return _iframe(html, height=height, scrolling=scrolling, **kwargs)
-        except TypeError:
-            return _iframe(html, height=height, **kwargs)
-    return components.html(html, height=height, scrolling=scrolling, **kwargs)
-
-
 from core import (
     prepare_receptor,
     prepare_ligand,
@@ -1631,7 +1612,7 @@ def show3d(view, height=480):
     except ImportError:
         raw  = view._make_html()
         resp = _re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', raw)
-        _render_html(
+        components.html(
             f'<div style="width:100%;overflow:hidden">{resp}</div>',
             height=height, scrolling=False,
         )
@@ -1791,7 +1772,7 @@ def _show_poseview_image(png_data, svg_data, caption, full_legend=False, stamp="
         svg_str = svg_str.replace(
             "<svg ", '<svg style="width:100%;height:auto;display:block;" ', 1
         )
-        _render_html(
+        components.html(
             f'<div style="background:#fff;border-radius:8px;padding:12px;'
             f'border:1px solid #D0D7DE;">'
             f'{svg_str}'
@@ -2190,7 +2171,7 @@ def _render_2d_panel_b(
         if acd_ihtml:
             # Strip toolbar/controls — show only the SVG diagram
             _clean = _strip_acd_toolbar(acd_ihtml)
-            _render_html(_clean, height=height, scrolling=False)
+            components.html(_clean, height=height, scrolling=False)
         elif acd_svg:
             svg_str = acd_svg.decode() if isinstance(acd_svg, bytes) else acd_svg
             b64 = base64.b64encode(svg_str.encode()).decode()
@@ -2831,7 +2812,7 @@ def _ready_figure_section(
             panel_w      = PANEL_W,
             panel_h      = PANEL_H,
         )
-        _render_html(_fig_html, height=_fig_h, scrolling=False)
+        components.html(_fig_html, height=_fig_h, scrolling=False)
 
     else:
         # ── Batch 4-panel — one unified HTML via _make_combined_figure_html ──
@@ -2899,7 +2880,7 @@ def _ready_figure_section(
             v3d_b_raw_html= _v3d_b_html,
             top_h         = TOP_H,
         )
-        _render_html(_fig_html4, height=_fig_h4, scrolling=False)
+        components.html(_fig_html4, height=_fig_h4, scrolling=False)
 
 
 def _ai_prompt_section(
@@ -3238,7 +3219,7 @@ def _poseview_ui(
                     f'<a href="data:image/svg+xml;base64,{_sb64}" '
                     f'download="{fn_base}.svg" style="{_bs}">&#8595; SVG</a>'
                 )
-                _render_html(
+                components.html(
                     f'<div style="background:#fff;border-radius:8px;'
                     f'border:1px solid #D0D7DE;overflow:hidden;">'
                     f'{svg_str}'
@@ -3260,14 +3241,14 @@ def _poseview_ui(
                     with _cl2:
                         st.markdown("##### Docked Pose")
                         if _view_mode.startswith("🖱") and _new_ihtml:
-                            _render_html(_new_ihtml, height=860, scrolling=False)
+                            components.html(_new_ihtml, height=860, scrolling=False)
                         else:
                             _show_svg_new(_new_svg, f"pose{pose_idx+1}_interaction")
                     with _cr2:
                         st.markdown("##### Co-Crystal Reference")
                         if _new_ref_svg:
                             if _view_mode.startswith("🖱") and _new_ref_ihtml:
-                                _render_html(_new_ref_ihtml, height=860, scrolling=False)
+                                components.html(_new_ref_ihtml, height=860, scrolling=False)
                             else:
                                 _show_svg_new(_new_ref_svg, "cocrystal_interaction")
                         else:
@@ -3275,7 +3256,7 @@ def _poseview_ui(
                 else:
                     st.markdown("##### Docked Pose")
                     if _view_mode.startswith("🖱") and _new_ihtml:
-                        _render_html(_new_ihtml, height=860, scrolling=False)
+                        components.html(_new_ihtml, height=860, scrolling=False)
                     else:
                         _show_svg_new(_new_svg, f"pose{pose_idx+1}_interaction")
                     st.caption("ℹ️ No co-crystal ligand detected — co-crystal reference diagram is not available.")
@@ -3431,7 +3412,7 @@ def _poseview_ui(
                     f'<a href="data:image/svg+xml;base64,{_sb64}" download="{dl_filename}"'
                     f' style="{_btn_style}">&#8595; SVG</a>'
                 )
-                _render_html(
+                components.html(
                     f"""<div style="background:#fff;border-radius:8px;
                         border:1px solid #D0D7DE;overflow:hidden;">
                       {_sv}
@@ -6212,3 +6193,4 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
+
