@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 from rdkit import Chem
-from rdkit.Chem import AllChem, rdMolDescriptors
+from rdkit.Chem import AllChem, rdMolDescriptors, Descriptors
 from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers, StereoEnumerationOptions
 from rdkit.Chem.MolStandardize import rdMolStandardize
 
@@ -44,6 +44,13 @@ try:
 except ImportError:
     _requests = None; _REQUESTS_OK = False
     print("⚠️  requests not installed — PubChem lookup disabled.")
+
+try:
+    import fitz  # PyMuPDF
+    _PYMUPDF_OK = True
+except ImportError:
+    fitz = None; _PYMUPDF_OK = False
+    print("⚠️  PyMuPDF (fitz) not available — PDF→SMILES tab disabled.")
 
 try:
     from dimorphite_dl import protonate_smiles as _dimorphite_fn
@@ -87,6 +94,251 @@ def convert_pdb_to_mol2_obabel(pdb_path, mol2_path):
                            capture_output=True, text=True, timeout=30)
         return r.returncode == 0 and Path(mol2_path).exists()
     except Exception: return False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 0  ·  PDF → SMILES  (scaffold + R-group table builder)
+#
+# Lets a user upload a PDF page that shows a core scaffold + R-group
+# legend/table (e.g. a SAR table from a paper or SI) and turn it into a
+# validated batch of SMILES that feeds straight into run_job() exactly like
+# a hand-uploaded .smi file does.
+#
+# Reading the *drawn* scaffold is intentionally a human-in-the-loop step —
+# there is no reliable way to OCR bond connectivity out of a PDF. What is
+# automated: rendering the page, pulling any extractable text layer, and —
+# once the scaffold + substituents are described as SMILES — assembling,
+# validating, and exporting the molecules.
+#
+# Assembly uses RDKit's `molzip`: the scaffold SMILES carries dummy
+# attachment atoms ([*:1], [*:2], [*:3]); each R-group fragment is written
+# attachment-atom-first (e.g. para-hydroxyphenyl = "c1ccc(O)cc1") and is
+# tagged with the matching [*:n] automatically before zipping. This avoids
+# all manual SMILES ring-closure-digit bookkeeping, even for fused-ring
+# R-groups (e.g. a pyrenyl group).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pdf2smi_get_page_count(pdf_bytes):
+    """Number of pages in a PDF (1-indexed page numbers are used elsewhere)."""
+    if not _PYMUPDF_OK:
+        raise RuntimeError("PyMuPDF (fitz) is not installed — cannot read PDFs.")
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        return doc.page_count
+
+
+def pdf2smi_render_page(pdf_bytes, page_num, dpi=200):
+    """Render one PDF page (1-indexed) to a PIL Image, for visual inspection."""
+    if not _PYMUPDF_OK:
+        raise RuntimeError("PyMuPDF (fitz) is not installed — cannot read PDFs.")
+    from PIL import Image  # local import: PDF tab is the only consumer
+    zoom = dpi / 72.0
+    matrix = fitz.Matrix(zoom, zoom)
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        page = doc[page_num - 1]
+        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        return Image.open(__import__("io").BytesIO(pix.tobytes("png")))
+
+
+def pdf2smi_extract_text(pdf_bytes, page_num):
+    """Plain text layer of one PDF page (1-indexed). '' if none exists
+    (common for flattened/outlined PDF exports — the page is then read
+    visually instead via pdf2smi_render_page)."""
+    if not _PYMUPDF_OK:
+        raise RuntimeError("PyMuPDF (fitz) is not installed — cannot read PDFs.")
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        page = doc[page_num - 1]
+        return page.get_text("text").strip()
+
+
+def pdf2smi_resolve_fragment(value, library):
+    """Look *value* up in the fragment-name library; otherwise treat it as a
+    literal attachment-first SMILES. Blank/None → None (slot unused)."""
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    return library.get(value, value)
+
+
+def pdf2smi_build_molecule(scaffold_smiles, slot_fragments):
+    """
+    scaffold_smiles : SMILES with dummy attachment atoms, e.g.
+        "Cc1nc([*:1])[nH]c1[*:2]"
+    slot_fragments  : {1: "c1ccccc1", 2: "c1cc(OC)c(O)c(OC)c1", ...} — each
+        value is an attachment-first SMILES fragment (no [*:n] needed; it is
+        added automatically for the matching slot number).
+
+    Returns (mol, error_message). mol is None on failure.
+    """
+    core_mol = Chem.MolFromSmiles(scaffold_smiles)
+    if core_mol is None:
+        return None, f"Could not parse scaffold SMILES: {scaffold_smiles!r}"
+
+    combined = core_mol
+    for slot, frag_smiles in slot_fragments.items():
+        if frag_smiles is None:
+            continue
+        tagged = f"[*:{slot}]{frag_smiles}"
+        frag_mol = Chem.MolFromSmiles(tagged)
+        if frag_mol is None:
+            return None, f"Could not parse fragment for [*:{slot}]: {frag_smiles!r}"
+        combined = Chem.CombineMols(combined, frag_mol)
+
+    try:
+        zipped = Chem.molzip(combined)
+        Chem.SanitizeMol(zipped)
+    except Exception as exc:
+        return None, f"molzip/sanitize failed: {exc}"
+
+    remaining = sum(1 for a in zipped.GetAtoms() if a.GetSymbol() == "*")
+    if remaining:
+        return None, (
+            f"{remaining} unfilled attachment point(s) remain "
+            "-- check that every [*:n] in the scaffold has a matching slot."
+        )
+    return zipped, ""
+
+
+def pdf2smi_describe_mol(mol):
+    return {
+        "smiles": Chem.MolToSmiles(mol),
+        "formula": rdMolDescriptors.CalcMolFormula(mol),
+        "mw": round(Descriptors.MolWt(mol), 2),
+    }
+
+
+_SLOT_PATTERN = re.compile(r"\[\*:(\d+)\]")
+
+
+def pdf2smi_count_scaffold_slots(scaffold_smiles):
+    """How many distinct [*:n] attachment points a scaffold SMILES declares
+    (i.e. max slot number found — slots are expected to be numbered 1..N
+    with no gaps)."""
+    nums = [int(m.group(1)) for m in _SLOT_PATTERN.finditer(scaffold_smiles)]
+    return max(nums) if nums else 0
+
+
+def pdf2smi_parse_slot_roles(roles_str, n_slots):
+    """
+    Turn a Slot_Roles string like "R1,AR,R2" into a list of per-slot role
+    names, one entry per [*:n] slot (1-indexed: roles[0] is the role for
+    slot 1, etc.).
+
+    The SAME role name can appear more than once — e.g. "R1,R2,R1,R2" means
+    slots 1 and 3 both take the value of column "R1", slots 2 and 4 both
+    take the value of column "R2". This is how a fragment gets attached at
+    more than one equivalent position on a symmetric scaffold (e.g. the
+    same NR1R2 amide on both arms of a catechol bis-ether).
+
+    Blank/None roles_str falls back to the legacy default ["R1", "AR", "R2"]
+    truncated/padded to n_slots, preserving old behavior for templates that
+    don't specify Slot_Roles at all.
+    """
+    # Treat None and pandas/NumPy NaN (a truthy float!) as "blank" so an
+    # empty Slot_Roles cell in a data_editor table falls back to the
+    # legacy default instead of being parsed as the literal string "nan".
+    if roles_str is None or (isinstance(roles_str, float) and roles_str != roles_str):
+        roles_str = ""
+    roles_str = str(roles_str).strip()
+
+    if roles_str:
+        roles = [r.strip() for r in roles_str.split(",") if r.strip()]
+    else:
+        roles = ["R1", "AR", "R2"]
+    if len(roles) < n_slots:
+        roles = roles + [None] * (n_slots - len(roles))
+    return roles[:n_slots]
+
+
+def pdf2smi_build_all(compounds_df, templates, library, template_roles=None):
+    """
+    Batch-build a compound table into validated molecules.
+
+    compounds_df columns expected: Compound_ID, Template, R1, R2, AR (extra
+    role columns are fine too — see template_roles below)
+
+    templates       : {template_name: scaffold_smiles_with_dummy_atoms}
+    library         : {fragment_name: attachment_first_smiles}
+    template_roles  : {template_name: "R1,AR,R2"} (optional) — maps each
+        [*:n] slot in that template's scaffold to a Compounds-table column
+        name, in slot order. Omit a template here (or leave its string
+        blank) to get the legacy default mapping (slot1=R1, slot2=AR,
+        slot3=R2). Repeat a role name to attach the same fragment at more
+        than one slot (symmetric scaffolds).
+
+    Returns (result_df, mols_for_grid, legends_for_grid). result_df has
+    columns Compound_ID, SMILES, Formula, MW, Status, Error.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError("pandas is required for pdf2smi_build_all()")
+
+    template_roles = template_roles or {}
+    rows = []
+    mols_for_grid = []
+    legends_for_grid = []
+
+    for _, row in compounds_df.iterrows():
+        cid = str(row.get("Compound_ID", "")).strip()
+        tmpl_name = str(row.get("Template", "")).strip()
+        if not cid:
+            continue
+
+        scaffold = templates.get(tmpl_name)
+        if scaffold is None:
+            rows.append(dict(Compound_ID=cid, SMILES=None, Formula=None, MW=None,
+                              Status="FAILED", Error=f"Unknown template name: {tmpl_name!r}"))
+            continue
+
+        n_slots = pdf2smi_count_scaffold_slots(scaffold)
+        role_list = pdf2smi_parse_slot_roles(template_roles.get(tmpl_name), n_slots)
+
+        slot_fragments = {}
+        for slot_idx, role in enumerate(role_list, start=1):
+            if not role:
+                continue
+            val = pdf2smi_resolve_fragment(row.get(role), library)
+            if val is not None:
+                slot_fragments[slot_idx] = val
+
+        mol, err = pdf2smi_build_molecule(scaffold, slot_fragments)
+        if mol is None:
+            rows.append(dict(Compound_ID=cid, SMILES=None, Formula=None, MW=None,
+                              Status="FAILED", Error=err))
+            continue
+
+        desc = pdf2smi_describe_mol(mol)
+        rows.append(dict(Compound_ID=cid, SMILES=desc["smiles"], Formula=desc["formula"],
+                          MW=desc["mw"], Status="OK", Error=""))
+        mols_for_grid.append(mol)
+        legends_for_grid.append(cid)
+
+    result_df = pd.DataFrame(rows)
+    return result_df, mols_for_grid, legends_for_grid
+
+
+def pdf2smi_make_grid_image(mols, legends, mols_per_row=5, sub_size=(220, 200)):
+    if not mols:
+        return None
+    from rdkit.Chem import Draw
+    return Draw.MolsToGridImage(mols, molsPerRow=mols_per_row, subImgSize=sub_size, legends=legends)
+
+
+def pdf2smi_to_smi_bytes(result_df):
+    """Render validated rows of a pdf2smi_build_all() result as .smi-format
+    bytes (SMILES<tab>name per line) — the same shape run_job() already
+    expects for input_type='SMI_FILE' via parse_smi_lines()."""
+    lines = []
+    for _, r in result_df.iterrows():
+        if r.get("Status") == "OK" and r.get("SMILES"):
+            lines.append(f"{r['SMILES']}\t{r['Compound_ID']}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def pdf2smi_to_csv_bytes(result_df):
+    return result_df.to_csv(index=False).encode("utf-8")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGE A  ·  RDKit standardization
@@ -472,14 +724,14 @@ _IONIZABLE_SITE_DEF = [
     # ── Thiols ────────────────────────────────────────────────────────────────
     # Bug B fix: Cys-like thiol alpha to amine pKa~8.3; recursive SMARTS.
     ("thiol_alpha_amino",          "[SX2H1;$([SX2H1][CX4][CX4][NX3;!$(NC=O)])]",              8.3,  "acid"),
-    # Heteroaryl thiol (quinoline-8-thiol pKa~7.8): ring N withdraws electron density,
-    # raising pKa vs plain thiophenol (6.6). Must precede thiol_arom.
+    # Aromatic thiol adjacent to ring N (heteroaryl thiol, e.g. quinoline-8-thiol pKa~7.8):
+    # electron-withdrawing ring N raises pKa vs plain thiophenol (6.6). Must precede thiol_arom.
     ("thiol_hetarom",              "[c;$([c]1[c,n][c,n][c,n][n,s,o]1)][SX2H1]",              7.9,  "acid"),
     ("thiol_arom",                 "c[SX2H1]",                                            6.5,  "acid"),  # thiophenol 6.6
     ("thiol_aliph",                "[CX4][SX2H1]",                                        9.8,  "acid"),
     # ── Bases ─────────────────────────────────────────────────────────────────
-    # N-oxide: Ar-N(+)(-O-) — conjugate acid pKa ~ −1.5; neutral (zwitterion) at pH 7.4.
-    # Must precede pyridine_like so the ring N is not counted as a protonatable base.
+    # N-oxide: Ar-N(+)(-O-) — the conjugate acid has pKa ~ −1.5; neutral (zwitterion) at pH 7.4
+    # Must precede pyridine_like so the ring N is not also counted as a base.
     ("n_oxide_neutral",            "[$([nX3+]~[OX1-]),$([NX3+](=O)[OX1-])]",               -1.5, "base"),
     # Aniline with EWG: strongly depressed pKa (4-nitroaniline=1.0, 4-CN=1.7 → avg ~2.5)
     ("aniline_EWG",                "c[NX3;H1,H2;!$(N~[!#6])][$([NX3+](=O)[O-]),$([NX3](=O)=O),$(C#N),$([SX4](=O)(=O))]", 2.5, "base"),
@@ -504,9 +756,13 @@ _IONIZABLE_SITE_DEF = [
     ("amine_beta_EWG",             "[NX3;H1,H2;!$(NC=O);!$([nH]);$([NX3][CX4][CX4][$([CX3](=O)),$([SX4](=O)(=O)),$(C#N)])]", 8.0, "base"),
     # Fluoroalkyl-adjacent amine: strongly suppressed by induction
     ("amine_fluoroalkyl",          "[NX3;H1,H2;!$(NC=O);!$([nH]);$([NX3][CX4][$([CX4](F)(F)),$([CX4](F)(F)F)])]", 6.5, "base"),
+    # Gamma-ring-sulfonyl amine: amine on a saturated carbon γ to a ring
+    # sulfone/sulfonyl.  Inductive withdrawal through the locked ring strongly
+    # suppresses amine pKa (dorzolamide exp 6.35, brinzolamide exp 5.9).
+    # Must precede generic aliphatic_amine (pKa 9.5).
+    ("amine_gamma_ring_sulfonyl",  "[NX3;H1,H2;!$(NC=O);!$([nH])][CX4;R][CX4;R][CX4;R][SX4;R](=O)(=O)", 6.5, "base"),
     ("aliphatic_amine",            "[NX3;H1,H2;!$(NC=O);!$(N~[!#6;!H]);!$([nH]);!$([NX3][CX3](=[NX2])[NX3])]",        9.5,  "base"),
-    # Tertiary aliphatic amine: pKa ~8.5 (v80 recalibrated; reduces false over-protonation
-    # of multi-substituted tertiary amines vs v70 value of 8.8)
+    # Tertiary aliphatic amine: pKa ~8.5 (trimethylamine=9.8 but multi-subst. lowers; v80 recalibrated)
     ("aliphatic_amine_t",          "[NX3;H0;!$(NC=O);!$(Nc);!$([nH]);!$([N]~[!#6]);!$([NX3]([CX4][CX3]=O)[CX4][CX3]=O)]",    8.5,  "base"),
     ("amidine",                    "[CX3](=[NX2;H0,H1])[NX3;H1,H2;!$([NX3][CX3](=[NX2])[NX3])]",                     12.4, "base"),
     ("guanidine",                  "[NX2;H1;$([NX2]=[CX3]([NX3])[NX3])]",                  12.5, "base"),  # imine =NH only; was 13.0, bias +0.31→ lower to 12.5
@@ -788,7 +1044,7 @@ def _find_flavone_A_ring_phenols(mol):
         elif n_ortho_phenols >= 2:
             label, pka = "flavone_6OH_pyrogallol_center", 8.5
         elif n_ortho_phenols == 1:
-            label, pka = "flavone_phenol_catechol_pair", 8.0  # v80: corrected 7.0→8.0; 6-OH stays neutral at pH 7.4
+            label, pka = "flavone_phenol_catechol_pair", 8.0  # corrected: 6-OH stays neutral at pH 7.4
         else:
             label, pka = "flavone_phenol_isolated", 8.5  # isolated flavone phenol (e.g. apigenin 7-OH actual pKa ~8.7)
         sites.append({"label": label, "atom_indices": [o_idx, c_idx], "heuristic_pka": pka, "site_type": "acid"})
@@ -957,7 +1213,7 @@ def find_ionizable_sites(mol):
                 seen_ion.add(oh); claimed_atoms.add(oh)
                 sites.append(dict(label=lbl, atom_indices=[oh], heuristic_pka=pka, site_type="acid"))
 
-    # (11) Warfarin / 4-hydroxycoumarin-like enol acid (aromatic form).
+    # (11) Warfarin / 4-hydroxycoumarin-like enol acid.
     if _PAT_WARFARIN_ENOL is not None:
         for match in mol.GetSubstructMatches(_PAT_WARFARIN_ENOL):
             oh = match[0]
@@ -966,10 +1222,9 @@ def find_ionizable_sites(mol):
                 sites.append(dict(label="warfarin_enol_acid", atom_indices=[oh],
                                   heuristic_pka=5.0, site_type="acid"))
 
-    # (11b) Non-aromatic chromanone enol (warfarin keto-form tautomer path).
-    # Fires on the enol tautomer of 4-chromanone when the input was provided
-    # as the keto form: C4(OH)=C3 in the benzo-fused ring.
-    # pKa ~5.0 matches the experimental warfarin enol pKa of 4.8–5.1.
+    # (11b) Non-aromatic chromanone enol (warfarin keto-form tautomer path):
+    # C4(OH)=C3 in benzo-fused chromanone ring; fires on enol tautomer generated
+    # from keto-form input, pKa ~5.0 (warfarin experimental pKa 4.8–5.1).
     if _PAT_CHROMANONE_ENOL_OH is not None:
         for match in mol.GetSubstructMatches(_PAT_CHROMANONE_ENOL_OH):
             oh = match[0]
@@ -998,9 +1253,7 @@ def find_ionizable_sites(mol):
                 sites.append(dict(label="beta_hydroxy_carboxyl_conservative", atom_indices=[oh],
                                   heuristic_pka=13.5, site_type="acid"))
 
-    # (14) Glyphosate amine: pKa ~10.1 (protonated at pH 7.4).
-    # Glyphosate is a zwitterion: 3 acid sites (COOH + 2× P-OH) deprotonated (−3)
-    # plus the amine protonated (+1) giving net −2. Corrected from v70 (pKa=5.5 neutral).
+    # (14) Glyphosate amine: pKa ~10.1 (protonated at pH 7.4, balancing 3 anions → net -2).
     if _PAT_GLYPHOSATE_BACKBONE is not None and mol.HasSubstructMatch(_PAT_GLYPHOSATE_BACKBONE):
         for atom in mol.GetAtoms():
             if atom.GetAtomicNum() == 7 and atom.GetFormalCharge() == 0 and atom.GetIdx() not in seen_ion:
@@ -1066,7 +1319,7 @@ def find_ionizable_sites(mol):
         if nidx not in seen_ion and nidx not in claimed_atoms:
             seen_ion.add(nidx); claimed_atoms.add(nidx)
             sites.append(dict(label="methotrexate_pteridine_extra_acid", atom_indices=[nidx],
-                              heuristic_pka=8.5, site_type="acid"))  # v80: 6.8→8.5; was triggering false −3 at pH 7.4
+                              heuristic_pka=8.5, site_type="acid"))
 
     # Pass 1: Diprotic phosphorus acids (Bug A fix)
     for pat_dp, pka1, pka2, lbl_dp in _DIPROTIC_P_COMPILED:
@@ -1441,10 +1694,8 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
         print(f"   🔬  Discarded {len(disc)} implausible tautomers (e.g. score={disc[0]['score']:.1f}: {disc[0]['smiles'][:55]})")
     ml_preds  = unipka_predict(base_smiles)
     ion_sites = find_ionizable_sites(ref_mol) if ref_mol else []
-    # v80 tautomer fallback: if the parent SMILES has no ionizable sites detected
-    # (e.g. warfarin supplied in keto form — the enol OH only appears in a tautomer),
-    # scan kept tautomers and borrow their sites.  This ensures the full scoring
-    # pipeline sees the correct acidic event without needing to re-enumerate.
+    # Tautomer fallback: if parent has no ionizable sites (e.g. warfarin keto form),
+    # check kept tautomers — their enol/tautomeric OH may carry the active pKa event.
     if not ion_sites:
         for taut_entry in kept:
             t_mol = Chem.MolFromSmiles(taut_entry["smiles"])
@@ -1830,11 +2081,23 @@ def run_job(*, input_type, smiles_text, uploaded_bytes, uploaded_name, target_pH
 # ─────────────────────────────────────────────────────────────────────────────
 # ZIP helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def zip_minimized_structures(out_dir, zip_path, selected_formats):
+def zip_minimized_structures(out_dir, zip_path, selected_formats, rank_only=None):
+    """Zip minimized structure files.
+
+    Parameters
+    ----------
+    out_dir         : output directory containing *_min.* files
+    zip_path        : destination ZIP path
+    selected_formats: list of format strings, e.g. ["PDB", "MOL2"]
+    rank_only       : if set to an integer (e.g. 1), only include files whose
+                      name contains ``_micro{rank_only}_`` (e.g. rank 1 only)
+    """
     out = Path(out_dir); zp = Path(zip_path)
     fmts = [f.lower() for f in selected_formats]
     with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as z:
         for p in out.glob("*_min.*"):
+            if rank_only is not None and f"_micro{rank_only}_" not in p.name:
+                continue
             s = p.suffix.lower()
             if (s == ".pdb" and "pdb" in fmts) or (s == ".mol2" and "mol2" in fmts):
                 z.write(p, arcname=p.name)
@@ -1848,26 +2111,18 @@ def zip_all_outputs(out_dir, zip_path):
     return str(zp)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# v80  PUBLIC FAST-PREDICT API
-# Three new public helpers built on top of the existing pipeline.
+# v80 PUBLIC FAST-PREDICT API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def heuristic_net_charge(smiles: str, ph: float = 7.4) -> "int | None":
-    """Fast formal-charge estimate from the ionizable-site SMARTS table + H-H.
+def heuristic_net_charge(smiles: str, ph: float = 7.4) -> int | None:
+    """Fast formal-charge estimate using the ionizable-site SMARTS table + H-H.
 
-    Uses the same SMARTS table as `find_ionizable_sites` but without tautomer
-    enumeration or Dimorphite calls (< 1 ms per molecule).  Two charge caps are
-    applied to suppress known systematic over-charging:
+    Unlike the full microstate pipeline this runs in <1 ms per molecule and
+    needs no tautomer enumeration or Dimorphite call. It applies the same
+    multi-site charge-cap logic used by `_expected_net_charge_from_sites` so
+    polyamine and multi-acid molecules are handled conservatively.
 
-    Cap 1 — polyamine: if no acid sites are present and multiple amines are all
-    protonated, cap at +1 (or +2 for 3+ very strong bases). Prevents spermine-
-    type over-charging.
-
-    Cap 2 — multi-acid: if no base sites are present and multiple acids are
-    deprotonated, cap at the number of sites whose pKa is *clearly* below ph
-    (pKa < ph − 1.5). Prevents over-deprotonation of symmetric diacids.
-
-    Returns the predicted integer formal charge, or None for an invalid SMILES.
+    Returns the predicted integer charge, or None if the SMILES is invalid.
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -1885,7 +2140,7 @@ def heuristic_net_charge(smiles: str, ph: float = 7.4) -> "int | None":
         stype = site.get("site_type", "acid")
         label = str(site.get("label", "")).lower()
 
-        # Skip conservative hydroxyl proxies that should not ionise at pH 7.4
+        # Skip conservative OH proxies that should never ionise at pH 7.4
         if "hydroxy_carboxyl_conservative" in label and ph < 12.5:
             continue
 
@@ -1898,7 +2153,9 @@ def heuristic_net_charge(smiles: str, ph: float = 7.4) -> "int | None":
             else:
                 base_charge += 1
 
-    # Cap 1: polyamine with no counterbalancing acid groups
+    # ── Multi-site charge caps (mirrors _expected_net_charge_from_sites) ────
+    # Cap 1: polyamine with no counterbalancing acid → at most +2 for 3+ strong
+    # bases, +1 otherwise.
     if acid_charge == 0 and base_charge > 1:
         n_strong_base = sum(
             1 for s in sites
@@ -1907,7 +2164,10 @@ def heuristic_net_charge(smiles: str, ph: float = 7.4) -> "int | None":
         )
         base_charge = min(base_charge, 2) if n_strong_base >= 3 else 1
 
-    # Cap 2: multi-acid with no counterbalancing base groups
+    # Cap 2: multi-acid with no counterbalancing base → cap at the number of
+    # acid sites whose pKa is CLEARLY below ph (pKa < ph − 1.5). Sites that
+    # are borderline (within 1.5 units) are unlikely to be simultaneously fully
+    # deprotonated in solution.
     if base_charge == 0 and acid_charge < -1:
         n_clear_acid = sum(
             1 for s in sites
@@ -1924,31 +2184,30 @@ def predict_charge(
     smiles: str,
     ph: float = 7.4,
     mode: str = "auto",
-    pubchem_result: "dict | None" = None,
+    pubchem_result: dict | None = None,
     ph_window: float = 1.0,
     max_tautomers: int = 8,
     top_n: int = 5,
-) -> "tuple[int | None, str]":
+) -> tuple[int | None, str]:
     """Predict formal charge at *ph* for a single molecule.
 
     Parameters
     ----------
-    smiles        : SMILES string
+    smiles        : SMILES string (any valid RDKit-parseable form)
     ph            : target pH (default 7.4)
-    mode          : ``'fast'``  — heuristic SMARTS + H-H only (< 1 ms)
-                    ``'full'``  — complete tautomer + Dimorphite + scoring pipeline
-                    ``'auto'``  — fast unless any detected site pKa is within 1.5 of
-                                  *ph* (borderline), **or** the molecule has rings but
-                                  no detectable ionizable sites (tautomeric enol risk,
-                                  e.g. warfarin keto form), in which case the full
-                                  pipeline is used automatically.
-    pubchem_result: pre-fetched PubChem pKa dict (optional, used only by full mode)
-    ph_window, max_tautomers, top_n : passed through to full pipeline
+    mode          : ``'fast'``  – heuristic SMARTS+H-H only (< 1 ms)
+                    ``'full'``  – complete tautomer+Dimorphite+scoring pipeline
+                    ``'auto'``  – fast unless any detected pKa is within 1.5 pH
+                                  units of *ph* (borderline), in which case the
+                                  full pipeline is used automatically
+    pubchem_result: pre-fetched PubChem pKa dict (optional, used by full mode)
+    ph_window     : passed to full pipeline (default 1.0)
+    max_tautomers : passed to full pipeline (default 8)
+    top_n         : passed to full pipeline (default 5)
 
     Returns
     -------
-    ``(charge, mode_used)`` where *mode_used* is ``'fast'``, ``'full'``, or
-    ``'fast_fallback'`` (full pipeline failed, reverted to heuristic).
+    (charge, mode_used) where mode_used is 'fast', 'full', or 'fast_fallback'
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -1959,20 +2218,16 @@ def predict_charge(
 
     if mode in ("auto", "full"):
         sites = find_ionizable_sites(mol) if mode == "auto" else []
-
-        is_borderline = any(
-            abs(ph - float(s.get("heuristic_pka", ph + 99))) <= 1.5
-            for s in sites
-        )
-        # Tautomeric enol risk: ring molecule with zero detected sites on the
-        # parent (e.g. warfarin supplied as the keto form).
-        tautomeric_risk = (
-            mode == "auto"
-            and not sites
-            and mol.GetRingInfo().NumRings() > 0
-            and mol.GetNumHeavyAtoms() > 4
-        )
-
+        is_borderline = any(abs(ph - float(s.get("heuristic_pka", ph + 99))) <= 1.5
+                            for s in sites)
+        # In auto mode, escalate to full pipeline when:
+        # (a) any site has pKa within 1.5 of ph, OR
+        # (b) no sites found on the parent but molecule has rings and >4 heavy atoms —
+        #     could be a tautomeric enol acid (e.g. warfarin) where the acidic OH
+        #     only exists in a non-input tautomer.
+        tautomeric_risk = (mode == "auto" and not sites
+                           and mol.GetRingInfo().NumRings() > 0
+                           and mol.GetNumHeavyAtoms() > 4)
         if mode == "auto" and not is_borderline and not tautomeric_risk:
             return heuristic_net_charge(smiles, ph), "fast"
 
@@ -1990,6 +2245,7 @@ def predict_charge(
                 return top[0]["net_charge"], "full"
         except Exception:
             pass
+        # Fall back to fast if full pipeline fails
         return heuristic_net_charge(smiles, ph), "fast_fallback"
 
     raise ValueError(f"Unknown mode: {mode!r}. Use 'fast', 'full', or 'auto'.")
@@ -1999,24 +2255,24 @@ def batch_predict_charges(
     records,
     ph: float = 7.4,
     mode: str = "auto",
-    pubchem_lookup_enabled: bool = False,
+    pubchem_lookup: bool = False,
     progress: bool = False,
 ) -> "pd.DataFrame":
     """Batch formal-charge prediction for a list of molecules.
 
     Parameters
     ----------
-    records      : iterable of SMILES strings **or** ``(smiles, name)`` tuples
-    ph           : target pH (default 7.4)
-    mode         : ``'fast'``, ``'full'``, or ``'auto'`` — see :func:`predict_charge`
-    pubchem_lookup_enabled : if True, queries PubChem for each molecule (slow)
-    progress     : print a progress dot every 1 000 molecules
+    records       : iterable of SMILES strings **or** (smiles, name) tuples
+    ph            : target pH (default 7.4)
+    mode          : 'fast', 'full', or 'auto' (see ``predict_charge``)
+    pubchem_lookup: if True, query PubChem for each molecule (slow; default False)
+    progress      : print a dot every 1000 molecules (default False)
 
     Returns
     -------
-    ``pandas.DataFrame`` with columns:
-        ``name``, ``smiles``, ``predicted_charge``, ``mode_used``,
-        ``n_ion_sites``, ``borderline_pka``, ``is_zwitterion``, ``error``
+    pandas DataFrame with columns:
+        name, smiles, predicted_charge, mode_used, n_ion_sites,
+        borderline_pka, is_zwitterion, error
     """
     try:
         import pandas as _pd
@@ -2030,11 +2286,9 @@ def batch_predict_charges(
         else:
             smi, name = rec[0], (rec[1] if len(rec) > 1 else f"mol_{i+1:06d}")
 
-        row: dict = {
-            "name": name, "smiles": smi, "predicted_charge": None,
-            "mode_used": "error", "n_ion_sites": 0,
-            "borderline_pka": False, "is_zwitterion": False, "error": None,
-        }
+        row: dict = {"name": name, "smiles": smi, "predicted_charge": None,
+                     "mode_used": "error", "n_ion_sites": 0,
+                     "borderline_pka": False, "is_zwitterion": False, "error": None}
         try:
             mol = Chem.MolFromSmiles(smi)
             if mol is None:
@@ -2046,29 +2300,29 @@ def batch_predict_charges(
                     abs(ph - float(s.get("heuristic_pka", ph + 99))) <= 1.5
                     for s in sites
                 )
-                pc = pubchem_lookup(smi) if pubchem_lookup_enabled else {}
-                charge, mode_used = predict_charge(smi, ph=ph, mode=mode,
-                                                   pubchem_result=pc)
+                pc = pubchem_lookup_fn(smi) if pubchem_lookup else {}
+                charge, mode_used = predict_charge(
+                    smi, ph=ph, mode=mode, pubchem_result=pc)
                 row["predicted_charge"] = charge
                 row["mode_used"]        = mode_used
-                # Zwitterion flag: at least one acid site AND one base site both charged
-                n_acid_ch = sum(
+                # Zwitterion: has both + and - sites predicted charged
+                acid_ch = sum(
                     1 for s in sites
                     if s.get("site_type") == "acid"
                     and (1.0 / (1.0 + 10 ** (float(s.get("heuristic_pka", 14)) - ph))) > 0.5
                 )
-                n_base_ch = sum(
+                base_ch = sum(
                     1 for s in sites
                     if s.get("site_type") == "base"
                     and (1.0 / (1.0 + 10 ** (ph - float(s.get("heuristic_pka", 0))))) > 0.5
                 )
-                row["is_zwitterion"] = bool(n_acid_ch > 0 and n_base_ch > 0)
+                row["is_zwitterion"] = bool(acid_ch > 0 and base_ch > 0)
         except Exception as exc:
             row["error"] = str(exc)[:120]
 
         rows.append(row)
         if progress and (i + 1) % 1000 == 0:
-            print(f"  batch_predict_charges: {i + 1} done …", flush=True)
+            print(f"  batch_predict_charges: {i+1} done …", flush=True)
 
     return _pd.DataFrame(rows, columns=[
         "name", "smiles", "predicted_charge", "mode_used",
@@ -2076,5 +2330,5 @@ def batch_predict_charges(
     ])
 
 
-# Backwards-compatibility alias
+# Alias for backwards-compat with older call sites that used pubchem_lookup directly
 pubchem_lookup_fn = pubchem_lookup
