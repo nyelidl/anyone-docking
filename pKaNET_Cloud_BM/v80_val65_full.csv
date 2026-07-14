@@ -1,66 +1,68 @@
-test_id,group,name,smiles,target_pH,expected_charge,fragment_guard,fragment_guard_pass,pka_source,pubchem_mock,predicted_charge,predicted_smiles,selection_score,pka_source_v80,decision_backend,flag_borderline_pka,flag_tautomer_rich,flag_ambiguous,is_zwitterion,n_microstates,agreement
-T01,G1,Imidazole,C1=CN=CN1,7.4,0,[n-],True,heuristic,no,0,c1c[nH]cn1,2.3,heuristic,heuristic_only,False,True,True,False,2,PASS
-T02,G1,Benzimidazole,C1=CC=C2C(=C1)NC=N2,7.4,0,[n-],True,pubchem,yes,0,c1ccc2[nH]cnc2c1,2.495,heuristic,heuristic_only,False,True,True,False,2,PASS
-T03,G1,Pyrazole,C1=CC=NN1,7.4,0,[n-],True,heuristic,no,0,c1cn[nH]c1,2.3,heuristic,heuristic_only,False,False,False,False,2,PASS
-T04,G1,Indazole,C1=CC2=CC=CC=C2N1,7.4,0,[n-],True,heuristic,no,0,c1ccc2[nH]ccc2c1,2.345,heuristic,heuristic_only,False,False,False,False,1,PASS
-T05,G1,Purine,C1=NC2=NC=NC=C2N1,7.4,0,[n-],True,heuristic,no,0,c1ncc2[nH]cnc2n1,2.6,heuristic,heuristic_only,False,True,True,False,4,PASS
-T06,G1,Adenine,Nc1ncnc2[nH]cnc12,7.4,0,[n-],True,heuristic,no,0,Nc1ncnc2[nH]cnc12,2.75,heuristic,heuristic_only,False,True,True,False,20,PASS
-T07,G1,1-Methylbenzimidazole,Cn1cnc2ccccc21,7.4,0,[n-],True,heuristic,no,0,Cn1cnc2ccccc21,2.345,heuristic,heuristic_only,False,False,False,False,1,PASS
-T08,G1,Clotrimazole,Clc1ccccc1C(c1ccccc1)(c1ccccc1)n1ccnc1,7.4,0,[n-],True,heuristic,no,0,Clc1ccccc1C(c1ccccc1)(c1ccccc1)n1ccnc1,2.735,heuristic,heuristic_only,False,False,False,False,1,PASS
-T09,G1,Omeprazole,COc1ccc2[nH]c(S(=O)Cc3ncc(C)c(OC)c3C)nc2c1,7.4,0,[n-],True,heuristic,no,0,COc1ccc2[nH]c(S(=O)Cc3ncc(C)c(OC)c3C)nc2c1,2.495,heuristic,heuristic_only,False,True,True,False,4,PASS
-T10,G1,Metronidazole,Cc1ncc([N+](=O)[O-])n1CCO,7.4,0,[n-],True,heuristic,no,0,Cc1ncc([N+](=O)[O-])n1CCO,1.55,heuristic,heuristic_only,False,False,False,True,1,PASS
-T11,G2,Methylphosphonic acid,CP(=O)(O)O,7.4,-2,,True,heuristic,no,-2,CP(=O)([O-])[O-],4.152,heuristic,heuristic_only,True,False,True,False,3,PASS
-T12,G2,Phenylphosphonic acid,OP(=O)(O)c1ccccc1,7.4,-2,,True,heuristic,no,-2,O=P([O-])([O-])c1ccccc1,1.047,heuristic,heuristic_only,True,False,True,False,3,PASS
-T13,G2,Fosfomycin,CC1OC1P(=O)(O)O,7.4,-2,,True,heuristic,no,-2,CC1OC1P(=O)([O-])[O-],4.152,heuristic,heuristic_only,True,False,True,False,3,PASS
-T14,G2,Alendronate,NCCCP(=O)(O)P(=O)(O)O,7.4,-2,,True,heuristic,no,-2,[NH3+]CCCP(=O)([O-])P(=O)([O-])[O-],7.212,heuristic,heuristic_only,True,False,True,False,14,PASS
-T15,G2,Tenofovir,Cc1cn([C@@H]2C[C@H](COP(=O)(O)O)O2)c(=O)nc1N,7.4,-2,,True,heuristic,no,-2,Cc1cn([C@@H]2C[C@H](COP(=O)([O-])[O-])O2)c(O)nc1=N,4.777,heuristic,heuristic_only,True,False,True,False,16,PASS
-T16,G2,Phosphate monoester,COP(=O)(O)O,7.4,-2,,True,heuristic,no,-2,COP(=O)([O-])[O-],4.152,heuristic,heuristic_only,True,False,True,False,3,PASS
-T17,G2,Glyphosate,OC(=O)CNCP(=O)(O)O,7.4,-2,,True,heuristic,no,-2,O=C([O-])C[NH2+]CP(=O)([O-])[O-],3.912,heuristic,heuristic_only,True,False,True,False,36,PASS
-T18,G3,Thiophenol,Sc1ccccc1,7.4,-1,,True,heuristic,no,-1,[S-]c1ccccc1,3.137,heuristic,heuristic_only,True,False,True,False,2,PASS
-T19,G3,4-Chlorothiophenol,Sc1ccc(Cl)cc1,7.4,-1,,True,heuristic,no,-1,[S-]c1ccc(Cl)cc1,3.137,heuristic,heuristic_only,True,False,True,False,2,PASS
-T20,G3,6-Mercaptopurine,S=c1[nH]cnc2nc[nH]c12,7.4,-1,,True,heuristic,no,-1,S=c1[n-]cnc2nc[nH]c12,2.952,heuristic,heuristic_only,True,True,True,False,24,PASS
-T21,G3,Captopril,SC[C@@H]1N[C@@H](C(=O)O)CS1,7.4,-1,,True,heuristic,no,-1,O=C([O-])[C@H]1CS[C@H](CS)N1,0.65,heuristic,heuristic_only,True,False,True,False,27,PASS
-T22,G3,Ethanethiol,CCS,7.4,0,,True,heuristic,no,0,CCS,2.15,heuristic,heuristic_only,False,False,False,False,2,PASS
-T23,G4,Acetic acid,CC(=O)O,7.4,-1,,True,heuristic,no,-1,CC(=O)[O-],3.65,heuristic,heuristic_only,False,False,False,False,5,PASS
-T24,G4,Ibuprofen,CC(C)Cc1ccc(CC(C)C(=O)O)cc1,7.4,-1,,True,heuristic,no,-1,CC(C)Cc1ccc(CC(C)C(=O)[O-])cc1,3.845,heuristic,heuristic_only,False,False,False,False,5,PASS
-T25,G4,Aspirin,CC(=O)Oc1ccccc1C(=O)O,7.4,-1,,True,heuristic,no,-1,CC(=O)Oc1ccccc1C(=O)[O-],3.845,heuristic,heuristic_only,False,False,False,False,5,PASS
-T26,G4,Diclofenac,OC(=O)Cc1ccccc1Nc1c(Cl)cccc1Cl,7.4,-1,,True,heuristic,no,-1,[O-]C(O)=Cc1ccccc1Nc1c(Cl)cccc1Cl,2.63,heuristic,heuristic_only,False,False,False,False,7,PASS
-T27,G4,Trichloroacetic acid,OC(=O)C(Cl)(Cl)Cl,7.4,-1,,True,heuristic,no,-1,O=C([O-])C(Cl)(Cl)Cl,0.35,heuristic,heuristic_only,False,False,False,False,2,PASS
-T28,G5,Phenol,Oc1ccccc1,7.4,0,,True,heuristic,no,0,Oc1ccccc1,2.67,heuristic,heuristic_only,False,False,False,False,2,PASS
-T29,G5,4-Nitrophenol,Oc1ccc([N+](=O)[O-])cc1,7.4,-1,,True,heuristic,no,-1,O=[N+]([O-])c1ccc([O-])cc1,2.034,heuristic,heuristic_only,True,False,True,False,2,PASS
-T30,G5,Pentafluorophenol,Oc1c(F)c(F)c(F)c(F)c1F,7.4,-1,,True,heuristic,no,-1,[O-]c1c(F)c(F)c(F)c(F)c1F,4.17,heuristic,heuristic_only,False,False,False,False,2,PASS
-T31,G5,Acetaminophen,CC(=O)Nc1ccc(O)cc1,7.4,0,,True,heuristic,no,0,CC(=O)Nc1ccc(O)cc1,4.445,heuristic,heuristic_only,False,False,False,False,4,PASS
-T32,G5,Catechol,Oc1ccccc1O,7.4,0,,True,heuristic,no,0,Oc1ccccc1O,3.145,heuristic,heuristic_only,False,False,False,False,3,PASS
-T33,G5,Warfarin,CC(=O)CC1C(=O)c2ccccc2OC1c1ccccc1,7.4,-1,,True,heuristic,no,-1,CC(=O)CC1=C([O-])c2ccccc2OC1c1ccccc1,3.26,heuristic,heuristic_only,False,True,True,False,15,PASS
-T34,G6,Aniline,Nc1ccccc1,7.4,0,,True,heuristic,no,0,Nc1ccccc1,2.345,heuristic,heuristic_only,False,False,False,False,1,PASS
-T35,G6,Pyridine,c1ccncc1,7.4,0,,True,heuristic,no,0,c1ccncc1,2.0,heuristic,heuristic_only,False,False,False,False,1,PASS
-T36,G6,Methylamine,CN,7.4,1,,True,heuristic,no,1,C[NH3+],3.65,heuristic,heuristic_only,False,False,False,False,2,PASS
-T37,G6,Metformin,CN(C)C(=N)NC(=N)N,7.4,1,,True,heuristic,no,1,C[NH+](C)C(=N)NC(=N)N,3.65,heuristic,heuristic_only,False,False,True,False,19,PASS
-T38,G6,Amlodipine,CCOC(=O)C1=C(CCl)NC(C)=C(C(=O)OCC)C1c1ccccc1Cl,7.4,1,,True,heuristic,no,1,CCOC(=O)C1=C(CCl)[NH+]=C(C)C(C(=O)OCC)C1c1ccccc1Cl,3.845,heuristic,heuristic_only,False,False,False,False,14,PASS
-T39,G7,Methanesulfonamide,CS(=O)(=O)N,7.4,0,,True,heuristic,no,0,CS(N)(=O)=O,2.15,heuristic,heuristic_only,False,False,False,False,2,PASS
-T40,G7,Saccharin,O=C1NS(=O)(=O)c2ccccc21,7.4,-1,,True,heuristic,no,-1,O=C1[N-]S(=O)(=O)c2ccccc21,7.095,heuristic,heuristic_only,False,False,False,False,2,PASS
-T41,G7,Chlorothiazide,NS(=O)(=O)c1cc2c(cc1Cl)NCNS2=O,7.4,-1,,True,heuristic,no,-1,[NH-]S(=O)(=O)c1cc2c(cc1Cl)NCNS2=O,3.023,heuristic,heuristic_only,True,False,True,False,6,PASS
-T42,G7,Furosemide,NS(=O)(=O)c1cc(C(=O)O)c(NCc2ccco2)cc1Cl,7.4,-2,,True,heuristic,no,-2,[NH-]S(=O)(=O)c1cc(C(=O)[O-])c(NCc2ccco2)cc1Cl,5.377,heuristic,heuristic_only,False,False,False,False,5,PASS
-T43,G8,Baicalein,O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12,7.4,0,[O-],True,heuristic,no,0,O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12,3.815,heuristic,heuristic_only,True,False,True,False,8,PASS
-T44,G8,Apigenin,O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,7.4,0,[O-],True,heuristic,no,0,O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,3.815,heuristic,heuristic_only,False,False,False,False,8,PASS
-T45,G8,Luteolin,O=c1cc(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12,7.4,0,[O-],True,heuristic,no,0,O=c1cc(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12,4.29,heuristic,heuristic_only,False,False,False,False,16,PASS
-T46,G8,Kaempferol,O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,7.4,0,[O-],True,heuristic,no,0,O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,4.29,heuristic,heuristic_only,True,False,True,False,16,PASS
-T47,G9,Glycine,NCC(=O)O,7.4,0,,True,heuristic,no,0,[NH3+]CC(=O)[O-],6.1,heuristic,heuristic_only,False,False,False,True,17,PASS
-T48,G9,Histidine,N[C@@H](Cc1c[nH]cn1)C(=O)O,7.4,0,[n-],True,pubchem,yes,0,[NH3+][C@@H](Cc1c[nH]cn1)C(=O)[O-],6.4,heuristic,heuristic_only,False,True,True,True,82,PASS
-T49,G9,Glutamic acid,N[C@@H](CCC(=O)O)C(=O)O,7.4,-1,,True,heuristic,no,-1,[NH3+][C@@H](CCC(=O)[O-])C(=O)[O-],6.83,heuristic,heuristic_only,False,False,True,False,129,PASS
-T50,G9,Lysine,NCCCC[C@@H](N)C(=O)O,7.4,1,,True,heuristic,no,1,[NH3+]CCCC[C@@H]([NH3+])C(=O)[O-],6.83,heuristic,heuristic_only,False,False,True,False,69,PASS
-T51,G9,Cysteine,N[C@@H](CS)C(=O)O,7.4,0,,True,heuristic,no,0,[NH3+][C@@H](CS)C(=O)[O-],6.25,heuristic,heuristic_only,True,False,True,True,79,PASS
-T52,G10,Benzimidazole+PubChem base pKa,C1=CC=C2C(=C1)NC=N2,7.4,0,[n-],True,pubchem,yes,0,c1ccc2[nH]cnc2c1,2.495,heuristic,heuristic_only,False,True,True,False,2,PASS
-T53,G10,Imidazole+PubChem base pKa,C1=CN=CN1,7.4,0,[n-],True,pubchem,yes,0,c1c[nH]cn1,2.3,heuristic,heuristic_only,False,True,True,False,2,PASS
-T54,G10,Phenol+PubChem correct pKa,Oc1ccccc1,7.4,0,,True,pubchem,yes,0,Oc1ccccc1,2.67,heuristic,heuristic_only,False,False,False,False,2,PASS
-T55,G11,Caffeine,Cn1cnc2c1c(=O)n(C)c(=O)n2C,7.4,0,,True,heuristic,no,0,Cn1c(=O)c2c(ncn2C)n(C)c1=O,2.15,heuristic,heuristic_only,False,False,False,False,1,PASS
-T56,G11,Cholesterol,C[C@H](CCCC(C)C)[C@H]1CC[C@@H]2[C@@H]3CC=C4C[C@@H](O)CC[C@]4(C)[C@H]3CC[C@]12C,7.4,0,,True,heuristic,no,0,CC(C)CCC[C@@H](C)[C@H]1CC[C@@H]2[C@@H]3CC=C4C[C@@H](O)CC[C@]4(C)[C@H]3CC[C@@]21C,2.0,heuristic,heuristic_only,False,False,False,False,1,PASS
-T57,G11,Glucose,OC[C@H]1OC(O)[C@H](O)[C@@H](O)[C@@H]1O,7.4,0,,True,heuristic,no,0,OC[C@H]1OC(O)[C@H](O)[C@@H](O)[C@@H]1O,2.0,heuristic,heuristic_only,False,False,False,False,1,PASS
-T58,G11,Benzene,c1ccccc1,7.4,0,,True,heuristic,no,0,c1ccccc1,2.195,heuristic,heuristic_only,False,False,False,False,1,PASS
-T59,G12,Erlotinib,COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC,7.4,0,[n-],True,heuristic,no,0,C#Cc1cccc(Nc2ncnc3cc(OCCOC)c(OCCOC)cc23)c1,2.84,heuristic,heuristic_only,False,False,True,False,5,PASS
-T60,G12,Gefitinib,COc1cc2c(cc1OCCCN1CCOCC1)ncnc2Nc1ccc(F)c(Cl)c1,7.4,1,,True,heuristic,no,1,COc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1OCCC[NH+]1CCOCC1,2.258,heuristic,heuristic_only,True,False,True,False,20,PASS
-T61,G12,Imatinib,Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1,7.4,1,,True,heuristic,no,1,Cc1ccc(NC(=O)c2ccc(CN3CC[NH+](C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1,5.883,heuristic,heuristic_only,False,False,True,False,55,PASS
-T62,G12,Osimertinib,C=CC(=O)Nc1cc(-c2cn(C)c3ncnc(Nc4ccc(F)c(Cl)c4)c23)ccn1,7.4,0,,True,heuristic,no,0,C=CC(=O)Nc1cc(-c2cn(C)c3ncnc(Nc4ccc(F)c(Cl)c4)c23)ccn1,4.42,heuristic,heuristic_only,False,False,True,False,20,PASS
-T63,G12,Atorvastatin,CC(C)c1n(CC[C@@H](O)C[C@@H](O)CC(=O)O)c(-c2ccccc2)c(C(=O)Nc2ccccc2F)c1CC(=O)O,7.4,-2,,True,heuristic,no,-2,CC(C)c1c(CC(=O)[O-])c(C(=O)Nc2ccccc2F)c(-c2ccccc2)n1CC[C@@H](O)C[C@@H](O)CC(=O)[O-],4.315,heuristic,heuristic_only,False,False,False,False,31,PASS
-T64,G12,Methotrexate,CN(Cc1cnc2nc(N)nc(N)c2n1)c1ccc(C(=O)N[C@@H](CCC(=O)O)C(=O)O)cc1,7.4,-2,,True,heuristic,no,-2,CN(Cc1cnc2nc(N)nc(N)c2n1)c1ccc(C(=O)N[C@@H](CCC(=O)[O-])C(=O)[O-])cc1,8.02,heuristic,heuristic_only,False,False,True,False,187,PASS
-T65,G12,Ciprofloxacin,O=C(O)c1cn(C2CC2)c2cc(N3CCNCC3)c(F)cc2c1=O,7.4,0,,True,heuristic,no,0,O=C([O-])c1cn(C2CC2)c2cc(N3CC[NH2+]CC3)c(F)cc2c1=O,6.445,heuristic,heuristic_only,False,False,False,True,8,PASS
+test_id,group,name,smiles,target_pH,expected_charge,predicted_charge,agreement,fragment_guard,fragment_guard_pass,top_smiles,selection_score,pka_source,pubchem_mock
+T01,G1,Imidazole,C1=CN=CN1,7.4,0,0,PASS,[n-],True,c1c[nH]cn1,2.3,heuristic,no
+T02,G1,Benzimidazole,C1=CC=C2C(=C1)NC=N2,7.4,0,0,PASS,[n-],True,c1ccc2[nH]cnc2c1,2.315,pubchem,yes
+T03,G1,Pyrazole,C1=CC=NN1,7.4,0,0,PASS,[n-],True,c1cn[nH]c1,2.3,heuristic,no
+T04,G1,Indazole,C1=CC2=CC=CC=C2N1,7.4,0,0,PASS,[n-],True,c1ccc2[nH]ccc2c1,2.3449999999999998,heuristic,no
+T05,G1,Purine,C1=NC2=NC=NC=C2N1,7.4,0,0,PASS,[n-],True,c1ncc2[nH]cnc2n1,2.6,heuristic,no
+T06,G1,Adenine,Nc1ncnc2[nH]cnc12,7.4,0,0,PASS,[n-],True,Nc1ncnc2[nH]cnc12,2.75,heuristic,no
+T07,G1,1-Methylbenzimidazole,Cn1cnc2ccccc21,7.4,0,0,PASS,[n-],True,Cn1cnc2ccccc21,2.3449999999999998,heuristic,no
+T08,G1,Clotrimazole,Clc1ccccc1C(c1ccccc1)(c1ccccc1)n1ccnc1,7.4,0,0,PASS,[n-],True,Clc1ccccc1C(c1ccccc1)(c1ccccc1)n1ccnc1,2.735,heuristic,no
+T09,G1,Omeprazole,COc1ccc2[nH]c(S(=O)Cc3ncc(C)c(OC)c3C)nc2c1,7.4,0,0,PASS,[n-],True,COc1ccc2[nH]c(S(=O)Cc3ncc(C)c(OC)c3C)nc2c1,2.495,heuristic,no
+T10,G1,Metronidazole,Cc1ncc([N+](=O)[O-])n1CCO,7.4,0,0,PASS,[n-],True,Cc1ncc([N+](=O)[O-])n1CCO,1.55,heuristic,no
+T11,G2,Methylphosphonic acid,CP(=O)(O)O,7.4,-2,-2,PASS,,True,CP(=O)([O-])[O-],4.152,heuristic,no
+T12,G2,Phenylphosphonic acid,OP(=O)(O)c1ccccc1,7.4,-2,-2,PASS,,True,O=P([O-])([O-])c1ccccc1,1.0470000000000004,heuristic,no
+T13,G2,Fosfomycin,CC1OC1P(=O)(O)O,7.4,-2,-2,PASS,,True,CC1OC1P(=O)([O-])[O-],4.152,heuristic,no
+T14,G2,Alendronate,NCCCP(=O)(O)P(=O)(O)O,7.4,-2,-2,PASS,,True,[NH3+]CCCP(=O)([O-])P(=O)([O-])[O-],7.212,heuristic,no
+T15,G2,Tenofovir,Cc1cn([C@@H]2C[C@H](COP(=O)(O)O)O2)c(=O)nc1N,7.4,-2,-2,PASS,,True,Cc1cn([C@@H]2C[C@H](COP(=O)([O-])[O-])O2)c(O)nc1=N,4.777,heuristic,no
+T16,G2,Phosphate monoester,COP(=O)(O)O,7.4,-2,-2,PASS,,True,COP(=O)([O-])[O-],4.152,heuristic,no
+T17,G2,Glyphosate,OC(=O)CNCP(=O)(O)O,7.4,-2,-2,PASS,,True,O=C([O-])C[NH2+]CP(=O)([O-])[O-],3.912,heuristic,no
+T18,G3,Thiophenol,Sc1ccccc1,7.4,-1,-1,PASS,,True,[S-]c1ccccc1,3.1370000000000005,heuristic,no
+T19,G3,4-Chlorothiophenol,Sc1ccc(Cl)cc1,7.4,-1,-1,PASS,,True,[S-]c1ccc(Cl)cc1,3.1370000000000005,heuristic,no
+T20,G3,6-Mercaptopurine,S=c1[nH]cnc2nc[nH]c12,7.4,-1,-1,PASS,,True,S=c1[n-]cnc2nc[nH]c12,2.9520000000000004,heuristic,no
+T21,G3,Captopril,SC[C@@H]1N[C@@H](C(=O)O)CS1,7.4,-1,-1,PASS,,True,O=C([O-])[C@H]1CS[C@H](CS)N1,0.6499999999999999,heuristic,no
+T22,G3,Ethanethiol,CCS,7.4,0,0,PASS,,True,CCS,2.15,heuristic,no
+T23,G4,Acetic acid,CC(=O)O,7.4,-1,-1,PASS,,True,CC(=O)[O-],3.65,heuristic,no
+T24,G4,Ibuprofen,CC(C)Cc1ccc(CC(C)C(=O)O)cc1,7.4,-1,-1,PASS,,True,CC(C)Cc1ccc(CC(C)C(=O)[O-])cc1,3.8449999999999998,heuristic,no
+T25,G4,Aspirin,CC(=O)Oc1ccccc1C(=O)O,7.4,-1,-1,PASS,,True,CC(=O)Oc1ccccc1C(=O)[O-],3.8449999999999998,heuristic,no
+T26,G4,Diclofenac,OC(=O)Cc1ccccc1Nc1c(Cl)cccc1Cl,7.4,-1,-1,PASS,,True,[O-]C(O)=Cc1ccccc1Nc1c(Cl)cccc1Cl,2.63,heuristic,no
+T27,G4,Trichloroacetic acid,OC(=O)C(Cl)(Cl)Cl,7.4,-1,-1,PASS,,True,O=C([O-])C(Cl)(Cl)Cl,0.3500000000000001,heuristic,no
+T28,G5,Phenol,Oc1ccccc1,7.4,0,0,PASS,,True,Oc1ccccc1,2.67,heuristic,no
+T29,G5,4-Nitrophenol,Oc1ccc([N+](=O)[O-])cc1,7.4,-1,-1,PASS,,True,O=[N+]([O-])c1ccc([O-])cc1,2.0339999999999994,heuristic,no
+T30,G5,Pentafluorophenol,Oc1c(F)c(F)c(F)c(F)c1F,7.4,-1,-1,PASS,,True,[O-]c1c(F)c(F)c(F)c(F)c1F,4.17,heuristic,no
+T31,G5,Acetaminophen,CC(=O)Nc1ccc(O)cc1,7.4,0,0,PASS,,True,CC(=O)Nc1ccc(O)cc1,4.445,heuristic,no
+T32,G5,Catechol,Oc1ccccc1O,7.4,0,0,PASS,,True,Oc1ccccc1O,3.145,heuristic,no
+T33,G5,Warfarin,CC(=O)CC1C(=O)c2ccccc2OC1c1ccccc1,7.4,-1,-1,PASS,,True,CC(=O)CC1=C([O-])c2ccccc2OC1c1ccccc1,3.26,heuristic,no
+T34,G6,Aniline,Nc1ccccc1,7.4,0,0,PASS,,True,Nc1ccccc1,2.3449999999999998,heuristic,no
+T35,G6,Pyridine,c1ccncc1,7.4,0,0,PASS,,True,c1ccncc1,2.0,heuristic,no
+T36,G6,Methylamine,CN,7.4,1,1,PASS,,True,C[NH3+],3.65,heuristic,no
+T37,G6,Metformin,CN(C)C(=N)NC(=N)N,7.4,1,1,PASS,,True,C[NH+](C)C(=N)NC(=N)N,3.65,heuristic,no
+T38,G6,Amlodipine,CCOC(=O)C1=C(CCl)NC(C)=C(C(=O)OCC)C1c1ccccc1Cl,7.4,1,1,PASS,,True,CCOC(=O)C1=C(CCl)[NH+]=C(C)C(C(=O)OCC)C1c1ccccc1Cl,3.8449999999999998,heuristic,no
+T39,G7,Methanesulfonamide,CS(=O)(=O)N,7.4,0,0,PASS,,True,CS(N)(=O)=O,2.15,heuristic,no
+T40,G7,Saccharin,O=C1NS(=O)(=O)c2ccccc21,7.4,-1,-1,PASS,,True,O=C1[N-]S(=O)(=O)c2ccccc21,7.095,heuristic,no
+T41,G7,Chlorothiazide,NS(=O)(=O)c1cc2c(cc1Cl)NCNS2=O,7.4,-1,-1,PASS,,True,[NH-]S(=O)(=O)c1cc2c(cc1Cl)NCNS2=O,3.0230000000000006,heuristic,no
+T42,G7,Furosemide,NS(=O)(=O)c1cc(C(=O)O)c(NCc2ccco2)cc1Cl,7.4,-2,-2,PASS,,True,[NH-]S(=O)(=O)c1cc(C(=O)[O-])c(NCc2ccco2)cc1Cl,5.377,heuristic,no
+T43,G8,Baicalein,O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12,7.4,0,0,PASS,[O-],True,O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12,3.8150000000000004,heuristic,no
+T44,G8,Apigenin,O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,7.4,0,0,PASS,[O-],True,O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,3.8150000000000004,heuristic,no
+T45,G8,Luteolin,O=c1cc(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12,7.4,0,0,PASS,[O-],True,O=c1cc(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12,4.29,heuristic,no
+T46,G8,Kaempferol,O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,7.4,0,0,PASS,[O-],True,O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12,4.29,heuristic,no
+T47,G9,Glycine,NCC(=O)O,7.4,0,0,PASS,,True,[NH3+]CC(=O)[O-],6.1,heuristic,no
+T48,G9,Histidine,N[C@@H](Cc1c[nH]cn1)C(=O)O,7.4,0,0,PASS,[n-],True,[NH3+][C@@H](Cc1c[nH]cn1)C(=O)[O-],6.35,pubchem,yes
+T49,G9,Glutamic acid,N[C@@H](CCC(=O)O)C(=O)O,7.4,-1,-1,PASS,,True,[NH3+][C@@H](CCC(=O)[O-])C(=O)[O-],6.829999999999999,heuristic,no
+T50,G9,Lysine,NCCCC[C@@H](N)C(=O)O,7.4,1,1,PASS,,True,[NH3+]CCCC[C@@H]([NH3+])C(=O)[O-],6.829999999999999,heuristic,no
+T51,G9,Cysteine,N[C@@H](CS)C(=O)O,7.4,0,0,PASS,,True,[NH3+][C@@H](CS)C(=O)[O-],6.25,heuristic,no
+T52,G10,Benzimidazole+PubChem base pKa,C1=CC=C2C(=C1)NC=N2,7.4,0,0,PASS,[n-],True,c1ccc2[nH]cnc2c1,2.315,pubchem,yes
+T53,G10,Imidazole+PubChem base pKa,C1=CN=CN1,7.4,0,0,PASS,[n-],True,c1c[nH]cn1,2.0,pubchem,yes
+T54,G10,Phenol+PubChem correct pKa,Oc1ccccc1,7.4,0,0,PASS,,True,Oc1ccccc1,3.17,pubchem,yes
+T55,G11,Caffeine,Cn1cnc2c1c(=O)n(C)c(=O)n2C,7.4,0,0,PASS,,True,Cn1c(=O)c2c(ncn2C)n(C)c1=O,2.15,heuristic,no
+T56,G11,Cholesterol,C[C@H](CCCC(C)C)[C@H]1CC[C@@H]2[C@@H]3CC=C4C[C@@H](O)CC[C@]4(C)[C@H]3CC[C@]12C,7.4,0,0,PASS,,True,CC(C)CCC[C@@H](C)[C@H]1CC[C@@H]2[C@@H]3CC=C4C[C@@H](O)CC[C@]4(C)[C@H]3CC[C@@]21C,2.0,heuristic,no
+T57,G11,Glucose,OC[C@H]1OC(O)[C@H](O)[C@@H](O)[C@@H]1O,7.4,0,0,PASS,,True,OC[C@H]1OC(O)[C@H](O)[C@@H](O)[C@@H]1O,2.0,heuristic,no
+T58,G11,Benzene,c1ccccc1,7.4,0,0,PASS,,True,c1ccccc1,2.195,heuristic,no
+T59,G12,Erlotinib,COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC,7.4,0,0,PASS,[n-],True,C#Cc1cccc(Nc2ncnc3cc(OCCOC)c(OCCOC)cc23)c1,2.84,heuristic,no
+T60,G12,Gefitinib,COc1cc2c(cc1OCCCN1CCOCC1)ncnc2Nc1ccc(F)c(Cl)c1,7.4,1,1,PASS,,True,COc1cc2c([NH2+]c3ccc(F)c(Cl)c3)ncnc2cc1OCCCN1CCOCC1,2.2580000000000005,heuristic,no
+T61,G12,Imatinib,Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1,7.4,1,1,PASS,,True,Cc1ccc(NC(=O)c2ccc(CN3CC[NH+](C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1,5.883,heuristic,no
+T62,G12,Osimertinib,C=CC(=O)Nc1cc(-c2cn(C)c3ncnc(Nc4ccc(F)c(Cl)c4)c23)ccn1,7.4,0,0,PASS,,True,C=CC(=O)Nc1cc(-c2cn(C)c3ncnc(Nc4ccc(F)c(Cl)c4)c23)ccn1,4.42,heuristic,no
+T63,G12,Atorvastatin,CC(C)c1n(CC[C@@H](O)C[C@@H](O)CC(=O)O)c(-c2ccccc2)c(C(=O)Nc2ccccc2F)c1CC(=O)O,7.4,-2,-2,PASS,,True,CC(C)c1c(CC(=O)[O-])c(C(=O)Nc2ccccc2F)c(-c2ccccc2)n1CC[C@@H](O)C[C@@H](O)CC(=O)[O-],4.3149999999999995,heuristic,no
+T64,G12,Methotrexate,CN(Cc1cnc2nc(N)nc(N)c2n1)c1ccc(C(=O)N[C@@H](CCC(=O)O)C(=O)O)cc1,7.4,-2,-2,PASS,,True,CN(Cc1cnc2nc(N)nc(N)c2n1)c1ccc(C(=O)N[C@@H](CCC(=O)[O-])C(=O)[O-])cc1,8.02,heuristic,no
+T65,G12,Ciprofloxacin,O=C(O)c1cn(C2CC2)c2cc(N3CCNCC3)c(F)cc2c1=O,7.4,0,0,PASS,,True,O=C([O-])c1cn(C2CC2)c2cc(N3CC[NH2+]CC3)c(F)cc2c1=O,6.444999999999999,heuristic,no
+T66,G13,Dorzolamide,CCN[C@H]1C[C@H](C)S(=O)(=O)c2sc(cc12)S(N)(=O)=O,7.4,0,0,PASS,,True,CCN[C@H]1C[C@H](C)S(=O)(=O)c2sc(S(N)(=O)=O)cc21,2.3,heuristic,no
+T67,G13,NAH (bis-acylhydrazone),O=C(N/N=C/CC)C1=NC(C(N/N=C/CC)=O)=CC=C1,7.4,0,0,PASS,,True,CC/C=N/NC(=O)c1cccc(C(=O)N/N=C/CC)n1,8.45,heuristic,no

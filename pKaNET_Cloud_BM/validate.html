@@ -113,7 +113,7 @@
 
       <div class="top rise d1">
         <div class="brand"><span class="dot"></span>pKaNET&nbsp;Cloud+</div>
-        <div class="meta">Validation Report · 20 May 2026</div>
+        <div class="meta">Validation Report · 14 Jul 2026</div>
       </div>
 
       <div class="band">
@@ -124,17 +124,17 @@
           </div>
           <div class="big rise d2"><span data-count="100" data-suffix="%">0%</span></div>
           <div class="headline rise d3">Every test passed.</div>
-          <div class="subline rise d3">65 of 65 cases · 12 functional groups</div>
+          <div class="subline rise d3">67 of 67 cases · 13 functional groups</div>
         </div>
 
         <div class="bench rise d2">
           <div class="lbl">Benchmark accuracy</div>
           <div class="val">
-            <span class="num"><span data-count="69.34" data-dec="2">0.00</span>%</span>
+            <span class="num"><span data-count="69.37" data-dec="2">0.00</span>%</span>
             <span class="ph">at pH 7.4</span>
           </div>
-          <div class="cap">18,850 of 27,183 drug-like molecules correctly charged</div>
-          <div class="chip"><svg viewBox="0 0 24 24" fill="none"><path d="M12 19V6M6 12l6-6 6 6" stroke="#178a3d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>+2.64 pts vs. previous heuristic</div>
+          <div class="cap">18,857 of 27,183 drug-like molecules correctly charged</div>
+          <div class="chip"><svg viewBox="0 0 24 24" fill="none"><path d="M12 19V6M6 12l6-6 6 6" stroke="#178a3d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>+2.67 pts vs. previous heuristic</div>
           <div class="divide"></div>
           <div class="minis">
             <div class="mini">
@@ -144,8 +144,8 @@
             </div>
             <div class="mini">
               <div class="mlbl">Anions · −1</div>
-              <div class="mval"><span data-count="57.7" data-dec="1">0.0</span>%</div>
-              <div class="mdel up">▲ +2.9 pts</div>
+              <div class="mval"><span data-count="57.9" data-dec="1">0.0</span>%</div>
+              <div class="mdel up">▲ +3.1 pts</div>
             </div>
             <div class="mini">
               <div class="mlbl">Neutral · 0</div>
@@ -183,7 +183,8 @@
   const groups=[
     ["Imidazole N–H","10 / 10"],["Phosphonate / Phosphate","7 / 7"],["Thiol","5 / 5"],["Carboxylic acid","5 / 5"],
     ["Phenol variants","6 / 6"],["Amine bases","5 / 5"],["Sulfonamide","4 / 4"],["Flavonoid guard","4 / 4"],
-    ["Zwitterion","5 / 5"],["PubChem pKa guard","3 / 3"],["Neutral","4 / 4"],["Drug panel","7 / 7"]
+    ["Zwitterion","5 / 5"],["PubChem pKa guard","3 / 3"],["Neutral","4 / 4"],["Drug panel","7 / 7"],
+    ["EWG amine","2 / 2"]
   ];
   const grid=document.getElementById('grid');
   groups.forEach((g,i)=>{

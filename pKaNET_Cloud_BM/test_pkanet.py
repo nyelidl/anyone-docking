@@ -6,9 +6,9 @@ test_pkanet.py — Internal regression test suite for pKaNET Cloud+
 Part of the pKaNET Cloud+ validation framework for Anyone Can Dock.
 
 Usage:
-    python3 test_pkanet.py pKaNET.py          # run all 65 tests
+    python3 test_pkanet.py pKaNET.py          # run all 67 tests
     python3 test_pkanet.py pKaNET.py G8       # flavonoid regression only
-    python3 test_pkanet.py pKaNET.py G12      # drug regression panel only
+    python3 test_pkanet.py pKaNET.py G13      # EWG-suppressed amine tests
 
     The first argument is the path to the pKaNET core module
     (core-pkaNET-v80.py or equivalent).
@@ -27,6 +27,7 @@ Groups:
     G10  PubChem pKa guard               ( 3 tests)
     G11  Truly neutral                   ( 4 tests)
     G12  Drug regression panel           ( 7 tests)  incl. EGFR inhibitors
+    G13  EWG-suppressed amine            ( 2 tests)  ring sulfonyl γ-amine
 
 Test environment:
     Tests run in heuristic-only mode when dimorphite-dl and ML pKa backends
@@ -53,6 +54,7 @@ GROUP_LABELS = {
     "G10": "PubChem pKa guard",
     "G11": "Truly neutral",
     "G12": "Drug regression panel",
+    "G13": "EWG-suppressed amine (ring sulfonyl)",
 }
 
 # ── Test definitions ───────────────────────────────────────────────────────
@@ -150,6 +152,13 @@ TESTS_RAW = [
     ("T63","G12","Atorvastatin",           "CC(C)c1n(CC[C@@H](O)C[C@@H](O)CC(=O)O)c(-c2ccccc2)c(C(=O)Nc2ccccc2F)c1CC(=O)O",7.4,-2,None,{}),
     ("T64","G12","Methotrexate",           "CN(Cc1cnc2nc(N)nc(N)c2n1)c1ccc(C(=O)N[C@@H](CCC(=O)O)C(=O)O)cc1",7.4,-2,None,{}),
     ("T65","G12","Ciprofloxacin",          "O=C(O)c1cn(C2CC2)c2cc(N3CCNCC3)c(F)cc2c1=O",7.4,0,None,{}),
+
+    # ── G13: EWG-suppressed amine (ring sulfonyl) ────────────────────
+    # Dorzolamide: secondary amine γ to ring sulfone → exp pKa 6.35 → neutral at 7.4
+    # Previously mis-assigned as aliphatic_amine pKa 9.5 → +1 (false positive).
+    # NAH: negative control — no sulfur, no amine rules should fire.
+    ("T66","G13","Dorzolamide",             "CCN[C@H]1C[C@H](C)S(=O)(=O)c2sc(cc12)S(N)(=O)=O",7.4,0,None,{}),
+    ("T67","G13","NAH (bis-acylhydrazone)", "O=C(N/N=C/CC)C1=NC(C(N/N=C/CC)=O)=CC=C1",7.4,0,None,{}),
 ]
 
 TESTS = [
@@ -281,7 +290,7 @@ if __name__ == "__main__":
     groups   = sorted(set(t["group"] for t in selected))
     total    = len(selected)
     print(f"Running {total} tests"
-          + (f" (group {filter_group})" if filter_group else " across 12 groups") + " …")
+          + (f" (group {filter_group})" if filter_group else " across 13 groups") + " …")
 
     results: dict[str, tuple[int,int]] = {}
     for grp in groups:
