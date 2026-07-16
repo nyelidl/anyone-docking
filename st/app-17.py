@@ -72,7 +72,7 @@ except ImportError:
         "GOL", "PEG", "EDO", "MPD", "PGE", "PG4",
         "SO4", "PO4", "SUL", "PHO",
         "IHP", "TTP", "CTP", "UTP",
-        "COA", "SAM", "SAH",
+       #"COA", "SAM", "SAH",
         "EPE", "MES", "TRS", "ACT", "ACY",
         "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU", "GD", "TB", "DY", "ER", "TM", "YB", "LU",
     }
@@ -111,10 +111,10 @@ def _search_compound_pubchem(name: str) -> dict:
 
         def _pick_smiles(prop_dict):
             for k in (
-                "IsomericSMILES",
-                "CanonicalSMILES",
-                "ConnectivitySMILES",
-                "SMILES",
+                "SMILES",             # new (2024+): isomeric + canonical, with stereo
+                "IsomericSMILES",     # deprecated legacy
+                "CanonicalSMILES",    # deprecated legacy
+                "ConnectivitySMILES", # no stereo — last resort
             ):
                 v = prop_dict.get(k)
                 if isinstance(v, str) and v.strip():
@@ -132,9 +132,11 @@ def _search_compound_pubchem(name: str) -> dict:
         cid = r.json()["IdentifierList"]["CID"][0]
 
         p = {}
+
         for _prop_block in [
-            "IUPACName,MolecularFormula,MolecularWeight,IsomericSMILES,CanonicalSMILES,ConnectivitySMILES",
-            "IUPACName,MolecularFormula,MolecularWeight,CanonicalSMILES,ConnectivitySMILES",
+            "IUPACName,MolecularFormula,MolecularWeight,SMILES,ConnectivitySMILES",
+            "IUPACName,MolecularFormula,MolecularWeight,SMILES,IsomericSMILES,CanonicalSMILES,ConnectivitySMILES",
+            "IUPACName,MolecularFormula,MolecularWeight,SMILES",
             "IUPACName,MolecularFormula,MolecularWeight,ConnectivitySMILES",
         ]:
             r2 = _req.get(
@@ -159,16 +161,23 @@ def _search_compound_pubchem(name: str) -> dict:
                 if r3.status_code == 200:
                     pc = r3.json().get("PC_Compounds", [{}])[0]
                     props = pc.get("props", [])
+                    smiles_absolute = ""
+                    smiles_any = ""
                     for prop in props:
                         urn = prop.get("urn", {})
                         label = str(urn.get("label", "")).lower()
                         name2 = str(urn.get("name", "")).lower()
                         if "smiles" in label or "smiles" in name2:
                             value = prop.get("value", {})
-                            cand = value.get("sval") or value.get("string") or ""
-                            if cand:
-                                smiles = cand.strip()
-                                break
+                            cand = (value.get("sval") or value.get("string") or "").strip()
+                            if not cand:
+                                continue
+                            if name2 in ("absolute", "isomeric"):
+                                smiles_absolute = cand
+                                break  # best possible — stop here
+                            if not smiles_any:
+                                smiles_any = cand
+                    smiles = smiles_absolute or smiles_any
             except Exception:
                 pass
 
@@ -176,7 +185,7 @@ def _search_compound_pubchem(name: str) -> dict:
             "found": True,
             "cid": cid,
             "smiles": smiles,
-            "canonical": p.get("CanonicalSMILES", "") or smiles,
+            "canonical": p.get("ConnectivitySMILES", "") or p.get("CanonicalSMILES", "") or smiles,
             "iupac": p.get("IUPACName", name),
             "formula": p.get("MolecularFormula", ""),
             "mw": float(p.get("MolecularWeight", 0) or 0),
@@ -4955,19 +4964,20 @@ with tab_basic:
                 "⚠️ Large range + many poses can produce low-quality output."
             ),
         )
-        vina_seed = st.number_input(
-            "Random seed (0 = random)", min_value=0, value=0, step=1,
-            key="vina_seed",
-            help=(
-                "Random seed for Vina's stochastic search.\n\n"
-                "📖 Vina uses Monte Carlo sampling — the same input with\n"
-                "   different seeds can give slightly different poses.\n"
-                "⚙️ 0 = let Vina pick a new seed each run (default).\n"
-                "   Any positive integer = deterministic, reproducible result.\n"
-                "🔬 Set a fixed seed when benchmarking or debugging so that\n"
-                "   re-running gives identical poses and scores."
-            ),
-        )
+        with st.expander("Reproducibility (random seed)", expanded=False):
+            vina_seed = st.number_input(
+                "Random seed (0 = random)", min_value=0, value=0, step=1,
+                key="vina_seed",
+                help=(
+                    "Random seed for Vina's stochastic search.\n\n"
+                    "📖 Vina uses Monte Carlo sampling — the same input with\n"
+                    "   different seeds can give slightly different poses.\n"
+                    "⚙️ 0 = let Vina pick a new seed each run (default).\n"
+                    "   Any positive integer = deterministic, reproducible result.\n"
+                    "🔬 Set a fixed seed when benchmarking or debugging so that\n"
+                    "   re-running gives identical poses and scores."
+                ),
+            )
         _dock_seed = vina_seed if vina_seed != 0 else None
     with cd2:
         est = max(1, exh // 8)
@@ -5693,14 +5703,15 @@ with tab_batch:
             ),
         )
         b_er  = st.slider("Energy range (kcal/mol)", 1, 5, 3, 1, key="b_er")
-        b_vina_seed = st.number_input(
-            "Random seed (0 = random)", min_value=0, value=0, step=1,
-            key="b_vina_seed",
-            help=(
-                "Random seed for Vina — set a fixed value for reproducible\n"
-                "batch results. 0 = random (default)."
-            ),
-        )
+        with st.expander("Reproducibility (random seed)", expanded=False):
+            b_vina_seed = st.number_input(
+                "Random seed (0 = random)", min_value=0, value=0, step=1,
+                key="b_vina_seed",
+                help=(
+                    "Random seed for Vina — set a fixed value for reproducible\n"
+                    "batch results. 0 = random (default)."
+                ),
+            )
         _b_dock_seed = b_vina_seed if b_vina_seed != 0 else None
 
     if not b_rec_done:
@@ -6193,4 +6204,3 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
-
