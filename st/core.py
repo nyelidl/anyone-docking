@@ -3173,6 +3173,33 @@ def _detect_all_interactions(lig_mol_3d, receptor_pdb: str,
     r_an  = np.array([ran[j].strip() for j in range(nr)])
     r_ch  = np.array([rch[j].strip() for j in range(nr)])
     r_ri  = np.array([int(rri[j])    for j in range(nr)])
+    # ── SPATIAL PRE-FILTER: restrict to a shell around the ligand pose ────
+    # Very large proteins (100+ kDa, ribosomes, viral capsids, AF-multimer
+    # complexes) would otherwise cause the H-to-heavy distance matrix below
+    # (h_coords[:, None, :] - hv_coords[None, :, :]) to allocate multi-GB
+    # arrays and OOM-kill the process. All interaction cutoffs are ≤ 5.5 Å
+    # (π-π is the longest), so an 8 Å shell around the ligand bounding
+    # sphere is amply safe — including a 1.85 Å pad for the halogen-bond
+    # covalent-neighbor lookup on atoms sitting at the edge of the shell.
+    # Small proteins (<200 residues) see negligible change; large receptors
+    # typically drop from tens of thousands of atoms to a few hundred near
+    # the pose.
+    _lig_centroid = lxyz.mean(axis=0)
+    _lig_radius   = float(np.linalg.norm(lxyz - _lig_centroid, axis=1).max())
+    _SHELL_PAD    = 8.0
+    _keep_mask    = (
+        np.linalg.norm(rc - _lig_centroid, axis=1) <= (_lig_radius + _SHELL_PAD)
+    )
+    if not _keep_mask.any():
+        return []
+    rc       = rc[_keep_mask]
+    r_rn     = r_rn[_keep_mask]
+    r_ch     = r_ch[_keep_mask]
+    r_ri     = r_ri[_keep_mask]
+    r_an     = r_an[_keep_mask]
+    r_el_arr = r_el_arr[_keep_mask]
+    r_el     = [r_el[k] for k, keep in enumerate(_keep_mask) if keep]
+    nr       = int(_keep_mask.sum())
     HYDL = {"C","S","CL","BR","I","F"}
     LIG_ACCEPTOR_EL = {"N","O","F","S"}
     lig_is_acceptor    = np.array([lel[i] in LIG_ACCEPTOR_EL for i in range(nl)])
