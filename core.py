@@ -11,7 +11,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import re as _re
 from pathlib import Path
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -866,12 +865,6 @@ def prepare_receptor(
 #  Full replacement with all 12 fixes — see file header for details.
 # ══════════════════════════════════════════════════════════════════════════════
 
-_PKANET_CACHE: dict = {}
-_PKA_PATTERNS = [
-    _re.compile(r"pK[aA][\w\s\(\)]*?=\s*([+-]?\d+(?:\.\d+)?)", _re.IGNORECASE),
-    _re.compile(r"([+-]?\d+(?:\.\d+)?)\s*\((?:pK[aA]|acid dissociation)[^)]*\)", _re.IGNORECASE),
-]
-
 # Weights matching real pKaNET Cloud notebook
 _W_AROM_RING_LOST         = 8.0
 _W_PHENOL_TO_KETO_FLIP    = 6.0
@@ -1474,61 +1467,14 @@ def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, targe
 
 
 # ── PubChem lookup ────────────────────────────────────────────────────────────
-
-def _pubchem_pka_lookup(smiles: str) -> dict:
-    from rdkit import Chem
-    result = {"available": False, "pka_values": [], "confidence": "low",
-              "source": "pubchem"}
-    try:
-        import requests as _rq
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return result
-        ik = Chem.MolToInchiKey(mol)
-        if not ik:
-            return result
-        if ik in _PKANET_CACHE:
-            return _PKANET_CACHE[ik]
-        time.sleep(0.25)
-        r = _rq.get(
-            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/inchikey/{ik}/cids/JSON",
-            timeout=8)
-        if r.status_code != 200:
-            _PKANET_CACHE[ik] = result; return result
-        cid = r.json()["IdentifierList"]["CID"][0]
-        time.sleep(0.25)
-        r2 = _rq.get(
-            f"https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound/{cid}/JSON"
-            "?heading=Dissociation+Constants", timeout=10)
-        if r2.status_code != 200:
-            _PKANET_CACHE[ik] = result; return result
-        texts = []
-        def _collect(sec):
-            if "dissociation" in sec.get("TOCHeading", "").lower():
-                for info in sec.get("Information", []):
-                    for swm in info.get("Value", {}).get("StringWithMarkup", []):
-                        s = swm.get("String", "").strip()
-                        if s: texts.append(s)
-            for sub in sec.get("Section", []): _collect(sub)
-        for sec in r2.json().get("Record", {}).get("Section", []):
-            _collect(sec)
-        vals = []
-        for text in texts:
-            for pat in _PKA_PATTERNS:
-                for m in pat.finditer(text):
-                    try:
-                        v = float(m.group(1))
-                        if -5.0 <= v <= 20.0 and not any(abs(v - e) < 0.05 for e in vals):
-                            vals.append(v)
-                    except ValueError:
-                        pass
-        confidence = "high" if len(vals) == 1 else ("medium" if vals else "low")
-        result = {"available": bool(vals), "pka_values": vals,
-                  "confidence": confidence, "source": "pubchem"}
-        _PKANET_CACHE[ik] = result
-        return result
-    except Exception:
-        return result
+# NOTE: PubChem pKa retrieval is delegated to pkanet-cloud.py's `pubchem_lookup`,
+# loaded via `_load_local_pkanet_module` and used at protonate_pkanet Stage B
+# (see line ~1810 below). The canonical implementation is preferred because it
+# offers persistent two-level caching (cid:{ik} + diss:{cid}), evidence-graded
+# confidence (temperature/solvent/site-label/vague/conflicting flags), a third
+# regex fallback for loose prose forms, and a richer return dict
+# (cid, inchikey, source_texts, flags, error). A local re-implementation was
+# removed to prevent accidental use of a weaker duplicate.
 
 
 # ── FIX 11: generate_ranked_microstates (full pipeline) ──────────────────────
