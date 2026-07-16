@@ -4964,20 +4964,21 @@ with tab_basic:
                 "⚠️ Large range + many poses can produce low-quality output."
             ),
         )
-        vina_seed = st.number_input(
-            "Random seed (0 = random)", min_value=0, value=0, step=1,
-            key="vina_seed",
-            help=(
-                "Random seed for Vina's stochastic search.\n\n"
-                "📖 Vina uses Monte Carlo sampling — the same input with\n"
-                "   different seeds can give slightly different poses.\n"
-                "⚙️ 0 = let Vina pick a new seed each run (default).\n"
-                "   Any positive integer = deterministic, reproducible result.\n"
-                "🔬 Set a fixed seed when benchmarking or debugging so that\n"
-                "   re-running gives identical poses and scores."
-            ),
-        )
-        _dock_seed = vina_seed if vina_seed != 0 else None
+        with st.expander("Reproducibility (random seed)", expanded=False):
+                    vina_seed = st.number_input(
+                        "Random seed (0 = random)", min_value=0, value=0, step=1,
+                        key="vina_seed",
+                        help=(
+                            "Random seed for Vina's stochastic search.\n\n"
+                            "📖 Vina uses Monte Carlo sampling — the same input with\n"
+                            "   different seeds can give slightly different poses.\n"
+                            "⚙️ 0 = let Vina pick a new seed each run (default).\n"
+                            "   Any positive integer = deterministic, reproducible result.\n"
+                            "🔬 Set a fixed seed when benchmarking or debugging so that\n"
+                            "   re-running gives identical poses and scores."
+                        ),
+                    )
+                _dock_seed = vina_seed if vina_seed != 0 else None
     with cd2:
         est = max(1, exh // 8)
         st.markdown(
@@ -5702,15 +5703,16 @@ with tab_batch:
             ),
         )
         b_er  = st.slider("Energy range (kcal/mol)", 1, 5, 3, 1, key="b_er")
-        b_vina_seed = st.number_input(
-            "Random seed (0 = random)", min_value=0, value=0, step=1,
-            key="b_vina_seed",
-            help=(
-                "Random seed for Vina — set a fixed value for reproducible\n"
-                "batch results. 0 = random (default)."
-            ),
-        )
-        _b_dock_seed = b_vina_seed if b_vina_seed != 0 else None
+        with st.expander("Reproducibility (random seed)", expanded=False):
+                    b_vina_seed = st.number_input(
+                        "Random seed (0 = random)", min_value=0, value=0, step=1,
+                        key="b_vina_seed",
+                        help=(
+                            "Random seed for Vina — set a fixed value for reproducible\n"
+                            "batch results. 0 = random (default)."
+                        ),
+                    )
+                _b_dock_seed = b_vina_seed if b_vina_seed != 0 else None
 
     if not b_rec_done:
         st.caption("⚠ Complete Step B1 first.")
