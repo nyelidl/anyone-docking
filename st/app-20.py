@@ -4131,9 +4131,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             "   12 Å    : tight rigid pockets.\n"
             "⚠️ Box > 30 Å significantly increases calculation time."
         )
-        sx = st.slider("X size", 10, 40, 16, 2, key=pfx + "sx", help=_box_help)
-        sy = st.slider("Y size", 10, 40, 16, 2, key=pfx + "sy", help=_box_help)
-        sz = st.slider("Z size", 10, 40, 16, 2, key=pfx + "sz", help=_box_help)
+        sx = st.slider("X size", 10, 40, 16, 0.5, key=pfx + "sx", help=_box_help)
+        sy = st.slider("Y size", 10, 40, 16, 0.5, key=pfx + "sy", help=_box_help)
+        sz = st.slider("Z size", 10, 40, 16, 0.5, key=pfx + "sz", help=_box_help)
         st.markdown(f"Box volume: **{sx*sy*sz:,} Å³**")
 
     blind = st.checkbox(
