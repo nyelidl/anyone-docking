@@ -4123,6 +4123,29 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             )
     with col_b:
         st.markdown("**Search box size (Å)**")
+        _auto_box = st.checkbox(
+            "🎯 Auto box size (from grid reference)",
+            value=False, key=pfx + "auto_box_size",
+            help=(
+                "Compute box dimensions automatically from the atoms used to define the grid center.\n\n"
+                "📖 Bounding box of the reference atoms + padding:\n"
+                "   • Co-crystal ligand → +6 Å rotation buffer\n"
+                "   • Residue selection → +5 Å side-chain reach + 8 Å rotation buffer\n"
+                "⚙️ Clamped to 16–40 Å per axis.\n"
+                "⚠️ Only works with 'Auto-detect co-crystal ligand' or 'ProDy selection' center modes."
+            ),
+        )
+        _auto_cube = True
+        if _auto_box:
+            _auto_cube = st.checkbox(
+                "Cubic box (uncheck for rectangular)",
+                value=True, key=pfx + "auto_box_cube",
+                help=(
+                    "Cubic: single edge from the longest axis extent. Safer default.\n"
+                    "Rectangular: per-axis edges — useful for elongated pockets "
+                    "(RdRp N-pocket, helicase RNA groove) to avoid wasting box volume."
+                ),
+            )
         _box_help = (
             "Docking search box size along this axis (Å).\n\n"
             "📖 Vina only searches for poses that fit within this box.\n"
@@ -4131,10 +4154,13 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             "   12 Å    : tight rigid pockets.\n"
             "⚠️ Box > 30 Å significantly increases calculation time."
         )
-        sx = st.slider("X size", 10, 40, 16, 2, key=pfx + "sx", help=_box_help)
-        sy = st.slider("Y size", 10, 40, 16, 2, key=pfx + "sy", help=_box_help)
-        sz = st.slider("Z size", 10, 40, 16, 2, key=pfx + "sz", help=_box_help)
-        st.markdown(f"Box volume: **{sx*sy*sz:,} Å³**")
+        sx = st.slider("X size", 10, 40, 16, 2, key=pfx + "sx", help=_box_help, disabled=_auto_box)
+        sy = st.slider("Y size", 10, 40, 16, 2, key=pfx + "sy", help=_box_help, disabled=_auto_box)
+        sz = st.slider("Z size", 10, 40, 16, 2, key=pfx + "sz", help=_box_help, disabled=_auto_box)
+        if _auto_box:
+            st.caption("🎯 Sliders disabled — box will be sized from the grid reference.")
+        else:
+            st.markdown(f"Box volume: **{sx*sy*sz:,} Å³**")
 
     blind = st.checkbox(
         "🔍 Blind docking (cover whole protein)",
@@ -4240,8 +4266,10 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         )
         _prody_sel = st.session_state.get(pfx + "mda_sel", "")
 
-        # ── Blind docking ─────────────────────────────────────────────────
-        _blind = st.session_state.get(pfx + "blind_docking", False)
+        # ── Blind docking (takes precedence over auto box size) ───────────
+        _blind    = st.session_state.get(pfx + "blind_docking", False)
+        _auto_box = st.session_state.get(pfx + "auto_box_size", False) and not _blind
+        _auto_cube = st.session_state.get(pfx + "auto_box_cube", True)
         if _blind:
             try:
                 import numpy as _np
@@ -4263,6 +4291,12 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 )
             except Exception as _be:
                 st.warning(f"⚠️ Could not compute blind docking box: {_be}")
+        elif _auto_box and _core_mode == "manual":
+            st.warning(
+                "⚠️ Auto box size needs a reference (ligand or ProDy selection) — "
+                "using slider values with manual XYZ center."
+            )
+            _auto_box = False
 
         with st.spinner("⏳ Preparing receptor…"):
             result = prepare_receptor(
@@ -4275,6 +4309,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
                 hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
                 reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
+                auto_box_size    = _auto_box,
+                auto_box_cube    = _auto_cube,
             )
 
         if result["success"]:
