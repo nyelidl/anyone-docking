@@ -630,6 +630,42 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
 
+def _compute_auto_box_size(
+    atoms,
+    is_ligand: bool,
+    min_edge: float = 16.0,
+    max_edge: float = 40.0,
+    cube: bool = True,
+) -> tuple:
+    """Auto box size from a ProDy atom selection.
+
+    Bounding-box + padding:
+      - is_ligand=True  → 6 Å rotation buffer (ligand atoms already define occupancy)
+      - is_ligand=False → 5 Å side-chain reach + 8 Å rotation buffer = 13 Å
+
+    Clamped to [min_edge, max_edge]. Returns (sx, sy, sz) as ints, rounded to
+    the nearest even Å so the value matches the UI slider step.
+    """
+    import numpy as _np
+    if atoms is None or atoms.numAtoms() == 0:
+        e = int(round(22 / 2) * 2)  # sensible drug-like default
+        return (e, e, e)
+    coords = atoms.getCoords()
+    extent = coords.max(axis=0) - coords.min(axis=0)  # per-axis Δ
+    pad = 6.0 if is_ligand else 13.0
+    if cube:
+        e = float(extent.max()) + 2 * pad
+        edges = (e, e, e)
+    else:
+        edges = tuple(float(v) + 2 * pad for v in extent)
+    # Clamp + round to nearest even integer (matches slider step=2)
+    out = []
+    for e in edges:
+        e = max(min_edge, min(max_edge, e))
+        out.append(int(round(e / 2) * 2))
+    return tuple(out)
+
+
 def write_box_pdb(filename: str, cx, cy, cz, sx, sy, sz):
     hx, hy, hz = sx / 2, sy / 2, sz / 2
     corners = [
@@ -674,6 +710,8 @@ def prepare_receptor(
     preferred_ligand: str = "",
     hetatm_policy: dict | None = None,
     reference_hetatm_key: str = "",
+    auto_box_size: bool = False,
+    auto_box_cube: bool = True,
 ) -> dict:
     from prody import parsePDB, calcCenter, writePDB
     wdir = Path(wdir)
@@ -742,11 +780,17 @@ def prepare_receptor(
             writePDB(ligand_pdb_path, _primary["atoms"])
             log.append(f"✓ Reference HETATM for grid: {rn} chain '{ch}' resnum {ri} ({_primary['n_atoms']} atoms)")
 
+        # Track the atom group used for the grid center — reused for auto box sizing.
+        _ref_atoms_for_box = None
+        _ref_is_ligand = False
+
         if center_mode == "auto":
             if _primary is not None:
                 cx, cy, cz = _primary["cx"], _primary["cy"], _primary["cz"]
                 log.append(f"📍 Auto center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
+                _ref_atoms_for_box = _primary.get("atoms")
+                _ref_is_ligand = True
             else:
                 log.append("⚠ No co-crystal ligand found")
         elif center_mode == "manual":
@@ -754,6 +798,7 @@ def prepare_receptor(
             log.append(f"🛠 Manual center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
             if _primary is not None:
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
+            # No atom reference available in pure-manual mode.
         elif center_mode == "selection":
             if not prody_sel.strip():
                 raise ValueError("ProDy selection string is empty.")
@@ -765,6 +810,37 @@ def prepare_receptor(
             log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
             if _primary is not None:
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
+            _ref_atoms_for_box = ref_atoms
+            # A selection targeting `resname LIG`/`hetero` is effectively a ligand;
+            # anything using `resid ...` or `name CA` is a residue centroid.
+            _sel_lc = prody_sel.lower()
+            _ref_is_ligand = ("resname" in _sel_lc and "hetero" in _sel_lc) or _sel_lc.startswith("resname ")
+
+        # ── Auto box size ────────────────────────────────────────────────
+        if auto_box_size:
+            if _ref_atoms_for_box is not None:
+                sx, sy, sz = _compute_auto_box_size(
+                    _ref_atoms_for_box,
+                    is_ligand=_ref_is_ligand,
+                    cube=auto_box_cube,
+                )
+                _kind = "ligand atoms" if _ref_is_ligand else "residue centroid"
+                log.append(
+                    f"🎯 Auto box size ({_kind}, "
+                    f"{'cubic' if auto_box_cube else 'rectangular'}): "
+                    f"{sx} × {sy} × {sz} Å"
+                )
+                if max(sx, sy, sz) >= 40 or min(sx, sy, sz) <= 16:
+                    log.append(
+                        "⚠ Auto box hit a clamp bound (16–40 Å) — "
+                        "verify the selection is correct."
+                    )
+            else:
+                log.append(
+                    "⚠ Auto box requested but no reference atoms available "
+                    f"(center_mode='{center_mode}') — using slider value "
+                    f"{sx} × {sy} × {sz} Å"
+                )
 
         if hetatm_policy:
             _remove_rows = [d for d in _hetatm_rows if d.get("action") in {"remove", "reference"}]
