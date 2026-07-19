@@ -1,6 +1,5 @@
-# core.py  —  pKaNET Cloud+  (v80 — calibrated heuristic + fast predict API)
-#
-# ─────────────────────────────────────────────────────────────────────────────
+# pKaNET.py  —  pKaNET Cloud+ engine for Anyone Can Dock (local Streamlit app)
+
 from __future__ import annotations
 
 import inspect
@@ -26,7 +25,9 @@ TAUTOMER_PLAUSIBILITY_CUTOFF = 3.0
 AMBIGUITY_SCORE_GAP          = 0.5
 BORDERLINE_PKA_WINDOW        = 1.0
 PUBCHEM_RATE_LIMIT_S         = 0.25
-PUBCHEM_CACHE_FILE           = "/tmp/pkanet_pubchem_cache.json"
+# Local-ACD cache path (kept distinct from the Colab cache to avoid collisions
+# when a user runs both environments on the same host).
+PUBCHEM_CACHE_FILE           = "/tmp/pkanet_local_acd_pubchem_cache.json"
 SEP = "=" * 70
 
 W_AROM_RING_LOST         = 8.0
@@ -1671,7 +1672,10 @@ def save_molecule_files(mol, base_path, formats):
     saved["warnings"] = warnings; return saved
 
 # ─────────────────────────────────────────────────────────────────────────────
-# run_job  —  main workflow adapter
+# run_job  —  main workflow adapter (kept for parity with the Colab notebook)
+# The local ACD Streamlit app does not use this — it drives protonate_pkanet
+# directly via core.py's prepare_ligand.  But keeping it here means anyone
+# who scripts against this file gets the same API as the Colab engine.
 # ─────────────────────────────────────────────────────────────────────────────
 def run_job(*, input_type, smiles_text, uploaded_bytes, uploaded_name, target_pH, output_name,
             out_dir, output_formats=None, enumerate_stereoisomers=True, use_pubchem=True,
@@ -2078,3 +2082,35 @@ def batch_predict_charges(
 
 # Backwards-compatibility alias
 pubchem_lookup_fn = pubchem_lookup
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Smoke test when run directly:  python pKaNET.py
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    print("pKaNET v80 — local ACD engine")
+    print(f"pKa backend: {_PKA_BACKEND}")
+    print()
+
+    test_cases = [
+        ("aspirin",           "CC(=O)Oc1ccccc1C(=O)O"),
+        ("glycine",           "NCC(=O)O"),
+        ("erlotinib",         "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC"),
+        ("apigenin",          "O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12"),
+        ("baicalein",         "O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12"),
+        ("2,4-dinitrophenol", "O=[N+]([O-])c1ccc(O)c([N+](=O)[O-])c1"),
+    ]
+    for name, smi in test_cases:
+        charge = heuristic_net_charge(smi, 7.4)
+        print(f"  {name:20s}  charge@7.4 = {charge:+d}   {smi}")
+
+    print()
+    print("Microstate generation test (glycine):")
+    top, amb, all_ms, tr, motifs, ml = generate_ranked_microstates(
+        "NCC(=O)O", target_ph=7.4, top_n=3,
+    )
+    for i, ms in enumerate(top[:3]):
+        print(f"  #{i+1}  {ms['microstate_smiles']:30s}  "
+              f"score={ms.get('selection_score', '?'):.3f}  "
+              f"charge={ms['net_charge']:+d}")
+    print(f"  ambiguous={amb}, tautomer_rich={tr}")
