@@ -236,7 +236,7 @@ Run the full Streamlit web interface on Colab's free compute tier — no local i
 
 Batch docking with 4 docking engines in a Python notebook environment:
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1e23e0145ja6zJi0HibA6_JBO7p78Xvyw?usp=sharing)
+[![Open In Colab](https://colab.research.google.com/drive/1XDBP7ZkCD2UgNs-FZ-zLk0-LWb4i3xM9?usp=sharing)
 
 ---
 
