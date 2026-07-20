@@ -19,7 +19,7 @@
 | 🌐 **Streamlit Web App** | Quickest start, no setup | [Open in browser →](https://nyelidl.github.io/anyone-docking/) |
 | ☁️ **Streamlit via Colab** | Web UI on free GPU/CPU | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1WtWYUUB1AREZMeB5qEJ9OD84AvWk1z4z?usp=sharing) |
 | 🖥️ **Streamlit locally** | Full control, own machine | `pip install anyonecandock && streamlit run app.py` |
-| 📓 **Colab notebook** | Batch docking, scripting | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1XDBP7ZkCD2UgNs-FZ-zLk0-LWb4i3xM9?usp=sharing) |
+| 📓 **Colab notebook** | Batch docking, scripting | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
 | ⌨️ **CLI (`acd`)** | Automation, pipelines, scripts | `pip install anyonecandock` then `acd dock ...` |
 | 🐍 **Python API** | Programmatic integration | `from anyonecandock import core` |
 | 🤖 **GPT / Claude plugin** | Natural-language docking | See below ↓ |
@@ -140,27 +140,77 @@ Options:
 ### All `acd dock` options
 
 ```bash
+
+usage: acd dock [options]
 acd dock --help
 
-  --receptor       PDB ID (auto-downloaded) or path to .pdb/.cif
-  --receptor-json  JSON from a previous acd receptor run (skips re-prep)
-  --fmt            PDB or CIF (default: PDB)
-  --smiles         Ligand SMILES string
-  --compound       Compound name to search on PubChem
-  --ligand-file    Ligand structure file (.sdf/.mol2/.pdb)
-  --name           Output name (default: LIG)
-  --ph             Target pH (default: 7.4)
-  --neutral        Neutral mode: keep input charge, add H only
-  --no-pubchem     Skip PubChem pKa lookup
-  --center         auto / manual / selection (default: auto)
-  --cx/cy/cz       Manual box centre coordinates
-  --bx/by/bz       Box size in Å (default: 20 × 20 × 20)
-  -e               Vina exhaustiveness (default: 16)
-  -n               Max poses (default: 10)
-  --redock-smiles  Dock a reference co-crystal ligand alongside yours
-  --save-poses     Save each pose as individual SDF/PDB
-  --diagram        Generate 2D interaction diagram after docking
-  -o               Output directory (default: ./acd_results)
+Protein:
+  --receptor PDB_ID_or_FILE
+      PDB ID (auto-downloaded) or path to .pdb/.cif
+  --receptor-json PATH
+      JSON from a previous acd receptor run
+  --fmt {PDB,CIF}
+      Input format (default: PDB)
+
+Ligand:
+  --smiles SMILES
+      Ligand SMILES string
+  --compound NAME
+      Compound name for PubChem lookup
+  --ligand-file PATH
+      Ligand structure file (.sdf/.mol2/.pdb)
+  --name NAME
+      Output name (default: LIG)
+  --ph PH
+      Target pH (default: 7.4)
+  --neutral
+      Keep the input charge and add hydrogens only
+  --no-pubchem
+      Skip PubChem pKa lookup
+
+Docking box:
+  --center {auto,manual,selection}
+      Box center mode (default: auto)
+  --cx X
+      Manual box-center X coordinate
+  --cy Y
+      Manual box-center Y coordinate
+  --cz Z
+      Manual box-center Z coordinate
+  --bx Å
+      Box X size, 10–40 Å (default: 18)
+  --by Å
+      Box Y size, 10–40 Å (default: 18)
+  --bz Å
+      Box Z size, 10–40 Å (default: 18)
+
+pKaNET:
+  --max-tautomers N
+      Maximum tautomers, 1–20 (default: 8)
+  --ph-window PH
+      pH window, 0.2–2.0 (default: 1.0)
+  --conformer-seed N
+      RDKit conformer seed (default: random)
+
+Vina:
+  -e N, --exhaustiveness N
+      Vina exhaustiveness (default: 16)
+  -n N, --poses N
+      Maximum poses (default: 10)
+  --energy-range KCAL
+      Energy range in kcal/mol (default: 3)
+  --seed N
+      Vina random seed (default: random)
+
+Validation and output:
+  --redock-smiles "SMILES [name]"
+      Dock a reference co-crystal ligand
+  --save-poses
+      Save individual pose files
+  --diagram
+      Generate a 2D interaction diagram
+  -o OUTPUT, --output OUTPUT
+      Output directory (default: ./acd_results)
 ```
 
 ---
@@ -170,18 +220,32 @@ acd dock --help
 ```python
 from anyonecandock import core
 
-# Prepare receptor from PDB ID
-result = core.prepare_receptor("raw.pdb", wdir="./rec")
+# Reproducibility settings
+SEED = 72
+BOX_SIZE = (18, 18, 18)
+vina_bin = "/path/to/vina"
 
-# Prepare ligand from SMILES at pH 7.4
+# Prepare receptor
+result = core.prepare_receptor(
+    raw_pdb="raw.pdb",
+    wdir="./rec",
+    box_size=BOX_SIZE,
+)
+
+# Prepare ligand using heuristic pKaNET backend
 lig = core.prepare_ligand(
     smiles="c1ccc(cc1)O",
     name="phenol",
     ph=7.4,
     wdir="./lig",
+    mode="pkanet",
+    use_pubchem=False,
+    max_tautomers=8,
+    ph_window=1.0,
+    conformer_seed=SEED,
 )
 
-# Run docking
+# Run deterministic docking
 dock = core.run_vina(
     receptor_pdbqt=result["rec_pdbqt"],
     ligand_pdbqt=lig["pdbqt"],
@@ -189,27 +253,36 @@ dock = core.run_vina(
     vina_path=vina_bin,
     exhaustiveness=16,
     n_modes=10,
+    energy_range=3,
+    seed=SEED,
     wdir="./out",
     out_name="phenol",
 )
-print(dock["top_score"])
 
-# Auto-detect co-crystal SMILES (used by redock)
+print("Top score:", dock["top_score"])
+
+# Auto-detect co-crystal SMILES
 smiles, source, warning = core.get_cocrystal_smiles(
-    ligand_pdb_path = result["ligand_pdb_path"],
-    cocrystal_ligand_id = result["cocrystal_ligand_id"],
-    raw_pdb = "raw.cif",   # used for CIF block parsing
+    ligand_pdb_path=result["ligand_pdb_path"],
+    cocrystal_ligand_id=result["cocrystal_ligand_id"],
+    raw_pdb="raw.cif",
 )
-print(f"SMILES ({source}): {smiles}")
+
+print(f"SMILES source: {source}")
+print(f"SMILES: {smiles}")
+if warning:
+    print(f"Warning: {warning}")
 
 # 2D interaction diagram
 svg_bytes = core.draw_interaction_diagram(
     receptor_pdb=result["rec_fh"],
-    pose_sdf="phenol_out.sdf",
+    pose_sdf="./out/phenol_out.sdf",
     smiles=lig["prot_smiles"],
     title="Phenol · 4AGN",
 )
-open("diagram.svg", "wb").write(svg_bytes)
+
+with open("./out/diagram.svg", "wb") as handle:
+    handle.write(svg_bytes)
 ```
 
 ---
@@ -235,7 +308,7 @@ Run the full Streamlit web interface on Colab's free compute tier — no local i
 ## 📓 Colab Notebook (batch docking)
 
 Batch docking with 4 docking engines in a Python notebook environment:
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1XDBP7ZkCD2UgNs-FZ-zLk0-LWb4i3xM9?usp=sharing)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing)
 
 ![Batch Docking](https://raw.githubusercontent.com/nyelidl/Docking_workshop/main/batch.png)
 
@@ -243,24 +316,48 @@ Batch docking with 4 docking engines in a Python notebook environment:
 
 ## 🖥️ Run Streamlit locally
 
-### Linux (Ubuntu / Debian)
+The local app uses the deterministic heuristic pKaNET backend.
+ML pKa backends are disabled.
+
+### Linux (Ubuntu/Debian)
+
 ```bash
-sudo apt install python3.11 python3.11-venv openbabel libcairo2-dev libpangocairo-1.0-0
-pip install anyonecandock
+sudo apt update
+
+sudo apt install -y \
+  python3.11 \
+  python3.11-venv \
+  openbabel \
+  libcairo2-dev \
+  libpango1.0-dev \
+  libpangocairo-1.0-0
+
 git clone https://github.com/nyelidl/anyone-docking-local.git
 cd anyone-docking-local
-python3.11 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+
+python3.11 -m venv venv
+source venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
 streamlit run app.py
 ```
 
 ### macOS
 ```bash
+brew update
 brew install python@3.11 open-babel cairo pango
+
 git clone https://github.com/nyelidl/anyone-docking-local.git
 cd anyone-docking-local
-python3.11 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+
+python3.11 -m venv venv
+source venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
 streamlit run app.py
 ```
 
