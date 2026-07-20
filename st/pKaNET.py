@@ -55,27 +55,11 @@ except ImportError:
     _dimorphite_fn = None; _DIMORPHITE_OK = False
     print("⚠️  dimorphite-dl not available.")
 
-_PKASOLVER_OK = False; _PROPKA_OK = False; _UNIPKA_OK = False; _PKA_BACKEND = "none"
-
-try:
-    from pkasolver.query import QueryModel as _PkaSolverModel  # noqa
-    _PKASOLVER_OK = True; _PKA_BACKEND = "pkasolver"; print("✅  pkasolver available.")
-except ImportError:
-    pass
-
-if not _PKASOLVER_OK:
-    try:
-        import propka.run as _propka_run  # noqa
-        _PROPKA_OK = True; _PKA_BACKEND = "propka"; print("✅  propka available.")
-    except ImportError:
-        pass
-
-if not _PKASOLVER_OK and not _PROPKA_OK:
-    if subprocess.run(["which", "unipka"], capture_output=True).returncode == 0:
-        _UNIPKA_OK = True; _PKA_BACKEND = "unipka_cli"; print("✅  unipka CLI available.")
-
-if _PKA_BACKEND == "none":
-    print("ℹ️  No ML pKa backend — heuristic ionizable-site table will be used.")
+# ML pKa backends are deliberately disabled; the validated heuristic backend
+# is more accurate on the project's 27k ligand benchmark.
+_PKASOLVER_OK = False; _PROPKA_OK = False; _UNIPKA_OK = False
+_PKA_BACKEND = "heuristic"
+print("ℹ️  ML pKa backends disabled — heuristic ionizable-site table will be used.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Open Babel helper
@@ -1457,6 +1441,14 @@ def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, targe
 def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_tautomers=8, top_n=5, pubchem_result=None):
     if pubchem_result is None: pubchem_result = {}
     ref_mol = Chem.MolFromSmiles(base_smiles)
+    # Preserve an explicitly charged input state unless it is an aromatic
+    # resonance cation; enumeration must not silently neutralize charged
+    # carboxylates or protonated amines.
+    input_canon = canonicalize(base_smiles)
+    input_charge = Chem.GetFormalCharge(ref_mol) if ref_mol is not None else 0
+    input_has_aromatic_charge = bool(ref_mol and any(
+        a.GetIsAromatic() and a.GetFormalCharge() != 0 for a in ref_mol.GetAtoms()))
+    preserve_input_state = bool(ref_mol and input_canon and not input_has_aromatic_charge)
     kept, disc, tr_flag, tr_motifs = enumerate_and_filter_tautomers(base_smiles, max_states=max_tautomers)
     if disc:
         print(f"   🔬  Discarded {len(disc)} implausible tautomers (e.g. score={disc[0]['score']:.1f}: {disc[0]['smiles'][:55]})")
@@ -1514,6 +1506,10 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
                 **{f"score_{k}": v for k, v in bd.items()},
                 **{f"taut_{k}":  v for k, v in taut["breakdown"].items()},
             })
+    if preserve_input_state:
+        for row in all_micro:
+            if row["microstate_smiles"] == input_canon:
+                row["selection_score"] += 5.0 if input_charge != 0 else 0.0
     if not all_micro: return [], False, [], tr_flag, tr_motifs, ml_preds
     all_micro.sort(key=lambda x: (-x["selection_score"], abs(x["net_charge"]), x["tautomer_rank"], x["microstate_smiles"]))
     best_sc = all_micro[0]["selection_score"]
