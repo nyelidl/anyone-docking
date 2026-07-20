@@ -515,6 +515,17 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
             raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
         log.append("✓ PDBQT conversion complete")
 
+        # Open Babel 3.2 may emit COMPND/AUTHOR headers that Vina 1.2.7
+        # rejects as unknown receptor tags. Keep only rigid-receptor records.
+        with open(rec_pdbqt) as f:
+            pdbqt_lines = [
+                line for line in f
+                if line[:6].strip() in ("ATOM", "HETATM", "TER", "END")
+            ]
+        with open(rec_pdbqt, "w") as f:
+            f.writelines(pdbqt_lines)
+        log.append("✓ Removed non-PDBQT Open Babel headers (Vina-safe)")
+
         # ── Re-add metals + heme to rec.pdb for display / PoseView ──────────
         # This is done AFTER PDBQT generation so the docking PDBQT still uses
         # the dedicated re-injection logic below (with proper AD4 atom types).
@@ -670,7 +681,7 @@ def prepare_receptor(
     center_mode: str = "auto",
     manual_xyz: tuple = (0.0, 0.0, 0.0),
     prody_sel: str = "",
-    box_size: tuple = (16, 16, 16),
+    box_size: tuple = (18, 18, 18),
     preferred_ligand: str = "",
     hetatm_policy: dict | None = None,
     reference_hetatm_key: str = "",
@@ -2016,6 +2027,7 @@ def prepare_ligand(
     pkanet_selection_mode: str = "auto_recommended",
     pkanet_manual_rank: int | None = None,
     pkanet_stereo_choice: str = "keep_input",
+    conformer_seed: int | None = None,
 ) -> dict:
     """
     Ligand preparation — pKaNET Cloud is the default protonation mode.
@@ -2154,14 +2166,32 @@ def prepare_ligand(
         log.append(f"✓ Charged atoms: {_charged_atoms_text(charge_info['charged_atoms'])}")
 
         mol = Chem.AddHs(mol)
+        _requested_conformer_seed = (
+            None if conformer_seed is None or int(conformer_seed) == 0
+            else int(conformer_seed)
+        )
+        if _requested_conformer_seed is not None and _requested_conformer_seed < 0:
+            raise ValueError("conformer_seed must be 0/random or a positive integer")
+        if _requested_conformer_seed is None:
+            import secrets as _secrets
+            _conformer_seed = _secrets.randbelow(2_147_483_646) + 1
+            _conformer_seed_mode = "random"
+        else:
+            _conformer_seed = _requested_conformer_seed
+            _conformer_seed_mode = "fixed"
+        log.append(
+            f"✓ RDKit ETKDG conformer seed: {_conformer_seed} ({_conformer_seed_mode})"
+        )
         try:
             params = AllChem.ETKDGv3()
         except AttributeError:
             params = AllChem.ETKDG()
-        params.randomSeed = 42
+        params.randomSeed = _conformer_seed
 
         if AllChem.EmbedMolecule(mol, params) == -1:
-            AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+            _fallback = {"useRandomCoords": True}
+            _fallback["randomSeed"] = _conformer_seed
+            AllChem.EmbedMolecule(mol, **_fallback)
 
         if AllChem.MMFFHasAllMoleculeParams(mol):
             AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
@@ -2205,6 +2235,8 @@ def prepare_ligand(
             "pkanet_ranked_csv": pkanet_ranked_csv,
             "pkanet_decision_log": pkanet_decision_log,
             "pkanet_ambiguous": pkanet_details.get("ambiguous", False),
+            "conformer_seed":    _conformer_seed,
+            "conformer_seed_mode": _conformer_seed_mode,
             "log":               log,
         }
 
@@ -2212,7 +2244,8 @@ def prepare_ligand(
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
 
-def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
+def prepare_ligand_from_file(file_path: str, name: str, wdir,
+                             conformer_seed: int | None = None) -> dict:
     """
     Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
     WITHOUT protonation — use the molecule exactly as provided.
@@ -2296,15 +2329,36 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
         mol = Chem.AddHs(mol, addCoords=True)
         log.append("✓ All hydrogens made explicit")
 
+        _requested_conformer_seed = (
+            None if conformer_seed is None or int(conformer_seed) == 0
+            else int(conformer_seed)
+        )
+        if _requested_conformer_seed is not None and _requested_conformer_seed < 0:
+            raise ValueError("conformer_seed must be 0/random or a positive integer")
+        _conformer_seed = None
+        _conformer_seed_mode = "not_used"
+
         conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
         if conf is None or conf.Is3D() is False:
+            if _requested_conformer_seed is None:
+                import secrets as _secrets
+                _conformer_seed = _secrets.randbelow(2_147_483_646) + 1
+                _conformer_seed_mode = "random"
+            else:
+                _conformer_seed = _requested_conformer_seed
+                _conformer_seed_mode = "fixed"
+            log.append(
+                f"✓ RDKit ETKDG conformer seed: {_conformer_seed} ({_conformer_seed_mode})"
+            )
             try:
                 params = AllChem.ETKDGv3()
             except AttributeError:
                 params = AllChem.ETKDG()
-            params.randomSeed = 42
+            params.randomSeed = _conformer_seed
             if AllChem.EmbedMolecule(mol, params) == -1:
-                AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+                _fallback = {"useRandomCoords": True}
+                _fallback["randomSeed"] = _conformer_seed
+                AllChem.EmbedMolecule(mol, **_fallback)
             if AllChem.MMFFHasAllMoleculeParams(mol):
                 AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
             else:
@@ -2336,6 +2390,8 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             "sdf":         out_sdf,
             "prot_smiles": smi,
             "charge":      charge,
+            "conformer_seed": _conformer_seed,
+            "conformer_seed_mode": _conformer_seed_mode,
             "log":         log,
         }
     except Exception as e:

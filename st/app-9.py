@@ -1558,7 +1558,7 @@ _DEFAULTS = dict(
     dock_run_id=0,
     pdb_token=None, receptor_fh=None, receptor_pdbqt=None,
     box_pdb=None, config_txt=None, cx=None, cy=None, cz=None,
-    box_sx=16, box_sy=16, box_sz=16,
+    box_sx=18, box_sy=18, box_sz=18,
     ligand_pdb_path=None, receptor_done=False, receptor_log="",
     cocrystal_ligand_id="",
     ligand_pdbqt=None, ligand_sdf=None, ligand_name="LIG",
@@ -1573,7 +1573,7 @@ _DEFAULTS = dict(
     pv_ref_png=None, pv_ref_svg=None,
     b_pdb_token=None, b_receptor_fh=None, b_receptor_pdbqt=None,
     b_box_pdb=None, b_config_txt=None, b_cx=None, b_cy=None, b_cz=None,
-    b_box_sx=16, b_box_sy=16, b_box_sz=16,
+    b_box_sx=18, b_box_sy=18, b_box_sz=18,
     b_ligand_pdb_path=None, b_receptor_done=False, b_receptor_log="",
     b_cocrystal_ligand_id="",
     b_batch_done=False, b_batch_results=None, b_batch_log="",
@@ -4131,9 +4131,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             "   12 Å    : tight rigid pockets.\n"
             "⚠️ Box > 30 Å significantly increases calculation time."
         )
-        sx = st.slider("X size", 10, 40, 16, 1, key=pfx + "sx", help=_box_help)
-        sy = st.slider("Y size", 10, 40, 16, 1, key=pfx + "sy", help=_box_help)
-        sz = st.slider("Z size", 10, 40, 16, 1, key=pfx + "sz", help=_box_help)
+        sx = st.slider("X size", 10, 40, 18, 1, key=pfx + "sx", help=_box_help)
+        sy = st.slider("Y size", 10, 40, 18, 1, key=pfx + "sy", help=_box_help)
+        sz = st.slider("Z size", 10, 40, 18, 1, key=pfx + "sz", help=_box_help)
         st.markdown(f"Box volume: **{sx*sy*sz:,} Å³**")
 
     blind = st.checkbox(
@@ -4593,6 +4593,15 @@ with tab_basic:
             "⚠️ Wrong pH can shift net charge ±1 — large effect on docking affinity."
         ),
     )
+    conformer_seed_in = st.number_input(
+        "Conformer seed (0 = random)", min_value=0, value=0, step=1,
+        key="conformer_seed_in",
+        help=(
+            "Random seed used by RDKit ETKDG to generate ligand 3D coordinates.\n\n"
+            "0 = a new random conformer each preparation (default).\n"
+            "Set a positive integer when exact ligand-preparation reproducibility is required."
+        ),
+    )
     st.caption("Ligand preparation uses pKaNET Cloud — tautomer-aware microstate ranking with 8-component HH scoring.")
 
     # ── Protonation mode ──────────────────────────────────────────────────────
@@ -4725,6 +4734,7 @@ with tab_basic:
                 "Manual rank": "manual_rank",
             }.get(_pkanet_sel_ui, "auto_recommended")
             _pkanet_manual_rank = int(st.session_state.get("pkanet_manual_rank", 1) or 1)
+            _conformer_seed = int(st.session_state.get("conformer_seed_in", 0) or 0) or None
 
             if "Upload" in _mode:
                 _sfobj = st.session_state.get("lig_struct_file")
@@ -4736,7 +4746,8 @@ with tab_basic:
                     _f.write(_sfobj.read())
                 _upload_prot = st.session_state.get("lig_upload_prot", "Use the uploaded form")
                 if _upload_prot == "Use the uploaded form":
-                    result = prepare_ligand_from_file(_tmp, lig_name, WORKDIR)
+                    result = prepare_ligand_from_file(
+                        _tmp, lig_name, WORKDIR, conformer_seed=_conformer_seed)
                 else:
                     try:
                         smiles_in = smiles_from_file(_tmp, WORKDIR)
@@ -4746,7 +4757,8 @@ with tab_basic:
                                             mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                             max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                             pkanet_selection_mode=_pkanet_sel_key,
-                                            pkanet_manual_rank=_pkanet_manual_rank)
+                                            pkanet_manual_rank=_pkanet_manual_rank,
+                                            conformer_seed=_conformer_seed)
             elif "Ketcher" in _mode:
                 smiles_in = st.session_state.get("ketcher_smi", "").strip()
                 if not smiles_in:
@@ -4755,13 +4767,15 @@ with tab_basic:
                                         mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                         max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                         pkanet_selection_mode=_pkanet_sel_key,
-                                        pkanet_manual_rank=_pkanet_manual_rank)
+                                        pkanet_manual_rank=_pkanet_manual_rank,
+                                        conformer_seed=_conformer_seed)
             else:
                 result = prepare_ligand(smiles_in, lig_name, ph_in, WORKDIR,
                                         mode=_prot_mode_key, use_pubchem=_use_pubchem,
                                         max_tautomers=_pkanet_max_tau, ph_window=_pkanet_ph_win,
                                         pkanet_selection_mode=_pkanet_sel_key,
-                                        pkanet_manual_rank=_pkanet_manual_rank)
+                                        pkanet_manual_rank=_pkanet_manual_rank,
+                                        conformer_seed=_conformer_seed)
 
         if result["success"]:
             st.session_state.update({
@@ -4775,6 +4789,8 @@ with tab_basic:
                 "ligand_charged_atoms": result.get("charged_atoms", []),
                 "ligand_is_zwitterion": result.get("is_zwitterion", False),
                 "ligand_prep_mode":    result.get("protonation_mode", _prot_mode_key),
+                "ligand_conformer_seed": result.get("conformer_seed"),
+                "ligand_conformer_seed_mode": result.get("conformer_seed_mode"),
                 "pkanet_ranked_microstates": result.get("pkanet_ranked_microstates", []),
                 "pkanet_ambiguous":          result.get("pkanet_ambiguous", False),
                 "pkanet_ranked_csv":         result.get("pkanet_ranked_csv", ""),
@@ -5043,10 +5059,12 @@ with tab_basic:
             _rd_use_pubchem = st.session_state.get("pkanet_use_pubchem", True)
             _rd_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _rd_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
+            _rd_conformer_seed = int(st.session_state.get("conformer_seed_in", 0) or 0) or None
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
                 rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, ph_val, WORKDIR,
                                          mode=_rd_prot_mode, use_pubchem=_rd_use_pubchem,
-                                         max_tautomers=_rd_max_tau, ph_window=_rd_ph_win)
+                                         max_tautomers=_rd_max_tau, ph_window=_rd_ph_win,
+                                         conformer_seed=_rd_conformer_seed)
                 if rd_prep["success"]:
                     rd_dock = run_vina(
                         st.session_state.receptor_pdbqt, rd_prep["pdbqt"],
@@ -5624,7 +5642,7 @@ with tab_batch:
                        "CS(=O)(=O)CCNCc1ccc(-c2ccc3ncnc(Nc4ccc(OCc5cccc(F)c5)c(Cl)c4)c3c2)o1 Lapatinib\n"
                        "CN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1O[C@H]1CCOC1 Afatinib\n"
                        "O=c1c(O)c(-c2ccccc2)oc2cc(O)cc(O)c12 Galangin\n"
-                       "Cc1ccc(NC(=O)c2ccc(CN3CCN(C)CC3)cc2)cc1Nc1nccc(-c2cccnc2)n1 Imatinib"
+                       "N#CC[C@@H](C1CCCC1)n1cc(-c2ncnc3[nH]ccc23)cn1 Ruxolitinib"
                        ),
 
                 height=300, key="b_smiles_text")
@@ -5639,6 +5657,11 @@ with tab_batch:
                 horizontal=True, key="b_struct_prot",
             )
         b_ph = st.number_input("Target pH", 0.0, 14.0, 7.4, 0.1, key="b_ph")
+        st.number_input(
+            "Conformer seed (0 = random)", min_value=0, value=0, step=1,
+            key="b_conformer_seed",
+            help="RDKit ETKDG seed used for every batch ligand; 0 = random (default).",
+        )
         _b_use_pubchem = False
 
         # ── Protonation mode ─────────────────────────────────────────────────
@@ -5727,6 +5750,7 @@ with tab_batch:
         _b_use_pubchem  = st.session_state.get("pkanet_use_pubchem", True)
         _b_pkanet_max_tau = st.session_state.get("b_pkanet_max_tau", 8)
         _b_pkanet_ph_win  = st.session_state.get("b_pkanet_ph_win", 1.0)
+        _b_conformer_seed = int(st.session_state.get("b_conformer_seed", 0) or 0) or None
 
         smiles_pairs = []
         struct_file_pairs = []
@@ -5773,7 +5797,8 @@ with tab_batch:
             with st.spinner(f"Docking reference ligand ({rd_nm})…"):
                 rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR,
                                          mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
-                                         max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
+                                         max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win,
+                                         conformer_seed=_b_conformer_seed)
                 if rd_prep["success"]:
                     rd_dock = run_vina(rec_pdbqt, rd_prep["pdbqt"], config,
                         VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm,
@@ -5818,7 +5843,8 @@ with tab_batch:
             if _b_use_struct_files:
                 _struct_prot = st.session_state.get("b_struct_prot", "Use the uploaded form")
                 if _struct_prot == "Use the uploaded form":
-                    prep = prepare_ligand_from_file(fpath, name, BATCH_WORKDIR)
+                    prep = prepare_ligand_from_file(
+                        fpath, name, BATCH_WORKDIR, conformer_seed=_b_conformer_seed)
                 else:
                     try: smi = smiles_from_file(fpath, BATCH_WORKDIR)
                     except Exception as e:
@@ -5826,11 +5852,13 @@ with tab_batch:
                         all_logs.append(f"[{name}] PREP ERROR: {e}"); continue
                     prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR,
                                           mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
-                                          max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
+                                          max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win,
+                                          conformer_seed=_b_conformer_seed)
             else:
                 prep = prepare_ligand(smi, name, b_ph_val, BATCH_WORKDIR,
                                       mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
-                                      max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win)
+                                      max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win,
+                                      conformer_seed=_b_conformer_seed)
 
             if not prep["success"]:
                 results.append({"Name": name, "SMILES": smi, "Charge": None, "Top Score": None, "Status": f"PREP FAILED: {prep['error']}"})
