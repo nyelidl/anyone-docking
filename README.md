@@ -18,7 +18,7 @@
 |---|---|---|
 | 🌐 **Streamlit Web App** | Quickest start, no setup | [Open in browser →](https://nyelidl.github.io/anyone-docking/) |
 | ☁️ **Streamlit via Colab** | Web UI on free GPU/CPU | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1WtWYUUB1AREZMeB5qEJ9OD84AvWk1z4z?usp=sharing) |
-| 🖥️ **Streamlit locally** | Full control, own machine | `pip install anyonecandock && streamlit run app.py` |
+| 🖥️ **Streamlit locally** | Full control, own machine | `see below` |
 | 📓 **Colab notebook** | Batch docking, scripting | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
 | ⌨️ **CLI (`acd`)** | Automation, pipelines, scripts | `pip install anyonecandock` then `acd dock ...` |
 | 🐍 **Python API** | Programmatic integration | `from anyonecandock import core` |
