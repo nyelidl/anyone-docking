@@ -454,8 +454,6 @@ REST API submission of receptor + docked pose. PoseView v1 (docked pose) + PoseV
 | Modified amino acids (CYP, MSE, TPO, SEP) | ✅ Full | Backbone atom check keeps them in receptor |
 | Multiple co-crystal ligands | ✅ Full | Dropdown shown only when needed |
 | Cofactor-binding proteins (FAD, NAD, ATP, CoA) | ✅ Full | Kept or stripped independently |
-| Glycoproteins | ⚠️ Partial | Glycans kept in receptor; not in 2D diagram |
-| Membrane proteins | ⚠️ Partial | Dockable without lipids; lipids not auto-filtered |
 | RNA / DNA targets | ⚠️ Partial | Basic interaction detection; no nucleic-acid-specific types |
 | Covalent docking | ❌ No | Vina is non-covalent only |
 
