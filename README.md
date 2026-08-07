@@ -22,7 +22,7 @@
 | 📓 **Colab notebook** | Batch docking, scripting | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
 | ⌨️ **CLI (`acd`)** | Automation, pipelines, scripts | `pip install anyonecandock` then `acd dock ...` |
 | 🐍 **Python API** | Programmatic integration | `from anyonecandock import core` |
-| 🤖 **GPT / Claude plugin** | Natural-language docking | See below ↓ |
+| 🤖 **GPT / Claude plugin** | Natural-language docking | `See below ↓` |
 
 ---
 
