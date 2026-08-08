@@ -2434,6 +2434,7 @@ def run_vina(
     wdir = ".",
     out_name: str = "out",
     seed: int | None = None,
+    cpu: int | None = None,
 ) -> dict:
     wdir      = Path(wdir)
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
@@ -2441,6 +2442,14 @@ def run_vina(
 
     # --seed: when set, makes docking deterministic for the same input.
     _seed_flag = f" --seed {int(seed)}" if seed is not None else ""
+    if cpu is None:
+        _cpu_env = os.environ.get("ACD_VINA_CPU", "").strip()
+        if _cpu_env:
+            try:
+                cpu = max(1, int(_cpu_env))
+            except ValueError:
+                cpu = None
+    _cpu_flag = f" --cpu {int(cpu)}" if cpu is not None else ""
 
     rc, vlog = run_cmd(
         f'"{vina_path}" '
@@ -2450,6 +2459,7 @@ def run_vina(
         f'--exhaustiveness {exhaustiveness} '
         f'--num_modes {n_modes} '
         f'--energy_range {energy_range}'
+        f'{_cpu_flag} '
         f'{_seed_flag} '
         f'--out "{out_pdbqt}"',
         cwd=str(wdir),
@@ -2488,6 +2498,7 @@ def run_vina(
         "scores":    scores,
         "top_score": scores[0]["affinity"] if scores else None,
         "seed":      int(seed) if seed is not None else None,
+        "cpu":       int(cpu) if cpu is not None else None,
         "log":       vlog,
     }
 

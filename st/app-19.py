@@ -37,6 +37,7 @@ from core import (
     is_cif_file,
     convert_cif_to_pdb,
     scan_hetatm_residues,
+    get_cocrystal_smiles,
 )
 
 try:
@@ -612,6 +613,33 @@ def _adme_section(
     """Full ADME predictions panel: metrics, rules, ADME estimates, alerts + AI prompt."""
     st.markdown("---")
     st.markdown("### 🧪 ADME Predictions")
+
+    with st.expander("What these ADME terms mean", expanded=False):
+        st.caption(
+            "MW (g/mol): molecular weight. Lower values are often easier to absorb; very large molecules can be harder to deliver orally.\n"
+            "LogP: fat-solubility. Higher values usually mean better membrane entry but also higher risk of poor solubility and off-target effects.\n"
+            "TPSA (Å²): polar surface area. Lower values often help membrane permeability; very high values can reduce gut and brain penetration.\n"
+            "HBD / HBA: hydrogen-bond donors and acceptors. More H-bonding can help binding but too many often reduce permeability.\n"
+            "Rot Bonds: number of rotatable bonds. More flexibility can increase entropy cost and lower oral bioavailability.\n"
+            "QED: quantitative estimate of drug-likeness from 0 to 1. Higher is generally more drug-like.\n"
+            "Fsp³: fraction of sp3 carbons. Higher values usually mean a more 3D-like molecule; very low values often mean a flatter scaffold.\n"
+            "Arom Rings / Rings / Heavy Atoms / Exact MW: size-and-shape descriptors. Use them to judge scaffold complexity and compare close analogs.\n"
+            "Lipinski / Veber / Egan / Muegge: rule-based drug-likeness filters. Passing suggests a more typical oral small-molecule profile, not guaranteed success.\n"
+            "Bioavail. (%): rough oral bioavailability score. Higher is generally more favorable.\n"
+            "GI Absorption: estimated uptake from the gut. High is better for oral dosing.\n"
+            "BBB Penetration: estimated ability to reach the brain. Useful only if CNS exposure is desired.\n"
+            "P-gp Substrate: whether the molecule may be pumped out by P-glycoprotein. Likely substrates may show lower absorption or brain exposure.\n"
+            "CYP Inhibition Flags: possible inhibition of drug-metabolism enzymes. Positive flags suggest possible drug-drug interaction risk.\n"
+            "hERG inhibition: possible heart rhythm liability. A positive call is a safety warning.\n"
+            "AMES mutagenicity / DILI / Skin reaction: predicted mutation, liver injury, or skin sensitization risk. Negative is preferred.\n"
+            "LD50 (mg/kg): estimated acute oral toxicity. Higher values usually mean lower acute toxicity.\n"
+            "Half-life (hr): estimated time the drug stays in the body. Longer half-life may support less frequent dosing.\n"
+            "Hepatic clearance (mL/min/g): estimated liver removal rate. Higher values usually mean faster elimination.\n"
+            "PPB (%): plasma protein binding. Very high PPB means less free drug in blood.\n"
+            "VDd (L/kg): volume of distribution. Higher values suggest broader tissue distribution.\n"
+            "CYP substrate predictions: whether CYP2C9, CYP2D6, or CYP3A4 may metabolize the compound.\n"
+            "PAINS / BRENK alerts: structural alerts for assay interference or reactive/unstable chemistry. Fewer alerts are generally better."
+        )
 
     if not smiles or not smiles.strip():
         st.info("No SMILES available — prepare a ligand first.")
@@ -1559,7 +1587,7 @@ _DEFAULTS = dict(
     pdb_token=None, receptor_fh=None, receptor_pdbqt=None,
     box_pdb=None, config_txt=None, cx=None, cy=None, cz=None,
     box_sx=18, box_sy=18, box_sz=18,
-    ligand_pdb_path=None, receptor_done=False, receptor_log="",
+    ligand_pdb_path=None, raw_pdb_path=None, receptor_done=False, receptor_log="",
     cocrystal_ligand_id="",
     ligand_pdbqt=None, ligand_sdf=None, ligand_name="LIG",
     prot_smiles=None, ligand_done=False, ligand_log="",
@@ -1574,7 +1602,7 @@ _DEFAULTS = dict(
     b_pdb_token=None, b_receptor_fh=None, b_receptor_pdbqt=None,
     b_box_pdb=None, b_config_txt=None, b_cx=None, b_cy=None, b_cz=None,
     b_box_sx=18, b_box_sy=18, b_box_sz=18,
-    b_ligand_pdb_path=None, b_receptor_done=False, b_receptor_log="",
+    b_ligand_pdb_path=None, b_raw_pdb_path=None, b_receptor_done=False, b_receptor_log="",
     b_cocrystal_ligand_id="",
     b_batch_done=False, b_batch_results=None, b_batch_log="",
     b_redock_score=None, b_redock_result=None,
@@ -4150,6 +4178,13 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
     if blind:
         st.caption("⚠️ Blind docking — box will cover entire protein extent.")
 
+    st.warning(
+        "**Warning:** Check the protein structure for missing residues near the binding pocket "
+        "(active site). Missing residues in or close to the binding site can change the pocket "
+        "shape and make docking less reliable. If this happens, choose another suitable protein "
+        "structure or repair the missing residues before docking."
+    )
+
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
 
         if src == "Download from RCSB":
@@ -4281,6 +4316,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             _full_log = result["log"]
 
             st.session_state.update({
+                pfx + "raw_pdb_path":        raw_path,
                 pfx + "receptor_fh":         result["rec_fh"],
                 pfx + "receptor_pdbqt":      result["rec_pdbqt"],
                 pfx + "box_pdb":             result["box_pdb"],
@@ -5020,18 +5056,7 @@ with tab_basic:
             ),
         )
         if do_redock:
-            st.text_input(
-                "Co-crystal SMILES [name]",
-                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
-                key="redock_smiles",
-                help=(
-                    "SMILES and name for the redocking reference ligand.\n"
-                    "Format: SMILES LigandName (space-separated).\n\n"
-                    "📖 Name labels output files and score plots.\n"
-                    "⚙️ Copy SMILES from PubChem or ChEMBL.\n"
-                    "⚠️ SMILES must exactly match the PDB co-crystal ligand chemistry."
-                ),
-            )
+            st.caption("ACD will automatically fetch the co-crystal ligand SMILES from the prepared receptor.")
             st.caption("Score shown as dashed reference line in plot.")
 
     if not st.session_state.ligand_done:
@@ -5046,10 +5071,15 @@ with tab_basic:
         redock_score  = None
         redock_result = None
         if st.session_state.get("do_redock"):
-            raw_rd = st.session_state.get("redock_smiles", "").strip()
-            pts    = raw_rd.split(None, 1)
-            rd_smi = pts[0]
-            rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
+            rd_ligand_pdb = st.session_state.get("ligand_pdb_path") or ""
+            rd_ligand_id  = st.session_state.get("cocrystal_ligand_id", "")
+            rd_raw_pdb    = st.session_state.get("raw_pdb_path") or ""
+            rd_nm         = rd_ligand_id.split("_")[0] if rd_ligand_id else "redock"
+            rd_smi, rd_source, rd_warn = get_cocrystal_smiles(
+                ligand_pdb_path=rd_ligand_pdb,
+                cocrystal_ligand_id=rd_ligand_id,
+                raw_pdb=rd_raw_pdb,
+            )
             ph_val = st.session_state.get("ph_in", 7.4)
             _rd_prot_mode = st.session_state.get("prot_mode", "🧪 pKaNET Cloud+")
             _rd_prot_mode = {
@@ -5060,39 +5090,45 @@ with tab_basic:
             _rd_max_tau = st.session_state.get("pkanet_max_tau", 8)
             _rd_ph_win  = st.session_state.get("pkanet_ph_win", 1.0)
             _rd_conformer_seed = int(st.session_state.get("conformer_seed_in", 0) or 0) or None
-            with st.spinner(f"Docking reference ligand ({rd_nm})…"):
-                rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, ph_val, WORKDIR,
-                                         mode=_rd_prot_mode, use_pubchem=_rd_use_pubchem,
-                                         max_tautomers=_rd_max_tau, ph_window=_rd_ph_win,
-                                         conformer_seed=_rd_conformer_seed)
-                if rd_prep["success"]:
-                    rd_dock = run_vina(
-                        st.session_state.receptor_pdbqt, rd_prep["pdbqt"],
-                        st.session_state.config_txt,
-                        VINA_PATH, exh, nm, er, WORKDIR, "redock_" + rd_nm,
-                        seed=_dock_seed,
-                    )
-                    if rd_dock["success"] and rd_dock["top_score"] is not None:
-                        redock_score = rd_dock["top_score"]
-                        rd_pv_sdf    = str(WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
-                        fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
-                        if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
-                            rd_pv_sdf = rd_dock["out_sdf"]
-                        rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
-                        redock_result = {
-                            "Name": f"⭐ {rd_nm} (co-crystal ref)", "ref_name": rd_nm,
-                            "SMILES": rd_smi, "prot_smiles": rd_prep["prot_smiles"],
-                            "Charge": rd_prep["charge"], "Top Score": redock_score,
-                            "pose_scores": [s["affinity"] for s in rd_dock["scores"]],
-                            "Poses": rd_n, "out_pdbqt": rd_dock["out_pdbqt"],
-                            "out_sdf": rd_dock["out_sdf"], "pv_sdf": rd_pv_sdf,
-                            "Status": "OK", "is_redock": True,
-                        }
-                        st.success(f"✓ Reference score: **{redock_score:.2f} kcal/mol** ({rd_nm})")
+            if not rd_smi:
+                st.warning(f"⚠ Could not auto-fetch co-crystal SMILES for redocking. {rd_warn}")
+            else:
+                st.caption(f"Reference ligand: `{rd_nm}` via `{rd_source}`")
+                if rd_warn:
+                    st.warning(rd_warn)
+                with st.spinner(f"Docking reference ligand ({rd_nm})…"):
+                    rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, ph_val, WORKDIR,
+                                             mode=_rd_prot_mode, use_pubchem=_rd_use_pubchem,
+                                             max_tautomers=_rd_max_tau, ph_window=_rd_ph_win,
+                                             conformer_seed=_rd_conformer_seed)
+                    if rd_prep["success"]:
+                        rd_dock = run_vina(
+                            st.session_state.receptor_pdbqt, rd_prep["pdbqt"],
+                            st.session_state.config_txt,
+                            VINA_PATH, exh, nm, er, WORKDIR, "redock_" + rd_nm,
+                            seed=_dock_seed,
+                        )
+                        if rd_dock["success"] and rd_dock["top_score"] is not None:
+                            redock_score = rd_dock["top_score"]
+                            rd_pv_sdf    = str(WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
+                            fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
+                            if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
+                                rd_pv_sdf = rd_dock["out_sdf"]
+                            rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
+                            redock_result = {
+                                "Name": f"⭐ {rd_nm} (co-crystal ref)", "ref_name": rd_nm,
+                                "SMILES": rd_smi, "prot_smiles": rd_prep["prot_smiles"],
+                                "Charge": rd_prep["charge"], "Top Score": redock_score,
+                                "pose_scores": [s["affinity"] for s in rd_dock["scores"]],
+                                "Poses": rd_n, "out_pdbqt": rd_dock["out_pdbqt"],
+                                "out_sdf": rd_dock["out_sdf"], "pv_sdf": rd_pv_sdf,
+                                "Status": "OK", "is_redock": True,
+                            }
+                            st.success(f"✓ Reference score: **{redock_score:.2f} kcal/mol** ({rd_nm})")
+                        else:
+                            st.warning("⚠ Redocking failed — no score returned")
                     else:
-                        st.warning("⚠ Redocking failed — no score returned")
-                else:
-                    st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
+                        st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
 
         _seed_label = f", seed={_dock_seed}" if _dock_seed is not None else ""
         with st.spinner(f"Running Vina (exhaustiveness={exh}{_seed_label})… ⏳"):
@@ -5698,11 +5734,7 @@ with tab_batch:
             ),
         )
         if b_do_redock:
-            st.text_input(
-                "Co-crystal SMILES [name]",
-                value="COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC Erlotinib",
-                key="b_redock_smiles",
-            )
+            st.caption("ACD will automatically fetch the co-crystal ligand SMILES from the prepared receptor.")
         st.markdown("**Docking parameters**")
         b_exh = st.slider(
             "Exhaustiveness", 4, 32, 8, 2, key="b_exh",
@@ -5790,40 +5822,51 @@ with tab_batch:
         redock_score  = None
         redock_result = None
         if st.session_state.get("b_do_redock"):
-            raw_rd = st.session_state.get("b_redock_smiles", "").strip()
-            pts    = raw_rd.split(None, 1)
-            rd_smi = pts[0]
-            rd_nm  = pts[1].replace(" ", "_") if len(pts) > 1 else "redock"
-            with st.spinner(f"Docking reference ligand ({rd_nm})…"):
-                rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR,
-                                         mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
-                                         max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win,
-                                         conformer_seed=_b_conformer_seed)
-                if rd_prep["success"]:
-                    rd_dock = run_vina(rec_pdbqt, rd_prep["pdbqt"], config,
-                        VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm,
-                        seed=_b_dock_seed)
-                    if rd_dock["success"] and rd_dock["top_score"] is not None:
-                        redock_score = rd_dock["top_score"]
-                        rd_pv_sdf = str(BATCH_WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
-                        fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
-                        if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
-                            rd_pv_sdf = rd_dock["out_sdf"]
-                        rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
-                        redock_result = {
-                            "Name": f"⭐ {rd_nm} (co-crystal ref)", "ref_name": rd_nm,
-                            "SMILES": rd_smi, "prot_smiles": rd_prep["prot_smiles"],
-                            "Charge": rd_prep["charge"], "Top Score": redock_score,
-                            "pose_scores": [s["affinity"] for s in rd_dock["scores"]],
-                            "Poses": rd_n, "out_pdbqt": rd_dock["out_pdbqt"],
-                            "out_sdf": rd_dock["out_sdf"], "pv_sdf": rd_pv_sdf,
-                            "Status": "OK", "is_redock": True,
-                        }
-                        st.success(f"✓ Reference score: **{redock_score:.2f} kcal/mol** ({rd_nm})")
+            rd_ligand_pdb = st.session_state.get("b_ligand_pdb_path") or ""
+            rd_ligand_id  = st.session_state.get("b_cocrystal_ligand_id", "")
+            rd_raw_pdb    = st.session_state.get("b_raw_pdb_path") or ""
+            rd_nm         = rd_ligand_id.split("_")[0] if rd_ligand_id else "redock"
+            rd_smi, rd_source, rd_warn = get_cocrystal_smiles(
+                ligand_pdb_path=rd_ligand_pdb,
+                cocrystal_ligand_id=rd_ligand_id,
+                raw_pdb=rd_raw_pdb,
+            )
+            if not rd_smi:
+                st.warning(f"⚠ Could not auto-fetch co-crystal SMILES for redocking. {rd_warn}")
+            else:
+                st.caption(f"Reference ligand: `{rd_nm}` via `{rd_source}`")
+                if rd_warn:
+                    st.warning(rd_warn)
+                with st.spinner(f"Docking reference ligand ({rd_nm})…"):
+                    rd_prep = prepare_ligand(rd_smi, "redock_" + rd_nm, b_ph_val, BATCH_WORKDIR,
+                                             mode=_b_prot_mode, use_pubchem=_b_use_pubchem,
+                                             max_tautomers=_b_pkanet_max_tau, ph_window=_b_pkanet_ph_win,
+                                             conformer_seed=_b_conformer_seed)
+                    if rd_prep["success"]:
+                        rd_dock = run_vina(rec_pdbqt, rd_prep["pdbqt"], config,
+                            VINA_PATH, b_exh, b_nm, b_er, BATCH_WORKDIR, "redock_" + rd_nm,
+                            seed=_b_dock_seed)
+                        if rd_dock["success"] and rd_dock["top_score"] is not None:
+                            redock_score = rd_dock["top_score"]
+                            rd_pv_sdf = str(BATCH_WORKDIR / f"redock_{rd_nm}_pv_ready.sdf")
+                            fix_sdf_bond_orders(rd_dock["out_sdf"], rd_smi, rd_pv_sdf)
+                            if not os.path.exists(rd_pv_sdf) or os.path.getsize(rd_pv_sdf) < 10:
+                                rd_pv_sdf = rd_dock["out_sdf"]
+                            rd_n = len(load_mols_from_sdf(rd_dock["out_sdf"], sanitize=False)) if os.path.exists(rd_dock["out_sdf"]) else 0
+                            redock_result = {
+                                "Name": f"⭐ {rd_nm} (co-crystal ref)", "ref_name": rd_nm,
+                                "SMILES": rd_smi, "prot_smiles": rd_prep["prot_smiles"],
+                                "Charge": rd_prep["charge"], "Top Score": redock_score,
+                                "pose_scores": [s["affinity"] for s in rd_dock["scores"]],
+                                "Poses": rd_n, "out_pdbqt": rd_dock["out_pdbqt"],
+                                "out_sdf": rd_dock["out_sdf"], "pv_sdf": rd_pv_sdf,
+                                "Status": "OK", "is_redock": True,
+                            }
+                            st.success(f"✓ Reference score: **{redock_score:.2f} kcal/mol** ({rd_nm})")
+                        else:
+                            st.warning("⚠ Redocking failed")
                     else:
-                        st.warning("⚠ Redocking failed")
-                else:
-                    st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
+                        st.warning(f"⚠ Reference ligand prep failed: {rd_prep.get('error')}")
 
         results = []
         _items  = struct_file_pairs if _b_use_struct_files else smiles_pairs
