@@ -2493,6 +2493,215 @@ def run_vina(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  CO-CRYSTAL LIGAND  —  SMILES ACQUISITION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _rcsb_ccd_smiles(resname: str):
+    import requests
+    url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{resname.strip().upper()}"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        descriptors = data.get("pdbx_chem_comp_descriptor", [])
+        if isinstance(descriptors, dict):
+            descriptors = [descriptors]
+
+        canonical_by_program: dict = {}
+        for item in descriptors:
+            t = (item.get("type") or "").upper()
+            d = (item.get("descriptor") or "").strip()
+            program = (item.get("program") or "").strip().lower()
+            if d and t == "SMILES_CANONICAL":
+                canonical_by_program.setdefault(program, d)
+
+        program_priority = ("cactvs", "openeye oetoolkits", "acdlabs")
+        for program in program_priority:
+            if program in canonical_by_program:
+                return canonical_by_program[program]
+        if canonical_by_program:
+            return canonical_by_program[sorted(canonical_by_program)[0]]
+        return None
+    except Exception:
+        return None
+
+
+def _smiles_from_cif_block(cif_path: str, resname: str):
+    target = resname.strip().upper()
+    try:
+        with open(cif_path, errors="replace") as fh:
+            content = fh.read()
+
+        loop_pat = _re.compile(
+            r"loop_\s*((?:_chem_comp\.\S+\s*)+)(.*?)(?=loop_|data_|\Z)",
+            _re.DOTALL,
+        )
+        for m in loop_pat.finditer(content):
+            header_block = m.group(1)
+            data_block = m.group(2)
+            headers = header_block.split()
+            if "_chem_comp.id" not in headers or "_chem_comp.pdbx_smiles" not in headers:
+                continue
+            id_idx = headers.index("_chem_comp.id")
+            smi_idx = headers.index("_chem_comp.pdbx_smiles")
+            n = len(headers)
+            tokens = _re.findall(r"'[^']*'|\"[^\"]*\"|[^\s]+", data_block)
+            for i in range(0, len(tokens) - n + 1, n):
+                row = tokens[i:i + n]
+                if len(row) < n:
+                    break
+                comp_id = row[id_idx].strip("'\"").upper()
+                if comp_id == target or comp_id.startswith(target + "_"):
+                    smi = row[smi_idx].strip("'\"")
+                    if smi and smi not in (".", "?"):
+                        return smi
+
+        m = _re.search(r"_chem_comp\.pdbx_smiles[ \t]+([^\s#][^\r\n]*)", content)
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+
+        m = _re.search(
+            r"_chem_comp\.pdbx_smiles\s*\r?\n[ \t]*([^_#;\s][^\r\n]*)",
+            content,
+        )
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+
+        m = _re.search(
+            r"_chem_comp\.pdbx_smiles\s*\r?\n;\r?\n([^\n]+)\r?\n;",
+            content,
+        )
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+    except Exception:
+        pass
+    return None
+
+
+def get_cocrystal_smiles(
+    ligand_pdb_path: str,
+    cocrystal_ligand_id: str,
+    raw_pdb: str = "",
+) -> tuple:
+    resname = cocrystal_ligand_id.split("_")[0].upper() if cocrystal_ligand_id else ""
+
+    if resname:
+        try:
+            smi = _rcsb_ccd_smiles(resname)
+            if smi:
+                return smi, "rcsb_ccd", ""
+        except Exception:
+            pass
+
+    if raw_pdb and is_cif_file(raw_pdb) and resname:
+        try:
+            smi = _smiles_from_cif_block(raw_pdb, resname)
+            if smi:
+                return smi, "cif_block", ""
+        except Exception:
+            pass
+
+    warn_3d = (
+        "SMILES was derived from 3D coordinates (PDB has no bond-order data). "
+        "Bond orders were inferred heuristically — verify the structure, "
+        "especially for aromatic rings or unusual valences, before trusting "
+        "docking scores."
+    )
+
+    if ligand_pdb_path and os.path.exists(ligand_pdb_path):
+        _rdkit_six_patch()
+        from rdkit import Chem
+
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".sdf", delete=False) as tf:
+                ob_sdf = tf.name
+            rc, _ = run_cmd(["obabel", ligand_pdb_path, "-O", ob_sdf, "-h", "-p", "7.4"])
+            if rc == 0 and os.path.exists(ob_sdf) and os.path.getsize(ob_sdf) > 10:
+                supp = Chem.SDMolSupplier(ob_sdf, removeHs=False, sanitize=True)
+                mols = [m for m in supp if m is not None]
+                if not mols:
+                    supp = Chem.SDMolSupplier(ob_sdf, removeHs=False, sanitize=False)
+                    mols = [m for m in supp if m is not None]
+                if mols:
+                    mol = mols[0]
+                    try:
+                        mol_noh = Chem.RemoveHs(mol)
+                        smi = Chem.MolToSmiles(mol_noh, isomericSmiles=True)
+                    except Exception:
+                        smi = Chem.MolToSmiles(mol, isomericSmiles=True)
+                    if smi:
+                        return smi, "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+        try:
+            mol = Chem.MolFromPDBFile(ligand_pdb_path, removeHs=False, sanitize=False)
+            if mol is not None:
+                bonded = False
+                try:
+                    from rdkit.Chem import DetermineBonds
+                    DetermineBonds(mol, charge=0)
+                    bonded = True
+                except (ImportError, Exception):
+                    pass
+
+                if not bonded:
+                    try:
+                        Chem.SanitizeMol(mol)
+                        bonded = True
+                    except Exception:
+                        try:
+                            Chem.SanitizeMol(
+                                mol,
+                                Chem.SanitizeFlags.SANITIZE_ALL
+                                ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+                            )
+                            bonded = True
+                        except Exception:
+                            pass
+
+                if bonded or mol.GetNumAtoms() > 0:
+                    try:
+                        mol_noh = Chem.RemoveHs(mol, sanitize=False)
+                        Chem.SanitizeMol(mol_noh)
+                        smi = Chem.MolToSmiles(mol_noh, isomericSmiles=True)
+                    except Exception:
+                        smi = Chem.MolToSmiles(mol, isomericSmiles=True)
+                    if smi:
+                        return smi, "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".smi", delete=False) as tf:
+                smi_tmp = tf.name
+            rc, _ = run_cmd(["obabel", ligand_pdb_path, "-O", smi_tmp, "-h", "--canonical"])
+            if rc == 0 and os.path.exists(smi_tmp):
+                for line in open(smi_tmp):
+                    pts = line.strip().split(None, 1)
+                    if pts and pts[0]:
+                        return pts[0], "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+    return "", "", (
+        f"Could not obtain SMILES for co-crystal ligand "
+        f"'{resname or cocrystal_ligand_id}'. "
+        "All strategies failed: RCSB CCD, CIF block, "
+        "OpenBabel PDB→SDF, RDKit DetermineBonds, OpenBabel direct."
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  BOND ORDER CORRECTION
 # ══════════════════════════════════════════════════════════════════════════════
 
