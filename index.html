@@ -424,7 +424,18 @@
   </div>
 
   <script>
-    const APPS = [
+    // ============================================================
+    // Anyone Can Dock launcher
+    //
+    // Normal mode   -> Streamlit Community Cloud
+    // Workshop mode -> AWS Tokyo through CloudFront
+    //
+    // Routing is controlled by ./launcher-config.json.
+    // If the config file is missing or invalid, NORMAL mode is used
+    // so the public launcher remains available.
+    // ============================================================
+
+    const STREAMLIT_APPS = [
       "https://anyone-docking-01.streamlit.app/",
       "https://anyone-docking-02.streamlit.app/",
       "https://anyone-docking-03.streamlit.app/",
@@ -451,153 +462,472 @@
       "https://anyone-docking-24.streamlit.app/",
     ];
 
-    const TIMEOUT_MS = 8000, MIN_DELAY_MS = 0, FALLBACK_MS = 10000;
-    const n = APPS.length, results = new Array(n).fill(null);
+    const DEFAULT_AWS_URL = "https://d1lnl7mg5ehqv6.cloudfront.net";
+    const CONFIG_URL = "./launcher-config.json";
+
+    const TIMEOUT_MS = 8000;
+    const FALLBACK_MS = 10000;
+    const AWS_HEALTH_TIMEOUT_MS = 8000;
+
     let redirected = false;
-    const startTime = Date.now();
+    let activeDots = [];
+    let manualFallbackHandler = null;
 
     const grid = document.getElementById("serverGrid");
-    const dots = APPS.map((_, i) => {
-      const d = document.createElement("div");
-      d.className = "server-dot"; d.title = `Server ${i + 1}`;
-      grid.appendChild(d); return d;
-    });
+    const fallbackBtn = document.getElementById("fallbackBtn");
 
     function setStatus(msg)   { document.getElementById("status").textContent = msg; }
     function setHint(msg)     { document.getElementById("hint").textContent = msg; }
     function setProgress(pct) { document.getElementById("progressBar").style.width = pct + "%"; }
 
+    function clearGrid() {
+      grid.innerHTML = "";
+      activeDots = [];
+    }
+
+    function addDot(title, className = "checking") {
+      const d = document.createElement("div");
+      d.className = `server-dot ${className}`;
+      d.title = title;
+      grid.appendChild(d);
+      activeDots.push(d);
+      return d;
+    }
+
+    function showFallback(label = "Open Streamlit fallback") {
+      fallbackBtn.textContent = label;
+      fallbackBtn.style.display = "inline-block";
+    }
+
+    function hideFallback() {
+      fallbackBtn.style.display = "none";
+    }
+
+    function redirectToFallback() {
+      if (redirected) return;
+      if (typeof manualFallbackHandler === "function") {
+        manualFallbackHandler();
+        return;
+      }
+      startStreamlitMode();
+    }
+
     function getNextServer(onlineIndices) {
       const key = "acd_rr_counter";
-      let c = parseInt(localStorage.getItem(key) || "0");
-      if (!isFinite(c)) c = 0;
+      let c = parseInt(localStorage.getItem(key) || "0", 10);
+      if (!Number.isFinite(c)) c = 0;
       const idx = onlineIndices[c % onlineIndices.length];
       localStorage.setItem(key, String(c + 1));
       return idx;
     }
 
-    function doRedirect(idx) {
+    function redirectWithCountdown(url, label, hintText, seconds = 3) {
       if (redirected) return;
       redirected = true;
-      dots[idx].className = "server-dot selected";
       setProgress(100);
-      let count = 3;
+
+      let count = seconds;
       const cdEl = document.getElementById("countdown");
+
       function tick() {
         if (count > 0) {
-          setStatus(`Server ${idx + 1} is ready — opening in…`);
+          setStatus(`${label} — opening in…`);
           cdEl.innerHTML = `<span class="countdown-num">${count}</span>`;
-          count--; setTimeout(tick, 1000);
+          count--;
+          setTimeout(tick, 1000);
         } else {
-          setStatus("🚀 Launching…"); cdEl.textContent = "";
-          setHint(`Server ${idx + 1} of ${n}`);
-          setTimeout(() => { window.location.href = APPS[idx]; }, 300);
+          setStatus("🚀 Launching…");
+          cdEl.textContent = "";
+          setHint(hintText);
+          setTimeout(() => { window.location.href = url; }, 250);
         }
       }
+
       tick();
     }
 
-    function redirectToFallback() {
-      if (redirected) return;
-      const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
-      doRedirect(online.length > 0 ? getNextServer(online) : Math.floor(Math.random() * n));
+    function normalizeLauncherConfig(raw) {
+      raw = raw && typeof raw === "object" ? raw : {};
+
+      let mode =
+        raw.mode ??
+        raw.routing_mode ??
+        raw.launcher_mode ??
+        raw.workshop_mode ??
+        raw.workshop?.enabled ??
+        "normal";
+
+      if (typeof mode === "boolean") {
+        mode = mode ? "workshop" : "normal";
+      }
+
+      mode = String(mode).trim().toLowerCase();
+
+      if (["aws", "workshop", "workshop_on", "on", "true", "1"].includes(mode)) {
+        mode = "workshop";
+      } else {
+        mode = "normal";
+      }
+
+      const awsUrl = String(
+        raw.aws_url ??
+        raw.workshop_url ??
+        raw.awsUrl ??
+        raw.workshopUrl ??
+        raw.aws?.url ??
+        raw.workshop?.url ??
+        DEFAULT_AWS_URL
+      ).replace(/\/+$/, "");
+
+      const healthUrl = String(
+        raw.aws_health_url ??
+        raw.health_url ??
+        raw.awsHealthUrl ??
+        raw.workshop?.health_url ??
+        `${awsUrl}/_stcore/health`
+      );
+
+      const fallbackToStreamlit =
+        raw.fallback_to_streamlit ??
+        raw.fallbackToStreamlit ??
+        raw.workshop?.fallback_to_streamlit ??
+        true;
+
+      return {
+        mode,
+        awsUrl,
+        healthUrl,
+        fallbackToStreamlit: fallbackToStreamlit !== false
+      };
     }
 
-    function checkProgress() {
-      const done = results.filter(r => r !== null).length;
-      setProgress(Math.round((done / n) * 90));
+    async function loadLauncherConfig() {
+      try {
+        const url = `${CONFIG_URL}?v=${Date.now()}`;
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) throw new Error(`config HTTP ${r.status}`);
+        return normalizeLauncherConfig(await r.json());
+      } catch (err) {
+        console.warn("Launcher config unavailable; using normal Streamlit mode.", err);
+        return normalizeLauncherConfig({ mode: "normal" });
+      }
     }
 
-    function tryRedirect() {
-      if (redirected) return;
-      const done = results.filter(r => r !== null).length;
-      const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
-      const elapsed = Date.now() - startTime;
-      if ((done === n || elapsed >= MIN_DELAY_MS) && online.length > 0) doRedirect(getNextServer(online));
-    }
-
-    APPS.forEach((url, i) => {
-      dots[i].className = "server-dot checking";
+    async function checkAwsHealth(healthUrl) {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-      const t0 = Date.now();
-      fetch(url, { mode: "no-cors", signal: controller.signal })
-        .then(() => {
-          clearTimeout(timer);
-          const ms = Date.now() - t0;
-          results[i] = { ok: true, ms };
-          dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
-          checkProgress(); tryRedirect();
-        })
-        .catch(() => {
-          clearTimeout(timer);
-          results[i] = { ok: false, ms: null };
-          dots[i].className = "server-dot offline";
-          checkProgress(); tryRedirect();
-        });
-    });
+      const timer = setTimeout(() => controller.abort(), AWS_HEALTH_TIMEOUT_MS);
 
-    setTimeout(() => {
-      if (!redirected) {
-        const online = results.map((r,i) => r?.ok ? i : -1).filter(i => i >= 0);
-        if (online.length > 0) { doRedirect(getNextServer(online)); }
-        else {
-          setStatus("All servers are starting up…");
-          document.getElementById("fallbackBtn").style.display = "inline-block";
-          doRedirect(Math.floor(Math.random() * n));
+      try {
+        const r = await fetch(
+          `${healthUrl}${healthUrl.includes("?") ? "&" : "?"}v=${Date.now()}`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+            mode: "cors"
+          }
+        );
+        clearTimeout(timer);
+        return { definitive: true, ok: r.ok, status: r.status };
+      } catch (err) {
+        clearTimeout(timer);
+
+        // If CORS hides the status, use a network reachability probe.
+        // The launcher-config mode remains the source of truth.
+        try {
+          const probeController = new AbortController();
+          const probeTimer = setTimeout(() => probeController.abort(), AWS_HEALTH_TIMEOUT_MS);
+
+          await fetch(
+            `${healthUrl}${healthUrl.includes("?") ? "&" : "?"}probe=${Date.now()}`,
+            {
+              cache: "no-store",
+              signal: probeController.signal,
+              mode: "no-cors"
+            }
+          );
+
+          clearTimeout(probeTimer);
+          return { definitive: false, ok: true, status: null };
+        } catch (probeErr) {
+          return { definitive: false, ok: false, status: null };
         }
       }
-    }, FALLBACK_MS);
+    }
+
+    async function startWorkshopMode(config) {
+      redirected = false;
+      manualFallbackHandler = () => {
+        redirected = false;
+        startStreamlitMode();
+      };
+
+      clearGrid();
+      hideFallback();
+      document.getElementById("countdown").textContent = "";
+
+      const awsDot = addDot("AWS Tokyo workshop", "checking");
+      setProgress(20);
+      setStatus("Workshop mode — checking AWS Tokyo…");
+      setHint("AWS Tokyo • CloudFront • Anyone Can Dock");
+
+      const health = await checkAwsHealth(config.healthUrl);
+
+      if (health.ok) {
+        awsDot.className = "server-dot online selected";
+        setProgress(100);
+
+        redirectWithCountdown(
+          config.awsUrl,
+          "AWS Tokyo workshop is ready",
+          "Powered by AWS Tokyo",
+          2
+        );
+        return;
+      }
+
+      awsDot.className = "server-dot offline";
+
+      if (config.fallbackToStreamlit) {
+        setStatus("AWS workshop is unavailable — using Streamlit…");
+        setHint("Automatic fallback to Streamlit Community Cloud");
+        setProgress(10);
+
+        await new Promise(resolve => setTimeout(resolve, 500));
+        startStreamlitMode();
+      } else {
+        setStatus("AWS workshop is currently unavailable.");
+        setHint("Try again shortly or open the Streamlit fallback.");
+        setProgress(0);
+        showFallback("Open Streamlit fallback");
+      }
+    }
+
+    function startStreamlitMode() {
+      redirected = false;
+      hideFallback();
+      clearGrid();
+      document.getElementById("countdown").textContent = "";
+
+      const APPS = STREAMLIT_APPS;
+      const n = APPS.length;
+      const results = new Array(n).fill(null);
+
+      const dots = APPS.map((_, i) => addDot(`Server ${i + 1}`, "checking"));
+
+      setStatus("Checking server availability…");
+      setHint("Connecting to the fastest available server • Powered by Streamlit");
+      setProgress(0);
+
+      manualFallbackHandler = () => {
+        if (redirected) return;
+
+        const online = results
+          .map((r, i) => r?.ok ? i : -1)
+          .filter(i => i >= 0);
+
+        const idx = online.length > 0
+          ? getNextServer(online)
+          : Math.floor(Math.random() * n);
+
+        dots[idx].className = "server-dot selected";
+
+        redirectWithCountdown(
+          APPS[idx],
+          `Server ${idx + 1} is ready`,
+          `Streamlit server ${idx + 1} of ${n}`,
+          2
+        );
+      };
+
+      function checkProgress() {
+        const done = results.filter(r => r !== null).length;
+        setProgress(Math.round((done / n) * 90));
+      }
+
+      function tryRedirect() {
+        if (redirected) return;
+
+        const online = results
+          .map((r, i) => r?.ok ? i : -1)
+          .filter(i => i >= 0);
+
+        if (online.length === 0) return;
+
+        const idx = getNextServer(online);
+        dots[idx].className = "server-dot selected";
+
+        redirectWithCountdown(
+          APPS[idx],
+          `Server ${idx + 1} is ready`,
+          `Streamlit server ${idx + 1} of ${n}`,
+          2
+        );
+      }
+
+      APPS.forEach((url, i) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        const t0 = Date.now();
+
+        fetch(url, {
+          mode: "no-cors",
+          signal: controller.signal,
+          cache: "no-store"
+        })
+          .then(() => {
+            clearTimeout(timer);
+
+            const ms = Date.now() - t0;
+            results[i] = { ok: true, ms };
+            dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
+
+            checkProgress();
+            tryRedirect();
+          })
+          .catch(() => {
+            clearTimeout(timer);
+
+            results[i] = { ok: false, ms: null };
+            dots[i].className = "server-dot offline";
+
+            checkProgress();
+
+            const done = results.filter(r => r !== null).length;
+            if (done === n && !redirected) {
+              showFallback("Open app manually");
+            }
+          });
+      });
+
+      setTimeout(() => {
+        if (redirected) return;
+
+        const online = results
+          .map((r, i) => r?.ok ? i : -1)
+          .filter(i => i >= 0);
+
+        if (online.length > 0) {
+          const idx = getNextServer(online);
+          dots[idx].className = "server-dot selected";
+
+          redirectWithCountdown(
+            APPS[idx],
+            `Server ${idx + 1} is ready`,
+            `Streamlit server ${idx + 1} of ${n}`,
+            2
+          );
+        } else {
+          setStatus("All Streamlit servers are starting up…");
+          setHint("Please wait, or open a server manually.");
+          showFallback("Open app manually");
+        }
+      }, FALLBACK_MS);
+    }
+
+    async function bootstrapRouting() {
+      const config = await loadLauncherConfig();
+
+      if (config.mode === "workshop") {
+        await startWorkshopMode(config);
+      } else {
+        startStreamlitMode();
+      }
+    }
+
+    // ============================================================
+    // iOS / Android install helpers
+    // ============================================================
 
     const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
-    if (isIOS && !isStandalone) setTimeout(() => document.getElementById('ios-hint').classList.add('visible'), 1200);
+    const isStandalone =
+      window.navigator.standalone === true ||
+      window.matchMedia("(display-mode: standalone)").matches;
 
-    const hint = document.getElementById('ios-hint');
-    const sheet = document.getElementById('sheet');
-    const overlay = document.getElementById('sheet-overlay');
-    const closeBtn = document.getElementById('sheet-close');
+    if (isIOS && !isStandalone) {
+      setTimeout(() => {
+        document.getElementById("ios-hint").classList.add("visible");
+      }, 1200);
+    }
 
-    function openSheet() { sheet.classList.add('open'); overlay.classList.add('open'); hint.classList.remove('visible'); }
-    function closeSheet() { sheet.classList.remove('open'); overlay.classList.remove('open'); setTimeout(() => hint.classList.add('visible'), 500); }
+    const hint = document.getElementById("ios-hint");
+    const sheet = document.getElementById("sheet");
+    const overlay = document.getElementById("sheet-overlay");
+    const closeBtn = document.getElementById("sheet-close");
 
-    hint.addEventListener('click', openSheet);
-    hint.addEventListener('keydown', e => { if (e.key === 'Enter') openSheet(); });
-    overlay.addEventListener('click', closeSheet);
-    closeBtn.addEventListener('click', closeSheet);
+    function openSheet() {
+      sheet.classList.add("open");
+      overlay.classList.add("open");
+      hint.classList.remove("visible");
+    }
+
+    function closeSheet() {
+      sheet.classList.remove("open");
+      overlay.classList.remove("open");
+      setTimeout(() => hint.classList.add("visible"), 500);
+    }
+
+    hint.addEventListener("click", openSheet);
+    hint.addEventListener("keydown", e => {
+      if (e.key === "Enter") openSheet();
+    });
+    overlay.addEventListener("click", closeSheet);
+    closeBtn.addEventListener("click", closeSheet);
 
     let startY = 0;
-    sheet.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
-    sheet.addEventListener('touchend', e => { if (e.changedTouches[0].clientY - startY > 60) closeSheet(); }, { passive: true });
+
+    sheet.addEventListener("touchstart", e => {
+      startY = e.touches[0].clientY;
+    }, { passive: true });
+
+    sheet.addEventListener("touchend", e => {
+      if (e.changedTouches[0].clientY - startY > 60) closeSheet();
+    }, { passive: true });
 
     let deferredPrompt;
-    window.addEventListener('beforeinstallprompt', e => {
-      e.preventDefault(); deferredPrompt = e;
-      if (!isStandalone) document.getElementById('android-banner').classList.add('visible');
-    });
-    document.getElementById('install-btn').addEventListener('click', async () => {
-      if (!deferredPrompt) return;
-      deferredPrompt.prompt(); await deferredPrompt.userChoice;
-      deferredPrompt = null; document.getElementById('android-banner').classList.remove('visible');
-    });
-    document.getElementById('dismiss-btn').addEventListener('click', () => {
-      document.getElementById('android-banner').classList.remove('visible');
+
+    window.addEventListener("beforeinstallprompt", e => {
+      e.preventDefault();
+      deferredPrompt = e;
+
+      if (!isStandalone) {
+        document.getElementById("android-banner").classList.add("visible");
+      }
     });
 
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+    document.getElementById("install-btn").addEventListener("click", async () => {
+      if (!deferredPrompt) return;
+
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+
+      document.getElementById("android-banner").classList.remove("visible");
+    });
+
+    document.getElementById("dismiss-btn").addEventListener("click", () => {
+      document.getElementById("android-banner").classList.remove("visible");
+    });
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    }
 
     function toggleClaudeSteps() {
-      const el = document.getElementById('claude-steps');
-      el.style.display = el.style.display === 'none' ? 'block' : 'none';
+      const el = document.getElementById("claude-steps");
+      el.style.display = el.style.display === "none" ? "block" : "none";
     }
 
     function copyMCPUrl() {
-      navigator.clipboard.writeText('https://anyone-can-dock-mcp.anyonecandock.workers.dev').then(() => {
-        const btn = document.getElementById('copy-btn');
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
-      });
+      navigator.clipboard
+        .writeText("https://anyone-can-dock-mcp.anyonecandock.workers.dev")
+        .then(() => {
+          const btn = document.getElementById("copy-btn");
+          btn.textContent = "Copied!";
+          setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+        });
     }
+
+    bootstrapRouting();
   </script>
 </body>
 </html>
