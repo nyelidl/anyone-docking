@@ -1745,7 +1745,11 @@ def _get_active_redock_reference(result, *, score_key, pose_key, name_key, rmsd_
             "confirmed": False,
         }
 
-    _confirmed = st.session_state.get(score_key) is not None
+    _confirmed = (
+        st.session_state.get(score_key) is not None
+        or st.session_state.get(pose_key) is not None
+        or st.session_state.get(rmsd_key) is not None
+    )
     _score = st.session_state.get(score_key)
     if _score is None:
         _score = result.get("Top Score")
@@ -4069,7 +4073,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 _lig_rows = [r for r in _het_rows if str(r.get("type_guess", "")).lower() == "ligand"]
                 _candidate_rows, _auto_row, _reason = _choose_ligand_candidates(_lig_rows)
 
-                _opt_col1, _opt_col2, _opt_col3 = st.columns(3)
+                _opt_col1, _opt_col2, _opt_col3, _opt_col4 = st.columns(4)
                 with _opt_col1:
                     _remove_water = st.checkbox(
                         "Remove waters", value=True, key=pfx + "het_remove_water",
@@ -4084,6 +4088,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     _keep_cofactors = st.checkbox(
                         "Keep cofactors", value=True, key=pfx + "het_keep_cofactors",
                         help="Keep cofactors such as HEM, FAD, NAD unless you intentionally remove them."
+                    )
+                with _opt_col4:
+                    _keep_lipid_additives = st.checkbox(
+                        "Keep cholesterol / lipids", value=False, key=pfx + "het_keep_lipid_additives",
+                        help="Keep cholesterol-like additives such as Y01, CHS, CLR, and CHL in the receptor instead of removing them."
                     )
 
                 _selected_ref_key = ""
@@ -4136,6 +4145,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                         _policy[_k] = "keep" if _keep_metals else "remove"
                     elif "cofactor" in _tg:
                         _policy[_k] = "keep" if _keep_cofactors else "remove"
+                    elif _tg == "lipid/additive":
+                        _policy[_k] = "keep" if _keep_lipid_additives else "remove"
                     else:
                         # Buffers/additives/ions such as GOL, EDO, SO4, PO4 are removed by default.
                         _policy[_k] = "remove"
@@ -4192,7 +4203,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 "- **reference**: use this co-crystal ligand to define the grid center, "
                   "then remove it from the receptor.\n"
                 "- **keep**: retain the residue — catalytic metal, structural ion, "
-                  "heme/FAD/NAD cofactor, or conserved water.\n"
+                  "heme/FAD/NAD cofactor, cholesterol-like additive, or conserved water.\n"
                 "- **remove**: strip buffer/solvent/additive molecules "
                   "such as GOL, EDO, SO4, or irrelevant waters.\n"
             )
@@ -5311,6 +5322,14 @@ with tab_basic:
             _rd_src = _redock_result.get("pv_sdf") or _redock_result["out_sdf"]
             _rd_mols = load_mols_from_sdf(_rd_src, sanitize=False)
             if _rd_mols:
+                _confirmed_pose = _active_single_ref.get("pose")
+                if (
+                    _active_single_ref.get("confirmed")
+                    and _confirmed_pose
+                    and st.session_state.get("_rd_pose_synced_to_confirmed") != int(_confirmed_pose)
+                ):
+                    st.session_state["rd_pose_sel"] = int(_confirmed_pose)
+                    st.session_state["_rd_pose_synced_to_confirmed"] = int(_confirmed_pose)
                 _rd_pose_i = st.slider("Reference pose", 1, len(_rd_mols), 1, key="rd_pose_sel") - 1
                 _rd_scores = _redock_result.get("pose_scores", [])
                 _rd_this_score = _rd_scores[_rd_pose_i] if _rd_pose_i < len(_rd_scores) else _redock_result.get("Top Score")
@@ -5328,6 +5347,18 @@ with tab_basic:
                         _rd_pills += f" {_pill(f'RMSD {_rmsd_rd:.2f} A vs crystal', _rk)}"
 
                 st.markdown(_pill("⭐ Co-crystal reference ligand", "warn") + " " + _rd_pills, unsafe_allow_html=True)
+                if _active_single_ref.get("confirmed"):
+                    _active_pose = int(_active_single_ref.get("pose") or 1)
+                    _active_pills = _pill(f"Active reference: pose {_active_pose}", "success")
+                    if _active_single_ref.get("score") is not None:
+                        _active_score_kind = "success" if _active_single_ref["score"] < -8 else "warn"
+                        _active_score_text = f"{_active_single_ref['score']:.2f} kcal/mol"
+                        _active_pills += f" {_pill(_active_score_text, _active_score_kind)}"
+                    if _active_single_ref.get("rmsd") is not None:
+                        _active_rmsd = float(_active_single_ref["rmsd"])
+                        _active_rk = "success" if _active_rmsd <= 2.0 else "warn" if _active_rmsd <= 3.0 else "info"
+                        _active_pills += f" {_pill(f'RMSD {_active_rmsd:.2f} A vs crystal', _active_rk)}"
+                    st.markdown(_active_pills, unsafe_allow_html=True)
 
                 _rd_v_col, _rd_a_col = st.columns([3, 1])
                 with _rd_v_col:
@@ -5371,12 +5402,14 @@ with tab_basic:
                                 "confirmed_ref_pose": _rd_pose_i + 1,
                                 "confirmed_ref_name": _rd_nm,
                                 "confirmed_ref_rmsd": _rmsd_rd,
+                                "_rd_pose_synced_to_confirmed": _rd_pose_i + 1,
                             })
                             st.rerun()
                         if _c_ref_score is not None and not _already:
                             if st.button("🔄 Reset reference", key="reset_ref_btn", width='stretch'):
                                 st.session_state.update({
                                     "confirmed_ref_score": None, "confirmed_ref_pose": None, "confirmed_ref_name": None, "confirmed_ref_rmsd": None,
+                                    "_rd_pose_synced_to_confirmed": None,
                                 })
                                 st.rerun()
                     st.markdown("**Download**")
@@ -6043,6 +6076,14 @@ with tab_batch:
             _b_src = sel_res.get("pv_sdf") or sel_res["out_sdf"]
             b_mols = load_mols_from_sdf(_b_src, sanitize=False) if (_b_src and os.path.exists(_b_src)) else []
             if b_mols:
+                _confirmed_batch_pose = _active_batch_ref.get("pose")
+                if (
+                    _active_batch_ref.get("confirmed")
+                    and _confirmed_batch_pose
+                    and st.session_state.get("_b_pose_synced_to_confirmed") != int(_confirmed_batch_pose)
+                ):
+                    st.session_state["b_pose_sel"] = int(_confirmed_batch_pose)
+                    st.session_state["_b_pose_synced_to_confirmed"] = int(_confirmed_batch_pose)
                 b_pose_i = st.slider("Pose", 1, len(b_mols), 1, key="b_pose_sel") - 1
                 this_score = pose_scores_l[b_pose_i] if b_pose_i < len(pose_scores_l) else sel_res["Top Score"]
                 _score_kind = "success" if (this_score is not None and this_score < -8) else "warn"
@@ -6057,6 +6098,18 @@ with tab_batch:
                             _rk = "success" if _rmsd <= 2.0 else "warn" if _rmsd <= 3.0 else "info"
                             row_pills += f" {_pill(f'RMSD {_rmsd:.2f} A vs crystal', _rk)}"
                     st.markdown(_pill("⭐ Co-crystal reference ligand", "warn"), unsafe_allow_html=True)
+                    if _active_batch_ref.get("confirmed"):
+                        _active_pose = int(_active_batch_ref.get("pose") or 1)
+                        _active_pills = _pill(f"Active reference: pose {_active_pose}", "success")
+                        if _active_batch_ref.get("score") is not None:
+                            _active_score_kind = "success" if _active_batch_ref["score"] < -8 else "warn"
+                            _active_score_text = f"{_active_batch_ref['score']:.2f} kcal/mol"
+                            _active_pills += f" {_pill(_active_score_text, _active_score_kind)}"
+                        if _active_batch_ref.get("rmsd") is not None:
+                            _active_rmsd = float(_active_batch_ref["rmsd"])
+                            _active_rk = "success" if _active_rmsd <= 2.0 else "warn" if _active_rmsd <= 3.0 else "info"
+                            _active_pills += f" {_pill(f'RMSD {_active_rmsd:.2f} A vs crystal', _active_rk)}"
+                        st.markdown(_active_pills, unsafe_allow_html=True)
 
                 st.markdown(row_pills, unsafe_allow_html=True)
 
@@ -6099,12 +6152,14 @@ with tab_batch:
                                 "b_confirmed_ref_pose": b_pose_i + 1,
                                 "b_confirmed_ref_name": sel_nm,
                                 "b_confirmed_ref_rmsd": _rmsd,
+                                "_b_pose_synced_to_confirmed": b_pose_i + 1,
                             })
                             st.rerun()
                         if c_ref_score is not None and not already:
                             if st.button("🔄 Reset reference", key="b_reset_ref_btn", width='stretch'):
                                 st.session_state.update({
                                     "b_confirmed_ref_score": None, "b_confirmed_ref_pose": None, "b_confirmed_ref_name": None, "b_confirmed_ref_rmsd": None,
+                                    "_b_pose_synced_to_confirmed": None,
                                 })
                                 st.rerun()
                     st.markdown("**Download**")

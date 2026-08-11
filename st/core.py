@@ -7,6 +7,7 @@ Safe to import in Colab notebooks, pytest, or any UI framework.
 """
 
 import os
+import re as _re
 import subprocess
 import sys
 import tempfile
@@ -302,6 +303,12 @@ BUFFER_RESNAMES = {
     "ACY", "ACE", "TRS", "MES", "EPE", "BME", "SO4", "PO4", "NO3",
     "SCN", "FMT", "IPA", "EOH", "MOH", "CL", "BR", "IOD"
 }
+LIPID_ADDITIVE_RESNAMES = {
+    "Y01",  # cholesterol hemisuccinate
+    "CHS",  # cholesteryl hemisuccinate
+    "CLR",  # cholesterol
+    "CHL",  # cholesterol / cholesteryl-like code in some entries
+}
 WATER_RESNAMES = {"HOH", "WAT", "DOD", "SOL"}
 
 
@@ -358,11 +365,15 @@ def _cif_full_resname_map(cif_path: str) -> dict:
             if group_idx is None or (label_comp_idx is None and auth_comp_idx is None):
                 continue
             n = len(headers)
-            tokens = _re.findall(r"'[^']*'|\"[^\"]*\"|[^\s]+", m.group(2))
-            for i in range(0, len(tokens) - n + 1, n):
-                row = tokens[i:i + n]
+            for raw_line in m.group(2).splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or line.startswith("_"):
+                    continue
+                row = _re.findall(r"'[^']*'|\"[^\"]*\"|[^\s]+", line)
                 if len(row) < n:
-                    break
+                    continue
+                if len(row) > n:
+                    row = row[:n]
                 if row[group_idx].strip("'\"").upper() != "HETATM":
                     continue
                 comp_id = ""
@@ -434,6 +445,8 @@ def _guess_hetatm_type(resname, n_atoms):
         return "ligand"
     if rn in COFACTOR_NAMES:
         return "cofactor"
+    if rn in LIPID_ADDITIVE_RESNAMES:
+        return "lipid/additive"
     if rn in BUFFER_RESNAMES or n_atoms <= 3:
         return "buffer/ion"
     if n_atoms >= _MIN_LIG_ATOMS:
@@ -449,6 +462,8 @@ def _default_hetatm_action(type_guess, n_atoms):
         return "keep"
     if "cofactor" in type_guess:
         return "keep"
+    if type_guess == "lipid/additive":
+        return "remove"
     if type_guess == "ligand":
         return "reference" if n_atoms >= _MIN_LIG_ATOMS else "remove"
     return "remove"
@@ -528,7 +543,7 @@ def _collect_removable_ligands(atoms) -> list:
     # ATP/SAM/SAH-like reference ligands are intentionally NOT excluded here so
     # they can be detected as grid-defining co-crystal ligands.
     excl = (
-        (EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES)
+        (EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES | LIPID_ADDITIVE_RESNAMES)
         - REFERENCE_LIGAND_COFACTORS
     )
     het  = atoms.select("hetatm and not water")
