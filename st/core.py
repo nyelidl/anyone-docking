@@ -13,6 +13,33 @@ import tempfile
 import time
 from pathlib import Path
 
+
+def _silence_rdkit_logs():
+    try:
+        from rdkit import RDLogger, rdBase
+        for name in ("rdApp.*", "rdApp.error", "rdApp.warning", "rdApp.info", "rdApp.debug"):
+            try:
+                RDLogger.DisableLog(name)
+            except Exception:
+                pass
+            try:
+                rdBase.DisableLog(name)
+            except Exception:
+                pass
+        try:
+            RDLogger.EnableLog = lambda *args, **kwargs: None
+        except Exception:
+            pass
+        try:
+            rdBase.EnableLog = lambda *args, **kwargs: None
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+_silence_rdkit_logs()
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -282,6 +309,10 @@ def _hetatm_key(resname, chain, resid):
     return f"{str(resname).strip().upper()}|{str(chain or '').strip() or '_'}|{int(resid)}"
 
 
+def _hetatm_site_key(chain, resid):
+    return f"{str(chain or '').strip() or '_'}|{int(resid)}"
+
+
 def _make_ligand_id(resname, chain, resid):
     return f"{str(resname).strip().upper()}_{str(chain or '').strip()}_{int(resid)}"
 
@@ -358,6 +389,7 @@ def _cif_full_resname_map(cif_path: str) -> dict:
                 for ch in (chains or [""]):
                     for resid in resids:
                         mapping[_hetatm_key(comp_id[:3], ch, resid)] = comp_id
+                        mapping[_hetatm_site_key(ch, resid)] = comp_id
             if mapping:
                 break
     except Exception:
@@ -370,7 +402,10 @@ def _augment_rows_with_cif_ids(rows: list, cif_path: str) -> list:
     if not mapping:
         return rows
     for row in rows:
-        full_resname = mapping.get(_hetatm_key(row.get("resname", ""), row.get("chain", ""), row.get("resid", 0)))
+        full_resname = (
+            mapping.get(_hetatm_key(row.get("resname", ""), row.get("chain", ""), row.get("resid", 0)))
+            or mapping.get(_hetatm_site_key(row.get("chain", ""), row.get("resid", 0)))
+        )
         if full_resname:
             row["full_resname"] = full_resname
             row["ligand_id"] = _make_ligand_id(full_resname, row.get("chain", ""), row.get("resid", 0))

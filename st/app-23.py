@@ -4024,7 +4024,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
             def _lig_label(_r):
                 _ch = _r.get("chain") or "—"
-                return f"{_r.get('resname')}  | chain {_ch} | resid {_r.get('resid')} | {_r.get('n_atoms')} atoms"
+                _lig_name = _r.get("full_resname") or _r.get("resname")
+                return f"{_lig_name}  | chain {_ch} | resid {_r.get('resid')} | {_r.get('n_atoms')} atoms"
 
             def _choose_ligand_candidates(_ligs):
                 """Return (candidate_rows, auto_selected_row, reason).
@@ -4037,7 +4038,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 if not _ligs:
                     return [], None, "no_ligand"
                 _chain_a = [r for r in _ligs if str(r.get("chain", "")).strip().upper() == "A"]
-                _resnames = {str(r.get("resname", "")).strip().upper() for r in _ligs}
+                _resnames = {str(r.get("full_resname") or r.get("resname", "")).strip().upper() for r in _ligs}
                 _chains = [str(r.get("chain", "")).strip().upper() or "_" for r in _ligs]
                 _one_per_chain = all(_chains.count(c) == 1 for c in set(_chains))
 
