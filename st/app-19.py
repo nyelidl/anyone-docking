@@ -1596,7 +1596,7 @@ _DEFAULTS = dict(
     output_pdbqt=None, output_sdf=None, output_pv_sdf=None, dock_base=None,
     docking_done=False, docking_log="", score_df=None, pose_mols=None,
     redock_done=False, redock_score=None, redock_result=None,
-    confirmed_ref_score=None, confirmed_ref_pose=None, confirmed_ref_name=None,
+    confirmed_ref_score=None, confirmed_ref_pose=None, confirmed_ref_name=None, confirmed_ref_rmsd=None,
     pv_image_png=None, pv_image_svg=None, pv_pose_key=None,
     pv_ref_png=None, pv_ref_svg=None,
     b_pdb_token=None, b_receptor_fh=None, b_receptor_pdbqt=None,
@@ -1606,7 +1606,7 @@ _DEFAULTS = dict(
     b_cocrystal_ligand_id="",
     b_batch_done=False, b_batch_results=None, b_batch_log="",
     b_redock_score=None, b_redock_result=None,
-    b_confirmed_ref_score=None, b_confirmed_ref_pose=None, b_confirmed_ref_name=None,
+    b_confirmed_ref_score=None, b_confirmed_ref_pose=None, b_confirmed_ref_name=None, b_confirmed_ref_rmsd=None,
     b_pv2_image_png=None, b_pv2_image_svg=None, b_pv2_pose_key=None,
     b_pv2_ref_png=None, b_pv2_ref_svg=None,
     b_plot_png=None,
@@ -1732,6 +1732,57 @@ def _add_metals_heme_to_view(view, rec_fh, model_idx):
             pass
 
     return model_idx
+
+
+def _get_active_redock_reference(result, *, score_key, pose_key, name_key, rmsd_key, ligand_pdb_key):
+    if not result:
+        return {
+            "score": None,
+            "pose": None,
+            "name": "",
+            "smiles": "",
+            "rmsd": None,
+            "confirmed": False,
+        }
+
+    _confirmed = st.session_state.get(score_key) is not None
+    _score = st.session_state.get(score_key)
+    if _score is None:
+        _score = result.get("Top Score")
+
+    _pose = st.session_state.get(pose_key)
+    if _pose is None:
+        _pose = 1
+
+    _name = (
+        st.session_state.get(name_key)
+        or result.get("ref_name")
+        or result.get("Name")
+        or "co-crystal ref"
+    )
+    _smiles = result.get("prot_smiles") or result.get("SMILES", "")
+    _rmsd = st.session_state.get(rmsd_key)
+
+    if _rmsd is None:
+        _cryst_pdb = st.session_state.get(ligand_pdb_key) or ""
+        _src = result.get("pv_sdf") or result.get("out_sdf") or ""
+        if _cryst_pdb and _src and os.path.exists(_cryst_pdb) and os.path.exists(_src):
+            try:
+                _mols = load_mols_from_sdf(_src, sanitize=False)
+                if _mols:
+                    _idx = min(max(int(_pose) - 1, 0), len(_mols) - 1)
+                    _rmsd = calc_rmsd_heavy(_mols[_idx], _cryst_pdb)
+            except Exception:
+                pass
+
+    return {
+        "score": _score,
+        "pose": _pose,
+        "name": _name,
+        "smiles": _smiles,
+        "rmsd": _rmsd,
+        "confirmed": _confirmed,
+    }
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  POSEVIEW LEGEND HTML
@@ -2929,6 +2980,7 @@ def _ai_prompt_section(
     cocrystal_ligand_id: str = "",
     ref_lig_name: str = "",
     ref_lig_energy=None,  # float or None
+    ref_rmsd_crystal=None,  # float or None — RMSD of chosen redock reference vs co-crystal
     ref_redocked: bool = False,
     rmsd_crystal=None,    # float or None — RMSD of selected pose vs co-crystal
     key_suffix: str = "",
@@ -2990,6 +3042,13 @@ def _ai_prompt_section(
     _pdb_disp   = pdb_id.upper() if pdb_id else "[PDB ID]"
     _ref_disp   = ref_lig_name or cocrystal_ligand_id or "[co-crystal ligand]"
     _ref_estr   = f"{ref_lig_energy:.2f} kcal/mol" if ref_lig_energy is not None else None
+    _ref_rmsd_line = (
+        f"  |  RMSD from chosen redock reference: {ref_rmsd_crystal:.2f} Å"
+        + (" ✓ (≤2.0 Å — good reproduction)" if ref_rmsd_crystal <= 2.0
+           else " ⚠ (2–3 Å — moderate)" if ref_rmsd_crystal <= 3.0
+           else " ✗ (>3 Å — pose differs significantly from crystal)")
+        if ref_rmsd_crystal is not None else ""
+    )
     # RMSD line — shown when available regardless of redocking
     _rmsd_line  = (
         f"  RMSD vs co-crystal pose: {rmsd_crystal:.2f} Å"
@@ -3004,6 +3063,7 @@ def _ai_prompt_section(
             f"Reference: {_ref_disp} co-crystallised in PDB {_pdb_disp}"
             + (f"  |  binding energy from re-docking: {_ref_estr}" if ref_redocked
                else "  (see 2D diagram — no re-docking performed)")
+            + (_ref_rmsd_line if ref_redocked and _ref_rmsd_line else "")
         )
         _lines = [
             "I have just run a molecular docking experiment and I need help",
@@ -3085,6 +3145,7 @@ def _poseview_ui(
     label_suffix="",
     lig_name="", lig_smiles="", binding_energy=None,
     ref_lig_name="", ref_lig_smiles="", ref_lig_energy=None,
+    ref_rmsd_crystal=None,
     show_header=True,
     rmsd_crystal=None,   # float or None — RMSD of selected pose vs co-crystal PDB
 ):
@@ -3307,6 +3368,7 @@ def _poseview_ui(
                     cocrystal_ligand_id=cocrystal_ligand_id,
                     ref_lig_name=ref_lig_name,
                     ref_lig_energy=ref_lig_energy,
+                    ref_rmsd_crystal=ref_rmsd_crystal,
                     ref_redocked=(ref_lig_energy is not None),
                     rmsd_crystal=rmsd_crystal,
                     key_suffix=btn_key + "_acd",
@@ -3878,17 +3940,10 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     ),
                 )
             with _fmt_col:
-                rcsb_fmt = st.radio(
-                    "Format", ["PDB", "CIF"],
-                    horizontal=True, key=pfx + "rcsb_fmt",
-                    help=(
-                        "File format to download from RCSB.\n\n"
-                        "📖 PDB = classic format, widely compatible.\n"
-                        "   CIF = modern mmCIF, required for large structures.\n"
-                        "⚙️ Use CIF if the protein has > 62 chains or > 99,999 atoms.\n"
-                        "⚠️ If PDB download fails, try CIF."
-                    ),
+                st.caption(
+                    "RCSB download order: **CIF first**, then **PDB fallback** if CIF is unavailable."
                 )
+                rcsb_fmt = "CIF"
             upload_file = None
         else:
             upload_file = st.file_uploader(
@@ -3928,11 +3983,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 # Auto-download a lightweight raw structure for ligand scanning as soon as
                 # a valid PDB ID is available. No extra user click is required.
                 _token_scan = (pdb_id or "").strip().upper()
-                _fmt_scan = st.session_state.get(pfx + "rcsb_fmt", "PDB")
                 if len(_token_scan) == 4:
-                    _scan_ext = "cif" if _fmt_scan == "CIF" else "pdb"
-                    _scan_path_dl = str(wdir / f"raw_scan_{_token_scan}.{_scan_ext}")
-                    _scan_key = f"{_token_scan}_{_fmt_scan}"
+                    _scan_path_dl = str(wdir / f"raw_scan_{_token_scan}.cif")
+                    _scan_key = f"{_token_scan}_prefer_cif"
                     _cached_key = st.session_state.get(pfx + "ligand_scan_key", "")
                     _cached_path = st.session_state.get(pfx + "ligand_scan_path", "")
 
@@ -3944,23 +3997,16 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                     ):
                         _scan_path = _cached_path
                     else:
-                        _url = f"https://files.rcsb.org/download/{_token_scan}.{_scan_ext}"
-                        with st.spinner(f"Scanning co-crystal ligands from RCSB entry {_token_scan}…"):
-                            rc, _ = _run_cmd(["curl", "-sf", _url, "-o", _scan_path_dl])
+                        with st.spinner(f"Scanning co-crystal ligands from RCSB entry {_token_scan} (trying CIF first)…"):
+                            rc, _ = _run_cmd(["curl", "-sf", f"https://files.rcsb.org/download/{_token_scan}.cif", "-o", _scan_path_dl])
 
-                        # Some large/new structures may not be available as legacy PDB.
-                        # Fall back to CIF automatically for ligand scanning.
-                        if (
-                            (rc != 0 or not os.path.exists(_scan_path_dl) or os.path.getsize(_scan_path_dl) < 200)
-                            and _fmt_scan == "PDB"
-                        ):
-                            _scan_path_cif = str(wdir / f"raw_scan_{_token_scan}.cif")
-                            _url_cif = f"https://files.rcsb.org/download/{_token_scan}.cif"
-                            with st.spinner(f"PDB scan unavailable; trying CIF for {_token_scan}…"):
-                                rc2, _ = _run_cmd(["curl", "-sf", _url_cif, "-o", _scan_path_cif])
-                            if rc2 == 0 and os.path.exists(_scan_path_cif) and os.path.getsize(_scan_path_cif) > 200:
-                                _scan_path_dl = _scan_path_cif
-                                _scan_key = f"{_token_scan}_CIF"
+                        if rc != 0 or not os.path.exists(_scan_path_dl) or os.path.getsize(_scan_path_dl) < 200:
+                            _scan_path_pdb = str(wdir / f"raw_scan_{_token_scan}.pdb")
+                            with st.spinner(f"CIF scan unavailable; trying PDB for {_token_scan}…"):
+                                rc2, _ = _run_cmd(["curl", "-sf", f"https://files.rcsb.org/download/{_token_scan}.pdb", "-o", _scan_path_pdb])
+                            if rc2 == 0 and os.path.exists(_scan_path_pdb) and os.path.getsize(_scan_path_pdb) > 200:
+                                _scan_path_dl = _scan_path_pdb
+                                _scan_key = f"{_token_scan}_fallback_pdb"
 
                         if os.path.exists(_scan_path_dl) and os.path.getsize(_scan_path_dl) > 200:
                             _scan_path = _scan_path_dl
@@ -4189,30 +4235,16 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
 
         if src == "Download from RCSB":
             token = pdb_id.strip().upper()
-            _fmt  = st.session_state.get(pfx + "rcsb_fmt", "PDB")
-            if _fmt == "CIF":
-                raw_path = str(wdir / "raw.cif")
-                _dl_url  = f"https://files.rcsb.org/download/{token}.cif"
-            else:
-                raw_path = str(wdir / "raw.pdb")
-                _dl_url  = f"https://files.rcsb.org/download/{token}.pdb"
-            rc, _ = _run_cmd(["curl", "-sf", _dl_url, "-o", raw_path])
+            raw_path = str(wdir / "raw.cif")
+            rc, _ = _run_cmd(["curl", "-sf", f"https://files.rcsb.org/download/{token}.cif", "-o", raw_path])
             if rc != 0 or not os.path.exists(raw_path) or os.path.getsize(raw_path) < 200:
-                if _fmt == "PDB":
-                    raw_path_cif = str(wdir / "raw.cif")
-                    rc2, _ = _run_cmd([
-                        "curl", "-sf",
-                        f"https://files.rcsb.org/download/{token}.cif",
-                        "-o", raw_path_cif,
-                    ])
-                    if rc2 == 0 and os.path.exists(raw_path_cif) and os.path.getsize(raw_path_cif) > 200:
-                        raw_path = raw_path_cif
-                        st.info(f"ℹ️ PDB format unavailable for {token} — using CIF instead.")
-                    else:
-                        st.error(f"❌ Download failed for {token}")
-                        st.stop()
+                raw_path_pdb = str(wdir / "raw.pdb")
+                rc2, _ = _run_cmd(["curl", "-sf", f"https://files.rcsb.org/download/{token}.pdb", "-o", raw_path_pdb])
+                if rc2 == 0 and os.path.exists(raw_path_pdb) and os.path.getsize(raw_path_pdb) > 200:
+                    raw_path = raw_path_pdb
+                    st.info(f"ℹ️ CIF unavailable for {token} — using PDB fallback instead.")
                 else:
-                    st.error(f"❌ Download failed for {token}")
+                    st.error(f"❌ Download failed for {token} in both CIF and PDB formats.")
                     st.stop()
             st.session_state[pfx + "pdb_token"] = token
         else:
@@ -5074,7 +5106,7 @@ with tab_basic:
             rd_ligand_pdb = st.session_state.get("ligand_pdb_path") or ""
             rd_ligand_id  = st.session_state.get("cocrystal_ligand_id", "")
             rd_raw_pdb    = st.session_state.get("raw_pdb_path") or ""
-            rd_nm         = rd_ligand_id.split("_")[0] if rd_ligand_id else "redock"
+            rd_nm         = rd_ligand_id.rsplit("_", 2)[0] if rd_ligand_id else "redock"
             rd_smi, rd_source, rd_warn = get_cocrystal_smiles(
                 ligand_pdb_path=rd_ligand_pdb,
                 cocrystal_ligand_id=rd_ligand_id,
@@ -5187,7 +5219,7 @@ with tab_basic:
                 "dock_run_id": st.session_state.get("dock_run_id", 0) + 1,
                 "redock_done": redock_result is not None,
                 "redock_score": redock_score, "redock_result": redock_result,
-                "confirmed_ref_score": None, "confirmed_ref_pose": None, "confirmed_ref_name": None,
+                "confirmed_ref_score": None, "confirmed_ref_pose": None, "confirmed_ref_name": None, "confirmed_ref_rmsd": None,
             })
 
     if st.session_state.docking_done:
@@ -5265,6 +5297,14 @@ with tab_basic:
 
         # ── Redocking Reference Browser ───────────────────────────────────
         _redock_result = st.session_state.get("redock_result")
+        _active_single_ref = _get_active_redock_reference(
+            _redock_result,
+            score_key="confirmed_ref_score",
+            pose_key="confirmed_ref_pose",
+            name_key="confirmed_ref_name",
+            rmsd_key="confirmed_ref_rmsd",
+            ligand_pdb_key="ligand_pdb_path",
+        )
         if _redock_result and _redock_result.get("out_sdf") and os.path.exists(_redock_result["out_sdf"]):
             st.markdown("**⭐ Redocking Reference**")
             _rd_src = _redock_result.get("pv_sdf") or _redock_result["out_sdf"]
@@ -5279,6 +5319,7 @@ with tab_basic:
                     _rd_pills += f" {_pill(f'{_rd_this_score:.2f} kcal/mol', _rsk)}"
 
                 _cryst_pdb_rd = st.session_state.get("ligand_pdb_path") or ""
+                _rmsd_rd = None
                 if _cryst_pdb_rd and os.path.exists(_cryst_pdb_rd):
                     _rmsd_rd = calc_rmsd_heavy(_rd_mols[_rd_pose_i], _cryst_pdb_rd)
                     if _rmsd_rd is not None:
@@ -5328,12 +5369,13 @@ with tab_basic:
                                 "confirmed_ref_score": _rd_this_score,
                                 "confirmed_ref_pose": _rd_pose_i + 1,
                                 "confirmed_ref_name": _rd_nm,
+                                "confirmed_ref_rmsd": _rmsd_rd,
                             })
                             st.rerun()
                         if _c_ref_score is not None and not _already:
                             if st.button("🔄 Reset reference", key="reset_ref_btn", width='stretch'):
                                 st.session_state.update({
-                                    "confirmed_ref_score": None, "confirmed_ref_pose": None, "confirmed_ref_name": None,
+                                    "confirmed_ref_score": None, "confirmed_ref_pose": None, "confirmed_ref_name": None, "confirmed_ref_rmsd": None,
                                 })
                                 st.rerun()
                     st.markdown("**Download**")
@@ -5597,10 +5639,11 @@ with tab_basic:
                     float(df[df["Pose"] == pose_idx+1]["Affinity (kcal/mol)"].iloc[0])
                     if df is not None and len(df[df["Pose"] == pose_idx+1]) > 0 else None
                 ),
-                ref_lig_name   = (st.session_state.get("redock_result", {}).get("ref_name", "") if st.session_state.get("redock_result") else ""),
-                ref_lig_smiles = ((st.session_state.get("redock_result", {}).get("prot_smiles") or st.session_state.get("redock_result", {}).get("SMILES", "")) if st.session_state.get("redock_result") else ""),
-                ref_lig_energy = (st.session_state.get("redock_result", {}).get("Top Score") if st.session_state.get("redock_result") else None),
-                rmsd_crystal   = _rmsd_pv,
+                ref_lig_name      = _active_single_ref["name"],
+                ref_lig_smiles    = _active_single_ref["smiles"],
+                ref_lig_energy    = _active_single_ref["score"],
+                ref_rmsd_crystal  = _active_single_ref["rmsd"],
+                rmsd_crystal      = _rmsd_pv,
             )
 
             # ── ADME Predictions ──────────────────────────────────────────
@@ -5825,7 +5868,7 @@ with tab_batch:
             rd_ligand_pdb = st.session_state.get("b_ligand_pdb_path") or ""
             rd_ligand_id  = st.session_state.get("b_cocrystal_ligand_id", "")
             rd_raw_pdb    = st.session_state.get("b_raw_pdb_path") or ""
-            rd_nm         = rd_ligand_id.split("_")[0] if rd_ligand_id else "redock"
+            rd_nm         = rd_ligand_id.rsplit("_", 2)[0] if rd_ligand_id else "redock"
             rd_smi, rd_source, rd_warn = get_cocrystal_smiles(
                 ligand_pdb_path=rd_ligand_pdb,
                 cocrystal_ligand_id=rd_ligand_id,
@@ -5938,7 +5981,7 @@ with tab_batch:
             "b_batch_done": True, "b_batch_results": results,
             "b_batch_log": "\n".join(all_logs),
             "b_redock_score": redock_score, "b_redock_result": redock_result,
-            "b_confirmed_ref_score": None, "b_confirmed_ref_pose": None, "b_confirmed_ref_name": None,
+            "b_confirmed_ref_score": None, "b_confirmed_ref_pose": None, "b_confirmed_ref_name": None, "b_confirmed_ref_rmsd": None,
             "b_pv2_image_png": None, "b_pv2_image_svg": None, "b_pv2_pose_key": None,
             "b_pv2_ref_png": None, "b_pv2_ref_svg": None, "b_plot_png": None,
         })
@@ -5966,6 +6009,14 @@ with tab_batch:
         redock_result = st.session_state.get("b_redock_result")
         c_ref_score   = st.session_state.get("b_confirmed_ref_score")
         c_ref_pose    = st.session_state.get("b_confirmed_ref_pose")
+        _active_batch_ref = _get_active_redock_reference(
+            redock_result,
+            score_key="b_confirmed_ref_score",
+            pose_key="b_confirmed_ref_pose",
+            name_key="b_confirmed_ref_name",
+            rmsd_key="b_confirmed_ref_rmsd",
+            ligand_pdb_key="b_ligand_pdb_path",
+        )
         active_ref    = c_ref_score if c_ref_score is not None else redock_score
 
         n_ok   = sum(1 for r in results if r["Status"] == "OK")
@@ -5997,6 +6048,7 @@ with tab_batch:
                 row_pills = f"{_pill(f'Pose {b_pose_i+1} / {len(b_mols)}')} {_pill(f'Score: {this_score:.2f} kcal/mol', _score_kind) if this_score is not None else ''}"
 
                 if is_redock_sel:
+                    _rmsd = None
                     _cryst = st.session_state.get("b_ligand_pdb_path") or ""
                     if _cryst and os.path.exists(_cryst):
                         _rmsd = calc_rmsd_heavy(b_mols[b_pose_i], _cryst)
@@ -6045,12 +6097,13 @@ with tab_batch:
                                 "b_confirmed_ref_score": this_score,
                                 "b_confirmed_ref_pose": b_pose_i + 1,
                                 "b_confirmed_ref_name": sel_nm,
+                                "b_confirmed_ref_rmsd": _rmsd,
                             })
                             st.rerun()
                         if c_ref_score is not None and not already:
                             if st.button("🔄 Reset reference", key="b_reset_ref_btn", width='stretch'):
                                 st.session_state.update({
-                                    "b_confirmed_ref_score": None, "b_confirmed_ref_pose": None, "b_confirmed_ref_name": None,
+                                    "b_confirmed_ref_score": None, "b_confirmed_ref_pose": None, "b_confirmed_ref_name": None, "b_confirmed_ref_rmsd": None,
                                 })
                                 st.rerun()
                     st.markdown("**Download**")
@@ -6215,9 +6268,10 @@ with tab_batch:
                     lig_name            = pv_safe_nm,
                     lig_smiles          = pv_sel_res.get("prot_smiles") or pv_sel_res.get("SMILES", ""),
                     binding_energy      = pv_score,
-                    ref_lig_name        = redock_result.get("ref_name", "") if redock_result else "",
-                    ref_lig_smiles      = (redock_result.get("prot_smiles") or redock_result.get("SMILES", "")) if redock_result else "",
-                    ref_lig_energy      = redock_result.get("Top Score") if redock_result else None,
+                    ref_lig_name        = _active_batch_ref["name"],
+                    ref_lig_smiles      = _active_batch_ref["smiles"],
+                    ref_lig_energy      = _active_batch_ref["score"],
+                    ref_rmsd_crystal    = _active_batch_ref["rmsd"],
                     show_header         = False,
                     rmsd_crystal        = _rmsd_pv2,
                 )

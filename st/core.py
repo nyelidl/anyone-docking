@@ -282,6 +282,101 @@ def _hetatm_key(resname, chain, resid):
     return f"{str(resname).strip().upper()}|{str(chain or '').strip() or '_'}|{int(resid)}"
 
 
+def _make_ligand_id(resname, chain, resid):
+    return f"{str(resname).strip().upper()}_{str(chain or '').strip()}_{int(resid)}"
+
+
+def _parse_ligand_id(ligand_id: str) -> tuple[str, str, str]:
+    token = (ligand_id or "").strip()
+    if not token:
+        return "", "", ""
+    parts = token.rsplit("_", 2)
+    if len(parts) == 3:
+        return parts[0].upper(), parts[1], parts[2]
+    return token.upper(), "", ""
+
+
+def _cif_full_resname_map(cif_path: str) -> dict:
+    mapping = {}
+    if not cif_path or not is_cif_file(cif_path) or not os.path.exists(cif_path):
+        return mapping
+    try:
+        with open(cif_path, errors="replace") as fh:
+            content = fh.read()
+        loop_pat = _re.compile(
+            r"loop_\s*((?:_atom_site\.\S+\s*)+)(.*?)(?=loop_|data_|\Z)",
+            _re.DOTALL,
+        )
+        for m in loop_pat.finditer(content):
+            headers = m.group(1).split()
+            if "_atom_site.group_PDB" not in headers:
+                continue
+            def _idx(name):
+                return headers.index(name) if name in headers else None
+            group_idx = _idx("_atom_site.group_PDB")
+            label_comp_idx = _idx("_atom_site.label_comp_id")
+            auth_comp_idx = _idx("_atom_site.auth_comp_id")
+            label_asym_idx = _idx("_atom_site.label_asym_id")
+            auth_asym_idx = _idx("_atom_site.auth_asym_id")
+            label_seq_idx = _idx("_atom_site.label_seq_id")
+            auth_seq_idx = _idx("_atom_site.auth_seq_id")
+            if group_idx is None or (label_comp_idx is None and auth_comp_idx is None):
+                continue
+            n = len(headers)
+            tokens = _re.findall(r"'[^']*'|\"[^\"]*\"|[^\s]+", m.group(2))
+            for i in range(0, len(tokens) - n + 1, n):
+                row = tokens[i:i + n]
+                if len(row) < n:
+                    break
+                if row[group_idx].strip("'\"").upper() != "HETATM":
+                    continue
+                comp_id = ""
+                for idx in (auth_comp_idx, label_comp_idx):
+                    if idx is not None:
+                        comp_id = row[idx].strip("'\"").upper()
+                        if comp_id and comp_id not in {".", "?"}:
+                            break
+                if not comp_id or comp_id in WATER_RESNAMES:
+                    continue
+                chains = []
+                for idx in (auth_asym_idx, label_asym_idx):
+                    if idx is not None:
+                        ch = row[idx].strip("'\"")
+                        if ch and ch not in {".", "?"} and ch not in chains:
+                            chains.append(ch)
+                resids = []
+                for idx in (auth_seq_idx, label_seq_idx):
+                    if idx is not None:
+                        rv = row[idx].strip("'\"")
+                        if rv and rv not in {".", "?"}:
+                            try:
+                                rnum = str(int(float(rv)))
+                            except Exception:
+                                continue
+                            if rnum not in resids:
+                                resids.append(rnum)
+                for ch in (chains or [""]):
+                    for resid in resids:
+                        mapping[_hetatm_key(comp_id[:3], ch, resid)] = comp_id
+            if mapping:
+                break
+    except Exception:
+        return mapping
+    return mapping
+
+
+def _augment_rows_with_cif_ids(rows: list, cif_path: str) -> list:
+    mapping = _cif_full_resname_map(cif_path)
+    if not mapping:
+        return rows
+    for row in rows:
+        full_resname = mapping.get(_hetatm_key(row.get("resname", ""), row.get("chain", ""), row.get("resid", 0)))
+        if full_resname:
+            row["full_resname"] = full_resname
+            row["ligand_id"] = _make_ligand_id(full_resname, row.get("chain", ""), row.get("resid", 0))
+    return rows
+
+
 def _guess_hetatm_type(resname, n_atoms):
     rn = (resname or "").strip().upper()
     if rn in WATER_RESNAMES:
@@ -366,6 +461,7 @@ def scan_hetatm_residues(raw_pdb: str) -> list:
     try:
         from prody import parsePDB, confProDy
         confProDy(verbosity="none")
+        _source_cif_path = raw_pdb if is_cif_file(raw_pdb) else ""
         if is_cif_file(raw_pdb):
             import tempfile as _tf
             _tmp = _tf.mktemp(suffix=".pdb")
@@ -375,9 +471,9 @@ def scan_hetatm_residues(raw_pdb: str) -> list:
         atoms = parsePDB(raw_pdb)
         if atoms is None:
             return []
-        rows = _collect_hetatm_residues(atoms)
+        rows = _augment_rows_with_cif_ids(_collect_hetatm_residues(atoms), _source_cif_path)
         return [
-            {k: d[k] for k in ("key", "resname", "chain", "resid", "n_atoms", "type_guess", "default_action", "action")}
+            {k: d.get(k) for k in ("key", "resname", "full_resname", "ligand_id", "chain", "resid", "n_atoms", "type_guess", "default_action", "action")}
             for d in rows
         ]
     except Exception:
@@ -420,7 +516,7 @@ def _collect_removable_ligands(atoms) -> list:
             "chain":     ch,
             "resid":     ri,
             "sel_str":   sel,
-            "ligand_id": f"{rn}_{ch}_{ri}",
+            "ligand_id": _make_ligand_id(rn, ch, ri),
             "n_atoms":   lig_atoms.numAtoms(),
             "atoms":     lig_atoms,
             "cx": cx_, "cy": cy_, "cz": cz_,
@@ -434,7 +530,7 @@ def detect_cocrystal_ligand(raw_pdb: str) -> dict:
     atoms = parsePDB(raw_pdb)
     if atoms is None:
         return {"found": False}
-    cands = _collect_removable_ligands(atoms)
+    cands = _augment_rows_with_cif_ids(_collect_removable_ligands(atoms), raw_pdb)
     if not cands:
         return {"found": False}
     chosen = cands[0]
@@ -455,6 +551,7 @@ def scan_ligands(raw_pdb: str) -> list:
     try:
         from prody import parsePDB, confProDy
         confProDy(verbosity="none")
+        _source_cif_path = raw_pdb if is_cif_file(raw_pdb) else ""
         if is_cif_file(raw_pdb):
             import tempfile as _tf
             _tmp = _tf.mktemp(suffix=".pdb")
@@ -464,9 +561,9 @@ def scan_ligands(raw_pdb: str) -> list:
         atoms = parsePDB(raw_pdb)
         if atoms is None:
             return []
-        ligs = _collect_removable_ligands(atoms)
+        ligs = _augment_rows_with_cif_ids(_collect_removable_ligands(atoms), _source_cif_path)
         return [
-            {"resname": d["resname"], "chain": d["chain"],
+            {"resname": d["resname"], "full_resname": d.get("full_resname"), "ligand_id": d.get("ligand_id"), "chain": d["chain"],
              "resid": d["resid"], "n_atoms": d["n_atoms"]}
             for d in ligs
         ]
@@ -691,6 +788,7 @@ def prepare_receptor(
     log  = []
     sx, sy, sz = box_size
     try:
+        _source_cif_path = raw_pdb if is_cif_file(raw_pdb) else ""
         if is_cif_file(raw_pdb):
             log.append("📄 Detected mmCIF format — converting to PDB…")
             converted_pdb = str(wdir / "converted_from_cif.pdb")
@@ -713,7 +811,7 @@ def prepare_receptor(
         #   reference = use as grid-center reference and remove from receptor
         #   keep      = keep in receptor
         #   remove    = strip from receptor
-        _hetatm_rows = _collect_hetatm_residues(atoms)
+        _hetatm_rows = _augment_rows_with_cif_ids(_collect_hetatm_residues(atoms), _source_cif_path)
         _policy = {str(k): str(v).lower() for k, v in (hetatm_policy or {}).items()}
         for _r in _hetatm_rows:
             _r["action"] = _policy.get(_r["key"], _r.get("default_action", "remove")).lower()
@@ -728,27 +826,30 @@ def prepare_receptor(
         _all_ligs = _collect_removable_ligands(atoms)
         _primary = None
         if _reference is not None:
+            _ref_name = _reference.get("full_resname") or _reference["resname"]
             _primary = {
-                "resname": _reference["resname"], "chain": _reference["chain"],
+                "resname": _reference["resname"], "full_resname": _ref_name, "chain": _reference["chain"],
                 "resid": _reference["resid"], "sel_str": _reference["sel_str"],
-                "ligand_id": f"{_reference['resname']}_{_reference['chain']}_{_reference['resid']}",
+                "ligand_id": _reference.get("ligand_id") or _make_ligand_id(_ref_name, _reference["chain"], _reference["resid"]),
                 "n_atoms": _reference["n_atoms"], "atoms": _reference["atoms"],
                 "cx": _reference["cx"], "cy": _reference["cy"], "cz": _reference["cz"],
             }
         elif not hetatm_policy and _all_ligs:
+            _all_ligs = _augment_rows_with_cif_ids(_all_ligs, _source_cif_path)
             if preferred_ligand:
                 _pref = preferred_ligand.strip().upper()
-                _primary = next((d for d in _all_ligs if d["resname"].upper() == _pref), None)
+                _primary = next((d for d in _all_ligs if d["resname"].upper() == _pref or (d.get("full_resname") or "").upper() == _pref), None)
                 if _primary is None:
-                    log.append(f"⚠ Preferred ligand '{preferred_ligand}' not found — using largest ({_all_ligs[0]['resname']})")
+                    _fallback_name = _all_ligs[0].get("full_resname") or _all_ligs[0]["resname"]
+                    log.append(f"⚠ Preferred ligand '{preferred_ligand}' not found — using largest ({_fallback_name})")
             if _primary is None:
                 _primary = _all_ligs[0]
 
         if _primary is not None:
-            rn  = _primary["resname"]
+            rn  = _primary.get("full_resname") or _primary["resname"]
             ch  = _primary["chain"]
             ri  = _primary["resid"]
-            cocrystal_ligand_id = _primary["ligand_id"]
+            cocrystal_ligand_id = _primary.get("ligand_id") or _make_ligand_id(rn, ch, ri)
             ligand_pdb_path     = str(wdir / "LIG.pdb")
             writePDB(ligand_pdb_path, _primary["atoms"])
             log.append(f"✓ Reference HETATM for grid: {rn} chain '{ch}' resnum {ri} ({_primary['n_atoms']} atoms)")
@@ -855,12 +956,12 @@ def prepare_receptor(
             "cocrystal_ligand_id": cocrystal_ligand_id,
             "n_atoms":             rec_sel.numAtoms(),
             "all_ligands":         [
-                {"resname": d["resname"], "chain": d["chain"],
+                {"resname": d["resname"], "full_resname": d.get("full_resname"), "ligand_id": d.get("ligand_id"), "chain": d["chain"],
                  "resid": d["resid"], "n_atoms": d["n_atoms"]}
                 for d in _all_ligs
             ],
             "hetatm_table":        [
-                {k: d.get(k) for k in ("key", "resname", "chain", "resid", "n_atoms", "type_guess", "action")}
+                {k: d.get(k) for k in ("key", "resname", "full_resname", "ligand_id", "chain", "resid", "n_atoms", "type_guess", "action")}
                 for d in _hetatm_rows
             ],
             "log": log,
@@ -2601,7 +2702,7 @@ def get_cocrystal_smiles(
     cocrystal_ligand_id: str,
     raw_pdb: str = "",
 ) -> tuple:
-    resname = cocrystal_ligand_id.split("_")[0].upper() if cocrystal_ligand_id else ""
+    resname, _, _ = _parse_ligand_id(cocrystal_ligand_id)
 
     if resname:
         try:
