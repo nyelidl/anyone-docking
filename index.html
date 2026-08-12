@@ -539,7 +539,8 @@
           setStatus("🚀 Launching…");
           cdEl.textContent = "";
           setHint(hintText);
-          setTimeout(() => { window.location.href = url; }, 250);
+          // Same-tab navigation is reliable and is not treated as a popup.
+          setTimeout(() => { window.location.replace(url); }, 250);
         }
       }
 
@@ -703,125 +704,40 @@
     }
 
     function startStreamlitMode() {
+      if (redirected) return;
+
       redirected = false;
+      manualFallbackHandler = null;
       hideFallback();
       clearGrid();
       document.getElementById("countdown").textContent = "";
 
-      const APPS = STREAMLIT_APPS;
-      const n = APPS.length;
-      const results = new Array(n).fill(null);
+      const n = STREAMLIT_APPS.length;
 
-      const dots = APPS.map((_, i) => addDot(`Server ${i + 1}`, "checking"));
-
-      setStatus("Checking server availability…");
-      setHint("Connecting to the fastest available server • Powered by Streamlit");
-      setProgress(0);
-
-      manualFallbackHandler = () => {
-        if (redirected) return;
-
-        const online = results
-          .map((r, i) => r?.ok ? i : -1)
-          .filter(i => i >= 0);
-
-        const idx = online.length > 0
-          ? getNextServer(online)
-          : Math.floor(Math.random() * n);
-
-        dots[idx].className = "server-dot selected";
-
-        redirectWithCountdown(
-          APPS[idx],
-          `Server ${idx + 1} is ready`,
-          `Streamlit server ${idx + 1} of ${n}`,
-          2
-        );
-      };
-
-      function checkProgress() {
-        const done = results.filter(r => r !== null).length;
-        setProgress(Math.round((done / n) * 90));
+      if (n === 0) {
+        setStatus("No Streamlit server is configured.");
+        setHint("Add at least one URL to STREAMLIT_APPS.");
+        setProgress(0);
+        return;
       }
 
-      function tryRedirect() {
-        if (redirected) return;
+      // Cross-origin fetch probes are unreliable for Streamlit Community
+      // Cloud. Select a server directly and let Streamlit handle wake-up.
+      const dots = STREAMLIT_APPS.map((_, i) =>
+        addDot(`Server ${i + 1}`, "online")
+      );
+      const allIndices = Array.from({ length: n }, (_, i) => i);
+      const idx = getNextServer(allIndices);
 
-        const online = results
-          .map((r, i) => r?.ok ? i : -1)
-          .filter(i => i >= 0);
+      dots[idx].className = "server-dot selected";
+      setProgress(100);
 
-        if (online.length === 0) return;
-
-        const idx = getNextServer(online);
-        dots[idx].className = "server-dot selected";
-
-        redirectWithCountdown(
-          APPS[idx],
-          `Server ${idx + 1} is ready`,
-          `Streamlit server ${idx + 1} of ${n}`,
-          2
-        );
-      }
-
-      APPS.forEach((url, i) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-        const t0 = Date.now();
-
-        fetch(url, {
-          mode: "no-cors",
-          signal: controller.signal,
-          cache: "no-store"
-        })
-          .then(() => {
-            clearTimeout(timer);
-
-            const ms = Date.now() - t0;
-            results[i] = { ok: true, ms };
-            dots[i].className = ms < 2000 ? "server-dot online" : "server-dot slow";
-
-            checkProgress();
-            tryRedirect();
-          })
-          .catch(() => {
-            clearTimeout(timer);
-
-            results[i] = { ok: false, ms: null };
-            dots[i].className = "server-dot offline";
-
-            checkProgress();
-
-            const done = results.filter(r => r !== null).length;
-            if (done === n && !redirected) {
-              showFallback("Open app manually");
-            }
-          });
-      });
-
-      setTimeout(() => {
-        if (redirected) return;
-
-        const online = results
-          .map((r, i) => r?.ok ? i : -1)
-          .filter(i => i >= 0);
-
-        if (online.length > 0) {
-          const idx = getNextServer(online);
-          dots[idx].className = "server-dot selected";
-
-          redirectWithCountdown(
-            APPS[idx],
-            `Server ${idx + 1} is ready`,
-            `Streamlit server ${idx + 1} of ${n}`,
-            2
-          );
-        } else {
-          setStatus("All Streamlit servers are starting up…");
-          setHint("Please wait, or open a server manually.");
-          showFallback("Open app manually");
-        }
-      }, FALLBACK_MS);
+      redirectWithCountdown(
+        STREAMLIT_APPS[idx],
+        `Server ${idx + 1} selected`,
+        `Opening Streamlit server ${idx + 1} of ${n}`,
+        2
+      );
     }
 
     async function bootstrapRouting() {
