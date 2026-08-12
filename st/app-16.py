@@ -1922,7 +1922,7 @@ def _render_binding_pocket_panel(
             v.addModel(open(cryst_pdb).read(), "pdb")
             v.setStyle({"model": mi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.18}})
             mi += 1
-        v.addModel(Chem.MolToMolBlock(mol), "mol")
+        v.addModel(Chem.MolToPDBBlock(mol), "pdb")
         _lig_m = mi
         v.setStyle({"model": _lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
         if rec_fh and os.path.exists(rec_fh):
@@ -2853,7 +2853,7 @@ def _ready_figure_section(
                 v.addSurface(_py3d.SAS, {"opacity": 0.55, "color": "white"}, {"model": mi})
             mi += 1
         mi = _add_metals_heme_to_view(v, rec, mi)
-        v.addModel(_Chem_fig.MolToMolBlock(mol), "mol")
+        v.addModel(_Chem_fig.MolToPDBBlock(mol), "pdb")
         lig_m = mi
         v.setStyle({"model": lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
         if rec and os.path.exists(rec):
@@ -2939,7 +2939,7 @@ def _ready_figure_section(
                     _vb.addModel(open(b_cryst_pdb).read(), "pdb")
                     _vb.setStyle({"model": _vbi}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.20}})
                     _vbi += 1
-                _vb.addModel(_Chem_fig.MolToMolBlock(_b_mols2[_b_pi2]), "mol")
+                _vb.addModel(_Chem_fig.MolToPDBBlock(_b_mols2[_b_pi2]), "pdb")
                 _vb.setStyle({"model": _vbi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                 _vb.zoomTo({"model": _vbi})
                 _v3d_b_html = _vb._make_html()
@@ -5377,7 +5377,7 @@ with tab_basic:
                             _mrd += 1
                         # Heme
                         _mrd = _add_metals_heme_to_view(_vrd, st.session_state.get("receptor_fh"), _mrd)
-                        _vrd.addModel(Chem.MolToMolBlock(_rd_mols[_rd_pose_i]), "mol")
+                        _vrd.addModel(Chem.MolToPDBBlock(_rd_mols[_rd_pose_i]), "pdb")
                         _vrd.setStyle({"model": _mrd}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                         _vrd.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": _mrd})
                         _vrd.zoomTo({"model": _mrd})
@@ -5515,7 +5515,7 @@ with tab_basic:
                     # ── Heme ──────────────────────────────────────────────
                     mi2 = _add_metals_heme_to_view(v2, st.session_state.get("receptor_fh"), mi2)
                     # ─────────────────────────────────────────────────────
-                    v2.addModel(Chem.MolToMolBlock(sel_mol), "mol")
+                    v2.addModel(Chem.MolToPDBBlock(sel_mol), "pdb")
                     v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                     v2.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": mi2})
                     v2.zoomTo({"model": mi2})
@@ -5596,7 +5596,7 @@ with tab_basic:
                 # ── Heme ──────────────────────────────────────────────────
                 mbp = _add_metals_heme_to_view(vbp, st.session_state.get("receptor_fh"), mbp)
                 # ─────────────────────────────────────────────────────────
-                vbp.addModel(Chem.MolToMolBlock(sel_mol), "mol")
+                vbp.addModel(Chem.MolToPDBBlock(sel_mol), "pdb")
                 _lig_m = mbp
                 vbp.setStyle({"model": _lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
 
@@ -6131,7 +6131,7 @@ with tab_batch:
                             bmi += 1
                         # Heme
                         bmi = _add_metals_heme_to_view(vb, st.session_state.get("b_receptor_fh"), bmi)
-                        vb.addModel(Chem.MolToMolBlock(b_mols[b_pose_i]), "mol")
+                        vb.addModel(Chem.MolToPDBBlock(b_mols[b_pose_i]), "pdb")
                         vb.setStyle({"model": bmi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                         vb.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": bmi})
                         vb.zoomTo({"model": bmi}); vb.center({"model": bmi})
