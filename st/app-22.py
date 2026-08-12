@@ -38,6 +38,10 @@ from core import (
     convert_cif_to_pdb,
     scan_hetatm_residues,
     get_cocrystal_smiles,
+    prolif_status,
+    prolif_lignetwork_html,
+    prolif_barcode_png,
+    prolif_3d_view_html,
 )
 
 try:
@@ -98,6 +102,91 @@ st.set_page_config(
 # ══════════════════════════════════════════════════════════════════════════════
 
 import json as _json
+
+_PROLIF_INTERACTION_COLORS = {
+    "HBAcceptor": "#57b7d9",
+    "HBDonor": "#3b82f6",
+    "Hydrophobic": "#57d16f",
+    "VdWContact": "#d8a43a",
+    "PiStacking": "#c061cb",
+    "CationPi": "#a855f7",
+    "PiCation": "#a855f7",
+    "Anionic": "#ef4444",
+    "Cationic": "#6366f1",
+    "MetalAcceptor": "#f59e0b",
+    "MetalDonor": "#f59e0b",
+    "XBAcceptor": "#0ea5e9",
+    "XBDonor": "#0284c7",
+}
+
+
+def _prolif_profile_table_html(profile_rows, residue_columns) -> str:
+    if not profile_rows or not residue_columns:
+        return ""
+
+    def _cell_fill(names: list[str]) -> str:
+        if not names:
+            return "#000000"
+        colors = [_PROLIF_INTERACTION_COLORS.get(name, "#9ca3af") for name in names]
+        if len(colors) == 1:
+            return colors[0]
+        step = 100 / len(colors)
+        parts = []
+        for i, color in enumerate(colors):
+            start = i * step
+            end = (i + 1) * step
+            parts.append(f"{color} {start:.2f}% {end:.2f}%")
+        return "linear-gradient(135deg, " + ", ".join(parts) + ")"
+
+    head_cells = "".join(
+        '<th style="position:sticky;top:0;background:#ffffff;border:1px solid #666;'
+        'padding:0 4px;height:170px;width:34px;min-width:34px;vertical-align:bottom;'
+        'text-align:center;z-index:2;">'
+        f'<div style="display:inline-block;transform:rotate(-90deg);transform-origin:center;'
+        f'white-space:nowrap;font-size:12px;color:#111;">{col["label"]}</div>'
+        '</th>'
+        for col in residue_columns
+    )
+    body_rows = []
+    for row in profile_rows:
+        cells = []
+        for cell in row.get("cells", []):
+            names = cell.get("interaction_types", [])
+            title = ", ".join(names) if names else "No interaction"
+            cells.append(
+                f'<td title="{title}" style="border:1px solid #222;padding:0;width:34px;min-width:34px;'
+                f'height:28px;background:{_cell_fill(names)};"></td>'
+            )
+        body_rows.append(
+            f'<tr><th style="position:sticky;left:0;background:#ffffff;border:1px solid #666;'
+            f'padding:6px 10px;text-align:left;white-space:nowrap;color:#111;z-index:1;">{row.get("label","")}</th>'
+            f'{"".join(cells)}</tr>'
+        )
+
+    legend_items = "".join(
+        f'<span style="display:inline-flex;align-items:center;margin-right:14px;margin-bottom:6px;'
+        f'font-size:12px;color:#111;"><span style="display:inline-block;width:14px;height:14px;'
+        f'margin-right:6px;background:{color};border:1px solid #444;"></span>{name}</span>'
+        for name, color in _PROLIF_INTERACTION_COLORS.items()
+    )
+
+    return (
+        '<div style="padding:10px 0 6px 0;color:#111;font-size:12px;">'
+        'Hover a colored cell to see interaction type(s). Black = no interaction.'
+        '</div>'
+        '<div style="overflow:auto;border:1px solid #666;border-radius:8px;background:#fff;">'
+        '<table style="border-collapse:collapse;width:max-content;min-width:100%;table-layout:fixed;">'
+        '<thead><tr>'
+        '<th style="position:sticky;left:0;top:0;background:#ffffff;border:1px solid #666;'
+        'padding:8px 10px;z-index:3;color:#111;">Ligand</th>'
+        f'{head_cells}'
+        '</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody>'
+        '</table></div>'
+        f'<div style="padding-top:10px;">{legend_items}</div>'
+    )
+
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3163,9 +3252,10 @@ def _poseview_ui(
         st.markdown("---")
         st.markdown("**🧬 2D Interaction Diagrams**")
 
-    _tab_new, _tab_rdkit, _tab_pv = st.tabs([
+    _tab_new, _tab_rdkit, _tab_prolif, _tab_pv = st.tabs([
         "🧬 Anyone Can Dock 2D Diagram",
         "🔬 RDKit 2D Diagram",
+        "🧪 ProLIF 2D Diagram",
         "🔬 PoseView (proteins.plus)",
     ])
 
@@ -3572,7 +3662,172 @@ def _poseview_ui(
                     key_suffix=btn_key + "_rdkit",
                 )
 
-    # ── TAB 3: PoseView ───────────────────────────────────────────────────────
+    # ── TAB 3: ProLIF diagram ────────────────────────────────────────────────
+    with _tab_prolif:
+        _rec_plf = st.session_state.get(rec_key, "")
+        _smiles_plf = lig_smiles or st.session_state.get(smiles_key, "")
+        _pfx_plf = rec_key.replace("receptor_fh", "")
+        _lig_pdb_plf = st.session_state.get(_pfx_plf + "ligand_pdb_path", "")
+        _has_ref_plf = bool(_lig_pdb_plf and os.path.exists(_lig_pdb_plf))
+        _plf_status = prolif_status()
+
+        st.caption(
+            "ProLIF LigNetwork uses interaction fingerprints to render an interactive 2D "
+            "protein-ligand contact network locally."
+        )
+        if not _plf_status.get("available"):
+            st.warning(f"ProLIF is not available in this environment: {_plf_status.get('error', 'unknown error')}")
+        elif not _rec_plf or not os.path.exists(_rec_plf):
+            st.warning("Complete receptor preparation first.")
+        elif not os.path.exists(pose_sdf_path):
+            st.warning("Pose SDF not ready.")
+        else:
+            _plf_c1, _plf_c2 = st.columns([2, 1])
+            with _plf_c1:
+                _plf_show_data = st.checkbox(
+                    "Show interaction metadata",
+                    value=False,
+                    key=btn_key + "_plf_show_data",
+                    help="Display per-edge interaction metadata in the ProLIF LigNetwork diagram.",
+                )
+            with _plf_c2:
+                _plf_run = st.button("🧪 Generate ProLIF Diagrams", key=btn_key + "_plf_run", type="primary")
+
+            if _plf_run:
+                try:
+                    with st.spinner("Generating ProLIF docked-pose diagram…"):
+                        _plf_res = prolif_lignetwork_html(
+                            receptor_pdb=_rec_plf,
+                            pose_sdf_path=pose_sdf_path,
+                            pose_index=0,
+                            width="100%",
+                            height="920px",
+                            fontsize=18,
+                            show_interaction_data=_plf_show_data,
+                        )
+                    st.session_state[img_svg_key + "_plf_html"] = _plf_res["html"]
+                    st.session_state[img_svg_key + "_plf_meta"] = _plf_res
+                    st.session_state[pose_key_key + "_plf"] = _pose_key
+                except Exception as e:
+                    st.error(f"❌ ProLIF docked-pose diagram error: {e}")
+
+                if _has_ref_plf:
+                    try:
+                        import subprocess as _sp_plf
+                        _ref_sdf_plf = _lig_pdb_plf.replace(".pdb", "_prolif_ref.sdf")
+                        _sp_plf.run(
+                            f'obabel "{_lig_pdb_plf}" -O "{_ref_sdf_plf}" 2>/dev/null',
+                            shell=True, capture_output=True,
+                        )
+                        if os.path.exists(_ref_sdf_plf) and os.path.getsize(_ref_sdf_plf) > 10:
+                            with st.spinner("Generating ProLIF co-crystal diagram…"):
+                                _plf_ref = prolif_lignetwork_html(
+                                    receptor_pdb=_rec_plf,
+                                    pose_sdf_path=_ref_sdf_plf,
+                                    pose_index=0,
+                                    width="100%",
+                                    height="920px",
+                                    fontsize=18,
+                                    show_interaction_data=_plf_show_data,
+                                )
+                            st.session_state[ref_svg_key + "_plf_html"] = _plf_ref["html"]
+                            st.session_state[ref_svg_key + "_plf_meta"] = _plf_ref
+                        else:
+                            st.warning("⚠️ Could not convert co-crystal ligand PDB to SDF for ProLIF.")
+                    except Exception as e:
+                        st.warning(f"⚠️ ProLIF co-crystal diagram error: {e}")
+                st.rerun()
+
+            _plf_html = st.session_state.get(img_svg_key + "_plf_html")
+            _plf_ref_html = st.session_state.get(ref_svg_key + "_plf_html") if ref_svg_key else None
+            _plf_meta = st.session_state.get(img_svg_key + "_plf_meta", {})
+            _plf_ref_meta = st.session_state.get(ref_svg_key + "_plf_meta", {}) if ref_svg_key else {}
+            _plf_stale = st.session_state.get(pose_key_key + "_plf") != _pose_key
+
+            if _plf_stale and _plf_html:
+                st.caption("⚠️ Pose changed — click **Generate ProLIF Diagrams** to update.")
+
+            if _plf_html and not _plf_stale:
+                if _has_ref_plf:
+                    _plf_l, _plf_r = st.columns(2)
+                    with _plf_l:
+                        st.markdown("##### 🧪 Docked Pose (ProLIF)")
+                        if _plf_meta:
+                            _plf_residue_text = f"{_plf_meta.get('n_residues', 0)} residues"
+                            _plf_interaction_text = f"{_plf_meta.get('n_interactions', 0)} interactions"
+                            st.markdown(
+                                f"{_pill(_plf_residue_text, 'success')} "
+                                f"{_pill(_plf_interaction_text, 'warn')}",
+                                unsafe_allow_html=True,
+                            )
+                        components.html(_plf_html, height=980, scrolling=False)
+                        st.download_button(
+                            "⬇ HTML",
+                            data=_plf_html.encode(),
+                            file_name=f"pose{pose_idx+1}_prolif.html",
+                            mime="text/html",
+                            key=dl_svg_key + "_plf_html",
+                            width='stretch',
+                        )
+                    with _plf_r:
+                        st.markdown("##### 🔬 Co-Crystal Reference (ProLIF)")
+                        if _plf_ref_html:
+                            if _plf_ref_meta:
+                                _plf_ref_residue_text = f"{_plf_ref_meta.get('n_residues', 0)} residues"
+                                _plf_ref_interaction_text = f"{_plf_ref_meta.get('n_interactions', 0)} interactions"
+                                st.markdown(
+                                    f"{_pill(_plf_ref_residue_text, 'success')} "
+                                    f"{_pill(_plf_ref_interaction_text, 'warn')}",
+                                    unsafe_allow_html=True,
+                                )
+                            components.html(_plf_ref_html, height=980, scrolling=False)
+                            st.download_button(
+                                "⬇ HTML",
+                                data=_plf_ref_html.encode(),
+                                file_name=f"cocrystal_{pdb_id}_{cocrystal_ligand_id}_prolif.html",
+                                mime="text/html",
+                                key=dl_svg_key + "_plf_ref_html",
+                                width='stretch',
+                            )
+                        else:
+                            st.info("Click **Generate ProLIF Diagrams** to load the co-crystal reference.")
+                else:
+                    st.markdown("##### 🧪 Docked Pose (ProLIF)")
+                    if _plf_meta:
+                        _plf_residue_text = f"{_plf_meta.get('n_residues', 0)} residues"
+                        _plf_interaction_text = f"{_plf_meta.get('n_interactions', 0)} interactions"
+                        st.markdown(
+                            f"{_pill(_plf_residue_text, 'success')} "
+                            f"{_pill(_plf_interaction_text, 'warn')}",
+                            unsafe_allow_html=True,
+                        )
+                    components.html(_plf_html, height=980, scrolling=False)
+                    st.download_button(
+                        "⬇ HTML",
+                        data=_plf_html.encode(),
+                        file_name=f"pose{pose_idx+1}_prolif.html",
+                        mime="text/html",
+                        key=dl_svg_key + "_plf_html",
+                        width='stretch',
+                    )
+                    st.caption("ℹ️ No co-crystal ligand detected.")
+
+                _ai_prompt_section(
+                    engine="prolif",
+                    lig_name=lig_name,
+                    pdb_id=pdb_id,
+                    binding_energy=binding_energy,
+                    has_ref=bool(_plf_ref_html),
+                    cocrystal_ligand_id=cocrystal_ligand_id,
+                    ref_lig_name=ref_lig_name,
+                    ref_lig_energy=ref_lig_energy,
+                    ref_rmsd_crystal=ref_rmsd_crystal,
+                    ref_redocked=(ref_lig_energy is not None),
+                    rmsd_crystal=rmsd_crystal,
+                    key_suffix=btn_key + "_prolif",
+                )
+
+    # ── TAB 4: PoseView ───────────────────────────────────────────────────────
     with _tab_pv:
         # ── PoseView charged-species warning ─────────────────────────────────
         st.warning(
@@ -6235,6 +6490,107 @@ with tab_batch:
                 st.markdown("**Score Table**"); st.dataframe(df_res, hide_index=True, width='stretch')
         else:
             st.markdown("**Score Table**"); st.dataframe(df_res, hide_index=True, width='stretch')
+
+        st.markdown("---")
+        st.markdown("**🧪 ProLIF Barcode**")
+        _plf_status_batch = prolif_status()
+        if not _plf_status_batch.get("available"):
+            st.info(f"ProLIF barcode unavailable: {_plf_status_batch.get('error', 'unknown error')}")
+        else:
+            _barcode_entries = []
+            for r in ok_results:
+                _src = r.get("pv_sdf") or r.get("out_sdf")
+                if _src and os.path.exists(_src):
+                    _barcode_entries.append({
+                        "label": r["Name"],
+                        "sdf_path": _src,
+                        "pose_index": 0,
+                    })
+            if redock_result and redock_result.get("out_sdf") and os.path.exists(redock_result["out_sdf"]):
+                _redock_src = redock_result.get("pv_sdf") or redock_result["out_sdf"]
+                _redock_best_i = 0
+                _redock_cryst = st.session_state.get("b_ligand_pdb_path") or ""
+                if _redock_cryst and os.path.exists(_redock_cryst):
+                    _redock_mols = load_mols_from_sdf(_redock_src, sanitize=False)
+                    _best_rmsd = None
+                    for _i, _mol in enumerate(_redock_mols):
+                        try:
+                            _this_rmsd = calc_rmsd_heavy(_mol, _redock_cryst)
+                        except Exception:
+                            _this_rmsd = None
+                        if _this_rmsd is None:
+                            continue
+                        if _best_rmsd is None or _this_rmsd < _best_rmsd:
+                            _best_rmsd = _this_rmsd
+                            _redock_best_i = _i
+                _barcode_entries.append({
+                    "label": f"Redock min RMSD (pose {_redock_best_i+1})",
+                    "sdf_path": _redock_src,
+                    "pose_index": _redock_best_i,
+                })
+
+            if _barcode_entries:
+                if st.button("🧪 Generate ProLIF Barcode", key="b_prolif_barcode_run", type="secondary"):
+                    try:
+                        with st.spinner("Generating ProLIF barcode…"):
+                            _barcode_res = prolif_barcode_png(
+                                receptor_pdb=st.session_state.get("b_receptor_fh", ""),
+                                pose_entries=_barcode_entries,
+                            )
+                        st.session_state["b_prolif_profile_rows"] = _barcode_res.get("profile_rows", [])
+                        st.session_state["b_prolif_residue_columns"] = _barcode_res.get("residue_columns", [])
+                        st.session_state["b_prolif_profile_png"] = _barcode_res.get("png")
+                        st.session_state["b_prolif_profile_svg"] = _barcode_res.get("svg")
+                        _profile_df = _barcode_res.get("profile_df")
+                        st.session_state["b_prolif_profile_csv"] = (
+                            _profile_df.to_csv(index=False).encode("utf-8")
+                            if _profile_df is not None else b""
+                        )
+                    except Exception as e:
+                        st.warning(f"⚠️ ProLIF barcode error: {e}")
+                _profile_rows = st.session_state.get("b_prolif_profile_rows", [])
+                _residue_columns = st.session_state.get("b_prolif_residue_columns", [])
+                _profile_png = st.session_state.get("b_prolif_profile_png")
+                _profile_svg = st.session_state.get("b_prolif_profile_svg")
+                _profile_csv = st.session_state.get("b_prolif_profile_csv", b"")
+                if _profile_rows and _residue_columns:
+                    st.markdown("**Interaction Profile Table**")
+                    st.caption("Matrix view: rows = ligand names, columns = non-redundant interacting residues shared across the batch.")
+                    if _profile_png:
+                        st.image(_profile_png)
+                    _dl_cols = st.columns(3)
+                    with _dl_cols[0]:
+                        if _profile_csv:
+                            st.download_button(
+                                "⬇ Save CSV",
+                                data=_profile_csv,
+                                file_name="prolif_interaction_profile_transposed.csv",
+                                mime="text/csv",
+                                key="b_prolif_profile_csv_dl",
+                                width='stretch',
+                            )
+                    with _dl_cols[1]:
+                        if _profile_png:
+                            st.download_button(
+                                "⬇ Save PNG",
+                                data=_profile_png,
+                                file_name="prolif_interaction_profile.png",
+                                mime="image/png",
+                                key="b_prolif_profile_png_dl",
+                                width='stretch',
+                            )
+                    with _dl_cols[2]:
+                        if _profile_svg:
+                            st.download_button(
+                                "⬇ Save SVG",
+                                data=_profile_svg,
+                                file_name="prolif_interaction_profile.svg",
+                                mime="image/svg+xml",
+                                key="b_prolif_profile_svg_dl",
+                                width='stretch',
+                            )
+            else:
+                st.caption("No valid poses available for ProLIF barcode generation.")
 
         st.markdown("---")
         st.markdown("**⬇ Download All Results**")

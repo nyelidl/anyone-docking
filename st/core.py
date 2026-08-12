@@ -3302,6 +3302,678 @@ def clear_poseview_cache():
     _PP_PROTEIN_CACHE.clear()
 
 
+def prolif_status() -> dict:
+    try:
+        import prolif as plf
+        import MDAnalysis as mda
+        return {
+            "available": True,
+            "prolif_version": getattr(plf, "__version__", "unknown"),
+            "mdanalysis_version": getattr(mda, "__version__", "unknown"),
+            "error": "",
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "prolif_version": "",
+            "mdanalysis_version": "",
+            "error": str(e),
+        }
+
+
+def _prolif_imports():
+    import prolif as plf
+    import MDAnalysis as mda
+    import py3Dmol
+    from rdkit import Chem
+    return plf, mda, py3Dmol, Chem
+
+
+def _prolif_protein_molecule(receptor_pdb: str):
+    plf, mda, _py3Dmol, Chem = _prolif_imports()
+    rd_prot = Chem.MolFromPDBFile(receptor_pdb, removeHs=False, sanitize=False)
+    if rd_prot is not None:
+        try:
+            Chem.SanitizeMol(rd_prot)
+        except Exception:
+            pass
+        return plf.Molecule.from_rdkit(rd_prot)
+
+    try:
+        u = mda.Universe(receptor_pdb)
+        try:
+            return plf.Molecule.from_mda(u, inferrer=None)
+        except Exception:
+            try:
+                return plf.Molecule.from_mda(u, force=True, inferrer=None)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    raise ValueError("Could not parse receptor for ProLIF.")
+
+
+def _prolif_pose_molecules_from_sdf(pose_sdf_path: str, pose_index: int = 0):
+    plf, _mda, _py3Dmol, _Chem = _prolif_imports()
+    rd_mols = load_mols_from_sdf(pose_sdf_path, sanitize=False)
+    if not rd_mols:
+        raise ValueError("Could not read pose SDF for ProLIF.")
+    idx = min(max(int(pose_index), 0), len(rd_mols) - 1)
+    plf_mols = [
+        plf.Molecule.from_rdkit(mol, resname="LIG", resnumber=1, chain="L")
+        for mol in rd_mols if mol is not None
+    ]
+    if not plf_mols:
+        raise ValueError("No valid ligand molecules available for ProLIF.")
+    return rd_mols, plf_mols, idx
+
+
+def _prolif_frame_stats(ifp_frame) -> tuple[int, int]:
+    n_residues = len(ifp_frame or {})
+    n_interactions = 0
+    for _residue_data in (ifp_frame or {}).values():
+        try:
+            n_interactions += len(_residue_data)
+        except Exception:
+            pass
+    return n_residues, n_interactions
+
+
+def _prolif_receptor_subset_path(receptor_pdb: str, rd_mols: list, cutoff: float = 6.0) -> str:
+    import tempfile as _tempfile
+    keep_residues = set()
+    for mol in rd_mols:
+        if mol is None:
+            continue
+        try:
+            for row in get_interacting_residues(receptor_pdb, mol, cutoff=cutoff):
+                keep_residues.add((
+                    str(row.get("resn", "")).strip().upper(),
+                    str(row.get("chain", "") or "").strip(),
+                    int(row.get("resi", 0) or 0),
+                ))
+        except Exception:
+            continue
+    if not keep_residues:
+        return receptor_pdb
+
+    out_dir = _tempfile.mkdtemp(prefix="acd_prolif_rec_")
+    out_path = str(Path(out_dir) / "receptor_focus.pdb")
+    kept = 0
+    with open(receptor_pdb) as fh, open(out_path, "w") as oh:
+        for line in fh:
+            rec = line[:6].strip()
+            if rec in ("ATOM", "HETATM"):
+                resn = line[17:20].strip().upper()
+                chain = line[21].strip()
+                try:
+                    resid = int((line[22:26] or "").strip() or 0)
+                except Exception:
+                    resid = 0
+                if rec == "HETATM":
+                    if resn not in WATER_RESNAMES:
+                        oh.write(line if line.endswith("\n") else line + "\n")
+                        kept += 1
+                    continue
+                if (resn, chain, resid) in keep_residues:
+                    oh.write(line if line.endswith("\n") else line + "\n")
+                    kept += 1
+            elif rec in ("TER", "END"):
+                oh.write(line if line.endswith("\n") else line + "\n")
+    return out_path if kept else receptor_pdb
+
+
+def _prolif_interacting_residue_centers_from_pose(receptor_pdb: str, rd_mol, cutoff: float = 5.0) -> list[dict]:
+    from prody import parsePDB, calcCenter
+    atoms = parsePDB(receptor_pdb)
+    if atoms is None:
+        return []
+    centers = []
+    try:
+        rows = get_interacting_residues(receptor_pdb, rd_mol, cutoff=cutoff)
+    except Exception:
+        rows = []
+    for rb in rows:
+        name = str(rb.get("resn", "") or "").strip()
+        chain = str(rb.get("chain", "") or "").strip()
+        try:
+            number = int(rb.get("resi", 0) or 0)
+        except Exception:
+            number = 0
+        if not name or not number:
+            continue
+        sel = f"resname {name} and resid {number}"
+        if chain:
+            sel += f" and chain {chain}"
+        res_atoms = atoms.select(sel)
+        if res_atoms is None:
+            continue
+        try:
+            cx, cy, cz = (float(v) for v in calcCenter(res_atoms))
+        except Exception:
+            continue
+        centers.append({
+            "label": f"{name}{number}{chain}",
+            "x": cx,
+            "y": cy,
+            "z": cz,
+        })
+    return centers
+
+
+def _prolif_manual_3d_html(
+    receptor_pdb: str,
+    rd_mol,
+    *,
+    size: tuple = (900, 460),
+    show_residue_labels: bool = True,
+    show_surface: bool = False,
+    hide_hydrogens: bool = True,
+    cutoff: float = 5.0,
+) -> str:
+    import tempfile as _tempfile
+
+    _plf, _mda, py3Dmol, _Chem = _prolif_imports()
+    receptor_view_pdb = receptor_pdb
+    if hide_hydrogens:
+        try:
+            _tmp_h = str(Path(_tempfile.mkdtemp(prefix="acd_prolif_view_")) / "receptor_noh.pdb")
+            _strip_h_from_pdb(receptor_pdb, _tmp_h)
+            if os.path.exists(_tmp_h) and os.path.getsize(_tmp_h) > 50:
+                receptor_view_pdb = _tmp_h
+        except Exception:
+            receptor_view_pdb = receptor_pdb
+
+    v = py3Dmol.view(width=size[0], height=size[1])
+    v.setBackgroundColor("#ffffff")
+    mi = 0
+    if receptor_view_pdb and os.path.exists(receptor_view_pdb):
+        with open(receptor_view_pdb) as fh:
+            v.addModel(fh.read(), "pdb")
+        v.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+        if show_surface:
+            try:
+                v.addSurface(py3Dmol.SAS, {"opacity": 0.30, "color": "white"}, {"model": mi})
+            except Exception:
+                pass
+        mi += 1
+
+    v.addModel(_Chem.MolToPDBBlock(rd_mol), "pdb")
+    lig_model = mi
+    v.setStyle({"model": lig_model}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
+
+    for rb in get_interacting_residues(receptor_pdb, rd_mol, cutoff=cutoff):
+        has_chain = bool(rb.get("chain") and str(rb.get("chain")).strip())
+        sel = {"model": 0, "resi": rb.get("resi")}
+        if has_chain:
+            sel["chain"] = rb.get("chain")
+        try:
+            v.setStyle(sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
+        except Exception:
+            pass
+        if show_residue_labels:
+            try:
+                v.addLabel(
+                    f"{rb.get('resn', '')}{rb.get('resi', '')}{rb.get('chain', '') if has_chain else ''}",
+                    {
+                        "fontSize": 11,
+                        "fontColor": "yellow",
+                        "backgroundColor": "black",
+                        "backgroundOpacity": 0.65,
+                        "inFront": True,
+                        "showBackground": True,
+                    },
+                    sel,
+                )
+            except Exception:
+                pass
+    try:
+        v.zoomTo({"model": lig_model})
+    except Exception:
+        v.zoomTo()
+    return v._make_html()
+
+
+def prolif_lignetwork_html(
+    receptor_pdb: str,
+    pose_sdf_path: str,
+    *,
+    pose_index: int = 0,
+    width: str = "100%",
+    height: str = "920px",
+    fontsize: int = 18,
+    show_interaction_data: bool = True,
+) -> dict:
+    import io as _io
+    plf, _mda, _py3Dmol, _Chem = _prolif_imports()
+    rd_mols, plf_mols, idx = _prolif_pose_molecules_from_sdf(pose_sdf_path, pose_index)
+    prot_pdb = _prolif_receptor_subset_path(receptor_pdb, [rd_mols[idx]])
+    prot_mol = _prolif_protein_molecule(prot_pdb)
+
+    fp = plf.Fingerprint(count=True)
+    fp.run_from_iterable(plf_mols, prot_mol, progress=False, n_jobs=1)
+    ligplot = fp.plot_lignetwork(
+        rd_mols[idx],
+        kind="frame",
+        frame=idx,
+        display_all=True,
+        use_coordinates=True,
+        flatten_coordinates=True,
+        kekulize=False,
+        width=width,
+        height=height,
+        fontsize=fontsize,
+        show_interaction_data=show_interaction_data,
+    )
+    buf = _io.StringIO()
+    ligplot.save(
+        buf,
+        width=width,
+        height=height,
+        fontsize=fontsize,
+        show_interaction_data=show_interaction_data,
+    )
+    n_residues, n_interactions = _prolif_frame_stats(fp.ifp[idx])
+    return {
+        "success": True,
+        "html": buf.getvalue(),
+        "n_residues": n_residues,
+        "n_interactions": n_interactions,
+    }
+
+
+def prolif_barcode_png(
+    receptor_pdb: str,
+    pose_entries: list[dict],
+    *,
+    dpi: int = 150,
+) -> dict:
+    import io as _io
+    import matplotlib.pyplot as _plt
+    import matplotlib.patches as _mpatches
+    import numpy as _np
+
+    plf, _mda, _py3Dmol, _Chem = _prolif_imports()
+
+    ligands = []
+    labels = []
+    rd_mols_all = []
+    label_entries = []
+    for i, entry in enumerate(pose_entries):
+        sdf_path = entry.get("sdf_path", "")
+        pose_index = int(entry.get("pose_index", 0) or 0)
+        label = str(entry.get("label", f"pose {i+1}"))
+        rd_mols = load_mols_from_sdf(sdf_path, sanitize=False)
+        if not rd_mols:
+            continue
+        idx = min(max(pose_index, 0), len(rd_mols) - 1)
+        rd_mols_all.append(rd_mols[idx])
+        ligands.append(plf.Molecule.from_rdkit(rd_mols[idx], resname="LIG", resnumber=i + 1, chain="L"))
+        labels.append(label)
+        label_entries.append({
+            "label": label,
+            "is_reference": bool(entry.get("is_reference", False) or "redock" in label.lower() or "reference" in label.lower()),
+        })
+
+    if not ligands:
+        raise ValueError("No valid poses available for ProLIF barcode generation.")
+
+    prot_pdb = _prolif_receptor_subset_path(receptor_pdb, rd_mols_all)
+    prot_mol = _prolif_protein_molecule(prot_pdb)
+
+    fp = plf.Fingerprint(count=True)
+    fp.run_from_iterable(ligands, prot_mol, progress=False, n_jobs=1)
+
+    def _protein_residue_id(item):
+        if isinstance(item, tuple) and len(item) >= 2:
+            cand = item[-1]
+            if hasattr(cand, "name") or hasattr(cand, "number") or hasattr(cand, "chain"):
+                return cand
+        return item
+
+    def _residue_label(item) -> str:
+        item = _protein_residue_id(item)
+        chain = str(getattr(item, "chain", "") or "").strip()
+        name = str(getattr(item, "name", "") or "").strip()
+        try:
+            number = int(getattr(item, "number", 0) or 0)
+        except Exception:
+            number = 0
+        if name and number:
+            return f"{name}{number}{chain}" if chain else f"{name}{number}"
+        text = str(item).strip()
+        return text if text else "?"
+
+    def _residue_sort_key(item):
+        try:
+            item = _protein_residue_id(item)
+            chain = str(getattr(item, "chain", "") or "")
+            number = int(getattr(item, "number", 0) or 0)
+            name = str(getattr(item, "name", "") or "")
+            if name and number:
+                return (chain, number, name)
+            return ("", 0, _residue_label(item))
+        except Exception:
+            return ("", 0, _residue_label(item))
+
+    observed_types = []
+    type_priority = [
+        "HBAcceptor",
+        "HBDonor",
+        "Hydrophobic",
+        "VdWContact",
+        "PiStacking",
+        "CationPi",
+        "PiCation",
+        "Anionic",
+        "Cationic",
+        "MetalAcceptor",
+        "MetalDonor",
+        "XBAcceptor",
+        "XBDonor",
+    ]
+    type_colors = {
+        "HBAcceptor": "#63b6db",
+        "HBDonor": "#3b82f6",
+        "Hydrophobic": "#5adb7a",
+        "VdWContact": "#e5b142",
+        "PiStacking": "#c061cb",
+        "CationPi": "#8b5cf6",
+        "PiCation": "#8b5cf6",
+        "Anionic": "#ef4444",
+        "Cationic": "#6366f1",
+        "MetalAcceptor": "#f59e0b",
+        "MetalDonor": "#f59e0b",
+        "XBAcceptor": "#0ea5e9",
+        "XBDonor": "#0284c7",
+    }
+    raw_rows = []
+    normalized_frames = []
+    residue_id_set = set()
+    for frame in fp.ifp.values():
+        normalized_frame = {}
+        for raw_resid, raw_interactions in (frame or {}).items():
+            prot_resid = _protein_residue_id(raw_resid)
+            bucket = normalized_frame.setdefault(prot_resid, set())
+            for name in raw_interactions.keys():
+                bucket.add(name)
+        normalized_frame = {k: sorted(v) for k, v in normalized_frame.items()}
+        normalized_frames.append(normalized_frame)
+        residue_id_set.update(normalized_frame.keys())
+
+    residue_ids = sorted(residue_id_set, key=_residue_sort_key)
+    residue_stats = {}
+    for resid in residue_ids:
+        residue_stats[resid] = {
+            "present_count": 0,
+            "ref_count": 0,
+        }
+
+    for frame_idx, label in enumerate(labels):
+        frame = normalized_frames[frame_idx] if frame_idx < len(normalized_frames) else {}
+        residue_cells = []
+        _is_ref = bool(label_entries[frame_idx]["is_reference"])
+        for resid in residue_ids:
+            interactions = list(frame.get(resid, []))
+            for name in interactions:
+                if name not in observed_types:
+                    observed_types.append(name)
+            if interactions:
+                residue_stats[resid]["present_count"] += 1
+                if _is_ref:
+                    residue_stats[resid]["ref_count"] += 1
+            residue_cells.append({
+                "resid": resid,
+                "interaction_types": interactions,
+                "count": len(interactions),
+            })
+        raw_rows.append({
+            "label": label,
+            "is_reference": _is_ref,
+            "cells": residue_cells,
+        })
+
+    residue_ids = sorted(
+        residue_ids,
+        key=lambda resid: (
+            -int(residue_stats[resid]["ref_count"] > 0),
+            -residue_stats[resid]["present_count"],
+            *_residue_sort_key(resid),
+        ),
+    )
+    residue_columns = []
+    for resid in residue_ids:
+        chain = str(getattr(resid, "chain", "") or "").strip()
+        try:
+            number = int(getattr(resid, "number", 0) or 0)
+        except Exception:
+            number = 0
+        name = str(getattr(resid, "name", "") or "").strip()
+        label = _residue_label(resid)
+        residue_columns.append({
+            "label": label,
+            "chain": chain,
+            "number": number,
+            "name": name,
+            "key": label,
+        })
+
+    raw_rows = sorted(
+        raw_rows,
+        key=lambda row: (
+            -int(row.get("is_reference", False)),
+            labels.index(row["label"]),
+        ),
+    )
+
+    profile_rows = []
+    matrix_rows = []
+    for row in raw_rows:
+        row_dict = {"Ligand": row["label"]}
+        cell_map = {cell["resid"]: cell for cell in row.get("cells", [])}
+        residue_cells = []
+        for resid, col_meta in zip(residue_ids, residue_columns):
+            cell = cell_map.get(resid, {"interaction_types": [], "count": 0})
+            interactions = list(cell.get("interaction_types", []))
+            row_dict[col_meta["key"]] = "; ".join(interactions)
+            residue_cells.append({
+                "residue": col_meta["key"],
+                "interaction_types": interactions,
+                "count": len(interactions),
+            })
+        profile_rows.append({
+            "label": row["label"],
+            "is_reference": row.get("is_reference", False),
+            "cells": residue_cells,
+        })
+        matrix_rows.append(row_dict)
+
+    profile_df = None
+    try:
+        import pandas as _pd
+        profile_df = _pd.DataFrame(matrix_rows)
+    except Exception:
+        profile_df = None
+
+    ordered_types = [name for name in type_priority if name in observed_types] + [
+        name for name in observed_types if name not in type_priority
+    ]
+    type_to_code = {name: i + 1 for i, name in enumerate(ordered_types)}
+
+    matrix = _np.zeros((len(labels), len(residue_columns)), dtype=int)
+    for i, row in enumerate(profile_rows):
+        for j, cell in enumerate(row.get("cells", [])):
+            interactions = cell.get("interaction_types", [])
+            chosen = next((name for name in type_priority if name in interactions), None)
+            if chosen is None and interactions:
+                chosen = interactions[0]
+            if chosen:
+                matrix[i, j] = type_to_code.get(chosen, 0)
+
+    cell_size = 0.42
+    fig_w = max(8.5, len(residue_columns) * cell_size + 2.8)
+    fig_h = max(3.8, len(profile_rows) * cell_size + 1.8)
+    fig, ax = _plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
+    ax.set_facecolor("#ffffff")
+    fig.patch.set_facecolor("#ffffff")
+
+    rgba = _np.zeros((matrix.shape[0], matrix.shape[1], 4), dtype=float)
+    for code in _np.unique(matrix):
+        if code == 0:
+            color = "#ffffff"
+        else:
+            color = type_colors.get(ordered_types[code - 1], "#9ca3af")
+        rgb = tuple(int(color[k:k+2], 16) / 255.0 for k in (1, 3, 5))
+        rgba[matrix == code] = (*rgb, 1.0)
+
+    ax.imshow(rgba, aspect="equal", interpolation="nearest")
+    ax.set_xticks(range(len(residue_columns)))
+    ax.set_xticklabels([col["label"] for col in residue_columns], rotation=90, fontsize=9)
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels([row["label"] for row in profile_rows], fontsize=10)
+    ax.tick_params(axis="x", colors="#111111")
+    ax.tick_params(axis="y", colors="#111111")
+    ax.set_xlabel("Shared interacting residues", color="#111111", fontsize=11)
+    ax.set_ylabel("Ligand / reference pose", color="#111111", fontsize=11)
+    ax.set_xticks(_np.arange(-0.5, len(residue_columns), 1), minor=True)
+    ax.set_yticks(_np.arange(-0.5, len(labels), 1), minor=True)
+    ax.grid(which="minor", color="#d4d4d4", linestyle="-", linewidth=0.5)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    legend_handles = [
+        _mpatches.Patch(color=type_colors.get(name, "#9ca3af"), label=name)
+        for name in ordered_types
+    ]
+    if legend_handles:
+        ax.legend(
+            handles=legend_handles,
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            frameon=True,
+            fontsize=9,
+        )
+
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#222222")
+    fig.tight_layout()
+
+    png_buf = _io.BytesIO()
+    fig.savefig(png_buf, format="png", dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+    png_buf.seek(0)
+    svg_buf = _io.BytesIO()
+    fig.savefig(svg_buf, format="svg", bbox_inches="tight", facecolor=fig.get_facecolor())
+    svg_buf.seek(0)
+    _plt.close(fig)
+
+    return {
+        "success": True,
+        "png": png_buf.getvalue(),
+        "svg": svg_buf.getvalue(),
+        "labels": labels,
+        "profile_rows": profile_rows,
+        "residue_columns": residue_columns,
+        "profile_df": profile_df,
+    }
+
+
+def prolif_3d_view_html(
+    receptor_pdb: str,
+    pose_sdf_path: str,
+    *,
+    pose_index: int = 0,
+    size: tuple = (900, 460),
+    show_residue_labels: bool = True,
+    show_surface: bool = False,
+    hide_hydrogens: bool = True,
+) -> dict:
+    plf, _mda, py3Dmol, _Chem = _prolif_imports()
+    rd_mols, plf_mols, idx = _prolif_pose_molecules_from_sdf(pose_sdf_path, pose_index)
+    prot_pdb = _prolif_receptor_subset_path(receptor_pdb, [rd_mols[idx]])
+    prot_mol = _prolif_protein_molecule(prot_pdb)
+
+    fp = plf.Fingerprint(count=True)
+    fp.run_from_iterable([plf_mols[idx]], prot_mol, progress=False, n_jobs=1)
+    frame_ifp = fp.ifp[0]
+    n_residues, n_interactions = _prolif_frame_stats(frame_ifp)
+
+    _html = ""
+    _viewer_mode = "prolif"
+    _plot_error = ""
+    try:
+        plot3d = fp.plot_3d(
+            ligand_mol=plf_mols[idx],
+            protein_mol=prot_mol,
+            frame=0,
+            size=size,
+            display_all=True,
+            only_interacting=True,
+            remove_hydrogens=hide_hydrogens,
+            sanitize=False,
+        )
+        try:
+            plot3d.setBackgroundColor("#ffffff")
+        except Exception:
+            pass
+        if show_surface:
+            try:
+                plot3d.addSurface(py3Dmol.SAS, {"opacity": 0.30, "color": "white"})
+            except Exception:
+                pass
+        if show_residue_labels:
+            for row in _prolif_interacting_residue_centers_from_pose(receptor_pdb, rd_mols[idx], cutoff=5.0):
+                try:
+                    plot3d.addLabel(
+                        row["label"],
+                        {
+                            "position": {"x": row["x"], "y": row["y"], "z": row["z"]},
+                            "fontSize": 11,
+                            "fontColor": "yellow",
+                            "backgroundColor": "black",
+                            "backgroundOpacity": 0.65,
+                            "inFront": True,
+                            "showBackground": True,
+                        },
+                    )
+                except Exception:
+                    continue
+        try:
+            plot3d.zoomTo()
+        except Exception:
+            pass
+        try:
+            _html = plot3d._repr_html_() or ""
+        except Exception:
+            _html = ""
+        if not _html:
+            try:
+                _html = plot3d._view._make_html()
+            except Exception:
+                _html = ""
+    except Exception as e:
+        _plot_error = str(e)
+
+    if not _html:
+        _viewer_mode = "manual_fallback"
+        _html = _prolif_manual_3d_html(
+            prot_pdb,
+            rd_mols[idx],
+            size=size,
+            show_residue_labels=show_residue_labels,
+            show_surface=show_surface,
+            hide_hydrogens=hide_hydrogens,
+            cutoff=5.0,
+        )
+    return {
+        "success": True,
+        "html": _html,
+        "n_residues": n_residues,
+        "n_interactions": n_interactions,
+        "viewer_mode": _viewer_mode,
+        "plot_error": _plot_error,
+    }
+
+
 def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
     import requests
     _SUBMIT = "https://proteins.plus/api/poseview2_rest"
