@@ -55,8 +55,9 @@ except ImportError:
     _dimorphite_fn = None; _DIMORPHITE_OK = False
     print("⚠️  dimorphite-dl not available.")
 
-# ML pKa backends are deliberately disabled; the validated heuristic backend
-# is more accurate on the project's 27k ligand benchmark.
+# ML pKa backends are deliberately disabled.  The validated heuristic backend
+# outperforms the available pKaSolver benchmark on the 27k ligand set, while
+# PROPKA/Uni-pKa are not configured as reproducible ligand-only dependencies.
 _PKASOLVER_OK = False; _PROPKA_OK = False; _UNIPKA_OK = False
 _PKA_BACKEND = "heuristic"
 print("ℹ️  ML pKa backends disabled — heuristic ionizable-site table will be used.")
@@ -1111,12 +1112,20 @@ def get_charge_profile(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None: raise ValueError(f"Bad SMILES: {smiles[:60]}")
     net = n_pos = n_neg = 0; rows = []
+    masked_atom_indices, masked_motifs = _internal_masked_charge_annotations(mol)
+    unmasked_pos = unmasked_neg = 0
     for atom in mol.GetAtoms():
         fc = int(atom.GetFormalCharge()); net += fc; n_pos += fc > 0; n_neg += fc < 0
+        if atom.GetIdx() not in masked_atom_indices:
+            unmasked_pos += fc > 0
+            unmasked_neg += fc < 0
         if fc != 0: rows.append({"atom_idx": atom.GetIdx(), "symbol": atom.GetSymbol(), "formal_charge": fc})
     return {"net_charge": int(net), "n_pos_atoms": int(n_pos), "n_neg_atoms": int(n_neg),
             "has_pos": n_pos > 0, "has_neg": n_neg > 0,
-            "is_zwitterion_strict": bool(n_pos > 0 and n_neg > 0 and net == 0), "charged_atoms": rows}
+            "is_zwitterion_strict": bool(unmasked_pos > 0 and unmasked_neg > 0 and net == 0),
+            "charged_atoms": rows,
+            "masked_internal_charge_atom_indices": sorted(masked_atom_indices),
+            "masked_internal_charge_motifs": masked_motifs}
 
 def charged_atoms_text(cp):
     rows = cp.get("charged_atoms", [])
@@ -1131,7 +1140,8 @@ def _best_pka_for_site(site, ml_predictions, pubchem_result):
     if pubchem_result.get("available") and pubchem_result.get("confidence") in ("high","medium"):
         vals = pubchem_result.get("pka_values", [])
         if vals:
-            best = min(vals, key=lambda v: abs(v - site["heuristic_pka"]))
+            heuristic_pka = _site_effective_pka(site, 10.0)
+            best = min(vals, key=lambda v: abs(v - heuristic_pka))
             # Guard: prevent PubChem pKa from being assigned to the wrong event
             # (e.g. benzimidazolium base pKa~5.5 attaching to N-H acid heuristic
             # pKa~13). Allow:
@@ -1140,12 +1150,12 @@ def _best_pka_for_site(site, ml_predictions, pubchem_result):
             #       needed when heuristic over-estimates due to missing
             #       substituent rule (e.g. heteroaryl sulfonamides where the
             #       heteroaryl ring suppresses pKa from 9.7 to ~5.6).
-            diff = best - site["heuristic_pka"]
+            diff = best - heuristic_pka
             within_symmetric = abs(diff) <= 3.0
             within_downward  = (diff < 0 and abs(diff) <= 5.0)
             if within_symmetric or within_downward:
                 return best, "pubchem"
-    return site["heuristic_pka"], "heuristic"
+    return _site_effective_pka(site, 10.0), "heuristic"
 
 def _label_decision_backend(ml_predictions, pubchem_result, used_heuristic):
     has_ml = bool(ml_predictions); has_pc = pubchem_result.get("available", False)
@@ -1179,7 +1189,7 @@ def _expected_net_charge_from_sites(ion_sites, target_ph):
     base_centers = 0
 
     for s in ion_sites:
-        pka = float(s.get("heuristic_pka", 10.0))
+        pka = _site_effective_pka(s, 10.0)
         stype = s.get("site_type", "acid")
         label = str(s.get("label", "")).lower()
 
@@ -1202,7 +1212,7 @@ def _expected_net_charge_from_sites(ion_sites, target_ph):
     if acid_charge == 0 and base_charge > 1:
         strong_bases = sum(1 for s in ion_sites
                           if s.get("site_type") == "base"
-                          and float(s.get("heuristic_pka", 0)) - target_ph > 2.0)
+                          and _site_effective_pka(s, 0.0) - target_ph > 2.0)
         if strong_bases >= 3:
             base_charge = min(base_charge, 2)
         else:
@@ -1240,16 +1250,16 @@ def score_microstate_full(microstate_smiles, tautomer_smiles, taut_plausibility,
             exp = -1 if hh_fraction_charged(pka_val, target_ph, "acid") > 0.5 else 0
             s_pubchem_bonus += 0.25 * pc_weight if net == exp else -0.15 * pc_weight
         s_pubchem_bonus = max(-0.4, min(0.5, s_pubchem_bonus))
-    has_acid_site = any(s["site_type"]=="acid" and (target_ph - s["heuristic_pka"]) > 1.0 for s in ion_sites)
-    has_base_site = any(s["site_type"]=="base" and (s["heuristic_pka"] - target_ph) > 1.0 for s in ion_sites)
+    has_acid_site = any(s["site_type"]=="acid" and (target_ph - _site_effective_pka(s, 14.0)) > 1.0 for s in ion_sites)
+    has_base_site = any(s["site_type"]=="base" and (_site_effective_pka(s, 0.0) - target_ph) > 1.0 for s in ion_sites)
     if cp["is_zwitterion_strict"]:
         s_zwit = 0.8 if (has_acid_site and has_base_site) else -0.6
     else:
         s_zwit = -0.4 if (has_acid_site and has_base_site and net == 0 and n_pos == 0) else 0.0
-    strong_acid   = [s for s in ion_sites if s["site_type"]=="acid" and (target_ph - s["heuristic_pka"]) > 2.0]
-    strong_base   = [s for s in ion_sites if s["site_type"]=="base" and (s["heuristic_pka"] - target_ph) > 2.0]
-    probable_acid = [s for s in ion_sites if s["site_type"]=="acid" and 0.0 < (target_ph - s["heuristic_pka"]) <= 2.0]
-    probable_base = [s for s in ion_sites if s["site_type"]=="base" and 0.0 < (s["heuristic_pka"] - target_ph) <= 2.0]
+    strong_acid   = [s for s in ion_sites if s["site_type"]=="acid" and (target_ph - _site_effective_pka(s, 14.0)) > 2.0]
+    strong_base   = [s for s in ion_sites if s["site_type"]=="base" and (_site_effective_pka(s, 0.0) - target_ph) > 2.0]
+    probable_acid = [s for s in ion_sites if s["site_type"]=="acid" and 0.0 < (target_ph - _site_effective_pka(s, 14.0)) <= 2.0]
+    probable_base = [s for s in ion_sites if s["site_type"]=="base" and 0.0 < (_site_effective_pka(s, 0.0) - target_ph) <= 2.0]
     s_improbable = 0.0
     if strong_acid  and net >= 0 and n_neg == 0: s_improbable -= 0.5  * len(strong_acid)
     if strong_base  and net <= 0 and n_pos == 0: s_improbable -= 0.5  * len(strong_base)
@@ -1272,7 +1282,7 @@ def score_microstate_full(microstate_smiles, tautomer_smiles, taut_plausibility,
         _soft_keys = ("phenol", "catechol", "flavone", "warfarin", "enol", "coumarin")
         if any(k in _acid_lbl for k in _soft_keys):
             _soft_pkas = sorted(
-                [float(s.get("heuristic_pka", 14)) for s in ion_sites
+                [_site_effective_pka(s, 14.0) for s in ion_sites
                  if s.get("site_type") == "acid"
                  and any(k in str(s.get("label","")).lower() for k in _soft_keys)],
                 reverse=True,
@@ -1421,8 +1431,8 @@ def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, targe
         if c not in existing:
             existing.add(c); supplemented.append(c)
     active = [s for s in ion_sites
-              if not (s["site_type"]=="acid" and (target_ph - s["heuristic_pka"]) < -1.5)
-              and not (s["site_type"]=="base" and (s["heuristic_pka"] - target_ph) < -1.5)]
+              if not (s["site_type"]=="acid" and (target_ph - _site_effective_pka(s, 14.0)) < -1.5)
+              and not (s["site_type"]=="base" and (_site_effective_pka(s, 0.0) - target_ph) < -1.5)]
     if not active: return supplemented
     # BFS multi-site: generates zwitterions and poly-ionics from all seeds.
     queue = list(supplemented)
@@ -1441,9 +1451,14 @@ def _supplement_dimorphite(tautomer_smiles, dimorphite_results, ion_sites, targe
 def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_tautomers=8, top_n=5, pubchem_result=None):
     if pubchem_result is None: pubchem_result = {}
     ref_mol = Chem.MolFromSmiles(base_smiles)
-    # Preserve an explicitly charged input state unless it is an aromatic
-    # resonance cation; enumeration must not silently neutralize charged
-    # carboxylates or protonated amines.
+    # The supplied SMILES is an experimental input, not merely a scaffold.
+    # Dimorphite/tautomer enumeration can otherwise demote or discard its
+    # explicit protonation state (notably pre-charged carboxylates and amines)
+    # even when no reliable pKa evidence justifies changing it.  Preserve that
+    # state as a candidate and give it a modest, general evidence bonus.  An
+    # aromatic cation is excluded: fused aromatic zwitterionic/mesoionic
+    # systems (e.g. imidazo[...][n+] inputs) commonly encode resonance rather
+    # than a net physiological protonation state.
     input_canon = canonicalize(base_smiles)
     input_charge = Chem.GetFormalCharge(ref_mol) if ref_mol is not None else 0
     input_has_aromatic_charge = bool(ref_mol and any(
@@ -1465,7 +1480,10 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
                 t_sites = find_ionizable_sites(t_mol)
                 if t_sites:
                     ion_sites = t_sites
+                    _apply_fast_site_pka_corrections(t_mol, ion_sites, ph=target_ph)
                     break
+    elif ref_mol is not None:
+        _apply_fast_site_pka_corrections(ref_mol, ion_sites, ph=target_ph)
     all_micro = []; seen_smi = set()
     ph_lo = max(0.0, target_ph - ph_window / 2); ph_hi = min(14.0, target_ph + ph_window / 2)
     for ti, taut in enumerate(kept, 1):
@@ -1506,10 +1524,19 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
                 **{f"score_{k}": v for k, v in bd.items()},
                 **{f"taut_{k}":  v for k, v in taut["breakdown"].items()},
             })
+    # Apply after enumeration so an explicitly charged input is preferred only
+    # when it is actually present and chemically parseable.  Neutral inputs do
+    # not receive a synthetic bonus: an uncharged SMILES is often just a
+    # starting scaffold and should still be ionized when the pKa evidence is
+    # strong.  Aromatic resonance states are excluded above.
     if preserve_input_state:
         for row in all_micro:
             if row["microstate_smiles"] == input_canon:
-                row["selection_score"] += 5.0 if input_charge != 0 else 0.0
+                bonus = 5.0 if input_charge != 0 else 0.0
+                row["selection_score"] += bonus
+                row["score_input_state_preference"] = bonus
+            else:
+                row["score_input_state_preference"] = 0.0
     if not all_micro: return [], False, [], tr_flag, tr_motifs, ml_preds
     all_micro.sort(key=lambda x: (-x["selection_score"], abs(x["net_charge"]), x["tautomer_rank"], x["microstate_smiles"]))
     best_sc = all_micro[0]["selection_score"]
@@ -1964,6 +1991,23 @@ for _sma_h, _sp, _sm in _HAMMETT_SIGMA_PHENOL_DEF:
         print(f"⚠️  Hammett SMARTS compile failed: {_sma_h}")
 
 _RHO_PHENOL = 2.23  # Hammett ρ for phenol ionization
+_RHO_SULFONAMIDE_ARYL = 1.35  # experimental, configurable aryl-sulfonamide coefficient
+
+_INTERNAL_MASKED_CHARGE_MOTIF_DEF = [
+    ("nitro", "[NX3+](=O)[O-]"),
+    ("nitro_alt", "N(=O)[O-]"),
+    ("n_oxide_aromatic", "[n+][O-]"),
+    ("n_oxide_amine", "[N+;!$([NX3+](=O)[O-])]-[O-]"),
+    ("azide", "[N]=[N+]=[N-]"),
+    ("azide_alt", "[N-][N+]#N"),
+]
+_INTERNAL_MASKED_CHARGE_MOTIFS = []
+for _motif_name, _motif_smarts in _INTERNAL_MASKED_CHARGE_MOTIF_DEF:
+    _motif_pat = Chem.MolFromSmarts(_motif_smarts)
+    if _motif_pat is not None:
+        _INTERNAL_MASKED_CHARGE_MOTIFS.append((_motif_name, _motif_pat))
+    else:
+        print(f"⚠️  Internal charge-mask SMARTS compile failed: {_motif_smarts}")
 
 
 def _get_ring_position(mol, oh_ring_c_idx, subst_c_idx):
@@ -1992,6 +2036,218 @@ def _get_ring_position(mol, oh_ring_c_idx, subst_c_idx):
         elif dist == 3:
             return "para"
     return None
+
+
+def _site_effective_pka(site, default=10.0):
+    return float(site.get("_corrected_pka", site.get("heuristic_pka", default)))
+
+
+def _internal_masked_charge_annotations(mol):
+    masked_atom_indices = set()
+    masked_motifs = []
+    seen = set()
+    for motif_name, motif_pat in _INTERNAL_MASKED_CHARGE_MOTIFS:
+        for match in mol.GetSubstructMatches(motif_pat, uniquify=True):
+            charged_atoms = tuple(sorted(
+                idx for idx in match
+                if mol.GetAtomWithIdx(idx).GetFormalCharge() != 0
+            ))
+            if not charged_atoms or charged_atoms in seen:
+                continue
+            motif_net = sum(
+                int(mol.GetAtomWithIdx(idx).GetFormalCharge()) for idx in charged_atoms
+            )
+            if motif_net != 0:
+                continue
+            seen.add(charged_atoms)
+            masked_atom_indices.update(charged_atoms)
+            masked_motifs.append({
+                "motif": motif_name,
+                "atom_indices": list(charged_atoms),
+            })
+    return masked_atom_indices, masked_motifs
+
+
+def _find_sulfonamide_sulfur_for_nh(mol, n_idx):
+    n_atom = mol.GetAtomWithIdx(n_idx)
+    for nb in n_atom.GetNeighbors():
+        if nb.GetAtomicNum() == 16:
+            return nb.GetIdx()
+    return None
+
+
+def _find_sulfonyl_attached_carbocyclic_ring(mol, sulfur_idx):
+    sulfur = mol.GetAtomWithIdx(sulfur_idx)
+    ring_info = mol.GetRingInfo()
+    for nb in sulfur.GetNeighbors():
+        if nb.GetAtomicNum() != 6 or not nb.GetIsAromatic():
+            continue
+        nb_idx = nb.GetIdx()
+        for ring in ring_info.AtomRings():
+            if len(ring) != 6 or nb_idx not in ring:
+                continue
+            if all(
+                mol.GetAtomWithIdx(atom_idx).GetAtomicNum() == 6
+                and mol.GetAtomWithIdx(atom_idx).GetIsAromatic()
+                for atom_idx in ring
+            ):
+                return nb_idx, tuple(ring)
+    return None, None
+
+
+def _hammett_corrected_sulfonamide_aryl_pka(mol, n_idx, base_pka=9.7):
+    sulfur_idx = _find_sulfonamide_sulfur_for_nh(mol, n_idx)
+    if sulfur_idx is None:
+        return base_pka, {"model": "experimental_hammett", "applied": False, "reason": "no_sulfur"}
+
+    ring_anchor_idx, target_ring = _find_sulfonyl_attached_carbocyclic_ring(mol, sulfur_idx)
+    if ring_anchor_idx is None or not target_ring:
+        return base_pka, {"model": "experimental_hammett", "applied": False, "reason": "no_carbocyclic_sulfonyl_ring"}
+
+    target_ring = tuple(target_ring)
+    seen_attachment_atoms = set()
+    sigma_sum = 0.0
+    substitutions = []
+
+    for ring_atom_idx in target_ring:
+        if ring_atom_idx == ring_anchor_idx:
+            continue
+        position = _get_ring_position(mol, ring_anchor_idx, ring_atom_idx)
+        if position is None:
+            continue
+        ring_atom = mol.GetAtomWithIdx(ring_atom_idx)
+        for nb in ring_atom.GetNeighbors():
+            nb_idx = nb.GetIdx()
+            if nb_idx in target_ring or nb_idx == sulfur_idx or nb_idx in seen_attachment_atoms:
+                continue
+            matched = False
+            for pattern, sigma_para, sigma_meta in _HAMMETT_SIGMA_PHENOL_COMPILED:
+                for match in mol.GetSubstructMatches(pattern):
+                    if nb_idx not in match:
+                        continue
+                    sigma = sigma_para if position in ("para", "ortho") else sigma_meta
+                    sigma_sum += sigma
+                    substitutions.append({
+                        "attachment_atom_idx": nb_idx,
+                        "position": position,
+                        "sigma": sigma,
+                        "pattern": Chem.MolToSmarts(pattern),
+                    })
+                    seen_attachment_atoms.add(nb_idx)
+                    matched = True
+                    break
+                if matched:
+                    break
+
+    corrected = base_pka - (_RHO_SULFONAMIDE_ARYL * sigma_sum)
+    corrected = max(0.0, min(14.0, corrected))
+    diagnostics = {
+        "model": "experimental_hammett",
+        "applied": bool(substitutions),
+        "base_pka": float(base_pka),
+        "corrected_pka": float(corrected),
+        "pka_shift": float(corrected - base_pka),
+        "sigma_sum": float(sigma_sum),
+        "ring_anchor_atom_idx": int(ring_anchor_idx),
+        "sulfur_atom_idx": int(sulfur_idx),
+        "substitutions": substitutions,
+    }
+    return corrected, diagnostics
+
+
+def _apply_fast_site_pka_corrections(mol, sites, ph=None):
+    for site in sites:
+        label = str(site.get("label", "")).lower()
+        if label in ("aliphatic_amine", "aliphatic_amine_t"):
+            n_idx = site["atom_indices"][0]
+            base_pka = float(site.get("heuristic_pka", 9.5))
+            corrected = _taft_corrected_amine_pka(mol, n_idx, base_pka)
+            if corrected < base_pka:
+                site["_corrected_pka"] = corrected
+        elif label == "phenol":
+            oh_idx = site["atom_indices"][0]
+            base_pka = float(site.get("heuristic_pka", 10.0))
+            corrected = _hammett_corrected_phenol_pka(mol, oh_idx, base_pka)
+            if corrected < base_pka:
+                site["_corrected_pka"] = corrected
+        elif label == "sulfonamide_aryl_nh":
+            n_idx = site["atom_indices"][0]
+            base_pka = float(site.get("heuristic_pka", 9.7))
+            corrected, diagnostics = _hammett_corrected_sulfonamide_aryl_pka(mol, n_idx, base_pka)
+            site["_sulfonamide_aryl_correction"] = diagnostics
+            if abs(corrected - base_pka) > 1e-8:
+                site["_corrected_pka"] = corrected
+
+    perm_pos_atoms = []
+    if ph is not None:
+        noxide_o_minus = set()
+        for atom in mol.GetAtoms():
+            if atom.GetAtomicNum() == 8 and atom.GetFormalCharge() == -1:
+                for nb in atom.GetNeighbors():
+                    if nb.GetAtomicNum() == 7 and nb.GetFormalCharge() == +1:
+                        noxide_o_minus.add(atom.GetIdx())
+                        break
+
+        claimed_atoms = set()
+        for site in sites:
+            claimed_atoms.update(site.get("atom_indices", []))
+
+        for atom in mol.GetAtoms():
+            fc = atom.GetFormalCharge()
+            if fc != 0 and atom.GetIdx() not in claimed_atoms:
+                if atom.GetIdx() in noxide_o_minus:
+                    continue
+                if (atom.GetAtomicNum() == 7 and fc == +1
+                        and any(nb.GetIdx() in noxide_o_minus for nb in atom.GetNeighbors())):
+                    continue
+                if fc > 0:
+                    perm_pos_atoms.append(atom.GetIdx())
+
+        if perm_pos_atoms:
+            ring_info = mol.GetRingInfo()
+            all_rings = [set(r) for r in ring_info.AtomRings()] if ring_info else []
+
+            def _ring_system_for(aidx):
+                system = set()
+                queue = [r for r in all_rings if aidx in r]
+                while queue:
+                    ring = queue.pop()
+                    if ring <= system:
+                        continue
+                    system |= ring
+                    queue.extend(r for r in all_rings if r & system and not r <= system)
+                return system
+
+            perm_ring_systems = set()
+            for pidx in perm_pos_atoms:
+                perm_ring_systems |= _ring_system_for(pidx)
+
+            if perm_ring_systems:
+                _CATION_PKA_SHIFT = -4.0
+                for site in sites:
+                    if site["site_type"] != "acid":
+                        continue
+                    site_atoms = site.get("atom_indices", [])
+                    on_ring_system = False
+                    for aidx in site_atoms:
+                        if aidx in perm_ring_systems:
+                            on_ring_system = True
+                            break
+                        for nb in mol.GetAtomWithIdx(aidx).GetNeighbors():
+                            if nb.GetIdx() in perm_ring_systems:
+                                on_ring_system = True
+                                break
+                        if on_ring_system:
+                            break
+                    if not on_ring_system:
+                        continue
+                    label = str(site.get("label", "")).lower()
+                    if label == "phenol" and "_corrected_pka" in site:
+                        continue
+                    orig_pka = _site_effective_pka(site, 14.0)
+                    if orig_pka > ph:
+                        site["_corrected_pka"] = orig_pka + _CATION_PKA_SHIFT
+    return sites
 
 
 def _hammett_corrected_phenol_pka(mol, oh_idx, base_pka=10.0):
@@ -2107,31 +2363,7 @@ def heuristic_net_charge(smiles: str, ph: float = 7.4) -> int | None:
         return None
 
     sites = find_ionizable_sites(mol)
-
-    # ── v81 Hammett/Taft substituent pKa corrections ─────────────────────
-    # Apply BEFORE Henderson-Hasselbalch scoring.  These correct the flat
-    # heuristic pKa using additive σ/σ* substituent contributions.
-    #
-    # Hammett is applied ONLY to plain "phenol" (pKa=10.0).  EWG phenol
-    # variants (phenol_EWG pKa=8.0, phenol_para_EWG pKa=7.8, etc.) already
-    # have reduced pKa from their SMARTS rule.  Applying Hammett on top
-    # would double-count the substituent effect.
-    for site in sites:
-        label = str(site.get("label", "")).lower()
-        # Taft correction for aliphatic amines
-        if label in ("aliphatic_amine", "aliphatic_amine_t"):
-            n_idx = site["atom_indices"][0]
-            base_pka = float(site.get("heuristic_pka", 9.5))
-            corrected = _taft_corrected_amine_pka(mol, n_idx, base_pka)
-            if corrected < base_pka:
-                site["_corrected_pka"] = corrected
-        # Hammett correction for plain phenol only (pKa=10.0 baseline)
-        elif label == "phenol":
-            oh_idx = site["atom_indices"][0]
-            base_pka = float(site.get("heuristic_pka", 10.0))
-            corrected = _hammett_corrected_phenol_pka(mol, oh_idx, base_pka)
-            if corrected < base_pka:
-                site["_corrected_pka"] = corrected
+    _apply_fast_site_pka_corrections(mol, sites, ph=ph)
 
     # ── Permanent (structural) charges ────────────────────────────────────
     # Quaternary ammonium N+, pyridinium n+, sulfonium S+, etc. are encoded
@@ -2169,64 +2401,6 @@ def heuristic_net_charge(smiles: str, ph: float = 7.4) -> int | None:
             if fc > 0:
                 perm_pos_atoms.append(atom.GetIdx())
 
-    # ── Ring-cation pKa correction ────────────────────────────────────────
-    # A permanent cation (n+, N+, S+) on an aromatic ring inductively lowers
-    # the pKa of weak acids (phenol, hydroxamic acid, etc.) on the same ring
-    # system by ~3-5 units.  Without this correction, pKaNET keeps phenol at
-    # pKa 10.0 → neutral, giving +1 instead of the correct zwitterion (0).
-    # Apply correction BEFORE Henderson-Hasselbalch scoring.
-    if perm_pos_atoms:
-        ring_info = mol.GetRingInfo()
-        all_rings = [set(r) for r in ring_info.AtomRings()] if ring_info else []
-        # Build ring-system map: merge rings that share atoms
-        def _ring_system_for(aidx):
-            system = set()
-            queue = [r for r in all_rings if aidx in r]
-            while queue:
-                ring = queue.pop()
-                if ring <= system:
-                    continue
-                system |= ring
-                queue.extend(r for r in all_rings if r & system and not r <= system)
-            return system
-
-        perm_ring_systems = set()
-        for pidx in perm_pos_atoms:
-            perm_ring_systems |= _ring_system_for(pidx)
-
-        if perm_ring_systems:
-            _CATION_PKA_SHIFT = -4.0  # inductive/resonance effect of ring cation
-            for site in sites:
-                if site["site_type"] != "acid":
-                    continue
-                site_atoms = site.get("atom_indices", [])
-                # Check if the acid site atom OR any of its neighbors is on
-                # the same ring system as the permanent cation.  Phenol O is
-                # exocyclic (not in the ring itself) but bonded to a ring C.
-                on_ring_system = False
-                for aidx in site_atoms:
-                    if aidx in perm_ring_systems:
-                        on_ring_system = True; break
-                    for nb in mol.GetAtomWithIdx(aidx).GetNeighbors():
-                        if nb.GetIdx() in perm_ring_systems:
-                            on_ring_system = True; break
-                    if on_ring_system:
-                        break
-                if not on_ring_system:
-                    continue
-                # For plain phenol sites that already have a Hammett
-                # _corrected_pka (which includes ring-cation σ), skip the
-                # ad-hoc shift — Hammett already handles the cation effect
-                # with position-dependent accuracy.
-                # For all other acid sites (EWG phenols, hydroxamic acid,
-                # etc.), apply the flat -4.0 shift as before.
-                label = str(site.get("label", "")).lower()
-                if label == "phenol" and "_corrected_pka" in site:
-                    continue  # Hammett already handled this
-                orig_pka = float(site.get("heuristic_pka", 14.0))
-                if orig_pka > ph:
-                    site["_corrected_pka"] = orig_pka + _CATION_PKA_SHIFT
-
     if not sites:
         return max(-6, min(6, permanent_charge))
 
@@ -2259,7 +2433,7 @@ def heuristic_net_charge(smiles: str, ph: float = 7.4) -> int | None:
         n_strong_base = sum(
             1 for s in sites
             if s.get("site_type") == "base"
-            and float(s.get("heuristic_pka", 0)) - ph > 2.0
+            and _site_effective_pka(s, 0.0) - ph > 2.0
         )
         max_base = 2 if n_strong_base >= 3 else 1
         base_charge = min(base_charge, max_base)
@@ -2270,7 +2444,7 @@ def heuristic_net_charge(smiles: str, ph: float = 7.4) -> int | None:
         n_clear_acid = sum(
             1 for s in sites
             if s.get("site_type") == "acid"
-            and (ph - float(s.get("heuristic_pka", 0))) > 1.5
+            and (ph - _site_effective_pka(s, 0.0)) > 1.5
             and "hydroxy_carboxyl_conservative" not in str(s.get("label", ""))
         )
         acid_charge = max(acid_charge, -max(n_clear_acid, 1))
@@ -2316,7 +2490,9 @@ def predict_charge(
 
     if mode in ("auto", "full"):
         sites = find_ionizable_sites(mol) if mode == "auto" else []
-        is_borderline = any(abs(ph - float(s.get("heuristic_pka", ph + 99))) <= 1.5
+        if mode == "auto":
+            _apply_fast_site_pka_corrections(mol, sites, ph=ph)
+        is_borderline = any(abs(ph - _site_effective_pka(s, ph + 99)) <= 1.5
                             for s in sites)
         # In auto mode, escalate to full pipeline when:
         # (a) any site has pKa within 1.5 of ph, OR
@@ -2393,9 +2569,10 @@ def batch_predict_charges(
                 row["error"] = "invalid_smiles"
             else:
                 sites = find_ionizable_sites(mol)
+                _apply_fast_site_pka_corrections(mol, sites, ph=ph)
                 row["n_ion_sites"] = len(sites)
                 row["borderline_pka"] = any(
-                    abs(ph - float(s.get("heuristic_pka", ph + 99))) <= 1.5
+                    abs(ph - _site_effective_pka(s, ph + 99)) <= 1.5
                     for s in sites
                 )
                 pc = pubchem_lookup_fn(smi) if pubchem_lookup else {}
@@ -2407,12 +2584,12 @@ def batch_predict_charges(
                 acid_ch = sum(
                     1 for s in sites
                     if s.get("site_type") == "acid"
-                    and (1.0 / (1.0 + 10 ** (float(s.get("heuristic_pka", 14)) - ph))) > 0.5
+                    and (1.0 / (1.0 + 10 ** (_site_effective_pka(s, 14.0) - ph))) > 0.5
                 )
                 base_ch = sum(
                     1 for s in sites
                     if s.get("site_type") == "base"
-                    and (1.0 / (1.0 + 10 ** (ph - float(s.get("heuristic_pka", 0))))) > 0.5
+                    and (1.0 / (1.0 + 10 ** (ph - _site_effective_pka(s, 0.0)))) > 0.5
                 )
                 row["is_zwitterion"] = bool(acid_ch > 0 and base_ch > 0)
         except Exception as exc:
