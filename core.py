@@ -7,11 +7,39 @@ Safe to import in Colab notebooks, pytest, or any UI framework.
 """
 
 import os
+import re as _re
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+
+def _silence_rdkit_logs():
+    try:
+        from rdkit import RDLogger, rdBase
+        for name in ("rdApp.*", "rdApp.error", "rdApp.warning", "rdApp.info", "rdApp.debug"):
+            try:
+                RDLogger.DisableLog(name)
+            except Exception:
+                pass
+            try:
+                rdBase.DisableLog(name)
+            except Exception:
+                pass
+        try:
+            RDLogger.EnableLog = lambda *args, **kwargs: None
+        except Exception:
+            pass
+        try:
+            rdBase.EnableLog = lambda *args, **kwargs: None
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+_silence_rdkit_logs()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONSTANTS
@@ -275,11 +303,132 @@ BUFFER_RESNAMES = {
     "ACY", "ACE", "TRS", "MES", "EPE", "BME", "SO4", "PO4", "NO3",
     "SCN", "FMT", "IPA", "EOH", "MOH", "CL", "BR", "IOD"
 }
+LIPID_ADDITIVE_RESNAMES = {
+    "Y01",  # cholesterol hemisuccinate
+    "CHS",  # cholesteryl hemisuccinate
+    "CLR",  # cholesterol
+    "CHL",  # cholesterol / cholesteryl-like code in some entries
+}
 WATER_RESNAMES = {"HOH", "WAT", "DOD", "SOL"}
 
 
 def _hetatm_key(resname, chain, resid):
     return f"{str(resname).strip().upper()}|{str(chain or '').strip() or '_'}|{int(resid)}"
+
+
+def _hetatm_site_key(chain, resid):
+    return f"{str(chain or '').strip() or '_'}|{int(resid)}"
+
+
+def _hetatm_chain_key(resname, chain):
+    return f"{str(resname).strip().upper()}|{str(chain or '').strip() or '_'}"
+
+
+def _make_ligand_id(resname, chain, resid):
+    return f"{str(resname).strip().upper()}_{str(chain or '').strip()}_{int(resid)}"
+
+
+def _parse_ligand_id(ligand_id: str) -> tuple[str, str, str]:
+    token = (ligand_id or "").strip()
+    if not token:
+        return "", "", ""
+    parts = token.rsplit("_", 2)
+    if len(parts) == 3:
+        return parts[0].upper(), parts[1], parts[2]
+    return token.upper(), "", ""
+
+
+def _cif_full_resname_map(cif_path: str) -> dict:
+    mapping = {}
+    if not cif_path or not is_cif_file(cif_path) or not os.path.exists(cif_path):
+        return mapping
+    try:
+        with open(cif_path, errors="replace") as fh:
+            content = fh.read()
+        loop_pat = _re.compile(
+            r"loop_\s*((?:_atom_site\.\S+\s*)+)(.*?)(?=loop_|data_|\Z)",
+            _re.DOTALL,
+        )
+        for m in loop_pat.finditer(content):
+            headers = m.group(1).split()
+            if "_atom_site.group_PDB" not in headers:
+                continue
+            def _idx(name):
+                return headers.index(name) if name in headers else None
+            group_idx = _idx("_atom_site.group_PDB")
+            label_comp_idx = _idx("_atom_site.label_comp_id")
+            auth_comp_idx = _idx("_atom_site.auth_comp_id")
+            label_asym_idx = _idx("_atom_site.label_asym_id")
+            auth_asym_idx = _idx("_atom_site.auth_asym_id")
+            label_seq_idx = _idx("_atom_site.label_seq_id")
+            auth_seq_idx = _idx("_atom_site.auth_seq_id")
+            if group_idx is None or (label_comp_idx is None and auth_comp_idx is None):
+                continue
+            n = len(headers)
+            for raw_line in m.group(2).splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or line.startswith("_"):
+                    continue
+                row = _re.findall(r"'[^']*'|\"[^\"]*\"|[^\s]+", line)
+                if len(row) < n:
+                    continue
+                if len(row) > n:
+                    row = row[:n]
+                if row[group_idx].strip("'\"").upper() != "HETATM":
+                    continue
+                comp_id = ""
+                for idx in (auth_comp_idx, label_comp_idx):
+                    if idx is not None:
+                        comp_id = row[idx].strip("'\"").upper()
+                        if comp_id and comp_id not in {".", "?"}:
+                            break
+                if not comp_id or comp_id in WATER_RESNAMES:
+                    continue
+                chains = []
+                for idx in (auth_asym_idx, label_asym_idx):
+                    if idx is not None:
+                        ch = row[idx].strip("'\"")
+                        if ch and ch not in {".", "?"} and ch not in chains:
+                            chains.append(ch)
+                resids = []
+                for idx in (auth_seq_idx, label_seq_idx):
+                    if idx is not None:
+                        rv = row[idx].strip("'\"")
+                        if rv and rv not in {".", "?"}:
+                            try:
+                                rnum = str(int(float(rv)))
+                            except Exception:
+                                continue
+                            if rnum not in resids:
+                                resids.append(rnum)
+                for ch in (chains or [""]):
+                    for resid in resids:
+                        mapping[_hetatm_key(comp_id[:3], ch, resid)] = comp_id
+                        mapping[_hetatm_site_key(ch, resid)] = comp_id
+                    mapping[_hetatm_chain_key(comp_id[:3], ch)] = comp_id
+                if not chains:
+                    mapping[_hetatm_chain_key(comp_id[:3], "")] = comp_id
+            if mapping:
+                break
+    except Exception:
+        return mapping
+    return mapping
+
+
+def _augment_rows_with_cif_ids(rows: list, cif_path: str) -> list:
+    mapping = _cif_full_resname_map(cif_path)
+    if not mapping:
+        return rows
+    for row in rows:
+        full_resname = (
+            mapping.get(_hetatm_key(row.get("resname", ""), row.get("chain", ""), row.get("resid", 0)))
+            or mapping.get(_hetatm_site_key(row.get("chain", ""), row.get("resid", 0)))
+            or mapping.get(_hetatm_chain_key(row.get("resname", ""), row.get("chain", "")))
+        )
+        if full_resname:
+            row["full_resname"] = full_resname
+            row["ligand_id"] = _make_ligand_id(full_resname, row.get("chain", ""), row.get("resid", 0))
+    return rows
 
 
 def _guess_hetatm_type(resname, n_atoms):
@@ -296,6 +445,8 @@ def _guess_hetatm_type(resname, n_atoms):
         return "ligand"
     if rn in COFACTOR_NAMES:
         return "cofactor"
+    if rn in LIPID_ADDITIVE_RESNAMES:
+        return "lipid/additive"
     if rn in BUFFER_RESNAMES or n_atoms <= 3:
         return "buffer/ion"
     if n_atoms >= _MIN_LIG_ATOMS:
@@ -311,6 +462,8 @@ def _default_hetatm_action(type_guess, n_atoms):
         return "keep"
     if "cofactor" in type_guess:
         return "keep"
+    if type_guess == "lipid/additive":
+        return "remove"
     if type_guess == "ligand":
         return "reference" if n_atoms >= _MIN_LIG_ATOMS else "remove"
     return "remove"
@@ -366,6 +519,7 @@ def scan_hetatm_residues(raw_pdb: str) -> list:
     try:
         from prody import parsePDB, confProDy
         confProDy(verbosity="none")
+        _source_cif_path = raw_pdb if is_cif_file(raw_pdb) else ""
         if is_cif_file(raw_pdb):
             import tempfile as _tf
             _tmp = _tf.mktemp(suffix=".pdb")
@@ -375,9 +529,9 @@ def scan_hetatm_residues(raw_pdb: str) -> list:
         atoms = parsePDB(raw_pdb)
         if atoms is None:
             return []
-        rows = _collect_hetatm_residues(atoms)
+        rows = _augment_rows_with_cif_ids(_collect_hetatm_residues(atoms), _source_cif_path)
         return [
-            {k: d[k] for k in ("key", "resname", "chain", "resid", "n_atoms", "type_guess", "default_action", "action")}
+            {k: d.get(k) for k in ("key", "resname", "full_resname", "ligand_id", "chain", "resid", "n_atoms", "type_guess", "default_action", "action")}
             for d in rows
         ]
     except Exception:
@@ -389,7 +543,7 @@ def _collect_removable_ligands(atoms) -> list:
     # ATP/SAM/SAH-like reference ligands are intentionally NOT excluded here so
     # they can be detected as grid-defining co-crystal ligands.
     excl = (
-        (EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES)
+        (EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES | LIPID_ADDITIVE_RESNAMES)
         - REFERENCE_LIGAND_COFACTORS
     )
     het  = atoms.select("hetatm and not water")
@@ -420,7 +574,7 @@ def _collect_removable_ligands(atoms) -> list:
             "chain":     ch,
             "resid":     ri,
             "sel_str":   sel,
-            "ligand_id": f"{rn}_{ch}_{ri}",
+            "ligand_id": _make_ligand_id(rn, ch, ri),
             "n_atoms":   lig_atoms.numAtoms(),
             "atoms":     lig_atoms,
             "cx": cx_, "cy": cy_, "cz": cz_,
@@ -434,7 +588,7 @@ def detect_cocrystal_ligand(raw_pdb: str) -> dict:
     atoms = parsePDB(raw_pdb)
     if atoms is None:
         return {"found": False}
-    cands = _collect_removable_ligands(atoms)
+    cands = _augment_rows_with_cif_ids(_collect_removable_ligands(atoms), raw_pdb)
     if not cands:
         return {"found": False}
     chosen = cands[0]
@@ -455,6 +609,7 @@ def scan_ligands(raw_pdb: str) -> list:
     try:
         from prody import parsePDB, confProDy
         confProDy(verbosity="none")
+        _source_cif_path = raw_pdb if is_cif_file(raw_pdb) else ""
         if is_cif_file(raw_pdb):
             import tempfile as _tf
             _tmp = _tf.mktemp(suffix=".pdb")
@@ -464,9 +619,9 @@ def scan_ligands(raw_pdb: str) -> list:
         atoms = parsePDB(raw_pdb)
         if atoms is None:
             return []
-        ligs = _collect_removable_ligands(atoms)
+        ligs = _augment_rows_with_cif_ids(_collect_removable_ligands(atoms), _source_cif_path)
         return [
-            {"resname": d["resname"], "chain": d["chain"],
+            {"resname": d["resname"], "full_resname": d.get("full_resname"), "ligand_id": d.get("ligand_id"), "chain": d["chain"],
              "resid": d["resid"], "n_atoms": d["n_atoms"]}
             for d in ligs
         ]
@@ -514,6 +669,17 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
             raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
         log.append("✓ PDBQT conversion complete")
+
+        # Open Babel 3.2 may emit COMPND/AUTHOR headers that Vina 1.2.7
+        # rejects as unknown receptor tags. Keep only rigid-receptor records.
+        with open(rec_pdbqt) as f:
+            pdbqt_lines = [
+                line for line in f
+                if line[:6].strip() in ("ATOM", "HETATM", "TER", "END")
+            ]
+        with open(rec_pdbqt, "w") as f:
+            f.writelines(pdbqt_lines)
+        log.append("✓ Removed non-PDBQT Open Babel headers (Vina-safe)")
 
         # ── Re-add metals + heme to rec.pdb for display / PoseView ──────────
         # This is done AFTER PDBQT generation so the docking PDBQT still uses
@@ -630,50 +796,6 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
 
-def _compute_auto_box_size(
-    atoms,
-    is_ligand: bool,
-    min_edge: float = 18.0,
-    max_edge: float = 30.0,
-    cube: bool = True,
-) -> tuple:
-    """Auto box size using Feinstein & Brylinski (2015), J Cheminform 7:18.
-
-    edge = 2.9 × Rg(reference atoms) + 6 Å  [+ 4 Å pocket-depth for residue mode]
-
-    - Ligand mode:   Rg of the ligand atoms; +0 pocket pad (atoms already
-                     define occupancy — the +6 covers rotation freedom).
-    - Residue mode:  Rg of the Cα/selected atoms; +4 Å extra to account for
-                     side-chain extension into the pocket beyond Cα.
-
-    Clamped to [min_edge, max_edge] = [18, 30] Å by default — the range that
-    covers >90% of drug-like SBVS boxes in the F&B benchmark. Values are
-    rounded to the nearest even Å to match the UI slider step.
-    """
-    import numpy as _np
-    if atoms is None or atoms.numAtoms() == 0:
-        e = 22
-        return (e, e, e)
-    coords = atoms.getCoords()
-    centroid = coords.mean(axis=0)
-    # Radius of gyration (uniform-mass; sufficient for box sizing)
-    rg = float(_np.sqrt(_np.mean(_np.sum((coords - centroid) ** 2, axis=1))))
-    pocket_pad = 0.0 if is_ligand else 4.0
-    edge_iso = 2.9 * rg + 6.0 + pocket_pad
-    if cube:
-        edges = (edge_iso, edge_iso, edge_iso)
-    else:
-        # Per-axis: scale by axis extent / mean extent, preserving the isotropic mean.
-        extent = coords.max(axis=0) - coords.min(axis=0)
-        mean_extent = float(extent.mean()) or 1.0
-        edges = tuple(edge_iso * (float(v) / mean_extent) for v in extent)
-    out = []
-    for e in edges:
-        e = max(min_edge, min(max_edge, e))
-        out.append(int(round(e / 2) * 2))
-    return tuple(out)
-
-
 def write_box_pdb(filename: str, cx, cy, cz, sx, sy, sz):
     hx, hy, hz = sx / 2, sy / 2, sz / 2
     corners = [
@@ -714,18 +836,17 @@ def prepare_receptor(
     center_mode: str = "auto",
     manual_xyz: tuple = (0.0, 0.0, 0.0),
     prody_sel: str = "",
-    box_size: tuple = (16, 16, 16),
+    box_size: tuple = (18, 18, 18),
     preferred_ligand: str = "",
     hetatm_policy: dict | None = None,
     reference_hetatm_key: str = "",
-    auto_box_size: bool = False,
-    auto_box_cube: bool = True,
 ) -> dict:
     from prody import parsePDB, calcCenter, writePDB
     wdir = Path(wdir)
     log  = []
     sx, sy, sz = box_size
     try:
+        _source_cif_path = raw_pdb if is_cif_file(raw_pdb) else ""
         if is_cif_file(raw_pdb):
             log.append("📄 Detected mmCIF format — converting to PDB…")
             converted_pdb = str(wdir / "converted_from_cif.pdb")
@@ -748,7 +869,7 @@ def prepare_receptor(
         #   reference = use as grid-center reference and remove from receptor
         #   keep      = keep in receptor
         #   remove    = strip from receptor
-        _hetatm_rows = _collect_hetatm_residues(atoms)
+        _hetatm_rows = _augment_rows_with_cif_ids(_collect_hetatm_residues(atoms), _source_cif_path)
         _policy = {str(k): str(v).lower() for k, v in (hetatm_policy or {}).items()}
         for _r in _hetatm_rows:
             _r["action"] = _policy.get(_r["key"], _r.get("default_action", "remove")).lower()
@@ -763,42 +884,39 @@ def prepare_receptor(
         _all_ligs = _collect_removable_ligands(atoms)
         _primary = None
         if _reference is not None:
+            _ref_name = _reference.get("full_resname") or _reference["resname"]
             _primary = {
-                "resname": _reference["resname"], "chain": _reference["chain"],
+                "resname": _reference["resname"], "full_resname": _ref_name, "chain": _reference["chain"],
                 "resid": _reference["resid"], "sel_str": _reference["sel_str"],
-                "ligand_id": f"{_reference['resname']}_{_reference['chain']}_{_reference['resid']}",
+                "ligand_id": _reference.get("ligand_id") or _make_ligand_id(_ref_name, _reference["chain"], _reference["resid"]),
                 "n_atoms": _reference["n_atoms"], "atoms": _reference["atoms"],
                 "cx": _reference["cx"], "cy": _reference["cy"], "cz": _reference["cz"],
             }
         elif not hetatm_policy and _all_ligs:
+            _all_ligs = _augment_rows_with_cif_ids(_all_ligs, _source_cif_path)
             if preferred_ligand:
                 _pref = preferred_ligand.strip().upper()
-                _primary = next((d for d in _all_ligs if d["resname"].upper() == _pref), None)
+                _primary = next((d for d in _all_ligs if d["resname"].upper() == _pref or (d.get("full_resname") or "").upper() == _pref), None)
                 if _primary is None:
-                    log.append(f"⚠ Preferred ligand '{preferred_ligand}' not found — using largest ({_all_ligs[0]['resname']})")
+                    _fallback_name = _all_ligs[0].get("full_resname") or _all_ligs[0]["resname"]
+                    log.append(f"⚠ Preferred ligand '{preferred_ligand}' not found — using largest ({_fallback_name})")
             if _primary is None:
                 _primary = _all_ligs[0]
 
         if _primary is not None:
-            rn  = _primary["resname"]
+            rn  = _primary.get("full_resname") or _primary["resname"]
             ch  = _primary["chain"]
             ri  = _primary["resid"]
-            cocrystal_ligand_id = _primary["ligand_id"]
+            cocrystal_ligand_id = _primary.get("ligand_id") or _make_ligand_id(rn, ch, ri)
             ligand_pdb_path     = str(wdir / "LIG.pdb")
             writePDB(ligand_pdb_path, _primary["atoms"])
             log.append(f"✓ Reference HETATM for grid: {rn} chain '{ch}' resnum {ri} ({_primary['n_atoms']} atoms)")
-
-        # Track the atom group used for the grid center — reused for auto box sizing.
-        _ref_atoms_for_box = None
-        _ref_is_ligand = False
 
         if center_mode == "auto":
             if _primary is not None:
                 cx, cy, cz = _primary["cx"], _primary["cy"], _primary["cz"]
                 log.append(f"📍 Auto center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
-                _ref_atoms_for_box = _primary.get("atoms")
-                _ref_is_ligand = True
             else:
                 log.append("⚠ No co-crystal ligand found")
         elif center_mode == "manual":
@@ -806,7 +924,6 @@ def prepare_receptor(
             log.append(f"🛠 Manual center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
             if _primary is not None:
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
-            # No atom reference available in pure-manual mode.
         elif center_mode == "selection":
             if not prody_sel.strip():
                 raise ValueError("ProDy selection string is empty.")
@@ -818,37 +935,6 @@ def prepare_receptor(
             log.append(f"📍 Center: ({cx:.3f}, {cy:.3f}, {cz:.3f})")
             if _primary is not None:
                 log.append(f"🔑 PoseView2 ligand ID: {cocrystal_ligand_id}")
-            _ref_atoms_for_box = ref_atoms
-            # A selection targeting `resname LIG`/`hetero` is effectively a ligand;
-            # anything using `resid ...` or `name CA` is a residue centroid.
-            _sel_lc = prody_sel.lower()
-            _ref_is_ligand = ("resname" in _sel_lc and "hetero" in _sel_lc) or _sel_lc.startswith("resname ")
-
-        # ── Auto box size ────────────────────────────────────────────────
-        if auto_box_size:
-            if _ref_atoms_for_box is not None:
-                sx, sy, sz = _compute_auto_box_size(
-                    _ref_atoms_for_box,
-                    is_ligand=_ref_is_ligand,
-                    cube=auto_box_cube,
-                )
-                _kind = "ligand atoms" if _ref_is_ligand else "residue Cα centroid"
-                log.append(
-                    f"🎯 Auto box (Feinstein & Brylinski 2015, {_kind}, "
-                    f"{'cubic' if auto_box_cube else 'anisotropic'}): "
-                    f"{sx} × {sy} × {sz} Å"
-                )
-                if max(sx, sy, sz) >= 30 or min(sx, sy, sz) <= 18:
-                    log.append(
-                        "⚠ Auto box hit a clamp bound (18–30 Å) — "
-                        "verify the selection is correct."
-                    )
-            else:
-                log.append(
-                    "⚠ Auto box requested but no reference atoms available "
-                    f"(center_mode='{center_mode}') — using slider value "
-                    f"{sx} × {sy} × {sz} Å"
-                )
 
         if hetatm_policy:
             _remove_rows = [d for d in _hetatm_rows if d.get("action") in {"remove", "reference"}]
@@ -928,12 +1014,12 @@ def prepare_receptor(
             "cocrystal_ligand_id": cocrystal_ligand_id,
             "n_atoms":             rec_sel.numAtoms(),
             "all_ligands":         [
-                {"resname": d["resname"], "chain": d["chain"],
+                {"resname": d["resname"], "full_resname": d.get("full_resname"), "ligand_id": d.get("ligand_id"), "chain": d["chain"],
                  "resid": d["resid"], "n_atoms": d["n_atoms"]}
                 for d in _all_ligs
             ],
             "hetatm_table":        [
-                {k: d.get(k) for k in ("key", "resname", "chain", "resid", "n_atoms", "type_guess", "action")}
+                {k: d.get(k) for k in ("key", "resname", "full_resname", "ligand_id", "chain", "resid", "n_atoms", "type_guess", "action")}
                 for d in _hetatm_rows
             ],
             "log": log,
@@ -2100,6 +2186,7 @@ def prepare_ligand(
     pkanet_selection_mode: str = "auto_recommended",
     pkanet_manual_rank: int | None = None,
     pkanet_stereo_choice: str = "keep_input",
+    conformer_seed: int | None = None,
 ) -> dict:
     """
     Ligand preparation — pKaNET Cloud is the default protonation mode.
@@ -2238,14 +2325,32 @@ def prepare_ligand(
         log.append(f"✓ Charged atoms: {_charged_atoms_text(charge_info['charged_atoms'])}")
 
         mol = Chem.AddHs(mol)
+        _requested_conformer_seed = (
+            None if conformer_seed is None or int(conformer_seed) == 0
+            else int(conformer_seed)
+        )
+        if _requested_conformer_seed is not None and _requested_conformer_seed < 0:
+            raise ValueError("conformer_seed must be 0/random or a positive integer")
+        if _requested_conformer_seed is None:
+            import secrets as _secrets
+            _conformer_seed = _secrets.randbelow(2_147_483_646) + 1
+            _conformer_seed_mode = "random"
+        else:
+            _conformer_seed = _requested_conformer_seed
+            _conformer_seed_mode = "fixed"
+        log.append(
+            f"✓ RDKit ETKDG conformer seed: {_conformer_seed} ({_conformer_seed_mode})"
+        )
         try:
             params = AllChem.ETKDGv3()
         except AttributeError:
             params = AllChem.ETKDG()
-        params.randomSeed = 42
+        params.randomSeed = _conformer_seed
 
         if AllChem.EmbedMolecule(mol, params) == -1:
-            AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+            _fallback = {"useRandomCoords": True}
+            _fallback["randomSeed"] = _conformer_seed
+            AllChem.EmbedMolecule(mol, **_fallback)
 
         if AllChem.MMFFHasAllMoleculeParams(mol):
             AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
@@ -2289,6 +2394,8 @@ def prepare_ligand(
             "pkanet_ranked_csv": pkanet_ranked_csv,
             "pkanet_decision_log": pkanet_decision_log,
             "pkanet_ambiguous": pkanet_details.get("ambiguous", False),
+            "conformer_seed":    _conformer_seed,
+            "conformer_seed_mode": _conformer_seed_mode,
             "log":               log,
         }
 
@@ -2296,7 +2403,8 @@ def prepare_ligand(
         log.append(f"ERROR: {e}")
         return {"success": False, "error": str(e), "log": log}
 
-def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
+def prepare_ligand_from_file(file_path: str, name: str, wdir,
+                             conformer_seed: int | None = None) -> dict:
     """
     Prepare a ligand directly from an uploaded structure file (PDB/SDF/MOL2)
     WITHOUT protonation — use the molecule exactly as provided.
@@ -2380,15 +2488,36 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
         mol = Chem.AddHs(mol, addCoords=True)
         log.append("✓ All hydrogens made explicit")
 
+        _requested_conformer_seed = (
+            None if conformer_seed is None or int(conformer_seed) == 0
+            else int(conformer_seed)
+        )
+        if _requested_conformer_seed is not None and _requested_conformer_seed < 0:
+            raise ValueError("conformer_seed must be 0/random or a positive integer")
+        _conformer_seed = None
+        _conformer_seed_mode = "not_used"
+
         conf = mol.GetConformer(0) if mol.GetNumConformers() > 0 else None
         if conf is None or conf.Is3D() is False:
+            if _requested_conformer_seed is None:
+                import secrets as _secrets
+                _conformer_seed = _secrets.randbelow(2_147_483_646) + 1
+                _conformer_seed_mode = "random"
+            else:
+                _conformer_seed = _requested_conformer_seed
+                _conformer_seed_mode = "fixed"
+            log.append(
+                f"✓ RDKit ETKDG conformer seed: {_conformer_seed} ({_conformer_seed_mode})"
+            )
             try:
                 params = AllChem.ETKDGv3()
             except AttributeError:
                 params = AllChem.ETKDG()
-            params.randomSeed = 42
+            params.randomSeed = _conformer_seed
             if AllChem.EmbedMolecule(mol, params) == -1:
-                AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+                _fallback = {"useRandomCoords": True}
+                _fallback["randomSeed"] = _conformer_seed
+                AllChem.EmbedMolecule(mol, **_fallback)
             if AllChem.MMFFHasAllMoleculeParams(mol):
                 AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
             else:
@@ -2420,6 +2549,8 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir) -> dict:
             "sdf":         out_sdf,
             "prot_smiles": smi,
             "charge":      charge,
+            "conformer_seed": _conformer_seed,
+            "conformer_seed_mode": _conformer_seed_mode,
             "log":         log,
         }
     except Exception as e:
@@ -2462,6 +2593,7 @@ def run_vina(
     wdir = ".",
     out_name: str = "out",
     seed: int | None = None,
+    cpu: int | None = None,
 ) -> dict:
     wdir      = Path(wdir)
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
@@ -2469,6 +2601,14 @@ def run_vina(
 
     # --seed: when set, makes docking deterministic for the same input.
     _seed_flag = f" --seed {int(seed)}" if seed is not None else ""
+    if cpu is None:
+        _cpu_env = os.environ.get("ACD_VINA_CPU", "").strip()
+        if _cpu_env:
+            try:
+                cpu = max(1, int(_cpu_env))
+            except ValueError:
+                cpu = None
+    _cpu_flag = f" --cpu {int(cpu)}" if cpu is not None else ""
 
     rc, vlog = run_cmd(
         f'"{vina_path}" '
@@ -2478,6 +2618,7 @@ def run_vina(
         f'--exhaustiveness {exhaustiveness} '
         f'--num_modes {n_modes} '
         f'--energy_range {energy_range}'
+        f'{_cpu_flag} '
         f'{_seed_flag} '
         f'--out "{out_pdbqt}"',
         cwd=str(wdir),
@@ -2516,8 +2657,218 @@ def run_vina(
         "scores":    scores,
         "top_score": scores[0]["affinity"] if scores else None,
         "seed":      int(seed) if seed is not None else None,
+        "cpu":       int(cpu) if cpu is not None else None,
         "log":       vlog,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  CO-CRYSTAL LIGAND  —  SMILES ACQUISITION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _rcsb_ccd_smiles(resname: str):
+    import requests
+    url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{resname.strip().upper()}"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        descriptors = data.get("pdbx_chem_comp_descriptor", [])
+        if isinstance(descriptors, dict):
+            descriptors = [descriptors]
+
+        canonical_by_program: dict = {}
+        for item in descriptors:
+            t = (item.get("type") or "").upper()
+            d = (item.get("descriptor") or "").strip()
+            program = (item.get("program") or "").strip().lower()
+            if d and t == "SMILES_CANONICAL":
+                canonical_by_program.setdefault(program, d)
+
+        program_priority = ("cactvs", "openeye oetoolkits", "acdlabs")
+        for program in program_priority:
+            if program in canonical_by_program:
+                return canonical_by_program[program]
+        if canonical_by_program:
+            return canonical_by_program[sorted(canonical_by_program)[0]]
+        return None
+    except Exception:
+        return None
+
+
+def _smiles_from_cif_block(cif_path: str, resname: str):
+    target = resname.strip().upper()
+    try:
+        with open(cif_path, errors="replace") as fh:
+            content = fh.read()
+
+        loop_pat = _re.compile(
+            r"loop_\s*((?:_chem_comp\.\S+\s*)+)(.*?)(?=loop_|data_|\Z)",
+            _re.DOTALL,
+        )
+        for m in loop_pat.finditer(content):
+            header_block = m.group(1)
+            data_block = m.group(2)
+            headers = header_block.split()
+            if "_chem_comp.id" not in headers or "_chem_comp.pdbx_smiles" not in headers:
+                continue
+            id_idx = headers.index("_chem_comp.id")
+            smi_idx = headers.index("_chem_comp.pdbx_smiles")
+            n = len(headers)
+            tokens = _re.findall(r"'[^']*'|\"[^\"]*\"|[^\s]+", data_block)
+            for i in range(0, len(tokens) - n + 1, n):
+                row = tokens[i:i + n]
+                if len(row) < n:
+                    break
+                comp_id = row[id_idx].strip("'\"").upper()
+                if comp_id == target or comp_id.startswith(target + "_"):
+                    smi = row[smi_idx].strip("'\"")
+                    if smi and smi not in (".", "?"):
+                        return smi
+
+        m = _re.search(r"_chem_comp\.pdbx_smiles[ \t]+([^\s#][^\r\n]*)", content)
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+
+        m = _re.search(
+            r"_chem_comp\.pdbx_smiles\s*\r?\n[ \t]*([^_#;\s][^\r\n]*)",
+            content,
+        )
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+
+        m = _re.search(
+            r"_chem_comp\.pdbx_smiles\s*\r?\n;\r?\n([^\n]+)\r?\n;",
+            content,
+        )
+        if m:
+            smi = m.group(1).strip().strip("'\"")
+            if smi and smi not in (".", "?"):
+                return smi
+    except Exception:
+        pass
+    return None
+
+
+def get_cocrystal_smiles(
+    ligand_pdb_path: str,
+    cocrystal_ligand_id: str,
+    raw_pdb: str = "",
+) -> tuple:
+    resname, _, _ = _parse_ligand_id(cocrystal_ligand_id)
+
+    if resname:
+        try:
+            smi = _rcsb_ccd_smiles(resname)
+            if smi:
+                return smi, "rcsb_ccd", ""
+        except Exception:
+            pass
+
+    if raw_pdb and is_cif_file(raw_pdb) and resname:
+        try:
+            smi = _smiles_from_cif_block(raw_pdb, resname)
+            if smi:
+                return smi, "cif_block", ""
+        except Exception:
+            pass
+
+    warn_3d = (
+        "SMILES was derived from 3D coordinates (PDB has no bond-order data). "
+        "Bond orders were inferred heuristically — verify the structure, "
+        "especially for aromatic rings or unusual valences, before trusting "
+        "docking scores."
+    )
+
+    if ligand_pdb_path and os.path.exists(ligand_pdb_path):
+        _rdkit_six_patch()
+        from rdkit import Chem
+
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".sdf", delete=False) as tf:
+                ob_sdf = tf.name
+            rc, _ = run_cmd(["obabel", ligand_pdb_path, "-O", ob_sdf, "-h", "-p", "7.4"])
+            if rc == 0 and os.path.exists(ob_sdf) and os.path.getsize(ob_sdf) > 10:
+                supp = Chem.SDMolSupplier(ob_sdf, removeHs=False, sanitize=True)
+                mols = [m for m in supp if m is not None]
+                if not mols:
+                    supp = Chem.SDMolSupplier(ob_sdf, removeHs=False, sanitize=False)
+                    mols = [m for m in supp if m is not None]
+                if mols:
+                    mol = mols[0]
+                    try:
+                        mol_noh = Chem.RemoveHs(mol)
+                        smi = Chem.MolToSmiles(mol_noh, isomericSmiles=True)
+                    except Exception:
+                        smi = Chem.MolToSmiles(mol, isomericSmiles=True)
+                    if smi:
+                        return smi, "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+        try:
+            mol = Chem.MolFromPDBFile(ligand_pdb_path, removeHs=False, sanitize=False)
+            if mol is not None:
+                bonded = False
+                try:
+                    from rdkit.Chem import DetermineBonds
+                    DetermineBonds(mol, charge=0)
+                    bonded = True
+                except (ImportError, Exception):
+                    pass
+
+                if not bonded:
+                    try:
+                        Chem.SanitizeMol(mol)
+                        bonded = True
+                    except Exception:
+                        try:
+                            Chem.SanitizeMol(
+                                mol,
+                                Chem.SanitizeFlags.SANITIZE_ALL
+                                ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES,
+                            )
+                            bonded = True
+                        except Exception:
+                            pass
+
+                if bonded or mol.GetNumAtoms() > 0:
+                    try:
+                        mol_noh = Chem.RemoveHs(mol, sanitize=False)
+                        Chem.SanitizeMol(mol_noh)
+                        smi = Chem.MolToSmiles(mol_noh, isomericSmiles=True)
+                    except Exception:
+                        smi = Chem.MolToSmiles(mol, isomericSmiles=True)
+                    if smi:
+                        return smi, "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".smi", delete=False) as tf:
+                smi_tmp = tf.name
+            rc, _ = run_cmd(["obabel", ligand_pdb_path, "-O", smi_tmp, "-h", "--canonical"])
+            if rc == 0 and os.path.exists(smi_tmp):
+                for line in open(smi_tmp):
+                    pts = line.strip().split(None, 1)
+                    if pts and pts[0]:
+                        return pts[0], "3d_conversion", warn_3d
+        except Exception:
+            pass
+
+    return "", "", (
+        f"Could not obtain SMILES for co-crystal ligand "
+        f"'{resname or cocrystal_ligand_id}'. "
+        "All strategies failed: RCSB CCD, CIF block, "
+        "OpenBabel PDB→SDF, RDKit DetermineBonds, OpenBabel direct."
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2949,6 +3300,678 @@ def warm_poseview_cache(receptor_pdb: str) -> tuple:
 
 def clear_poseview_cache():
     _PP_PROTEIN_CACHE.clear()
+
+
+def prolif_status() -> dict:
+    try:
+        import prolif as plf
+        import MDAnalysis as mda
+        return {
+            "available": True,
+            "prolif_version": getattr(plf, "__version__", "unknown"),
+            "mdanalysis_version": getattr(mda, "__version__", "unknown"),
+            "error": "",
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "prolif_version": "",
+            "mdanalysis_version": "",
+            "error": str(e),
+        }
+
+
+def _prolif_imports():
+    import prolif as plf
+    import MDAnalysis as mda
+    import py3Dmol
+    from rdkit import Chem
+    return plf, mda, py3Dmol, Chem
+
+
+def _prolif_protein_molecule(receptor_pdb: str):
+    plf, mda, _py3Dmol, Chem = _prolif_imports()
+    rd_prot = Chem.MolFromPDBFile(receptor_pdb, removeHs=False, sanitize=False)
+    if rd_prot is not None:
+        try:
+            Chem.SanitizeMol(rd_prot)
+        except Exception:
+            pass
+        return plf.Molecule.from_rdkit(rd_prot)
+
+    try:
+        u = mda.Universe(receptor_pdb)
+        try:
+            return plf.Molecule.from_mda(u, inferrer=None)
+        except Exception:
+            try:
+                return plf.Molecule.from_mda(u, force=True, inferrer=None)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    raise ValueError("Could not parse receptor for ProLIF.")
+
+
+def _prolif_pose_molecules_from_sdf(pose_sdf_path: str, pose_index: int = 0):
+    plf, _mda, _py3Dmol, _Chem = _prolif_imports()
+    rd_mols = load_mols_from_sdf(pose_sdf_path, sanitize=False)
+    if not rd_mols:
+        raise ValueError("Could not read pose SDF for ProLIF.")
+    idx = min(max(int(pose_index), 0), len(rd_mols) - 1)
+    plf_mols = [
+        plf.Molecule.from_rdkit(mol, resname="LIG", resnumber=1, chain="L")
+        for mol in rd_mols if mol is not None
+    ]
+    if not plf_mols:
+        raise ValueError("No valid ligand molecules available for ProLIF.")
+    return rd_mols, plf_mols, idx
+
+
+def _prolif_frame_stats(ifp_frame) -> tuple[int, int]:
+    n_residues = len(ifp_frame or {})
+    n_interactions = 0
+    for _residue_data in (ifp_frame or {}).values():
+        try:
+            n_interactions += len(_residue_data)
+        except Exception:
+            pass
+    return n_residues, n_interactions
+
+
+def _prolif_receptor_subset_path(receptor_pdb: str, rd_mols: list, cutoff: float = 6.0) -> str:
+    import tempfile as _tempfile
+    keep_residues = set()
+    for mol in rd_mols:
+        if mol is None:
+            continue
+        try:
+            for row in get_interacting_residues(receptor_pdb, mol, cutoff=cutoff):
+                keep_residues.add((
+                    str(row.get("resn", "")).strip().upper(),
+                    str(row.get("chain", "") or "").strip(),
+                    int(row.get("resi", 0) or 0),
+                ))
+        except Exception:
+            continue
+    if not keep_residues:
+        return receptor_pdb
+
+    out_dir = _tempfile.mkdtemp(prefix="acd_prolif_rec_")
+    out_path = str(Path(out_dir) / "receptor_focus.pdb")
+    kept = 0
+    with open(receptor_pdb) as fh, open(out_path, "w") as oh:
+        for line in fh:
+            rec = line[:6].strip()
+            if rec in ("ATOM", "HETATM"):
+                resn = line[17:20].strip().upper()
+                chain = line[21].strip()
+                try:
+                    resid = int((line[22:26] or "").strip() or 0)
+                except Exception:
+                    resid = 0
+                if rec == "HETATM":
+                    if resn not in WATER_RESNAMES:
+                        oh.write(line if line.endswith("\n") else line + "\n")
+                        kept += 1
+                    continue
+                if (resn, chain, resid) in keep_residues:
+                    oh.write(line if line.endswith("\n") else line + "\n")
+                    kept += 1
+            elif rec in ("TER", "END"):
+                oh.write(line if line.endswith("\n") else line + "\n")
+    return out_path if kept else receptor_pdb
+
+
+def _prolif_interacting_residue_centers_from_pose(receptor_pdb: str, rd_mol, cutoff: float = 5.0) -> list[dict]:
+    from prody import parsePDB, calcCenter
+    atoms = parsePDB(receptor_pdb)
+    if atoms is None:
+        return []
+    centers = []
+    try:
+        rows = get_interacting_residues(receptor_pdb, rd_mol, cutoff=cutoff)
+    except Exception:
+        rows = []
+    for rb in rows:
+        name = str(rb.get("resn", "") or "").strip()
+        chain = str(rb.get("chain", "") or "").strip()
+        try:
+            number = int(rb.get("resi", 0) or 0)
+        except Exception:
+            number = 0
+        if not name or not number:
+            continue
+        sel = f"resname {name} and resid {number}"
+        if chain:
+            sel += f" and chain {chain}"
+        res_atoms = atoms.select(sel)
+        if res_atoms is None:
+            continue
+        try:
+            cx, cy, cz = (float(v) for v in calcCenter(res_atoms))
+        except Exception:
+            continue
+        centers.append({
+            "label": f"{name}{number}{chain}",
+            "x": cx,
+            "y": cy,
+            "z": cz,
+        })
+    return centers
+
+
+def _prolif_manual_3d_html(
+    receptor_pdb: str,
+    rd_mol,
+    *,
+    size: tuple = (900, 460),
+    show_residue_labels: bool = True,
+    show_surface: bool = False,
+    hide_hydrogens: bool = True,
+    cutoff: float = 5.0,
+) -> str:
+    import tempfile as _tempfile
+
+    _plf, _mda, py3Dmol, _Chem = _prolif_imports()
+    receptor_view_pdb = receptor_pdb
+    if hide_hydrogens:
+        try:
+            _tmp_h = str(Path(_tempfile.mkdtemp(prefix="acd_prolif_view_")) / "receptor_noh.pdb")
+            _strip_h_from_pdb(receptor_pdb, _tmp_h)
+            if os.path.exists(_tmp_h) and os.path.getsize(_tmp_h) > 50:
+                receptor_view_pdb = _tmp_h
+        except Exception:
+            receptor_view_pdb = receptor_pdb
+
+    v = py3Dmol.view(width=size[0], height=size[1])
+    v.setBackgroundColor("#ffffff")
+    mi = 0
+    if receptor_view_pdb and os.path.exists(receptor_view_pdb):
+        with open(receptor_view_pdb) as fh:
+            v.addModel(fh.read(), "pdb")
+        v.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
+        if show_surface:
+            try:
+                v.addSurface(py3Dmol.SAS, {"opacity": 0.30, "color": "white"}, {"model": mi})
+            except Exception:
+                pass
+        mi += 1
+
+    v.addModel(_Chem.MolToPDBBlock(rd_mol), "pdb")
+    lig_model = mi
+    v.setStyle({"model": lig_model}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
+
+    for rb in get_interacting_residues(receptor_pdb, rd_mol, cutoff=cutoff):
+        has_chain = bool(rb.get("chain") and str(rb.get("chain")).strip())
+        sel = {"model": 0, "resi": rb.get("resi")}
+        if has_chain:
+            sel["chain"] = rb.get("chain")
+        try:
+            v.setStyle(sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.20}})
+        except Exception:
+            pass
+        if show_residue_labels:
+            try:
+                v.addLabel(
+                    f"{rb.get('resn', '')}{rb.get('resi', '')}{rb.get('chain', '') if has_chain else ''}",
+                    {
+                        "fontSize": 11,
+                        "fontColor": "yellow",
+                        "backgroundColor": "black",
+                        "backgroundOpacity": 0.65,
+                        "inFront": True,
+                        "showBackground": True,
+                    },
+                    sel,
+                )
+            except Exception:
+                pass
+    try:
+        v.zoomTo({"model": lig_model})
+    except Exception:
+        v.zoomTo()
+    return v._make_html()
+
+
+def prolif_lignetwork_html(
+    receptor_pdb: str,
+    pose_sdf_path: str,
+    *,
+    pose_index: int = 0,
+    width: str = "100%",
+    height: str = "920px",
+    fontsize: int = 18,
+    show_interaction_data: bool = True,
+) -> dict:
+    import io as _io
+    plf, _mda, _py3Dmol, _Chem = _prolif_imports()
+    rd_mols, plf_mols, idx = _prolif_pose_molecules_from_sdf(pose_sdf_path, pose_index)
+    prot_pdb = _prolif_receptor_subset_path(receptor_pdb, [rd_mols[idx]])
+    prot_mol = _prolif_protein_molecule(prot_pdb)
+
+    fp = plf.Fingerprint(count=True)
+    fp.run_from_iterable(plf_mols, prot_mol, progress=False, n_jobs=1)
+    ligplot = fp.plot_lignetwork(
+        rd_mols[idx],
+        kind="frame",
+        frame=idx,
+        display_all=True,
+        use_coordinates=True,
+        flatten_coordinates=True,
+        kekulize=False,
+        width=width,
+        height=height,
+        fontsize=fontsize,
+        show_interaction_data=show_interaction_data,
+    )
+    buf = _io.StringIO()
+    ligplot.save(
+        buf,
+        width=width,
+        height=height,
+        fontsize=fontsize,
+        show_interaction_data=show_interaction_data,
+    )
+    n_residues, n_interactions = _prolif_frame_stats(fp.ifp[idx])
+    return {
+        "success": True,
+        "html": buf.getvalue(),
+        "n_residues": n_residues,
+        "n_interactions": n_interactions,
+    }
+
+
+def prolif_barcode_png(
+    receptor_pdb: str,
+    pose_entries: list[dict],
+    *,
+    dpi: int = 150,
+) -> dict:
+    import io as _io
+    import matplotlib.pyplot as _plt
+    import matplotlib.patches as _mpatches
+    import numpy as _np
+
+    plf, _mda, _py3Dmol, _Chem = _prolif_imports()
+
+    ligands = []
+    labels = []
+    rd_mols_all = []
+    label_entries = []
+    for i, entry in enumerate(pose_entries):
+        sdf_path = entry.get("sdf_path", "")
+        pose_index = int(entry.get("pose_index", 0) or 0)
+        label = str(entry.get("label", f"pose {i+1}"))
+        rd_mols = load_mols_from_sdf(sdf_path, sanitize=False)
+        if not rd_mols:
+            continue
+        idx = min(max(pose_index, 0), len(rd_mols) - 1)
+        rd_mols_all.append(rd_mols[idx])
+        ligands.append(plf.Molecule.from_rdkit(rd_mols[idx], resname="LIG", resnumber=i + 1, chain="L"))
+        labels.append(label)
+        label_entries.append({
+            "label": label,
+            "is_reference": bool(entry.get("is_reference", False) or "redock" in label.lower() or "reference" in label.lower()),
+        })
+
+    if not ligands:
+        raise ValueError("No valid poses available for ProLIF barcode generation.")
+
+    prot_pdb = _prolif_receptor_subset_path(receptor_pdb, rd_mols_all)
+    prot_mol = _prolif_protein_molecule(prot_pdb)
+
+    fp = plf.Fingerprint(count=True)
+    fp.run_from_iterable(ligands, prot_mol, progress=False, n_jobs=1)
+
+    def _protein_residue_id(item):
+        if isinstance(item, tuple) and len(item) >= 2:
+            cand = item[-1]
+            if hasattr(cand, "name") or hasattr(cand, "number") or hasattr(cand, "chain"):
+                return cand
+        return item
+
+    def _residue_label(item) -> str:
+        item = _protein_residue_id(item)
+        chain = str(getattr(item, "chain", "") or "").strip()
+        name = str(getattr(item, "name", "") or "").strip()
+        try:
+            number = int(getattr(item, "number", 0) or 0)
+        except Exception:
+            number = 0
+        if name and number:
+            return f"{name}{number}{chain}" if chain else f"{name}{number}"
+        text = str(item).strip()
+        return text if text else "?"
+
+    def _residue_sort_key(item):
+        try:
+            item = _protein_residue_id(item)
+            chain = str(getattr(item, "chain", "") or "")
+            number = int(getattr(item, "number", 0) or 0)
+            name = str(getattr(item, "name", "") or "")
+            if name and number:
+                return (chain, number, name)
+            return ("", 0, _residue_label(item))
+        except Exception:
+            return ("", 0, _residue_label(item))
+
+    observed_types = []
+    type_priority = [
+        "HBAcceptor",
+        "HBDonor",
+        "Hydrophobic",
+        "VdWContact",
+        "PiStacking",
+        "CationPi",
+        "PiCation",
+        "Anionic",
+        "Cationic",
+        "MetalAcceptor",
+        "MetalDonor",
+        "XBAcceptor",
+        "XBDonor",
+    ]
+    type_colors = {
+        "HBAcceptor": "#63b6db",
+        "HBDonor": "#3b82f6",
+        "Hydrophobic": "#5adb7a",
+        "VdWContact": "#e5b142",
+        "PiStacking": "#c061cb",
+        "CationPi": "#8b5cf6",
+        "PiCation": "#8b5cf6",
+        "Anionic": "#ef4444",
+        "Cationic": "#6366f1",
+        "MetalAcceptor": "#f59e0b",
+        "MetalDonor": "#f59e0b",
+        "XBAcceptor": "#0ea5e9",
+        "XBDonor": "#0284c7",
+    }
+    raw_rows = []
+    normalized_frames = []
+    residue_id_set = set()
+    for frame in fp.ifp.values():
+        normalized_frame = {}
+        for raw_resid, raw_interactions in (frame or {}).items():
+            prot_resid = _protein_residue_id(raw_resid)
+            bucket = normalized_frame.setdefault(prot_resid, set())
+            for name in raw_interactions.keys():
+                bucket.add(name)
+        normalized_frame = {k: sorted(v) for k, v in normalized_frame.items()}
+        normalized_frames.append(normalized_frame)
+        residue_id_set.update(normalized_frame.keys())
+
+    residue_ids = sorted(residue_id_set, key=_residue_sort_key)
+    residue_stats = {}
+    for resid in residue_ids:
+        residue_stats[resid] = {
+            "present_count": 0,
+            "ref_count": 0,
+        }
+
+    for frame_idx, label in enumerate(labels):
+        frame = normalized_frames[frame_idx] if frame_idx < len(normalized_frames) else {}
+        residue_cells = []
+        _is_ref = bool(label_entries[frame_idx]["is_reference"])
+        for resid in residue_ids:
+            interactions = list(frame.get(resid, []))
+            for name in interactions:
+                if name not in observed_types:
+                    observed_types.append(name)
+            if interactions:
+                residue_stats[resid]["present_count"] += 1
+                if _is_ref:
+                    residue_stats[resid]["ref_count"] += 1
+            residue_cells.append({
+                "resid": resid,
+                "interaction_types": interactions,
+                "count": len(interactions),
+            })
+        raw_rows.append({
+            "label": label,
+            "is_reference": _is_ref,
+            "cells": residue_cells,
+        })
+
+    residue_ids = sorted(
+        residue_ids,
+        key=lambda resid: (
+            -int(residue_stats[resid]["ref_count"] > 0),
+            -residue_stats[resid]["present_count"],
+            *_residue_sort_key(resid),
+        ),
+    )
+    residue_columns = []
+    for resid in residue_ids:
+        chain = str(getattr(resid, "chain", "") or "").strip()
+        try:
+            number = int(getattr(resid, "number", 0) or 0)
+        except Exception:
+            number = 0
+        name = str(getattr(resid, "name", "") or "").strip()
+        label = _residue_label(resid)
+        residue_columns.append({
+            "label": label,
+            "chain": chain,
+            "number": number,
+            "name": name,
+            "key": label,
+        })
+
+    raw_rows = sorted(
+        raw_rows,
+        key=lambda row: (
+            -int(row.get("is_reference", False)),
+            labels.index(row["label"]),
+        ),
+    )
+
+    profile_rows = []
+    matrix_rows = []
+    for row in raw_rows:
+        row_dict = {"Ligand": row["label"]}
+        cell_map = {cell["resid"]: cell for cell in row.get("cells", [])}
+        residue_cells = []
+        for resid, col_meta in zip(residue_ids, residue_columns):
+            cell = cell_map.get(resid, {"interaction_types": [], "count": 0})
+            interactions = list(cell.get("interaction_types", []))
+            row_dict[col_meta["key"]] = "; ".join(interactions)
+            residue_cells.append({
+                "residue": col_meta["key"],
+                "interaction_types": interactions,
+                "count": len(interactions),
+            })
+        profile_rows.append({
+            "label": row["label"],
+            "is_reference": row.get("is_reference", False),
+            "cells": residue_cells,
+        })
+        matrix_rows.append(row_dict)
+
+    profile_df = None
+    try:
+        import pandas as _pd
+        profile_df = _pd.DataFrame(matrix_rows)
+    except Exception:
+        profile_df = None
+
+    ordered_types = [name for name in type_priority if name in observed_types] + [
+        name for name in observed_types if name not in type_priority
+    ]
+    type_to_code = {name: i + 1 for i, name in enumerate(ordered_types)}
+
+    matrix = _np.zeros((len(labels), len(residue_columns)), dtype=int)
+    for i, row in enumerate(profile_rows):
+        for j, cell in enumerate(row.get("cells", [])):
+            interactions = cell.get("interaction_types", [])
+            chosen = next((name for name in type_priority if name in interactions), None)
+            if chosen is None and interactions:
+                chosen = interactions[0]
+            if chosen:
+                matrix[i, j] = type_to_code.get(chosen, 0)
+
+    cell_size = 0.42
+    fig_w = max(8.5, len(residue_columns) * cell_size + 2.8)
+    fig_h = max(3.8, len(profile_rows) * cell_size + 1.8)
+    fig, ax = _plt.subplots(figsize=(fig_w, fig_h), dpi=dpi)
+    ax.set_facecolor("#ffffff")
+    fig.patch.set_facecolor("#ffffff")
+
+    rgba = _np.zeros((matrix.shape[0], matrix.shape[1], 4), dtype=float)
+    for code in _np.unique(matrix):
+        if code == 0:
+            color = "#ffffff"
+        else:
+            color = type_colors.get(ordered_types[code - 1], "#9ca3af")
+        rgb = tuple(int(color[k:k+2], 16) / 255.0 for k in (1, 3, 5))
+        rgba[matrix == code] = (*rgb, 1.0)
+
+    ax.imshow(rgba, aspect="equal", interpolation="nearest")
+    ax.set_xticks(range(len(residue_columns)))
+    ax.set_xticklabels([col["label"] for col in residue_columns], rotation=90, fontsize=9)
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels([row["label"] for row in profile_rows], fontsize=10)
+    ax.tick_params(axis="x", colors="#111111")
+    ax.tick_params(axis="y", colors="#111111")
+    ax.set_xlabel("Shared interacting residues", color="#111111", fontsize=11)
+    ax.set_ylabel("Ligand / reference pose", color="#111111", fontsize=11)
+    ax.set_xticks(_np.arange(-0.5, len(residue_columns), 1), minor=True)
+    ax.set_yticks(_np.arange(-0.5, len(labels), 1), minor=True)
+    ax.grid(which="minor", color="#d4d4d4", linestyle="-", linewidth=0.5)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    legend_handles = [
+        _mpatches.Patch(color=type_colors.get(name, "#9ca3af"), label=name)
+        for name in ordered_types
+    ]
+    if legend_handles:
+        ax.legend(
+            handles=legend_handles,
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            frameon=True,
+            fontsize=9,
+        )
+
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#222222")
+    fig.tight_layout()
+
+    png_buf = _io.BytesIO()
+    fig.savefig(png_buf, format="png", dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+    png_buf.seek(0)
+    svg_buf = _io.BytesIO()
+    fig.savefig(svg_buf, format="svg", bbox_inches="tight", facecolor=fig.get_facecolor())
+    svg_buf.seek(0)
+    _plt.close(fig)
+
+    return {
+        "success": True,
+        "png": png_buf.getvalue(),
+        "svg": svg_buf.getvalue(),
+        "labels": labels,
+        "profile_rows": profile_rows,
+        "residue_columns": residue_columns,
+        "profile_df": profile_df,
+    }
+
+
+def prolif_3d_view_html(
+    receptor_pdb: str,
+    pose_sdf_path: str,
+    *,
+    pose_index: int = 0,
+    size: tuple = (900, 460),
+    show_residue_labels: bool = True,
+    show_surface: bool = False,
+    hide_hydrogens: bool = True,
+) -> dict:
+    plf, _mda, py3Dmol, _Chem = _prolif_imports()
+    rd_mols, plf_mols, idx = _prolif_pose_molecules_from_sdf(pose_sdf_path, pose_index)
+    prot_pdb = _prolif_receptor_subset_path(receptor_pdb, [rd_mols[idx]])
+    prot_mol = _prolif_protein_molecule(prot_pdb)
+
+    fp = plf.Fingerprint(count=True)
+    fp.run_from_iterable([plf_mols[idx]], prot_mol, progress=False, n_jobs=1)
+    frame_ifp = fp.ifp[0]
+    n_residues, n_interactions = _prolif_frame_stats(frame_ifp)
+
+    _html = ""
+    _viewer_mode = "prolif"
+    _plot_error = ""
+    try:
+        plot3d = fp.plot_3d(
+            ligand_mol=plf_mols[idx],
+            protein_mol=prot_mol,
+            frame=0,
+            size=size,
+            display_all=True,
+            only_interacting=True,
+            remove_hydrogens=hide_hydrogens,
+            sanitize=False,
+        )
+        try:
+            plot3d.setBackgroundColor("#ffffff")
+        except Exception:
+            pass
+        if show_surface:
+            try:
+                plot3d.addSurface(py3Dmol.SAS, {"opacity": 0.30, "color": "white"})
+            except Exception:
+                pass
+        if show_residue_labels:
+            for row in _prolif_interacting_residue_centers_from_pose(receptor_pdb, rd_mols[idx], cutoff=5.0):
+                try:
+                    plot3d.addLabel(
+                        row["label"],
+                        {
+                            "position": {"x": row["x"], "y": row["y"], "z": row["z"]},
+                            "fontSize": 11,
+                            "fontColor": "yellow",
+                            "backgroundColor": "black",
+                            "backgroundOpacity": 0.65,
+                            "inFront": True,
+                            "showBackground": True,
+                        },
+                    )
+                except Exception:
+                    continue
+        try:
+            plot3d.zoomTo()
+        except Exception:
+            pass
+        try:
+            _html = plot3d._repr_html_() or ""
+        except Exception:
+            _html = ""
+        if not _html:
+            try:
+                _html = plot3d._view._make_html()
+            except Exception:
+                _html = ""
+    except Exception as e:
+        _plot_error = str(e)
+
+    if not _html:
+        _viewer_mode = "manual_fallback"
+        _html = _prolif_manual_3d_html(
+            prot_pdb,
+            rd_mols[idx],
+            size=size,
+            show_residue_labels=show_residue_labels,
+            show_surface=show_surface,
+            hide_hydrogens=hide_hydrogens,
+            cutoff=5.0,
+        )
+    return {
+        "success": True,
+        "html": _html,
+        "n_residues": n_residues,
+        "n_interactions": n_interactions,
+        "viewer_mode": _viewer_mode,
+        "plot_error": _plot_error,
+    }
 
 
 def call_poseview2_ref(pdb_code: str, ligand_id: str) -> tuple:
