@@ -1,5 +1,5 @@
 {
-  "mode": "normal",
+  "mode": "workshop",
   "aws_url": "https://d1lnl7mg5ehqv6.cloudfront.net",
   "aws_health_url": "https://d1lnl7mg5ehqv6.cloudfront.net/_stcore/health",
   "fallback_to_streamlit": true
