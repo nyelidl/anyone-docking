@@ -1100,6 +1100,9 @@ def find_ionizable_sites(mol):
                                   and mol.GetAtomWithIdx(idx).GetAtomicNum() == 7))
                          and idx not in seen_ion]
             if not ion_atoms: continue
+            # Mark the full SMARTS match as claimed so overlapping fallback
+            # patterns cannot double-count the same acidic/basic motif.
+            claimed_atoms.update(match)
             for ion_idx in ion_atoms:
                 seen_ion.add(ion_idx)
                 sites.append(dict(label=lbl, atom_indices=[ion_idx], heuristic_pka=pka_v, site_type=stype))
