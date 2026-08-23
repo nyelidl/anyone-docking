@@ -309,6 +309,221 @@ def _strip_h_from_pdb(pdb_path: str, out_path: str) -> bool:
         return False
 
 
+def _parse_pdb_atom_line(line: str) -> dict:
+    return {
+        "record": line[:6].strip() or "HETATM",
+        "serial": int(line[6:11]) if line[6:11].strip() else 0,
+        "name": line[12:16].strip(),
+        "resname": line[17:20].strip() or "LIG",
+        "chain": (line[21] if len(line) > 21 else " ") or " ",
+        "resid": int(line[22:26]) if line[22:26].strip() else 1,
+        "x": float(line[30:38]),
+        "y": float(line[38:46]),
+        "z": float(line[46:54]),
+        "element": (line[76:78].strip() if len(line) > 77 else "") or _infer_pdb_element(line).strip(),
+    }
+
+
+def _format_pdb_atom_line(
+    serial: int,
+    name: str,
+    resname: str,
+    chain: str,
+    resid: int,
+    x: float,
+    y: float,
+    z: float,
+    element: str,
+    record: str = "HETATM",
+) -> str:
+    atom_name = name[:4].strip()
+    if len(atom_name) < 4:
+        atom_name = atom_name.rjust(4)
+    return (
+        f"{record:<6}{serial:5d} {atom_name:<4} {resname:>3} {chain[:1]}{resid:4d}    "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element[:2].rjust(2)}\n"
+    )
+
+
+def _parse_pdbqt_atom_line(line: str) -> dict:
+    tail = line[66:].split()
+    charge = 0.0
+    atype = "C"
+    if tail:
+        atype = tail[-1]
+        if len(tail) >= 2:
+            try:
+                charge = float(tail[-2])
+            except Exception:
+                charge = 0.0
+    return {
+        "record": line[:6].strip() or "HETATM",
+        "serial": int(line[6:11]) if line[6:11].strip() else 0,
+        "name": line[12:16].strip(),
+        "x": float(line[30:38]),
+        "y": float(line[38:46]),
+        "z": float(line[46:54]),
+        "charge": charge,
+        "atype": atype,
+    }
+
+
+def _format_pdbqt_atom_line(
+    serial: int,
+    name: str,
+    resname: str,
+    chain: str,
+    resid: int,
+    x: float,
+    y: float,
+    z: float,
+    charge: float,
+    atype: str,
+    record: str = "HETATM",
+) -> str:
+    atom_name = name[:4].strip()
+    if len(atom_name) < 4:
+        atom_name = atom_name.rjust(4)
+    return (
+        f"{record:<6}{serial:5d} {atom_name:<4} {resname:<3s} "
+        f"{chain[:1]}{resid:4d}    "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
+        f"    {charge:+.3f} {atype}\n"
+    )
+
+
+def _write_atom_block(lines: list[str], out_path: str):
+    with open(out_path, "w") as f:
+        for line in lines:
+            if line[:6].strip() in ("ATOM", "HETATM", "TER"):
+                f.write(line if line.endswith("\n") else line + "\n")
+        f.write("END\n")
+
+
+def _overlay_residue_pdb_lines(prepared_pdb: str, template_lines: list[str]) -> list[str]:
+    template_atoms = [_parse_pdb_atom_line(l) for l in template_lines if l[:6].strip() in ("ATOM", "HETATM")]
+    if not template_atoms:
+        return []
+    template_by_name = {a["name"].upper(): a for a in template_atoms}
+    anchor = template_atoms[0]
+    next_serial = max(a["serial"] for a in template_atoms) + 1
+    out = []
+    with open(prepared_pdb) as f:
+        for line in f:
+            if line[:6].strip() not in ("ATOM", "HETATM"):
+                continue
+            atom = _parse_pdb_atom_line(line)
+            meta = template_by_name.get(atom["name"].upper())
+            if meta is not None:
+                serial = meta["serial"]
+                resname = meta["resname"]
+                chain = meta["chain"]
+                resid = meta["resid"]
+                record = meta["record"]
+            else:
+                serial = next_serial
+                next_serial += 1
+                resname = anchor["resname"]
+                chain = anchor["chain"]
+                resid = anchor["resid"]
+                record = "HETATM"
+            out.append(
+                _format_pdb_atom_line(
+                    serial=serial,
+                    name=atom["name"],
+                    resname=resname,
+                    chain=chain,
+                    resid=resid,
+                    x=atom["x"],
+                    y=atom["y"],
+                    z=atom["z"],
+                    element=atom["element"],
+                    record=record,
+                )
+            )
+    return out
+
+
+def _overlay_residue_pdbqt_lines(prepared_pdbqt: str, template_lines: list[str]) -> list[str]:
+    template_atoms = [_parse_pdb_atom_line(l) for l in template_lines if l[:6].strip() in ("ATOM", "HETATM")]
+    if not template_atoms:
+        return []
+    template_by_name = {a["name"].upper(): a for a in template_atoms}
+    anchor = template_atoms[0]
+    next_serial = max(a["serial"] for a in template_atoms) + 1
+    out = []
+    with open(prepared_pdbqt) as f:
+        for line in f:
+            if line[:6].strip() not in ("ATOM", "HETATM"):
+                continue
+            atom = _parse_pdbqt_atom_line(line)
+            meta = template_by_name.get(atom["name"].upper())
+            if meta is not None:
+                serial = meta["serial"]
+                resname = meta["resname"]
+                chain = meta["chain"]
+                resid = meta["resid"]
+                record = meta["record"]
+            else:
+                serial = next_serial
+                next_serial += 1
+                resname = anchor["resname"]
+                chain = anchor["chain"]
+                resid = anchor["resid"]
+                record = "HETATM"
+            out.append(
+                _format_pdbqt_atom_line(
+                    serial=serial,
+                    name=atom["name"],
+                    resname=resname,
+                    chain=chain,
+                    resid=resid,
+                    x=atom["x"],
+                    y=atom["y"],
+                    z=atom["z"],
+                    charge=atom["charge"],
+                    atype=atom["atype"],
+                    record=record,
+                )
+            )
+    return out
+
+
+def _prepare_isolated_residue_block(lines: list[str], wdir, stem: str, log: list[str], label: str) -> dict:
+    wdir = Path(wdir)
+    result = {
+        "display_lines": list(lines),
+        "pdbqt_lines": [],
+        "display_method": "raw",
+        "pdbqt_method": "manual",
+    }
+    if not lines:
+        return result
+    raw_pdb = str(wdir / f"{stem}_raw.pdb")
+    h_pdb = str(wdir / f"{stem}_h.pdb")
+    pdbqt = str(wdir / f"{stem}.pdbqt")
+    _write_atom_block(lines, raw_pdb)
+    rc_h, out_h = run_cmd(f'obabel "{raw_pdb}" -O "{h_pdb}" -h')
+    if os.path.exists(h_pdb) and os.path.getsize(h_pdb) > 100:
+        display_lines = _overlay_residue_pdb_lines(h_pdb, lines)
+        if display_lines:
+            result["display_lines"] = display_lines
+            result["display_method"] = "obabel-h"
+            log.append(f"✓ {label} hydrogens added via isolated OpenBabel pass")
+        rc_pdbqt, out_pdbqt = run_cmd(f'obabel "{h_pdb}" -O "{pdbqt}" -xr --partialcharge gasteiger')
+        if os.path.exists(pdbqt) and os.path.getsize(pdbqt) > 20:
+            pdbqt_lines = _overlay_residue_pdbqt_lines(pdbqt, lines)
+            if pdbqt_lines:
+                result["pdbqt_lines"] = pdbqt_lines
+                result["pdbqt_method"] = "obabel"
+                log.append(f"✓ {label} PDBQT prepared from hydrogenated isolated block")
+        else:
+            log.append(f"⚠ {label} isolated PDBQT preparation failed (exit {rc_pdbqt}): {out_pdbqt[:240]}")
+    else:
+        log.append(f"⚠ {label} isolated hydrogenation failed (exit {rc_h}): {out_h[:240]}")
+    return result
+
+
 def _infer_pdb_element(line: str) -> str:
     name = line[12:16].strip().upper()
     raw = "".join(ch for ch in name if ch.isalpha()).upper()
@@ -920,6 +1135,12 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         if cofactor_lines:
             cnames = ", ".join(sorted({l[17:20].strip() for l in cofactor_lines}))
             log.append(f"⚠ Stripped {len(cofactor_lines)} cofactor atom(s) before Meeko: {cnames}")
+        heme_prepared = _prepare_isolated_residue_block(heme_lines, wdir, "heme", log, "Heme") if heme_lines else {
+            "display_lines": [],
+            "pdbqt_lines": [],
+            "display_method": "raw",
+            "pdbqt_method": "manual",
+        }
 
         meeko_res = _run_meeko_prepare_receptor(rec_nometal, rec_fh, rec_pdbqt, wdir)
         log.extend(meeko_res["log"])
@@ -995,9 +1216,19 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 # Remove any trailing END record so we can append cleanly
                 rec_lines = [l for l in rec_lines if l.strip() != "END"]
                 rec_lines.extend(metal_lines)
-                rec_lines.extend(heme_lines)
+                rec_lines.extend(heme_prepared["display_lines"] or heme_lines)
                 if used_meeko:
-                    rec_lines.extend(cofactor_lines)
+                    grouped = {}
+                    order = []
+                    for line in cofactor_lines:
+                        key = (line[17:20], line[21], line[22:26], line[26] if len(line) > 26 else " ")
+                        if key not in grouped:
+                            grouped[key] = []
+                            order.append(key)
+                        grouped[key].append(line)
+                    for idx, key in enumerate(order, 1):
+                        prepared = _prepare_isolated_residue_block(grouped[key], wdir, f"cofactor_{idx}", log, f"Cofactor {key[0].strip()}")
+                        rec_lines.extend(prepared["display_lines"] or grouped[key])
                 rec_lines.append("END\n")
                 with open(rec_fh, "w") as f:
                     f.writelines(rec_lines)
@@ -1050,38 +1281,41 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 except Exception as e:
                     log.append(f"⚠ Could not re-inject metal line: {e}")
 
-            # Heme atoms — assign AD4 atom types
-            for hl in heme_lines:
-                try:
-                    serial  = int(hl[6:11])
-                    name    = hl[12:16].strip()
-                    resname = hl[17:20].strip().upper()
-                    chain   = hl[21] if len(hl) > 21 else "A"
-                    resid   = int(hl[22:26])
-                    x       = float(hl[30:38])
-                    y       = float(hl[38:46])
-                    z       = float(hl[46:54])
-                    if name.upper() in ("FE", "FE2", "FE3"):
-                        atype  = "Fe"
-                        charge = +3.0
-                    elif name.upper().startswith("N"):
-                        atype  = "NA"
-                        charge = -0.3
-                    elif name.upper().startswith("C"):
-                        atype  = "A"   # aromatic carbon
-                        charge = 0.0
-                    else:
-                        atype  = "C"
-                        charge = 0.0
-                    pdbqt_lines.append(
-                        f"HETATM{serial:5d} {name:<4s} {resname:<3s} "
-                        f"{chain}{resid:4d}    "
-                        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
-                        f"    {charge:+.3f} {atype}\n"
-                    )
-                    heme_injected += 1
-                except Exception as e:
-                    log.append(f"⚠ Could not re-inject heme line: {e}")
+            if heme_prepared["pdbqt_lines"]:
+                pdbqt_lines.extend(heme_prepared["pdbqt_lines"])
+                heme_injected = len(heme_prepared["pdbqt_lines"])
+            else:
+                for hl in heme_lines:
+                    try:
+                        serial  = int(hl[6:11])
+                        name    = hl[12:16].strip()
+                        resname = hl[17:20].strip().upper()
+                        chain   = hl[21] if len(hl) > 21 else "A"
+                        resid   = int(hl[22:26])
+                        x       = float(hl[30:38])
+                        y       = float(hl[38:46])
+                        z       = float(hl[46:54])
+                        if name.upper() in ("FE", "FE2", "FE3"):
+                            atype  = "Fe"
+                            charge = +3.0
+                        elif name.upper().startswith("N"):
+                            atype  = "NA"
+                            charge = -0.3
+                        elif name.upper().startswith("C"):
+                            atype  = "A"
+                            charge = 0.0
+                        else:
+                            atype  = "C"
+                            charge = 0.0
+                        pdbqt_lines.append(
+                            f"HETATM{serial:5d} {name:<4s} {resname:<3s} "
+                            f"{chain}{resid:4d}    "
+                            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00"
+                            f"    {charge:+.3f} {atype}\n"
+                        )
+                        heme_injected += 1
+                    except Exception as e:
+                        log.append(f"⚠ Could not re-inject heme line: {e}")
 
             pdbqt_lines.append("END\n")
             with open(rec_pdbqt, "w") as f:
@@ -1101,12 +1335,18 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                         order.append(key)
                     grouped[key].append(line)
                 for idx, key in enumerate(order, 1):
-                    extra_lines, err = _append_rigid_pdbqt_from_pdb_lines(grouped[key], wdir, f"cofactor_{idx}")
+                    prepared = _prepare_isolated_residue_block(grouped[key], wdir, f"cofactor_{idx}", log, f"Cofactor {key[0].strip()}")
+                    extra_lines = prepared["pdbqt_lines"]
                     if extra_lines:
                         pdbqt_lines.extend(extra_lines)
                         cofactor_injected += len(extra_lines)
-                    elif err:
-                        log.append(f"⚠ Could not re-inject cofactor {key[0].strip()} {key[1]}:{key[2].strip()}: {err}")
+                    else:
+                        extra_lines, err = _append_rigid_pdbqt_from_pdb_lines(grouped[key], wdir, f"cofactor_{idx}")
+                        if extra_lines:
+                            pdbqt_lines.extend(extra_lines)
+                            cofactor_injected += len(extra_lines)
+                        elif err:
+                            log.append(f"⚠ Could not re-inject cofactor {key[0].strip()} {key[1]}:{key[2].strip()}: {err}")
                 if cofactor_injected:
                     log.append(f"✅ Re-injected {cofactor_injected} cofactor PDBQT line(s)")
             if skipped_exotic:
