@@ -356,9 +356,9 @@ def _run_meeko_prepare_receptor(rec_input: str, rec_fh: str, rec_pdbqt: str, wdi
         ("plain", [], "✓ Receptor prepared with Meeko"),
         ("default_altloc_a", ["--default_altloc", "A"], "✓ Receptor prepared with Meeko after selecting default altloc A"),
         (
-            "default_altloc_a_delete_bad_res",
-            ["--default_altloc", "A", "--delete_bad_res"],
-            "✓ Receptor prepared with Meeko after selecting default altloc A and deleting bad residues",
+            "default_altloc_a_allow_bad_res",
+            ["--default_altloc", "A", "--allow_bad_res"],
+            "✓ Receptor prepared with Meeko after selecting default altloc A and allowing bad residues",
         ),
     ]
     last_out = ""
@@ -936,15 +936,15 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 )
                 meeko_res["success"] = False
             elif residue_check["missing_residues"]:
-                if meeko_res.get("meeko_rung") == "default_altloc_a_delete_bad_res":
+                if meeko_res.get("meeko_rung") == "default_altloc_a_allow_bad_res":
                     prep_meta["deleted_residues"] = residue_check["missing_residues"]
                     log.append(
-                        "ℹ Meeko deleted residue(s) under delete_bad_res: "
+                        "ℹ Meeko deleted residue(s) under allow_bad_res: "
                         + ", ".join(residue_check["missing_residues"][:10])
                     )
                 else:
                     log.append(
-                        "⚠ Meeko dropped residue(s) without delete_bad_res; using Open Babel fallback: "
+                        "⚠ Meeko dropped residue(s) without allow_bad_res; using Open Babel fallback: "
                         + ", ".join(residue_check["missing_residues"][:10])
                     )
                     meeko_res["success"] = False
