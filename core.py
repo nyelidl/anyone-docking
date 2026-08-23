@@ -121,6 +121,47 @@ def run_cmd(cmd, cwd=None):
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
+def _fix_protonated_acid_sidechains(pdb_path: str) -> dict:
+    """Revert Open Babel's protonated ASP/GLU forms back to ASP/GLU carboxylates."""
+    renamed_ash = renamed_glh = removed_hd = removed_he = 0
+    fixed_lines = []
+
+    with open(pdb_path) as f:
+        for line in f:
+            if line[:6].strip() not in ("ATOM", "HETATM"):
+                fixed_lines.append(line)
+                continue
+
+            resname = line[17:20].strip().upper()
+            atom_name = line[12:16].strip().upper()
+
+            if resname in {"ASH", "ASP"} and atom_name in {"HD1", "HD2"}:
+                removed_hd += 1
+                continue
+            if resname in {"GLH", "GLU"} and atom_name in {"HE1", "HE2"}:
+                removed_he += 1
+                continue
+
+            if resname == "ASH":
+                line = f"{line[:17]}ASP{line[20:]}"
+                renamed_ash += 1
+            elif resname == "GLH":
+                line = f"{line[:17]}GLU{line[20:]}"
+                renamed_glh += 1
+
+            fixed_lines.append(line)
+
+    with open(pdb_path, "w") as f:
+        f.writelines(fixed_lines)
+
+    return {
+        "renamed_ash": renamed_ash,
+        "renamed_glh": renamed_glh,
+        "removed_hd": removed_hd,
+        "removed_he": removed_he,
+    }
+
+
 def _rdkit_six_patch():
     try:
         from rdkit import six  # noqa
@@ -154,6 +195,69 @@ def _strip_h_from_pdb(pdb_path: str, out_path: str) -> bool:
     except Exception:
         shutil.copy(pdb_path, out_path)
         return False
+
+
+def _infer_pdb_element(line: str) -> str:
+    name = line[12:16].strip().upper()
+    raw = "".join(ch for ch in name if ch.isalpha()).upper()
+    if len(raw) >= 2 and raw[:2] in METAL_RESNAMES:
+        return raw[:2].rjust(2)
+    if raw[:1] in {"C", "N", "O", "S", "P", "H", "F", "I", "B", "K"}:
+        return raw[:1].rjust(2)
+    return (raw[:1] or "C").rjust(2)
+
+
+def _normalize_pdb_for_meeko(in_path: str, out_path: str) -> None:
+    out_lines = []
+    serial = 1
+    with open(in_path) as f:
+        for line in f:
+            if line[:6].strip() not in ("ATOM", "HETATM"):
+                continue
+            atom_name = line[12:16].strip()
+            element = (line[76:78].strip() if len(line) >= 78 else "") or _infer_pdb_element(line).strip()
+            if element.upper() == "H" or atom_name.upper().startswith("H"):
+                continue
+            new_line = f"{line[:6]}{serial:5d}{line[11:76]:<65}{element.rjust(2)}{line[78:] if len(line) > 78 else ''}"
+            out_lines.append(new_line.rstrip() + "\n")
+            serial += 1
+    with open(out_path, "w") as f:
+        f.writelines(out_lines)
+
+
+def _meeko_prepare_receptor_cmd() -> list[str] | None:
+    import shutil
+    exe = shutil.which("mk_prepare_receptor.py")
+    if exe:
+        return [exe]
+    return None
+
+
+def _run_meeko_prepare_receptor(rec_input: str, rec_fh: str, rec_pdbqt: str, wdir) -> dict:
+    wdir = Path(wdir)
+    meeko_in = str(wdir / "receptor_atoms_for_meeko.pdb")
+    _normalize_pdb_for_meeko(rec_input, meeko_in)
+    cmd = _meeko_prepare_receptor_cmd()
+    if cmd is None:
+        return {"success": False, "error": "mk_prepare_receptor.py not found", "log": []}
+    full_cmd = cmd + ["--read_pdb", meeko_in, "--write_pdb", rec_fh, "-p", rec_pdbqt]
+    rc, out = run_cmd(full_cmd)
+    if rc != 0 or not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
+        return {"success": False, "error": out[:4000], "log": [f"⚠ Meeko receptor prep failed; falling back to Open Babel path. {out[:400]}"]}
+    return {"success": True, "log": ["✓ Receptor prepared with Meeko"]}
+
+
+def _append_rigid_pdbqt_from_pdb_lines(lines: list[str], wdir, stem: str) -> tuple[list[str], str | None]:
+    tmp_pdb = Path(wdir) / f"{stem}.pdb"
+    tmp_pdbqt = Path(wdir) / f"{stem}.pdbqt"
+    with open(tmp_pdb, "w") as f:
+        f.writelines(lines)
+    rc, out = run_cmd(f'obabel "{tmp_pdb}" -O "{tmp_pdbqt}" -xr --partialcharge gasteiger')
+    if rc != 0 or not tmp_pdbqt.exists() or tmp_pdbqt.stat().st_size < 20:
+        return [], out[:400]
+    with open(tmp_pdbqt) as f:
+        pdbqt_lines = [line for line in f if line[:6].strip() in ("ATOM", "HETATM", "TER")]
+    return pdbqt_lines, None
 
 
 def convert_cif_to_pdb(cif_path: str, pdb_out_path: str) -> dict:
@@ -637,7 +741,9 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
     try:
         metal_lines = []
         heme_lines  = []
+        cofactor_lines = []
         clean_lines = []
+        legacy_clean_lines = []
         with open(rec_raw) as f:
             for line in f:
                 field = line[:6].strip()
@@ -646,12 +752,20 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                     metal_lines.append(line)
                 elif field in ("ATOM", "HETATM") and rn in HEME_RESNAMES:
                     heme_lines.append(line)
+                elif field in ("ATOM", "HETATM") and rn in COFACTOR_NAMES:
+                    cofactor_lines.append(line)
+                    legacy_clean_lines.append(line)
                 else:
                     clean_lines.append(line)
+                    legacy_clean_lines.append(line)
 
         rec_nometal = str(wdir / "receptor_atoms_nometal.pdb")
         with open(rec_nometal, "w") as f:
             f.writelines(clean_lines)
+
+        rec_legacy_input = str(wdir / "receptor_atoms_legacy_input.pdb")
+        with open(rec_legacy_input, "w") as f:
+            f.writelines(legacy_clean_lines)
 
         if metal_lines:
             names = ", ".join(sorted({l[17:20].strip() for l in metal_lines}))
@@ -659,16 +773,32 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         if heme_lines:
             hnames = ", ".join(sorted({l[17:20].strip() for l in heme_lines}))
             log.append(f"⚠ Stripped {len(heme_lines)} heme atom(s) before OpenBabel: {hnames}")
+        if cofactor_lines:
+            cnames = ", ".join(sorted({l[17:20].strip() for l in cofactor_lines}))
+            log.append(f"⚠ Stripped {len(cofactor_lines)} cofactor atom(s) before Meeko: {cnames}")
 
-        rc1, out1 = run_cmd(f'obabel "{rec_nometal}" -O "{rec_fh}" -h')
-        if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
-            raise ValueError(f"OpenBabel H-addition produced empty file (exit {rc1}). Output: {out1[:400]}")
-        log.append("✓ Hydrogens added")
+        meeko_res = _run_meeko_prepare_receptor(rec_nometal, rec_fh, rec_pdbqt, wdir)
+        log.extend(meeko_res["log"])
+        if not meeko_res["success"]:
+            rc1, out1 = run_cmd(f'obabel "{rec_legacy_input}" -O "{rec_fh}" -h')
+            if not os.path.exists(rec_fh) or os.path.getsize(rec_fh) < 100:
+                raise ValueError(f"OpenBabel H-addition produced empty file (exit {rc1}). Output: {out1[:400]}")
+            log.append("✓ Hydrogens added")
+            acid_fix = _fix_protonated_acid_sidechains(rec_fh)
+            if any(acid_fix.values()):
+                log.append(
+                    "✓ Restored deprotonated acidic side chains after H-addition "
+                    f"(ASH→ASP lines: {acid_fix['renamed_ash']}, GLH→GLU lines: {acid_fix['renamed_glh']}, "
+                    f"removed acid H: Asp {acid_fix['removed_hd']}, Glu {acid_fix['removed_he']})"
+                )
 
-        rc2, out2 = run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger')
-        if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
-            raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
-        log.append("✓ PDBQT conversion complete")
+            rc2, out2 = run_cmd(f'obabel "{rec_fh}" -O "{rec_pdbqt}" -xr --partialcharge gasteiger')
+            if not os.path.exists(rec_pdbqt) or os.path.getsize(rec_pdbqt) < 100:
+                raise ValueError(f"PDBQT conversion produced empty file (exit {rc2}). Output: {out2[:400]}")
+            log.append("✓ PDBQT conversion complete")
+            used_meeko = False
+        else:
+            used_meeko = True
 
         # Open Babel 3.2 may emit COMPND/AUTHOR headers that Vina 1.2.7
         # rejects as unknown receptor tags. Keep only rigid-receptor records.
@@ -685,31 +815,35 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         # This is done AFTER PDBQT generation so the docking PDBQT still uses
         # the dedicated re-injection logic below (with proper AD4 atom types).
         # We ALWAYS attempt this, regardless of whether PDBQT re-injection works.
-        if metal_lines or heme_lines:
+        if metal_lines or heme_lines or (used_meeko and cofactor_lines):
             try:
                 rec_lines = open(rec_fh).readlines()
                 # Remove any trailing END record so we can append cleanly
                 rec_lines = [l for l in rec_lines if l.strip() != "END"]
                 rec_lines.extend(metal_lines)
                 rec_lines.extend(heme_lines)
+                if used_meeko:
+                    rec_lines.extend(cofactor_lines)
                 rec_lines.append("END\n")
                 with open(rec_fh, "w") as f:
                     f.writelines(rec_lines)
                 log.append(
-                    f"✓ Re-added {len(metal_lines)} metal + {len(heme_lines)} heme "
+                    f"✓ Re-added {len(metal_lines)} metal + {len(heme_lines)} heme + "
+                    f"{len(cofactor_lines) if used_meeko else 0} cofactor "
                     f"atom(s) to rec.pdb for display"
                 )
             except Exception as e:
                 log.append(f"⚠ Could not re-add metals/heme to rec.pdb: {e}")
 
         # ── Re-inject metals + heme into PDBQT with AD4 atom types ──────────
-        if metal_lines or heme_lines:
+        if metal_lines or heme_lines or (used_meeko and cofactor_lines):
             pdbqt_lines = open(rec_pdbqt).readlines()
             pdbqt_lines = [l for l in pdbqt_lines if l.strip() != "END"]
 
             injected        = 0
             skipped_exotic  = 0
             heme_injected   = 0
+            cofactor_injected = 0
 
             _no_reinject = {
                 "HO", "LA", "CE", "PR", "ND", "PM", "SM", "EU",
@@ -783,6 +917,24 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 log.append(f"✅ Re-injected {injected} metal atom(s) into PDBQT")
             if heme_injected:
                 log.append(f"✅ Re-injected {heme_injected} heme atom(s) into PDBQT with AD4 atom types")
+            if used_meeko and cofactor_lines:
+                grouped = {}
+                order = []
+                for line in cofactor_lines:
+                    key = (line[17:20], line[21], line[22:26], line[26] if len(line) > 26 else " ")
+                    if key not in grouped:
+                        grouped[key] = []
+                        order.append(key)
+                    grouped[key].append(line)
+                for idx, key in enumerate(order, 1):
+                    extra_lines, err = _append_rigid_pdbqt_from_pdb_lines(grouped[key], wdir, f"cofactor_{idx}")
+                    if extra_lines:
+                        pdbqt_lines.extend(extra_lines)
+                        cofactor_injected += len(extra_lines)
+                    elif err:
+                        log.append(f"⚠ Could not re-inject cofactor {key[0].strip()} {key[1]}:{key[2].strip()}: {err}")
+                if cofactor_injected:
+                    log.append(f"✅ Re-injected {cofactor_injected} cofactor PDBQT line(s)")
             if skipped_exotic:
                 log.append(
                     f"ℹ Skipped re-injection of {skipped_exotic} Ho/lanthanide ion(s) into "
