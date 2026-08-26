@@ -29,6 +29,8 @@ from core import (
     load_mols_from_sdf,
     write_single_pose,
     write_single_pose_pdb,
+    write_single_pose_with_h,
+    write_single_pose_pdb_with_h,
     get_interacting_residues,
     calc_rmsd_heavy,
     call_poseview_v1,
@@ -3904,6 +3906,20 @@ def _poseview_ui(
                         mime="chemical/x-mdl-sdfile",
                         key=btn_key + "_pv_dl_sdf", width='stretch',
                     )
+                    try:
+                        _pv_mols_dl = load_mols_from_sdf(pose_sdf_path)
+                        _pv_mol_dl = _pv_mols_dl[0] if _pv_mols_dl else None
+                        if _pv_mol_dl is not None:
+                            _pv_sdf_h_path = str(Path(pose_sdf_path).with_name(f"{Path(pose_sdf_path).stem}_with_H.sdf"))
+                            write_single_pose_with_h(_pv_mol_dl, _pv_sdf_h_path)
+                            st.download_button(
+                                "⬇ docked_pose_with_H.sdf", data=open(_pv_sdf_h_path, "rb"),
+                                file_name=f"pose_{pose_idx+1}_docked_with_H.sdf",
+                                mime="chemical/x-mdl-sdfile",
+                                key=btn_key + "_pv_dl_sdf_h", width='stretch',
+                            )
+                    except Exception:
+                        pass
             with _dl_c3:
                 if os.path.exists(pose_sdf_path):
                     try:
@@ -3917,6 +3933,14 @@ def _poseview_ui(
                                 file_name=f"pose_{pose_idx+1}_docked.pdb",
                                 mime="chemical/x-pdb",
                                 key=btn_key + "_pv_dl_pdb", width='stretch',
+                            )
+                            _pv_pdb_h_path = str(Path(pose_sdf_path).with_name(f"{Path(pose_sdf_path).stem}_with_H.pdb"))
+                            write_single_pose_pdb_with_h(_pv_mol_dl, _pv_pdb_h_path)
+                            st.download_button(
+                                "⬇ docked_pose_with_H.pdb", data=open(_pv_pdb_h_path, "rb"),
+                                file_name=f"pose_{pose_idx+1}_docked_with_H.pdb",
+                                mime="chemical/x-pdb",
+                                key=btn_key + "_pv_dl_pdb_h", width='stretch',
                             )
                     except Exception:
                         pass
@@ -5782,13 +5806,22 @@ with tab_basic:
                 st.markdown("**Download**")
                 sp_raw = str(WORKDIR / f"pose_{pose_idx+1}_raw.sdf")
                 sp_raw_pdb = str(WORKDIR / f"pose_{pose_idx+1}.pdb")
+                sp_raw_h = str(WORKDIR / f"pose_{pose_idx+1}_with_H.sdf")
+                sp_raw_pdb_h = str(WORKDIR / f"pose_{pose_idx+1}_with_H.pdb")
                 write_single_pose(sel_mol, sp_raw)
                 write_single_pose_pdb(sel_mol, sp_raw_pdb)
+                write_single_pose_with_h(sel_mol, sp_raw_h)
+                write_single_pose_pdb_with_h(sel_mol, sp_raw_pdb_h)
                 st.download_button(f"⬇ Pose {pose_idx+1} (.sdf)", open(sp_raw, "rb"),
                     file_name=f"pose_{pose_idx+1}.sdf", key=f"dl_p_{pose_idx}", width='stretch')
+                st.download_button(f"⬇ Pose {pose_idx+1} (.sdf, with H)", open(sp_raw_h, "rb"),
+                    file_name=f"pose_{pose_idx+1}_with_H.sdf", key=f"dl_p_h_{pose_idx}", width='stretch')
                 st.download_button(f"⬇ Pose {pose_idx+1} (.pdb)", open(sp_raw_pdb, "rb"),
                     file_name=f"pose_{pose_idx+1}.pdb", mime="chemical/x-pdb",
                     key=f"dl_p_pdb_{pose_idx}", width='stretch')
+                st.download_button(f"⬇ Pose {pose_idx+1} (.pdb, with H)", open(sp_raw_pdb_h, "rb"),
+                    file_name=f"pose_{pose_idx+1}_with_H.pdb", mime="chemical/x-pdb",
+                    key=f"dl_p_pdb_h_{pose_idx}", width='stretch')
                 st.download_button("⬇ All poses (.pdbqt)", open(st.session_state.output_pdbqt, "rb"),
                     file_name=f"{st.session_state.dock_base}_out.pdbqt", key="dl_pdbqt", width='stretch')
                 if df is not None:
@@ -6421,16 +6454,29 @@ with tab_batch:
                     safe_nm = sel_nm.replace("⭐ ", "").replace(" (co-crystal ref)", "")
                     sp3 = str(BATCH_WORKDIR / f"{safe_nm}_pose{b_pose_i+1}.sdf")
                     sp3_pdb = str(BATCH_WORKDIR / f"{safe_nm}_pose{b_pose_i+1}.pdb")
+                    sp3_h = str(BATCH_WORKDIR / f"{safe_nm}_pose{b_pose_i+1}_with_H.sdf")
+                    sp3_pdb_h = str(BATCH_WORKDIR / f"{safe_nm}_pose{b_pose_i+1}_with_H.pdb")
                     write_single_pose(b_mols[b_pose_i], sp3)
                     write_single_pose_pdb(b_mols[b_pose_i], sp3_pdb)
+                    write_single_pose_with_h(b_mols[b_pose_i], sp3_h)
+                    write_single_pose_pdb_with_h(b_mols[b_pose_i], sp3_pdb_h)
                     st.download_button(f"⬇ Pose {b_pose_i+1} (.sdf)", open(sp3, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf", key="b_dl_pose", width='stretch')
+                    st.download_button(f"⬇ Pose {b_pose_i+1} (.sdf, with H)", open(sp3_h, "rb"),
+                        file_name=f"{safe_nm}_pose{b_pose_i+1}_with_H.sdf", key="b_dl_pose_h", width='stretch')
                     st.download_button(f"⬇ Pose {b_pose_i+1} (.pdb)", open(sp3_pdb, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.pdb", mime="chemical/x-pdb",
                         key="b_dl_pose_pdb", width='stretch')
+                    st.download_button(f"⬇ Pose {b_pose_i+1} (.pdb, with H)", open(sp3_pdb_h, "rb"),
+                        file_name=f"{safe_nm}_pose{b_pose_i+1}_with_H.pdb", mime="chemical/x-pdb",
+                        key="b_dl_pose_pdb_h", width='stretch')
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
                         st.download_button("⬇ All poses (.pdbqt)", open(sel_res["out_pdbqt"], "rb"),
                             file_name=f"{safe_nm}_out.pdbqt", key="b_dl_pdbqt", width='stretch')
+                    if _rec_fh and os.path.exists(_rec_fh):
+                        st.download_button("⬇ Receptor (.pdb)", open(_rec_fh, "rb"),
+                            file_name="receptor.pdb", mime="chemical/x-pdb",
+                            key="b_dl_receptor_pdb", width='stretch')
 
         st.markdown("---")
         with st.expander("📋 Full docking log", expanded=False):
@@ -6733,6 +6779,8 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 st.markdown(
     '<div style="text-align:center;color:#57606A;font-size:0.78rem;'
     'font-family:\'IBM Plex Mono\',monospace;">'
+    '<img src="https://d1.awsstatic.com/customer-references-case-studies-logos/1200x900_logos/Powered-by-AWS_1200x900_Logo.4525cf2f0c07616a2bedf9a9a52da83b935f64d3.png" '
+    'alt="Powered by AWS" style="display:block;margin:0 auto 0.45rem auto;max-width:180px;width:100%;height:auto;">'
     'AutoDock Vina 1.2.7 · Meeko · RDKit · OpenBabel · py3Dmol<br>'
     'Eberhardt et al. J. Chem. Inf. Model. 2021, 61, 3891&#8211;3898 &nbsp;·&nbsp; '
     '<a href="https://pubs.acs.org/doi/10.1021/acs.jcim.5c02852" target="_blank" '

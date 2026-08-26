@@ -3634,6 +3634,29 @@ def write_single_pose_pdb(mol, path: str) -> None:
     Chem.MolToPDBFile(mol, path)
 
 
+def write_single_pose_with_h(mol, path: str) -> None:
+    from rdkit import Chem
+    mol_copy = Chem.Mol(mol)
+    try:
+        mol_copy = Chem.RemoveHs(mol_copy, sanitize=False)
+    except Exception:
+        pass
+    mol_h = Chem.AddHs(mol_copy, addCoords=True)
+    with Chem.SDWriter(path) as w:
+        w.write(mol_h)
+
+
+def write_single_pose_pdb_with_h(mol, path: str) -> None:
+    from rdkit import Chem
+    mol_copy = Chem.Mol(mol)
+    try:
+        mol_copy = Chem.RemoveHs(mol_copy, sanitize=False)
+    except Exception:
+        pass
+    mol_h = Chem.AddHs(mol_copy, addCoords=True)
+    Chem.MolToPDBFile(mol_h, path)
+
+
 def convert_sdf_to_v2000(sdf_path: str) -> str:
     from rdkit import Chem, RDLogger
     out = sdf_path.replace(".sdf", "_v2000.sdf")
