@@ -304,7 +304,7 @@ print("Top score:", dock["top_score"])
 | Automated scripting | No | No | Yes | Partial |
 | Interactive Pose Browser | Yes | Yes | File output | Yes |
 | ADME/ADMET analysis | Yes | Yes | Optional tools | No |
-| Strict ferric/Compound-I validation | Not yet | Yes | Yes | Yes |
+| Strict ferric/Compound-I validation | Yes | Yes | Yes | Yes |
 | Private local processing | No | Yes | Yes | Colab runtime |
 
 ---
