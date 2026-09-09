@@ -1,68 +1,166 @@
-# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> Anyone can dock, everyone can do!
+# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> Anyone Can Dock
 
-**Anyone docking: Browser-based molecular docking — no installation required.**
+**Anyone can dock, Everyone can do!**
+
+***One molecular docking workflow, four ways to run.***
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://nyelidl.github.io/anyone-docking/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/anyonecandock/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> Paste a SMILES, draw a structure, or upload a file. Pick a PDB or CIF. Dock in seconds.
+Anyone Can Dock makes protein-ligand docking accessible through a **zero-install web app**, a **private local interface**, an **automation-friendly CLI**, and a **GPU-ready Google Colab notebook**.
 
-> **Recent updates:** New **CLI** and **Python API** via [`anyonecandock`](https://pypi.org/project/anyonecandock/) on PyPI. New **`redock` command** — automatically re-docks the co-crystal ligand with zero SMILES input (RCSB CCD lookup → CIF block → 3D fallback). Receptor setup now auto-scans ligand-like HETATM records. Ligand preparation supports pKaNET-ranked microstates with manual rank selection.
+> From structure preparation to validated docking results, without making molecular docking harder than it needs to be.
 
 ---
 
-## 🚀 Six ways to use Anyone Can Dock
+## 🚀 Four ways to use Anyone Can Dock (ACD)
 
-| Mode | Best for | How |
+| Mode | Best for | Start here |
 |---|---|---|
-| 🌐 **Streamlit Web App** | Quickest start, no setup | [Open in browser →](https://nyelidl.github.io/anyone-docking/) |
-| ☁️ **Streamlit via Colab** | Web UI on free GPU/CPU | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1WtWYUUB1AREZMeB5qEJ9OD84AvWk1z4z?usp=sharing) |
-| 🖥️ **Streamlit locally** | Full control, own machine | `See below ↓` |
-| 📓 **Colab notebook** | Batch docking, scripting | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
-| ⌨️ **CLI (`acd`)** | Automation, pipelines, scripts | `pip install anyonecandock` then `acd dock ...` |
-| 🐍 **Python API** | Programmatic integration | `from anyonecandock import core` |
-| 🤖 **GPT / Claude plugin** | Natural-language docking | `See below ↓` |
+| 🌐 **ACD Online** | Beginners, teaching, demonstrations, quick docking | [Open in browser →](https://nyelidl.github.io/anyone-docking/) |
+| 🖥️ **ACD Local** | Private research and unrestricted local workflows | [Local installation](#-acd-local) |
+| ⌨️ **ACD CLI** | Automation, reproducible research, servers, screening | `pip install anyonecandock` |
+| 📓 **ACD Google Colab** | Workshops, portable research, GPU docking | [Open in Colab →](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
 
 ---
 
-## 🤖 AI Interfaces
+## 🌐 ACD Online
 
-### Anyone Can Dock GPT
-Ask GPT-4o to dock molecules using natural language.
+**Best for:** beginners, teaching, demonstrations, and quick docking without installation.
 
-[![ChatGPT](https://img.shields.io/badge/ChatGPT-Anyone_Can_Dock_GPT-10a37f?logo=openai&logoColor=white)](https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt)
+- Runs directly in a web browser
+- Interactive **Basic Dock** and **Batch Dock** modes
+- Download structures from RCSB or upload PDB/mmCIF files
+- Automatic, manual, residue-selection, and blind-docking box placement
+- Meeko receptor preparation with Open Babel fallback
+- Metal, heme, cofactor, water, and HETATM handling
+- SMILES, PubChem name, SDF, MOL2, and PDB ligand input
+- pH-aware ligand protonation with pKaNET
+- AutoDock Vina docking and reproducible random seeds
+- Co-crystal redocking and RMSD validation
+- Interactive 3D receptor, binding-box, ligand, and pose visualization
+- Pose Browser with individual pose export
+- Download SDF or PDB poses with explicit hydrogens
+- Preserve all docked poses in the original PDBQT output
+- Interaction diagrams using ACD, RDKit, ProLIF, and PoseView
+- Batch ranking, score tables, ProLIF interaction barcodes, and ZIP export
+- RDKit physicochemical descriptors, drug-likeness rules, and structural alerts
+- Optional ADMET-AI predictions
 
-### Anyone Can Dock in Claude
-Connect Claude to the ACD API as a custom MCP connector — ask Claude to dock molecules, search PDB targets, and interpret results directly in the chat.
-
-**Setup (3 steps):**
-
-1. Copy the MCP server URL:
-   ```
-   https://anyone-can-dock-mcp.anyonecandock.workers.dev
-   ```
-2. Click the badge below to open Claude Connectors settings, then click **"Add custom connector"**
-
-   [![Add to Claude](https://img.shields.io/badge/Claude-Add_Anyone_Can_Dock-cc7b4b?logo=anthropic&logoColor=white)](https://claude.ai/customize/connectors)
-
-3. Paste the URL into **Remote MCP server URL** and click **Add**
-
-**Example prompts after connecting:**
-```
-"dock quercetin into JAK2 and report binding affinity"
-"compare erlotinib vs gefitinib binding to EGFR (1M17)"
-```
-
-**Powered by:** AutoDock Vina 1.2.7 · pKaNET protonation at pH 7.4 · MCP Streamable HTTP
-
-> MCP server URL: `https://anyone-can-dock-mcp.anyonecandock.workers.dev`
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://nyelidl.github.io/anyone-docking/)
 
 ---
 
-## ⌨️ CLI — `acd` command
+## 🖥️ ACD Local
 
-Install from PyPI:
+**Best for:** private research, full graphical functionality, and unrestricted local workflows.
+
+Includes all major Online features, plus:
+
+- Runs entirely on the user's own computer
+- Local control of receptor, ligand, result, and temporary files
+- Basic Dock and Batch Dock interfaces
+- Validated ferric-heme and Compound-I preparation
+- Automatic `HEME_FERRIC` versus `CPD_I` geometry detection
+- Geometric ferryl oxygen and proximal cysteine identification
+- Fe-O and Fe-S validation gates
+- Ferryl oxygen hydrogen removal
+- JSON-derived RESP charges for Fe, OXO, heme, and proximal cysteine
+- Final PDBQT reread and charge validation before docking
+- Fail-closed heme validation: docking starts only after required checks pass
+- Receptor PDB, scores, individual poses, hydrogenated poses, diagrams, and complete result archives
+- Optional local ADMET-AI analysis
+- No hosted-server runtime or storage restrictions
+
+### Linux (Ubuntu/Debian)
+
+```bash
+sudo apt update
+sudo apt install -y \
+  python3.11 \
+  python3.11-venv \
+  openbabel \
+  libcairo2-dev \
+  libpango1.0-dev \
+  libpangocairo-1.0-0
+
+git clone https://github.com/nyelidl/anyone-docking-local.git
+cd anyone-docking-local
+
+python3.11 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+streamlit run app.py
+```
+
+### macOS
+
+```bash
+brew update
+brew install python@3.11 open-babel cairo pango
+
+git clone https://github.com/nyelidl/anyone-docking-local.git
+cd anyone-docking-local
+
+python3.11 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+streamlit run app.py
+```
+
+> **Apple Silicon (M1-M4):** supported with the native `aarch64` Vina binary.
+
+### Windows
+
+**Recommended:** use WSL2 with Ubuntu and follow the Linux instructions above.
+
+For native Windows:
+
+1. Install Open Babel and add it to `PATH`.
+2. Install Cairo/Pango, for example with `conda install -c conda-forge cairo pango`.
+3. Clone and run the app:
+
+```bash
+git clone https://github.com/nyelidl/anyone-docking-local.git
+cd anyone-docking-local
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+---
+
+## ⌨️ ACD CLI
+
+**Best for:** automation, reproducible research, scripting, servers, and large screening projects.
+
+- Commands for docking, batch docking, receptor preparation, ligand preparation, redocking, and diagrams
+- Accepts PDB IDs or local PDB/mmCIF structures
+- Accepts SMILES, PubChem names, SDF, MOL2, and PDB ligands
+- Automatic co-crystal, manual, selection-based, and blind-docking boxes
+- No artificial docking-box size limit
+- Preparation-only mode without starting Vina
+- Prepared-receptor JSON export and reuse
+- pH-aware, tautomer-aware ligand preparation using pKaNET
+- Microstate selection and configurable tautomer limits
+- Deterministic conformer and Vina random seeds
+- AutoDock Vina exhaustiveness, pose count, and energy-range controls
+- Batch-safe noninteractive operation
+- Automatic co-crystal redocking and heavy-atom RMSD verdicts
+- Validated ferric-heme and Compound-I preparation
+- RESP charge assignment and final PDBQT validation
+- Multi-heme-center support
+- PDBQT, SDF, bond-order-corrected SDF, PDB, CSV, and SVG output
+- Eight interaction classes, including hydrogen bonding, hydrophobic, aromatic, ionic, halogen, and metal/heme coordination
+- Python API access for integration into custom pipelines
+
+### Install from PyPI
 
 ```bash
 pip install anyonecandock
@@ -70,15 +168,15 @@ pip install anyonecandock
 
 ### Commands
 
-```
+```text
 acd <command> [options]
 
   dock      Full pipeline: receptor + ligand + Vina (single ligand)
-  redock    Self-docking validation — no SMILES input needed
+  redock    Self-docking validation; no SMILES input needed
   batch     Batch docking from a .smi file or SMILES list
-  receptor  Prepare receptor only (download/convert → .pdb + .pdbqt + box)
-  ligand    Prepare ligand only (SMILES/file → .pdbqt + .sdf)
-  diagram   Generate a 2D interaction diagram SVG for a completed run
+  receptor  Prepare receptor only
+  ligand    Prepare ligand only
+  diagram   Generate a 2D interaction diagram SVG
 ```
 
 ### Quick examples
@@ -90,149 +188,51 @@ acd dock --receptor 1M17 --compound erlotinib
 # Dock by SMILES
 acd dock --receptor 4AGN --smiles "CCO" --name ethanol
 
-# Dock from an existing receptor preparation (skips re-prep)
+# Reuse a prepared receptor
 acd dock --receptor-json ./rec/receptor_summary.json --compound baicalein
 
-# Dock from a structure file
+# Dock from local structure files
 acd dock --receptor structure.cif --ligand-file ligand.sdf --name mylig
 
-# ── Redocking (self-docking validation) — NEW ──────────────────────────
-# Re-docks the co-crystal ligand automatically; no SMILES required.
-# SMILES acquired via: RCSB CCD → CIF _chem_comp.pdbx_smiles → 3D fallback
+# Self-docking validation
 acd redock --receptor 4AGN
 acd redock --receptor structure.cif --fmt CIF
 acd redock --receptor 4AGN --resname DC3 --diagram
-acd redock --receptor-json ./rec/receptor_summary.json
 
 # Batch docking
 acd batch --receptor 1M17 --ligands compounds.smi
 acd batch --receptor 4AGN --smiles-list "CCO ethanol" "c1ccccc1O phenol"
 ```
 
-### `acd redock` — self-docking validation
+### Redocking verdict
 
-The `redock` command automatically identifies and re-docks the co-crystal ligand present in a PDB/CIF structure — **no SMILES input required**.
+The `redock` workflow automatically identifies and re-docks the co-crystal ligand. SMILES are obtained in this order:
 
-```
-acd redock --receptor <PDB_ID_or_FILE> [options]
+1. RCSB Chemical Component Dictionary (CCD)
+2. CIF `_chem_comp.pdbx_smiles`
+3. 3D coordinate conversion as a fallback
 
-Options:
-  --resname     Override the auto-detected ligand residue name (e.g. DC3, ATP)
-  --name        Output name for the re-docked ligand (default: residue code)
-  --ph          Target pH for protonation (default: 7.4)
-  --diagram     Generate 2D interaction diagram after docking
-  --save-poses  Save each docked pose as an individual SDF/PDB file
-  -e / --exhaustiveness   Vina exhaustiveness (default: 16)
-  -n / --poses            Max poses to output (default: 10)
-  -o / --output           Output directory (default: ./acd_redock)
-```
+The heavy-atom RMSD verdict is reported automatically:
 
-**SMILES acquisition order:**
-1. **RCSB CCD REST API** — ideal, stereo-correct, curated SMILES from the PDB chemical component dictionary
-2. **CIF `_chem_comp.pdbx_smiles`** — parsed directly from the structure CIF (no network required)
-3. **3D coordinate conversion** — RDKit + OpenBabel with hydrogen-aware bond perception (last resort; a warning is shown)
+- **PASS:** RMSD <= 2.0 Å
+- **BORDERLINE:** RMSD > 2.0 Å and <= 3.0 Å
+- **FAIL:** RMSD > 3.0 Å
 
-**Redocking verdict** (printed automatically):
-- ✓ **PASS** — best pose RMSD ≤ 2.0 Å vs crystal
-- ⚠ **BORDERLINE** — RMSD 2–3 Å
-- ✗ **FAIL** — RMSD > 3.0 Å
-
-### All `acd dock` options
-
-```bash
-
-usage: acd dock [options]
-acd dock --help
-
-Protein:
-  --receptor PDB_ID_or_FILE
-      PDB ID (auto-downloaded) or path to .pdb/.cif
-  --receptor-json PATH
-      JSON from a previous acd receptor run
-  --fmt {PDB,CIF}
-      Input format (default: PDB)
-
-Ligand:
-  --smiles SMILES
-      Ligand SMILES string
-  --compound NAME
-      Compound name for PubChem lookup
-  --ligand-file PATH
-      Ligand structure file (.sdf/.mol2/.pdb)
-  --name NAME
-      Output name (default: LIG)
-  --ph PH
-      Target pH (default: 7.4)
-  --neutral
-      Keep the input charge and add hydrogens only
-  --no-pubchem
-      Skip PubChem pKa lookup
-
-Docking box:
-  --center {auto,manual,selection}
-      Box center mode (default: auto)
-  --cx X
-      Manual box-center X coordinate
-  --cy Y
-      Manual box-center Y coordinate
-  --cz Z
-      Manual box-center Z coordinate
-  --bx Å
-      Box X size, 10–40 Å (default: 18)
-  --by Å
-      Box Y size, 10–40 Å (default: 18)
-  --bz Å
-      Box Z size, 10–40 Å (default: 18)
-
-pKaNET:
-  --max-tautomers N
-      Maximum tautomers, 1–20 (default: 8)
-  --ph-window PH
-      pH window, 0.2–2.0 (default: 1.0)
-  --conformer-seed N
-      RDKit conformer seed (default: random)
-
-Vina:
-  -e N, --exhaustiveness N
-      Vina exhaustiveness (default: 16)
-  -n N, --poses N
-      Maximum poses (default: 10)
-  --energy-range KCAL
-      Energy range in kcal/mol (default: 3)
-  --seed N
-      Vina random seed (default: random)
-
-Validation and output:
-  --redock-smiles "SMILES [name]"
-      Dock a reference co-crystal ligand
-  --save-poses
-      Save individual pose files
-  --diagram
-      Generate a 2D interaction diagram
-  -o OUTPUT, --output OUTPUT
-      Output directory (default: ./acd_results)
-```
-
----
-
-## 🐍 Python API
+### Python API
 
 ```python
 from anyonecandock import core
 
-# Reproducibility settings
 SEED = 72
 BOX_SIZE = (18, 18, 18)
 vina_bin = "/path/to/vina"
 
-# Prepare receptor
 result = core.prepare_receptor(
     raw_pdb="raw.pdb",
     wdir="./rec",
     box_size=BOX_SIZE,
 )
 
-# Prepare ligand using heuristic pKaNET backend
 lig = core.prepare_ligand(
     smiles="c1ccc(cc1)O",
     name="phenol",
@@ -245,7 +245,6 @@ lig = core.prepare_ligand(
     conformer_seed=SEED,
 )
 
-# Run deterministic docking
 dock = core.run_vina(
     receptor_pdbqt=result["rec_pdbqt"],
     ligand_pdbqt=lig["pdbqt"],
@@ -260,184 +259,89 @@ dock = core.run_vina(
 )
 
 print("Top score:", dock["top_score"])
-
-# Auto-detect co-crystal SMILES
-smiles, source, warning = core.get_cocrystal_smiles(
-    ligand_pdb_path=result["ligand_pdb_path"],
-    cocrystal_ligand_id=result["cocrystal_ligand_id"],
-    raw_pdb="raw.cif",
-)
-
-print(f"SMILES source: {source}")
-print(f"SMILES: {smiles}")
-if warning:
-    print(f"Warning: {warning}")
-
-# 2D interaction diagram
-svg_bytes = core.draw_interaction_diagram(
-    receptor_pdb=result["rec_fh"],
-    pose_sdf="./out/phenol_out.sdf",
-    smiles=lig["prot_smiles"],
-    title="Phenol · 4AGN",
-)
-
-with open("./out/diagram.svg", "wb") as handle:
-    handle.write(svg_bytes)
 ```
 
 ---
 
-## 🌐 Streamlit Web App
+## 📓 ACD Google Colab
 
-The simplest entry point — no installation, runs in the browser.
+**Best for:** workshops, education, portable research, and GPU docking without local setup.
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://nyelidl.github.io/anyone-docking/)
+- Guided notebook workflow with step-by-step preparation and analysis
+- Upload PDB/mmCIF structures or download them from RCSB
+- Receptor and pH-aware ligand preparation
+- Validated ferric-heme and Compound-I handling
+- Four supported docking engines:
+  - AutoDock Vina 1.2.7
+  - VinaXB
+  - GNINA
+  - Vina-GPU 2.1
+- Google T4 GPU support for Vina-GPU
+- Co-crystal redocking before production docking
+- Interactive ligand and pose selection
+- Binding-box validation
+- Heavy-atom RMSD analysis across poses
+- Engine-aware score extraction
+- Ranked CSV results and score plots
+- Individual result download or complete ZIP packaging
+- Mobile- and tablet-friendly result export
+- No additional `prepare_receptor.py` upload required; required preparation logic is included in the notebook/package
 
-Supports single and batch docking, all 2D diagram engines, interactive drag layout, ADME predictions, and ready-to-use figure export.
-
----
-
-## ☁️ Streamlit via Google Colab
-
-Run the full Streamlit web interface on Colab's free compute tier — no local install needed.
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1WtWYUUB1AREZMeB5qEJ9OD84AvWk1z4z?usp=sharing)
-
----
-
-## 📓 Colab Notebook (batch docking)
-
-Batch docking with 4 docking engines in a Python notebook environment:
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing)
 
-![Batch Docking](https://raw.githubusercontent.com/nyelidl/Docking_workshop/main/batch.png)
+---
+
+## 📊 Choose Your Version
+
+| Capability | Online | Local | CLI | Colab |
+|---|---:|---:|---:|---:|
+| Graphical workflow | Yes | Yes | No | Notebook |
+| No local installation | Yes | No | No | Yes |
+| Basic docking | Yes | Yes | Yes | Yes |
+| Batch docking | Yes | Yes | Yes | Yes |
+| AutoDock Vina | Yes | Yes | Yes | Yes |
+| VinaXB, GNINA, and Vina-GPU | No | No | No | Yes |
+| Automated scripting | No | No | Yes | Partial |
+| Interactive Pose Browser | Yes | Yes | File output | Yes |
+| ADME/ADMET analysis | Yes | Yes | Optional tools | No |
+| Strict ferric/Compound-I validation | Not yet | Yes | Yes | Yes |
+| Private local processing | No | Yes | Yes | Colab runtime |
 
 ---
 
-## 🖥️ Run Streamlit locally
+## 🧬 Heme-aware docking
 
-The local app uses the deterministic heuristic pKaNET backend.
-ML pKa backends are disabled.
+ACD Local, CLI, and Colab support validated preparation of ferric heme and Compound-I systems.
 
-### Linux (Ubuntu/Debian)
+For supported heme centers, ACD can:
 
-```bash
-sudo apt update
-
-sudo apt install -y \
-  python3.11 \
-  python3.11-venv \
-  openbabel \
-  libcairo2-dev \
-  libpango1.0-dev \
-  libpangocairo-1.0-0
-
-git clone https://github.com/nyelidl/anyone-docking-local.git
-cd anyone-docking-local
-
-python3.11 -m venv venv
-source venv/bin/activate
-
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-
-streamlit run app.py
-```
-
-### macOS
-```bash
-brew update
-brew install python@3.11 open-babel cairo pango
-
-git clone https://github.com/nyelidl/anyone-docking-local.git
-cd anyone-docking-local
-
-python3.11 -m venv venv
-source venv/bin/activate
-
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-
-streamlit run app.py
-```
-
-> **Apple Silicon (M1–M4):** Fully supported — the app auto-downloads the correct `aarch64` Vina binary.
-
-### Windows
-
-> **Recommended:** Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/) with Ubuntu and follow the Linux instructions above.
-
-For native Windows:
-1. Install **OpenBabel** from [openbabel.org](https://openbabel.org/wiki/Category:Installation) and add to PATH
-2. Install **Cairo/Pango** via conda: `conda install -c conda-forge cairo pango`
-
-```bash
-git clone https://github.com/nyelidl/anyone-docking-local.git
-cd anyone-docking-local
-python -m venv venv && venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-### Streamlit Cloud deployment
-
-```
-anyone-docking/
-├── app.py
-├── core.py
-├── requirements.txt   # Python packages
-└── packages.txt       # System packages (openbabel, libcairo2-dev, …)
-```
+- Detect `HEME_FERRIC` versus `CPD_I` from local Fe coordination geometry
+- Identify a ferryl oxygen geometrically rather than relying only on atom names
+- Recognize ferryl oxygen labels such as `O`, `O1`, `OXY`, or `OXO`
+- Identify the proximal cysteine sulfur geometrically
+- Validate Fe-O and Fe-S distances before docking
+- Remove an incorrectly retained O-H hydrogen from the ferryl oxygen
+- Apply JSON-derived RESP charges to Fe, OXO, the heme group, and proximal cysteine
+- Re-read the final PDBQT and validate required charges before docking
+- Fail closed if required heme-state checks do not pass
+- Handle multiple heme centers in CLI workflows
 
 ---
 
-## ✨ What it does
+## 🗺️ Interaction analysis
 
-| | |
-|---|---|
-| 🔬 | **Single & batch docking** via AutoDock Vina 1.2.7 |
-| ♻️ | **`redock` — self-docking validation** — auto-fetches co-crystal SMILES (RCSB CCD → CIF → 3D), docks, reports RMSD verdict |
-| 🏗️ | **Guided receptor prep** — download any PDB/CIF, review ligand candidates automatically, strip solvent, add hydrogens |
-| 📄 | **PDB & mmCIF support** — upload `.pdb` or `.cif` files or download from RCSB (auto-fallback to CIF for large entries) |
-| 🎯 | **Smart grid detection** — auto-detects ligand-like HETATM records; shows dropdown only when multiple candidates exist |
-| ✏️ | **3-way ligand input** — SMILES text, file upload, or draw in **Ketcher** |
-| 🧬 | **pKaNET-ranked microstates** — tautomer-aware protonation at target pH with manual rank selection [Open in browser →](https://nyelidl.github.io/pKaNET_Cloud/)|
-| ⚖️ | **Conservative docking-state selection** — avoids over-deprotonated states for polyphenols, flavonoids, coumarins |
-| 🧬 | **Heme-aware preparation** — HEM/HEC/HEA/HEB stripped before OpenBabel, re-injected with correct AD4 atom types |
-| ⚗️ | **Water/cofactor/metal control** — remove waters, keep metals, keep/strip FAD/NAD/ATP/CoA independently |
-| 🗺️ | **Three 2D diagram engines**: ACD custom SVG · RDKit · PoseView (proteins.plus) |
-| 🖱️ | **Interactive drag mode** — reposition residue labels in real time, export PNG (up to 600 dpi) or SVG |
-| 🔭 | **Binding pocket viewer** — interacting residues as orange sticks with adjustable distance cutoff |
-| 🤖 | **AI-ready prompt** — auto-filled for Claude, GPT-4o, Gemini; adapts to redocking context |
-| 📊 | **3D viewers** — animated multi-pose sweep, pose selector, binding pocket view |
-| 📁 | **One-click ZIP** — all poses, corrected SDFs, diagrams, score plot, pKaNET log |
+ACD supports eight interaction classes in its geometry-based analysis, including:
 
----
+- Hydrogen bonds
+- Hydrophobic contacts
+- Aromatic interactions
+- Cation-pi interactions
+- Ionic interactions
+- Metal/heme coordination
+- Halogen bonds
+- H···halogen contacts
 
-## 🗺️ 2D Interaction Diagrams
-
-Three tabs — each with a different rendering engine:
-
-### 🧬 Anyone Can Dock 2D Diagram *(default)*
-
-| Feature | Detail |
-|---|---|
-| **8 interaction types** | H-bond (distance on line), hydrophobic, π-π, cation-π, ionic, metal/heme, halogen bond, H···halogen |
-| **Geometry-based** | All interactions computed from 3D coordinates — no server, works offline |
-| **ACS-style bonds** | Bond widths, double-bond spacing, and wedge geometry follow ACS publication standards |
-| **Smart layout** | Radial placement by interaction angle; push-apart prevents overlap |
-| **Interactive drag** | Reposition any residue label in real time; distance labels update live |
-| **Export** | SVG (vector) · PNG at 1× / 2× (150 dpi) / 3× (300 dpi) / 4× (600 dpi) |
-
-### 🔬 RDKit 2D Diagram
-
-Classic highlight-circle style. H-bond (blue) · Hydrophobic (green) · Other/metal (pink). Side-by-side with co-crystal reference when available.
-
-### 🔬 PoseView (proteins.plus)
-
-REST API submission of receptor + docked pose. PoseView v1 (docked pose) + PoseView2 (co-crystal reference by PDB code + ligand ID). Built-in API test and manual fallback download.
-
-> ⚠️ **PoseView limitation:** charged species are shown in neutral form. Use ACD or RDKit diagrams for ligands with formal charges.
+Depending on the interface, results can also be visualized with **RDKit**, **ProLIF**, and **PoseView**.
 
 ---
 
@@ -446,93 +350,94 @@ REST API submission of receptor + docked pose. PoseView v1 (docked pose) + PoseV
 | Protein class | Support | Notes |
 |---|---|---|
 | Standard single-chain proteins | ✅ Full | Primary use case |
-| Multi-chain / homo-oligomers | ✅ Full | Duplicate chains deduplicated; chain A ligand auto-selected |
-| Heme proteins (CYP450, peroxidases, Hb, Mb) | ✅ Full | Fe-porphyrin handled separately; grid auto-centers on Fe |
-| Metal-binding proteins (zinc fingers, carbonic anhydrase) | ✅ Full | ZN, MG, CA, MN, FE, CU re-injected with correct charges |
-| MD simulation outputs (GROMACS, AMBER) | ✅ Full | Blank chain IDs auto-assigned to chain A |
-| Non-standard ligand names (MOL, LIG, UNL, INH) | ✅ Full | |
-| Modified amino acids (CYP, MSE, TPO, SEP) | ✅ Full | Backbone atom check keeps them in receptor |
-| Multiple co-crystal ligands | ✅ Full | Dropdown shown only when needed |
-| Cofactor-binding proteins (FAD, NAD, ATP, CoA) | ✅ Full | Kept or stripped independently |
-| RNA / DNA targets | ⚠️ Partial | Basic interaction detection; no nucleic-acid-specific types |
-| Covalent docking | ❌ No | Vina is non-covalent only |
+| Multi-chain / homo-oligomers | ✅ Full | Multi-chain structures supported |
+| Heme proteins | ✅ Full | Ferric heme and Compound-I supported in Local/CLI/Colab |
+| Metal-binding proteins | ✅ Full | Common metal ions can be retained during preparation |
+| MD simulation outputs | ✅ Full | PDB structures from common MD workflows can be used |
+| Non-standard ligand names | ✅ Full | Ligand-like HETATM records can be detected |
+| Modified amino acids | ✅ Full | Supported when retained as part of the receptor |
+| Multiple co-crystal ligands | ✅ Full | Ligand selection supported |
+| Cofactor-binding proteins | ✅ Full | Cofactors can be retained or removed as appropriate |
+| RNA / DNA targets | ⚠️ Partial | No nucleic-acid-specific interaction model |
+| Covalent docking | ❌ No | Standard Vina docking is non-covalent |
 
 ---
 
-## ♻️ Redocking validation
+## 🤖 AI interfaces
 
-Available in **all modes** (Streamlit, CLI `acd redock`, API, Colab):
+AI interfaces are optional front ends to ACD rather than separate docking engines.
 
-| Feature | Description |
-|---|---|
-| **Auto SMILES acquisition** | RCSB CCD API → CIF `_chem_comp.pdbx_smiles` → 3D conversion (no manual input needed) |
-| **RMSD vs crystal** | Heavy-atom RMSD via MCS matching against original crystal pose |
-| **Verdict** | PASS ≤ 2.0 Å · BORDERLINE 2–3 Å · FAIL > 3.0 Å |
-| **Reference score line** | Dashed red line on affinity plot |
-| **Pose confirmation** | Browse reference poses, pin as baseline for score comparisons |
-| **Download** | Export reference poses as SDF/PDBQT |
+### Anyone Can Dock GPT
+
+Ask ChatGPT to dock molecules using natural-language instructions.
+
+[![ChatGPT](https://img.shields.io/badge/ChatGPT-Anyone_Can_Dock_GPT-10a37f?logo=openai&logoColor=white)](https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt)
+
+### Anyone Can Dock in Claude
+
+Connect Claude to the ACD API as a custom MCP connector.
+
+**MCP server URL:**
+
+```text
+https://anyone-can-dock-mcp.anyonecandock.workers.dev
+```
+
+[![Add to Claude](https://img.shields.io/badge/Claude-Add_Anyone_Can_Dock-cc7b4b?logo=anthropic&logoColor=white)](https://claude.ai/customize/connectors)
+
+Example prompts:
+
+```text
+"dock quercetin into JAK2 and report binding affinity"
+"compare erlotinib vs gefitinib binding to EGFR (1M17)"
+```
 
 ---
 
 ## 💻 Platform compatibility
 
-| Platform | Vina binary | OpenBabel | Status |
+| Platform | Vina binary | Open Babel | Status |
 |---|---|---|---|
-| **Linux x86_64** | ✅ Auto-download | `apt install openbabel` | Fully supported (primary) |
-| **macOS Intel** | ✅ Auto-download | `brew install open-babel` | Fully supported |
-| **macOS Apple Silicon** (M1–M4) | ✅ Native `aarch64` | `brew install open-babel` | Fully supported |
-| **Windows x86_64** | ✅ Auto-download | [Installer](https://openbabel.org/wiki/Category:Installation) | Supported (WSL2 recommended) |
-| **Streamlit Cloud** | ✅ Auto-download | via `packages.txt` | Fully supported |
-| **Google Colab** | ✅ Auto-download | `!apt install openbabel` | Fully supported |
-
----
-
-## 🧬 pKaNET microstate selection
-
-| Mode | Meaning |
-|---|---|
-| **Auto recommended** | pKaNET recommendation. For ambiguous systems (polyphenols, coumarins, flavonoids), may choose a conservative state rather than the highest score |
-| **Highest-scoring** | Top-ranked pKaNET state directly |
-| **Manual rank** | Choose any ranked microstate from a dropdown before docking |
-
----
-
-## ⚗️ Water, cofactor & metal options
-
-| Option | Default | Effect |
-|---|---|---|
-| **Remove waters** | ✅ On | Removes crystallographic waters |
-| **Keep metal ions** | ✅ On | Keeps ZN, MG, CA, MN, FE, CU, CO, NI, CD, HG, NA, K |
-| **Keep cofactors** | ✅ On | Keeps ATP, ADP, FAD, FMN, NAD, CoA, SAM, HEM |
-
-Buffers and additives (GOL, EDO, PEG, SO4, PO4) are removed by default.
+| Linux x86_64 | Auto-download | `apt install openbabel` | Fully supported |
+| macOS Intel | Auto-download | `brew install open-babel` | Fully supported |
+| macOS Apple Silicon | Native `aarch64` | `brew install open-babel` | Fully supported |
+| Windows x86_64 | Auto-download | Installer / WSL2 | Supported; WSL2 recommended |
+| Streamlit Cloud | Auto-download | via `packages.txt` | Fully supported |
+| Google Colab | Auto-download | `apt install openbabel` | Fully supported |
 
 ---
 
 ## 📄 Citation
 
-If you use this tool in research, please cite:
+If you use ACD in research, please cite the relevant methods used in your workflow.
 
-> **AutoDock Vina 1.2.7**
-> Eberhardt et al., *J. Chem. Inf. Model.*, 2021 · DOI: [10.1021/acs.jcim.1c00203](https://doi.org/10.1021/acs.jcim.1c00203)
+> **AutoDock Vina 1.2.7**  
+> Eberhardt et al., *J. Chem. Inf. Model.*, 2021. DOI: [10.1021/acs.jcim.1c00203](https://doi.org/10.1021/acs.jcim.1c00203)
 
-> **DFDD**
-> Hengphasatporn, K.; Duan, L.; Harada, R.; Shigeta, Y., *J. Chem. Inf. Model.*, 2026 · DOI: [10.1021/acs.jcim.5c02852](https://doi.org/10.1021/acs.jcim.5c02852)
+> **DFDD**  
+> Hengphasatporn, K.; Duan, L.; Harada, R.; Shigeta, Y., *J. Chem. Inf. Model.*, 2026. DOI: [10.1021/acs.jcim.5c02852](https://doi.org/10.1021/acs.jcim.5c02852)
+
+> **Anyone Can Dock: An Online Molecular Docking Tool for Everyone**  
+> Hengphasatporn, K.; Bunchuay T.; Duan, L.; ; Shigeta, Y., *J. Cheminformatics.*, 2026. DOI: [10.21203/rs.3.rs-9763995/v1](https://doi.org/10.21203/rs.3.rs-9763995/v1)
 
 > **RDKit** · Landrum, G. (2023) · https://www.rdkit.org
 
-> **ProDy** · Bakan et al., *Bioinformatics*, 2011 · DOI: [10.1093/bioinformatics/btr168](https://doi.org/10.1093/bioinformatics/btr168)
+> **ProDy** · Bakan et al., *Bioinformatics*, 2011. DOI: [10.1093/bioinformatics/btr168](https://doi.org/10.1093/bioinformatics/btr168)
 
-> **stmol** · Nápoles-Duarte et al., *Front. Mol. Biosci.*, 2022 · DOI: [10.3389/fmolb.2022.990846](https://doi.org/10.3389/fmolb.2022.990846)
+> **stmol** · Nápoles-Duarte et al., *Front. Mol. Biosci.*, 2022. DOI: [10.3389/fmolb.2022.990846](https://doi.org/10.3389/fmolb.2022.990846)
 
-> **Dimorphite-DL** · Ropp et al., *J. Cheminform.*, 2019 · DOI: [10.1186/s13321-019-0336-9](https://doi.org/10.1186/s13321-019-0336-9)
+> **Dimorphite-DL** · Ropp et al., *J. Cheminform.*, 2019. DOI: [10.1186/s13321-019-0336-9](https://doi.org/10.1186/s13321-019-0336-9)
 
 > **pKaNET Cloud** · Please cite the corresponding manuscript when available.
 
-> **gemmi** *(optional, for CIF support)* · Wojdyr, M., *JOSS*, 2022 · DOI: [10.21105/joss.04200](https://doi.org/10.21105/joss.04200)
+> **gemmi** *(optional, for CIF support)* · Wojdyr, M., *JOSS*, 2022. DOI: [10.21105/joss.04200](https://doi.org/10.21105/joss.04200)
 
 ---
 
 ## 📜 License
 
 MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+**Anyone Can Dock: from structure preparation to validated docking results, without making molecular docking harder than it needs to be.**
