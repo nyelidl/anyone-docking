@@ -1,6 +1,4 @@
-# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> Anyone Can Dock
-
-**Anyone can dock, Everyone can do!**
+# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> nyone can dock, everyone can do!
 
 ***One molecular docking workflow, four ways to run.***
 
