@@ -18,7 +18,7 @@ Anyone Can Dock makes protein-ligand docking accessible through a **zero-install
 |---|---|---|
 | 🌐 **ACD Online** | Beginners, teaching, demonstrations, quick docking | [Open in browser →](https://nyelidl.github.io/anyone-docking/) |
 | 🖥️ **ACD Local** | Private research and unrestricted local workflows | [Local installation](#-acd-local) |
-| ⌨️ **ACD CLI** | Automation, reproducible research, servers, screening | `pip install anyonecandock` |
+| ⌨️ **ACD CLI** | Automation, reproducible research, servers, screening, redocking, ensemble docking | `pip install anyonecandock` |
 | 📓 **ACD Google Colab** | Workshops, portable research, GPU docking | [Open in Colab →](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
 
 ---
@@ -133,12 +133,11 @@ streamlit run app.py
 ```
 
 ---
-
 ## ⌨️ ACD CLI
 
 **Best for:** automation, reproducible research, scripting, servers, and large screening projects.
 
-- Commands for docking, batch docking, receptor preparation, ligand preparation, redocking, and diagrams
+- Commands for docking, ligand batch docking, receptor-ensemble docking, receptor preparation, ligand preparation, redocking, and diagrams
 - Accepts PDB IDs or local PDB/mmCIF structures
 - Accepts SMILES, PubChem names, SDF, MOL2, and PDB ligands
 - Automatic co-crystal, manual, selection-based, and blind-docking boxes
@@ -150,6 +149,9 @@ streamlit run app.py
 - Deterministic conformer and Vina random seeds
 - AutoDock Vina exhaustiveness, pose count, and energy-range controls
 - Batch-safe noninteractive operation
+- Protein-ensemble docking from receptor files, directories, glob patterns, or PDB IDs
+- Independent preparation, box generation, and heme/Compound-I validation for every ensemble member
+- Per-receptor failure isolation with combined raw-score and statistical summary CSV files
 - Automatic co-crystal redocking and heavy-atom RMSD verdicts
 - Validated ferric-heme and Compound-I preparation
 - RESP charge assignment and final PDBQT validation
@@ -171,7 +173,8 @@ acd <command> [options]
 
   dock      Full pipeline: receptor + ligand + Vina (single ligand)
   redock    Self-docking validation; no SMILES input needed
-  batch     Batch docking from a .smi file or SMILES list
+  batch     Dock multiple ligands against one receptor
+  ensemble  Dock multiple ligands against multiple receptor conformations
   receptor  Prepare receptor only
   ligand    Prepare ligand only
   diagram   Generate a 2D interaction diagram SVG
@@ -200,7 +203,38 @@ acd redock --receptor 4AGN --resname DC3 --diagram
 # Batch docking
 acd batch --receptor 1M17 --ligands compounds.smi
 acd batch --receptor 4AGN --smiles-list "CCO ethanol" "c1ccccc1O phenol"
+
+# Receptor-ensemble docking
+acd ensemble --receptors "ensemble/*.pdb" --ligands compounds.smi --seed 42
+
+# Ensemble docking with aligned receptors and a shared box
+acd ensemble \
+  --receptors model1.pdb model2.cif model3.pdb \
+  --ligands compounds.smi \
+  --center manual --cx 14.2 --cy -3.8 --cz 22.1 \
+  --bx 22 --by 22 --bz 22 \
+  --seed 42 \
+  --output ./ensemble_screen
 ```
+
+### Receptor ensembles
+
+The `ensemble` workflow accepts local PDB/mmCIF files, directories, quoted glob patterns, and four-character PDB IDs. It runs the established ACD batch workflow independently for every receptor, so receptor preparation and validation are never shared or bypassed between conformations.
+
+For heme-containing structures, each ensemble member independently undergoes ferric-heme or Compound-I detection, Fe-S/Fe-O geometry validation, RESP assignment, and final PDBQT reread validation. A receptor that fails preparation or geometry validation is recorded and skipped rather than passed to Vina.
+
+Use automatic or selection-based centering when each receptor requires its own box. A shared manual box should be used only when all receptor conformations are structurally aligned in the same coordinate frame.
+
+```text
+ensemble_screen/
+  001_model1/                 Complete batch output for receptor 1
+  002_model2/                 Complete batch output for receptor 2
+  ensemble_receptors.csv      Receptor preparation and run status
+  ensemble_scores.csv         All receptor-ligand score rows
+  ensemble_summary.csv        Best, mean, median, and population SD per ligand
+```
+
+The ensemble statistics are transparent ranking aids. They are not population-weighted thermodynamic binding energies.
 
 ### Redocking verdict
 
