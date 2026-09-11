@@ -521,7 +521,7 @@
       return idx;
     }
 
-    function redirectWithCountdown(url, label, hintText, seconds = 3) {
+    function redirectWithCountdown(url, label, hintText, seconds = 3, holdMs = 3000) {
       if (redirected) return;
       redirected = true;
       setProgress(100);
@@ -539,12 +539,20 @@
           setStatus("🚀 Launching…");
           cdEl.textContent = "";
           setHint(hintText);
+
           // Same-tab navigation is reliable and is not treated as a popup.
           setTimeout(() => { window.location.replace(url); }, 250);
         }
       }
 
-      tick();
+      // Hold on the selected-server message before starting 3 → 2 → 1.
+      setStatus(label);
+      cdEl.textContent = "";
+      setHint(hintText);
+
+      setTimeout(() => {
+        tick();
+      }, holdMs);
     }
 
     function normalizeLauncherConfig(raw) {
@@ -681,7 +689,8 @@
           config.awsUrl,
           "AWS Tokyo workshop is ready",
           "Powered by AWS Tokyo",
-          2
+          3,
+          3000
         );
         return;
       }
@@ -736,7 +745,8 @@
         STREAMLIT_APPS[idx],
         `Server ${idx + 1} selected`,
         `Opening Streamlit server ${idx + 1} of ${n}`,
-        2
+        3,
+        3000
       );
     }
 
