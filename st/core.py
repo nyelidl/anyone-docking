@@ -15,6 +15,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from heme_state import apply_and_validate_pdbqt, prepare_heme_centers
+
 
 def _silence_rdkit_logs():
     try:
@@ -489,7 +491,9 @@ def _overlay_residue_pdbqt_lines(prepared_pdbqt: str, template_lines: list[str])
     return out
 
 
-def _prepare_isolated_residue_block(lines: list[str], wdir, stem: str, log: list[str], label: str) -> dict:
+def _prepare_isolated_residue_block(
+    lines: list[str], wdir, stem: str, log: list[str], label: str, preserve_hydrogens: bool = False
+) -> dict:
     wdir = Path(wdir)
     result = {
         "display_lines": list(lines),
@@ -510,7 +514,10 @@ def _prepare_isolated_residue_block(lines: list[str], wdir, stem: str, log: list
             result["display_lines"] = display_lines
             result["display_method"] = "obabel-h"
             log.append(f"✓ {label} hydrogens added via isolated OpenBabel pass")
-        rc_pdbqt, out_pdbqt = run_cmd(f'obabel "{h_pdb}" -O "{pdbqt}" -xr --partialcharge gasteiger')
+        write_options = "-xrhnp" if preserve_hydrogens else "-xr"
+        rc_pdbqt, out_pdbqt = run_cmd(
+            f'obabel "{h_pdb}" -O "{pdbqt}" {write_options} --partialcharge gasteiger'
+        )
         if os.path.exists(pdbqt) and os.path.getsize(pdbqt) > 20:
             pdbqt_lines = _overlay_residue_pdbqt_lines(pdbqt, lines)
             if pdbqt_lines:
@@ -554,7 +561,10 @@ def _normalize_pdb_for_meeko(in_path: str, out_path: str) -> None:
 
 def _meeko_prepare_receptor_cmd() -> list[str] | None:
     import shutil
-    exe = shutil.which("mk_prepare_receptor.py")
+    vendored = Path(__file__).resolve().with_name("mk_prepare_receptor.py")
+    if vendored.exists():
+        return [sys.executable, str(vendored)]
+    exe = shutil.which("acd-mk-prepare-receptor") or shutil.which("mk_prepare_receptor.py")
     if exe:
         return [exe]
     return None
@@ -1084,7 +1094,7 @@ def scan_ligands(raw_pdb: str) -> list:
         return []
 
 
-def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
+def strip_and_convert_receptor(rec_raw: str, wdir, heme_preparation: dict | None = None) -> dict:
     wdir = Path(wdir)
     log  = []
     rec_fh    = str(wdir / "rec.pdb")
@@ -1103,13 +1113,22 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         cofactor_lines = []
         clean_lines = []
         legacy_clean_lines = []
+        heme_extra_serials = {
+            int(center["oxo_serial"])
+            for center in (heme_preparation or {}).get("centers", [])
+            if center.get("oxo_serial") is not None
+        }
         with open(rec_raw) as f:
             for line in f:
                 field = line[:6].strip()
                 rn    = line[17:20].strip().upper()
+                try:
+                    serial = int(line[6:11]) if field in ("ATOM", "HETATM") else -1
+                except ValueError:
+                    serial = -1
                 if field in ("ATOM", "HETATM") and rn in METAL_RESNAMES:
                     metal_lines.append(line)
-                elif field in ("ATOM", "HETATM") and rn in HEME_RESNAMES:
+                elif field in ("ATOM", "HETATM") and (rn in HEME_RESNAMES or serial in heme_extra_serials):
                     heme_lines.append(line)
                 elif field in ("ATOM", "HETATM") and rn in COFACTOR_NAMES:
                     cofactor_lines.append(line)
@@ -1135,12 +1154,52 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
         if cofactor_lines:
             cnames = ", ".join(sorted({l[17:20].strip() for l in cofactor_lines}))
             log.append(f"⚠ Stripped {len(cofactor_lines)} cofactor atom(s) before Meeko: {cnames}")
-        heme_prepared = _prepare_isolated_residue_block(heme_lines, wdir, "heme", log, "Heme") if heme_lines else {
+        heme_prepared = {
             "display_lines": [],
             "pdbqt_lines": [],
             "display_method": "raw",
             "pdbqt_method": "manual",
         }
+        for heme_index, center in enumerate((heme_preparation or {}).get("centers", []), 1):
+            center_lines = []
+            for line in heme_lines:
+                try:
+                    line_serial = int(line[6:11])
+                    line_resid = int(line[22:26])
+                except ValueError:
+                    continue
+                same_residue = (
+                    line[17:20].strip().upper() == center["resname"]
+                    and (line[21].strip() or "_") == center["chain"]
+                    and line_resid == center["resid"]
+                )
+                if same_residue or line_serial == center.get("oxo_serial"):
+                    center_lines.append(line)
+            parameter_block = heme_preparation["parameters"][center["selected_state"]]
+            expected_hydrogens = len(parameter_block["heme_hydrogen_parents"])
+            present_hydrogens = sum(
+                1 for line in center_lines
+                if line[12:16].strip().upper().lstrip("0123456789").startswith("H")
+                or (len(line) >= 78 and line[76:78].strip().upper() == "H")
+            )
+            if present_hydrogens == expected_hydrogens:
+                prepared_center = {
+                    "display_lines": center_lines, "pdbqt_lines": [],
+                    "display_method": "input-complete", "pdbqt_method": "manual",
+                }
+                log.append(
+                    f"✓ Heme center {heme_index} already contains the complete "
+                    f"JSON-defined hydrogen topology ({present_hydrogens}); preserved unchanged"
+                )
+            else:
+                prepared_center = _prepare_isolated_residue_block(
+                    center_lines, wdir, f"heme_{heme_index}", log,
+                    f"Heme center {heme_index}", preserve_hydrogens=True,
+                )
+            heme_prepared["display_lines"].extend(prepared_center["display_lines"])
+            heme_prepared["pdbqt_lines"].extend(prepared_center["pdbqt_lines"])
+            heme_prepared["display_method"] = prepared_center["display_method"]
+            heme_prepared["pdbqt_method"] = prepared_center["pdbqt_method"]
 
         meeko_res = _run_meeko_prepare_receptor(rec_nometal, rec_fh, rec_pdbqt, wdir)
         log.extend(meeko_res["log"])
@@ -1285,6 +1344,7 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                 pdbqt_lines.extend(heme_prepared["pdbqt_lines"])
                 heme_injected = len(heme_prepared["pdbqt_lines"])
             else:
+                # Preserve any hydrogens present in the hydrogenated heme block.
                 fallback_heme_lines = heme_prepared["display_lines"] or heme_lines
                 for hl in fallback_heme_lines:
                     try:
@@ -1303,6 +1363,9 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                         elif name.upper() in ("FE", "FE2", "FE3"):
                             atype  = "Fe"
                             charge = +3.0
+                        elif element.upper() == "O" or name.upper().startswith("O"):
+                            atype  = "OA"
+                            charge = 0.0
                         elif name.upper().startswith("N"):
                             atype  = "NA"
                             charge = -0.3
@@ -1359,6 +1422,11 @@ def strip_and_convert_receptor(rec_raw: str, wdir) -> dict:
                     f"ℹ Skipped re-injection of {skipped_exotic} Ho/lanthanide ion(s) into "
                     f"docking PDBQT; kept only in rec.pdb for display"
                 )
+
+        if heme_preparation and heme_preparation.get("centers"):
+            charge_validation = apply_and_validate_pdbqt(rec_pdbqt, heme_preparation)
+            log.extend(charge_validation["log"])
+            prep_meta["heme_centers"] = charge_validation["centers"]
 
         log.append("✓ Receptor PDBQT ready")
         return {
@@ -1417,6 +1485,7 @@ def prepare_receptor(
     preferred_ligand: str = "",
     hetatm_policy: dict | None = None,
     reference_hetatm_key: str = "",
+    heme_states: dict | None = None,
 ) -> dict:
     from prody import parsePDB, calcCenter, writePDB
     wdir = Path(wdir)
@@ -1436,6 +1505,9 @@ def prepare_receptor(
                 raise ValueError(f"CIF -> PDB conversion failed: {cif_result.get('error', 'unknown')}")
             raw_pdb = converted_pdb
 
+        # Detect before HETATM filtering so standalone ferryl oxygen is retained.
+        heme_preparation = prepare_heme_centers(raw_pdb, heme_states, remove_oxo_h=False)
+
         atoms = parsePDB(raw_pdb)
         if atoms is None:
             raise ValueError("ProDy parsePDB returned None")
@@ -1453,6 +1525,15 @@ def prepare_receptor(
         _policy = {str(k): str(v).lower() for k, v in (hetatm_policy or {}).items()}
         for _r in _hetatm_rows:
             _r["action"] = _policy.get(_r["key"], _r.get("default_action", "remove")).lower()
+        _oxo_residues = {
+            (c["oxo_resname"], c["oxo_chain"], c["oxo_resid"])
+            for c in heme_preparation["centers"]
+            if c.get("oxo_serial") is not None
+        }
+        for _r in _hetatm_rows:
+            _row_residue = (_r["resname"].upper(), _r["chain"] or "_", int(_r["resid"]))
+            if _row_residue in _oxo_residues:
+                _r["action"] = "keep"
 
         _reference = None
         if reference_hetatm_key:
@@ -1462,6 +1543,10 @@ def prepare_receptor(
 
         # Backward compatibility: if no HETATM policy is provided, old preferred_ligand behavior still works.
         _all_ligs = _collect_removable_ligands(atoms)
+        _all_ligs = [
+            d for d in _all_ligs
+            if (d["resname"].upper(), d["chain"] or "_", int(d["resid"])) not in _oxo_residues
+        ]
         _primary = None
         if _reference is not None:
             _ref_name = _reference.get("full_resname") or _reference["resname"]
@@ -1550,6 +1635,9 @@ def prepare_receptor(
 
         rec_raw_path = str(wdir / "receptor_atoms.pdb")
         writePDB(rec_raw_path, rec_sel)
+        # ProDy may renumber atoms; refresh identities before cleanup and mapping.
+        heme_preparation = prepare_heme_centers(rec_raw_path, heme_states)
+        log.extend(heme_preparation["log"])
         log.append(f"✓ Receptor: {rec_sel.numAtoms()} atoms")
 
         try:
@@ -1571,7 +1659,7 @@ def prepare_receptor(
         except Exception as _ce:
             log.append(f"⚠ Chain-fix skipped: {_ce}")
 
-        conv = strip_and_convert_receptor(rec_raw_path, wdir)
+        conv = strip_and_convert_receptor(rec_raw_path, wdir, heme_preparation)
         log.extend(conv["log"])
         if not conv["success"]:
             raise ValueError(conv["error"])
@@ -1630,6 +1718,7 @@ def prepare_receptor(
                 for d in _hetatm_rows
             ],
             "preparation_manifest": manifest_path,
+            "prep_meta":            prep_meta,
             "log": log,
         }
     except Exception as e:
