@@ -5814,14 +5814,9 @@ with tab_basic:
                 write_single_pose_pdb_with_h(sel_mol, sp_raw_pdb_h)
                 st.download_button(f"⬇ Pose {pose_idx+1} (.sdf)", open(sp_raw, "rb"),
                     file_name=f"pose_{pose_idx+1}.sdf", key=f"dl_p_{pose_idx}", width='stretch')
-                st.download_button(f"⬇ Pose {pose_idx+1} (.sdf, with H)", open(sp_raw_h, "rb"),
-                    file_name=f"pose_{pose_idx+1}_with_H.sdf", key=f"dl_p_h_{pose_idx}", width='stretch')
                 st.download_button(f"⬇ Pose {pose_idx+1} (.pdb)", open(sp_raw_pdb, "rb"),
                     file_name=f"pose_{pose_idx+1}.pdb", mime="chemical/x-pdb",
                     key=f"dl_p_pdb_{pose_idx}", width='stretch')
-                st.download_button(f"⬇ Pose {pose_idx+1} (.pdb, with H)", open(sp_raw_pdb_h, "rb"),
-                    file_name=f"pose_{pose_idx+1}_with_H.pdb", mime="chemical/x-pdb",
-                    key=f"dl_p_pdb_h_{pose_idx}", width='stretch')
                 st.download_button("⬇ All poses (.pdbqt)", open(st.session_state.output_pdbqt, "rb"),
                     file_name=f"{st.session_state.dock_base}_out.pdbqt", key="dl_pdbqt", width='stretch')
                 if df is not None:
@@ -6462,14 +6457,9 @@ with tab_batch:
                     write_single_pose_pdb_with_h(b_mols[b_pose_i], sp3_pdb_h)
                     st.download_button(f"⬇ Pose {b_pose_i+1} (.sdf)", open(sp3, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf", key="b_dl_pose", width='stretch')
-                    st.download_button(f"⬇ Pose {b_pose_i+1} (.sdf, with H)", open(sp3_h, "rb"),
-                        file_name=f"{safe_nm}_pose{b_pose_i+1}_with_H.sdf", key="b_dl_pose_h", width='stretch')
                     st.download_button(f"⬇ Pose {b_pose_i+1} (.pdb)", open(sp3_pdb, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.pdb", mime="chemical/x-pdb",
                         key="b_dl_pose_pdb", width='stretch')
-                    st.download_button(f"⬇ Pose {b_pose_i+1} (.pdb, with H)", open(sp3_pdb_h, "rb"),
-                        file_name=f"{safe_nm}_pose{b_pose_i+1}_with_H.pdb", mime="chemical/x-pdb",
-                        key="b_dl_pose_pdb_h", width='stretch')
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
                         st.download_button("⬇ All poses (.pdbqt)", open(sel_res["out_pdbqt"], "rb"),
                             file_name=f"{safe_nm}_out.pdbqt", key="b_dl_pdbqt", width='stretch')
@@ -6779,8 +6769,8 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 st.markdown(
     '<div style="text-align:center;color:#57606A;font-size:0.78rem;'
     'font-family:\'IBM Plex Mono\',monospace;">'
-    '<img src="https://d1.awsstatic.com/customer-references-case-studies-logos/1200x900_logos/Powered-by-AWS_1200x900_Logo.4525cf2f0c07616a2bedf9a9a52da83b935f64d3.png" '
-    'alt="Powered by AWS" style="display:block;margin:0 auto 0.45rem auto;max-width:180px;width:100%;height:auto;">'
+    '<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" '
+    'alt="Anyone Can Dock" style="display:block;margin:0 auto 0.45rem auto;max-width:180px;width:100%;height:auto;">'
     'AutoDock Vina 1.2.7 · Meeko · RDKit · OpenBabel · py3Dmol<br>'
     'Eberhardt et al. J. Chem. Inf. Model. 2021, 61, 3891&#8211;3898 &nbsp;·&nbsp; '
     '<a href="https://pubs.acs.org/doi/10.1021/acs.jcim.5c02852" target="_blank" '
