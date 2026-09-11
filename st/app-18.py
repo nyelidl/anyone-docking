@@ -5814,14 +5814,9 @@ with tab_basic:
                 write_single_pose_pdb_with_h(sel_mol, sp_raw_pdb_h)
                 st.download_button(f"⬇ Pose {pose_idx+1} (.sdf)", open(sp_raw, "rb"),
                     file_name=f"pose_{pose_idx+1}.sdf", key=f"dl_p_{pose_idx}", width='stretch')
-                st.download_button(f"⬇ Pose {pose_idx+1} (.sdf, with H)", open(sp_raw_h, "rb"),
-                    file_name=f"pose_{pose_idx+1}_with_H.sdf", key=f"dl_p_h_{pose_idx}", width='stretch')
                 st.download_button(f"⬇ Pose {pose_idx+1} (.pdb)", open(sp_raw_pdb, "rb"),
                     file_name=f"pose_{pose_idx+1}.pdb", mime="chemical/x-pdb",
                     key=f"dl_p_pdb_{pose_idx}", width='stretch')
-                st.download_button(f"⬇ Pose {pose_idx+1} (.pdb, with H)", open(sp_raw_pdb_h, "rb"),
-                    file_name=f"pose_{pose_idx+1}_with_H.pdb", mime="chemical/x-pdb",
-                    key=f"dl_p_pdb_h_{pose_idx}", width='stretch')
                 st.download_button("⬇ All poses (.pdbqt)", open(st.session_state.output_pdbqt, "rb"),
                     file_name=f"{st.session_state.dock_base}_out.pdbqt", key="dl_pdbqt", width='stretch')
                 if df is not None:
@@ -6462,14 +6457,9 @@ with tab_batch:
                     write_single_pose_pdb_with_h(b_mols[b_pose_i], sp3_pdb_h)
                     st.download_button(f"⬇ Pose {b_pose_i+1} (.sdf)", open(sp3, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.sdf", key="b_dl_pose", width='stretch')
-                    st.download_button(f"⬇ Pose {b_pose_i+1} (.sdf, with H)", open(sp3_h, "rb"),
-                        file_name=f"{safe_nm}_pose{b_pose_i+1}_with_H.sdf", key="b_dl_pose_h", width='stretch')
                     st.download_button(f"⬇ Pose {b_pose_i+1} (.pdb)", open(sp3_pdb, "rb"),
                         file_name=f"{safe_nm}_pose{b_pose_i+1}.pdb", mime="chemical/x-pdb",
                         key="b_dl_pose_pdb", width='stretch')
-                    st.download_button(f"⬇ Pose {b_pose_i+1} (.pdb, with H)", open(sp3_pdb_h, "rb"),
-                        file_name=f"{safe_nm}_pose{b_pose_i+1}_with_H.pdb", mime="chemical/x-pdb",
-                        key="b_dl_pose_pdb_h", width='stretch')
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
                         st.download_button("⬇ All poses (.pdbqt)", open(sel_res["out_pdbqt"], "rb"),
                             file_name=f"{safe_nm}_out.pdbqt", key="b_dl_pdbqt", width='stretch')
