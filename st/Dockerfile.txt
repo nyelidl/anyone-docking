@@ -3,18 +3,18 @@ FROM python:3.11-slim-bookworm
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
-# Build from the repository root: docker build -f ACD_gpt/Dockerfile .
-COPY ACD_gpt/Aptfile /tmp/Aptfile
+# Use this directory as build context: docker build -t acd-gpt ./st
+COPY Aptfile /tmp/Aptfile
 RUN apt-get update \
  && xargs -r apt-get install -y --no-install-recommends < /tmp/Aptfile \
  && rm -rf /var/lib/apt/lists/*
 
 # Use exactly the shared CLI source containing PDB/PDBQT handling and mapping.
-COPY ACD_API/anyonecandock /opt/anyonecandock
-COPY ACD_gpt/requirements-api.txt /app/requirements-api.txt
+COPY vendor/anyonecandock /opt/anyonecandock
+COPY requirements-api.txt /app/requirements-api.txt
 RUN python -m pip install --upgrade pip \
  && python -m pip install "/opt/anyonecandock[diagram]" -r /app/requirements-api.txt
 
-COPY ACD_gpt/api.py /app/api.py
+COPY api.py /app/api.py
 # JOBS and the quota lock are process-local: run one worker.
 CMD ["sh", "-c", "exec uvicorn api:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1"]
