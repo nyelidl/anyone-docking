@@ -9,11 +9,11 @@ RUN apt-get update \
  && xargs -r apt-get install -y --no-install-recommends < /tmp/Aptfile \
  && rm -rf /var/lib/apt/lists/*
 
-# Use exactly the shared CLI source containing PDB/PDBQT handling and mapping.
-COPY vendor/anyonecandock /opt/anyonecandock
+# Bundled updated CLI wheel; upload this file alongside the Dockerfile.
+COPY anyonecandock-1.3.1-py3-none-any.whl /opt/anyonecandock-1.3.1-py3-none-any.whl
 COPY requirements-api.txt /app/requirements-api.txt
 RUN python -m pip install --upgrade pip \
- && python -m pip install "/opt/anyonecandock[diagram]" -r /app/requirements-api.txt
+ && python -m pip install "/opt/anyonecandock-1.3.1-py3-none-any.whl[diagram]" -r /app/requirements-api.txt
 
 COPY api.py /app/api.py
 # JOBS and the quota lock are process-local: run one worker.
