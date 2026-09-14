@@ -19,10 +19,14 @@ Earlier fixes (retained):
 
 from __future__ import annotations
 
+import base64
+import binascii
+import tempfile
 import csv
 import html
 import json
 import os
+import re
 import shutil
 import threading
 import traceback
@@ -43,10 +47,13 @@ from anyonecandock.core import (
     get_vina_binary,
     load_mols_from_sdf,
     prepare_ligand,
+    prepare_ligand_from_file,
     prepare_receptor,
     run_vina,
     scan_hetatm_residues,
 )
+
+from anyonecandock.ligand_validation import validate_ligand_file
 
 try:
     from anyonecandock.core import (
@@ -67,7 +74,7 @@ except Exception:
 
 
 API_TITLE = "Anyone Can Dock API"
-API_VERSION = "0.1.3"  # [REV] env-configurable resource limits
+API_VERSION = "0.2.0"  # [REV] env-configurable resource limits
 BASE_WORKDIR = Path(os.getenv("ACD_API_WORKDIR", "/tmp/anyone_can_dock_api")).resolve()
 BASE_WORKDIR.mkdir(parents=True, exist_ok=True)
 
@@ -230,8 +237,39 @@ class GridBox(BaseModel):
 
 
 class LigandInput(BaseModel):
-    smiles: str
+    smiles: Optional[str] = None
     name: str = "ligand"
+    file_name: Optional[str] = Field(default=None, description="Ligand filename ending in .pdb, .sdf, .mol2, or .pdbqt; never a server path")
+    file_content: Optional[str] = Field(default=None, description="Exact structure-file text; JSON escapes preserve newlines")
+    file_content_base64: Optional[str] = Field(default=None, description="Base64 of original file bytes, recommended for exact PDBQT provenance")
+    no_add_h: bool = Field(default=False, description="For PDB: add no H and preserve existing H; direct PDBQT always bypasses preparation")
+
+    def file_bytes(self) -> bytes:
+        if self.file_content_base64 is not None:
+            try:
+                return base64.b64decode(self.file_content_base64, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError("Invalid ligand file_content_base64") from exc
+        return (self.file_content or "").encode("utf-8")
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "LigandInput":
+        has_smiles = bool(self.smiles and self.smiles.strip())
+        has_file = self.file_name is not None
+        contents = sum(x is not None for x in (self.file_content, self.file_content_base64))
+        if has_smiles == has_file or (has_file and contents != 1) or (not has_file and contents):
+            raise ValueError("Provide either SMILES or file_name with exactly one of file_content/file_content_base64")
+        if not has_file and self.no_add_h:
+            raise ValueError("no_add_h applies to structure files, not SMILES")
+        if has_file:
+            # Validate before queueing/receptor preparation; never accept server paths.
+            if not self.file_name or Path(self.file_name).name != self.file_name or "\\" in self.file_name:
+                raise ValueError("file_name must be a filename, not a path")
+            with tempfile.TemporaryDirectory(prefix="acd_input_check_") as folder:
+                path = Path(folder) / ("input" + Path(self.file_name).suffix.lower())
+                path.write_bytes(self.file_bytes())
+                validate_ligand_file(path)
+        return self
 
 
 class DockRequest(BaseModel):
@@ -260,6 +298,8 @@ class DockRequest(BaseModel):
     num_modes: int = Field(default=10, ge=1, le=50)
     energy_range: int = Field(default=3, ge=1, le=20)
 
+    seed: Optional[int] = None
+    conformer_seed: Optional[int] = Field(default=None, ge=0)
     fix_bond_orders: bool = True
 
     @model_validator(mode="after")
@@ -312,12 +352,21 @@ def _job_url(job_id: str, endpoint: str) -> str:
     return _public_url(f"/jobs/{job_id}")
 
 
+def _job_directory(job_id: str) -> Path:
+    if not re.fullmatch(r"(?:dock|scan)_[A-Za-z0-9_-]+", job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID")
+    path = BASE_WORKDIR / job_id
+    if path.resolve().parent != BASE_WORKDIR.resolve():
+        raise HTTPException(status_code=400, detail="Invalid job directory")
+    return path
+
+
 def _status_path(job_id: str) -> Path:
-    return BASE_WORKDIR / job_id / "status.json"
+    return _job_directory(job_id) / "status.json"
 
 
 def _write_status_file(job_id: str, payload: Dict[str, Any]) -> None:
-    wdir = BASE_WORKDIR / job_id
+    wdir = _job_directory(job_id)
     wdir.mkdir(parents=True, exist_ok=True)
     payload = dict(payload)
     payload.setdefault("job_id", job_id)
@@ -389,6 +438,7 @@ def _csv_from_scores(path: Path, rows: List[Dict[str, Any]]) -> None:
     fieldnames = [
         "name",
         "input_smiles",
+        "ligand_mode", "input_file_name", "input_sha256", "vina_input_sha256", "atom_mapping_report",
         "prepared_smiles",
         "charge",
         "status",
@@ -648,6 +698,12 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "num_poses": r.get("num_poses", None),
             "charge": r.get("charge", None),
             "prepared_smiles": r.get("prepared_smiles", ""),
+            "ligand_mode": r.get("ligand_mode", "smiles"),
+            "input_file_name": r.get("input_file_name", ""),
+            "input_sha256": r.get("input_sha256", ""),
+            "vina_input_sha256": r.get("vina_input_sha256", ""),
+            "atom_mapping_url": r.get("atom_mapping_url", ""),
+            "atom_mapping": r.get("atom_mapping"),
             "protonation_mode_used": r.get("protonation_mode_used", ""),
             "protonation_fallback": r.get("protonation_fallback", ""),
             "selected_pose_rank": r.get("selected_pose_rank", None),
@@ -681,7 +737,7 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
 
 
 def _run_docking_job(job_id: str, req: DockRequest) -> None:
-    wdir = BASE_WORKDIR / job_id
+    wdir = _job_directory(job_id)
     wdir.mkdir(parents=True, exist_ok=True)
 
     JOBS[job_id].update(status="running", workdir=str(wdir), error=None)
@@ -762,19 +818,40 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
             }
 
             try:
-                prep = prepare_ligand(
-                    smiles=lig.smiles,
-                    name=name,
-                    ph=req.ph,
-                    wdir=wdir,
-                    mode=req.protonation_mode,
-                    use_pubchem=req.use_pubchem,
-                    max_tautomers=req.max_tautomers,
-                    ph_window=req.ph_window,
-                    pkanet_selection_mode=req.pkanet_selection_mode,
-                    pkanet_manual_rank=req.pkanet_manual_rank,
-                )
-
+                if lig.file_name:
+                    ligand_dir = wdir / f"ligand_{idx:04d}"
+                    ligand_dir.mkdir(exist_ok=True)
+                    source = ligand_dir / ("input" + Path(lig.file_name).suffix.lower())
+                    source.write_bytes(lig.file_bytes())
+                    prep = prepare_ligand_from_file(
+                        str(source), name, ligand_dir / "prepared",
+                        add_h=not lig.no_add_h, conformer_seed=req.conformer_seed,
+                    )
+                    row["ligand_mode"] = "direct_pdbqt" if source.suffix == ".pdbqt" else "structure_file"
+                    row["input_file_name"] = lig.file_name
+                    row["input_sha256"] = prep.get("input_sha256", "")
+                    report = ligand_dir / "prepared" / "atom_mapping.tsv"
+                    if report.is_file():
+                        exported = wdir / f"{name}_atom_mapping.tsv"
+                        shutil.copyfile(report, exported)
+                        row["atom_mapping_report"] = str(exported)
+                        row["atom_mapping_url"] = _public_url(f"/jobs/{job_id}/files/{exported.name}")
+                        row["atom_mapping"] = prep.get("atom_mapping")
+                else:
+                    row["ligand_mode"] = "smiles"
+                    prep = prepare_ligand(
+                        smiles=lig.smiles,
+                        name=name,
+                        ph=req.ph,
+                        wdir=wdir,
+                        mode=req.protonation_mode,
+                        use_pubchem=req.use_pubchem,
+                        max_tautomers=req.max_tautomers,
+                        ph_window=req.ph_window,
+                        pkanet_selection_mode=req.pkanet_selection_mode,
+                        pkanet_manual_rank=req.pkanet_manual_rank,
+                        conformer_seed=req.conformer_seed,
+                    )
                 all_logs.append(f"\n===== {name}: ligand preparation =====")
                 all_logs.extend(prep.get("log", []))
 
@@ -783,7 +860,8 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     prep_log = "\n".join(map(str, prep.get("log", [])))
 
                     if (
-                        req.protonation_mode != "neutral"
+                        not lig.file_name
+                        and req.protonation_mode != "neutral"
                         and _looks_like_protonation_valence_error(prep_error + "\n" + prep_log)
                     ):
                         all_logs.append(
@@ -803,6 +881,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                             ph_window=0.0,
                             pkanet_selection_mode="auto_recommended",
                             pkanet_manual_rank=None,
+                            conformer_seed=req.conformer_seed,
                         )
 
                         all_logs.extend(prep.get("log", []))
@@ -814,6 +893,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 dock = run_vina(
                     receptor_pdbqt=rec["rec_pdbqt"],
                     ligand_pdbqt=prep["pdbqt"],
+                    **({"ligand_input_sha256": prep["input_sha256"]} if prep.get("direct_pdbqt") else {}),
                     config_txt=rec["config_txt"],
                     vina_path=vina_path,
                     exhaustiveness=req.exhaustiveness,
@@ -821,6 +901,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     energy_range=req.energy_range,
                     wdir=wdir,
                     out_name=name,
+                    seed=req.seed,
                 )
 
                 all_logs.append(f"\n===== {name}: docking =====")
@@ -829,12 +910,18 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 if not dock.get("success"):
                     raise RuntimeError(dock.get("error", "Docking failed"))
 
+                if prep.get("direct_pdbqt"):
+                    row["vina_input_sha256"] = prep["input_sha256"]
+                    all_logs.extend([f"SHA256 Vina ligand: {prep['input_sha256']}",
+                                     "Input PDBQT checksum verified.",
+                                     "Passing original PDBQT directly to AutoDock Vina."])
                 pv_sdf = ""
-                if req.fix_bond_orders and dock.get("out_sdf"):
+                prepared_smiles = prep.get("prot_smiles") or prep.get("prepared_smiles") or lig.smiles or ""
+                if req.fix_bond_orders and dock.get("out_sdf") and prepared_smiles:
                     pv_path = wdir / f"{name}_pv_ready.sdf"
                     bo_log = fix_sdf_bond_orders(
                         dock["out_sdf"],
-                        prep.get("prot_smiles", lig.smiles),
+                        prepared_smiles,
                         str(pv_path),
                     )
                     all_logs.append(f"\n===== {name}: bond-order correction =====")
@@ -845,7 +932,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
 
                 pose_sdf_for_reading = pv_sdf or dock.get("out_sdf", "")
                 n_poses = len(load_mols_from_sdf(pose_sdf_for_reading, sanitize=False)) if pose_sdf_for_reading else 0
-                prepared_smiles = prep.get("prot_smiles") or prep.get("prepared_smiles") or lig.smiles
+                prepared_smiles = prep.get("prot_smiles") or prep.get("prepared_smiles") or lig.smiles or ""
 
                 # ------------------------------------------------------------------
                 # ligand_pdb_path must be defined before use.
@@ -902,6 +989,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     pkanet_decision_log=prep.get("pkanet_decision_log", ""),
                     pkanet_ambiguous=prep.get("pkanet_ambiguous", False),
                     protonation_mode_used=(
+                        "not_applied" if lig.file_name else
                         "neutral" if row.get("protonation_fallback") == "neutral" else req.protonation_mode
                     ),
                     protonation_fallback=row.get("protonation_fallback", ""),
@@ -980,7 +1068,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
 
 
 def _restore_completed_job_from_disk(job_id: str) -> Optional[Dict[str, Any]]:
-    wdir = BASE_WORKDIR / job_id
+    wdir = _job_directory(job_id)
     meta_path = wdir / "metadata.json"
 
     if not meta_path.exists():
@@ -1045,6 +1133,12 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "num_poses": r.get("num_poses"),
             "charge": r.get("charge"),
             "prepared_smiles": r.get("prepared_smiles"),
+            "ligand_mode": r.get("ligand_mode", "smiles"),
+            "input_file_name": r.get("input_file_name", ""),
+            "input_sha256": r.get("input_sha256", ""),
+            "vina_input_sha256": r.get("vina_input_sha256", ""),
+            "atom_mapping_url": r.get("atom_mapping_url", ""),
+            "atom_mapping": r.get("atom_mapping"),
             "protonation_mode_used": r.get("protonation_mode_used", ""),
             "protonation_fallback": r.get("protonation_fallback", ""),
             "selected_pose_rank": r.get("selected_pose_rank", None),
@@ -1355,7 +1449,7 @@ def pdb_search(
 @app.post("/scan_hetatm", dependencies=[Depends(require_api_key)])
 def scan_hetatm(req: ScanRequest) -> Dict[str, Any]:
     job_id = f"scan_{uuid.uuid4().hex[:10]}"
-    wdir = BASE_WORKDIR / job_id
+    wdir = _job_directory(job_id)
     wdir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -1447,7 +1541,7 @@ def get_job_summary(job_id: str) -> Dict[str, Any]:
 @app.get("/jobs/{job_id}/files/{filename}", dependencies=[Depends(require_api_key)])
 def get_job_file(job_id: str, filename: str) -> FileResponse:
     safe_filename = Path(filename).name
-    file_path = BASE_WORKDIR / job_id / safe_filename
+    file_path = _job_directory(job_id) / safe_filename
 
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -1523,8 +1617,12 @@ def download_job(job_id: str) -> FileResponse:
 
 @app.delete("/jobs/{job_id}", dependencies=[Depends(require_api_key)])
 def delete_job(job_id: str) -> Dict[str, Any]:
+    wdir = _job_directory(job_id)
+    job = JOBS.get(job_id)
+    status = (job or {}).get("status") or (_read_status_file(job_id) or {}).get("status")
+    if status in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="Cannot delete a queued or running job")
     job = JOBS.pop(job_id, None)
-    wdir = BASE_WORKDIR / job_id
 
     if wdir.exists():
         shutil.rmtree(wdir, ignore_errors=True)
@@ -1539,5 +1637,5 @@ if __name__ == "__main__":
         "api:app",
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8000")),
-        reload=True,
+        reload=False,
     )

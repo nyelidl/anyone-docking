@@ -1,6 +1,10 @@
 openbabel
+libopenbabel-dev
 libcairo2-dev
 libpango1.0-dev
+libpangocairo-1.0-0
 pkg-config
 python3-dev
+build-essential
 libgirepository1.0-dev
+ca-certificates
