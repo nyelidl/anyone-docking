@@ -15,6 +15,6 @@ COPY requirements-api.txt /app/requirements-api.txt
 RUN python -m pip install --upgrade pip \
  && python -m pip install "/opt/anyonecandock-1.3.1-py3-none-any.whl[diagram]" -r /app/requirements-api.txt
 
-COPY api.py /app/api.py
+COPY api.py pose_access.py viewer3d.html /app/
 # JOBS and the quota lock are process-local: run one worker.
 CMD ["sh", "-c", "exec uvicorn api:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1"]

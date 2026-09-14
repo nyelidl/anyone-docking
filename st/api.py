@@ -27,6 +27,7 @@ import html
 import json
 import os
 import re
+import math
 import shutil
 import threading
 import traceback
@@ -38,7 +39,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import requests
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field, model_validator
 
 from anyonecandock.core import (
@@ -54,6 +55,7 @@ from anyonecandock.core import (
 )
 
 from anyonecandock.ligand_validation import validate_ligand_file
+import pose_access
 
 try:
     from anyonecandock.core import (
@@ -74,7 +76,7 @@ except Exception:
 
 
 API_TITLE = "Anyone Can Dock API"
-API_VERSION = "0.2.0"  # [REV] env-configurable resource limits
+API_VERSION = "0.3.0"  # [REV] env-configurable resource limits
 BASE_WORKDIR = Path(os.getenv("ACD_API_WORKDIR", "/tmp/anyone_can_dock_api")).resolve()
 BASE_WORKDIR.mkdir(parents=True, exist_ok=True)
 
@@ -495,6 +497,7 @@ def _select_pose_for_interaction(
     rec: Dict[str, Any],
     req: DockRequest,
     lig_name: str,
+    pose_pdbqt: str = "",
 ) -> Dict[str, Any]:
     pose_info: Dict[str, Any] = {
         "selected_pose_rank": None,
@@ -510,10 +513,31 @@ def _select_pose_for_interaction(
         pose_info["warning"] = "No readable docking poses were available for 2D interaction generation."
         return pose_info
 
+    pose_ranks = list(range(1, len(mols) + 1))
+    affinities = None
+    if pose_pdbqt:
+        try:
+            from rdkit import Chem
+            models = pose_access.pdbqt_models(Path(pose_pdbqt))
+            pose_ranks = list(models)
+            mols = list(Chem.SDMolSupplier(pose_sdf, sanitize=False, removeHs=False))
+            if len(mols) != len(pose_ranks):
+                raise ValueError("SDF record count differs from Vina MODEL count")
+            for rank, mol in zip(pose_ranks, mols):
+                if mol is None:
+                    raise ValueError("Unreadable SDF record; RMSD pose numbering cannot be verified")
+                pose_access.validate_sdf_coordinates(mol, pose_access.atom_records(models[rank]['text'], pdbqt=True))
+            affinities = [models[rank]['affinity'] for rank in pose_ranks]
+        except Exception as exc:
+            pose_info['pose_selection_method'] = 'unavailable'
+            pose_info['warning'] = 'SDF/Vina pose identity validation failed; no RMSD selection: ' + getattr(exc, 'detail', str(exc))
+            return pose_info
+
     ligand_pdb_path = rec.get("ligand_pdb_path") or ""
     is_redocking = _is_redocking_case(lig_name, rec, req)
 
-    selected_idx = 0
+    selected_idx = min(range(len(mols)), key=lambda i: affinities[i]) if affinities else 0
+    pose_info["pose_rmsd_by_rank"] = {}
 
     if is_redocking and calc_rmsd_heavy is not None and ligand_pdb_path and Path(ligand_pdb_path).exists():
         rmsd_rows = []
@@ -522,8 +546,9 @@ def _select_pose_for_interaction(
                 rmsd = calc_rmsd_heavy(mol, ligand_pdb_path)
             except Exception:
                 rmsd = None
-            if rmsd is not None:
+            if rmsd is not None and math.isfinite(float(rmsd)) and float(rmsd) >= 0:
                 rmsd_rows.append((float(rmsd), i))
+                pose_info["pose_rmsd_by_rank"][pose_ranks[i]] = float(rmsd)
 
         if rmsd_rows:
             rmsd_rows.sort(key=lambda x: x[0])
@@ -556,7 +581,7 @@ def _select_pose_for_interaction(
             (pose_info.get("warning") + " ") if pose_info.get("warning") else ""
         ) + f"Could not write selected pose SDF: {e}"
 
-    pose_info["selected_pose_rank"] = int(selected_idx + 1)
+    pose_info["selected_pose_rank"] = int(pose_ranks[selected_idx])
     return pose_info
 
 
@@ -706,6 +731,7 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "atom_mapping": r.get("atom_mapping"),
             "protonation_mode_used": r.get("protonation_mode_used", ""),
             "protonation_fallback": r.get("protonation_fallback", ""),
+            **{key: r.get(key, [] if key == "interactions" else "") for key in pose_access.COMPACT_FIELDS},
             "selected_pose_rank": r.get("selected_pose_rank", None),
             "pose_selection_method": r.get("pose_selection_method", ""),
             "selected_pose_rmsd": r.get("selected_pose_rmsd", None),
@@ -941,30 +967,19 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 ligand_pdb_path = rec.get("ligand_pdb_path") or ""
 
                 raw_scores = dock.get("scores", [])
-                if (
-                    pose_sdf_for_reading  # [REV] skip if no pose SDF was produced
-                    and _is_redocking_case(name, rec, req)
-                    and calc_rmsd_heavy is not None
-                    and ligand_pdb_path
-                    and Path(ligand_pdb_path).exists()
-                ):
-                    all_mols = load_mols_from_sdf(pose_sdf_for_reading, sanitize=False)
-                    for i, score_row in enumerate(raw_scores):
-                        if not isinstance(score_row, dict):
-                            continue  # [REV] guard: score rows may not be mutable dicts
-                        if i < len(all_mols):
-                            try:
-                                rmsd = calc_rmsd_heavy(all_mols[i], ligand_pdb_path)
-                                score_row["rmsd_vs_crystal"] = round(float(rmsd), 2) if rmsd is not None else None
-                            except Exception:
-                                score_row["rmsd_vs_crystal"] = None
 
                 pose_info = _select_pose_for_interaction(
                     pose_sdf=pose_sdf_for_reading,
                     rec=rec,
                     req=req,
                     lig_name=name,
+                    pose_pdbqt=dock.get("out_pdbqt", ""),
                 )
+                for score_row in raw_scores:
+                    if isinstance(score_row, dict):
+                        rmsd = pose_info.get("pose_rmsd_by_rank", {}).get(score_row.get("pose"))
+                        if rmsd is not None:
+                            score_row["rmsd_vs_crystal"] = round(rmsd, 4)
 
                 interaction2d = _generate_2d_interaction(
                     job_id=job_id,
@@ -976,6 +991,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 )
 
                 row.update(
+                    is_redocking=_is_redocking_case(name, rec, req),
                     prepared_smiles=prepared_smiles,
                     charge=prep.get("charge"),
                     status="ok",
@@ -1032,6 +1048,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
             "log_file": str(log_path),
         }
 
+        _ensure_selected_structures(wdir, meta)
         meta_path = wdir / "metadata.json"
         meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -1141,6 +1158,7 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "atom_mapping": r.get("atom_mapping"),
             "protonation_mode_used": r.get("protonation_mode_used", ""),
             "protonation_fallback": r.get("protonation_fallback", ""),
+            **{key: r.get(key, [] if key == "interactions" else "") for key in pose_access.COMPACT_FIELDS},
             "selected_pose_rank": r.get("selected_pose_rank", None),
             "pose_selection_method": r.get("pose_selection_method", ""),
             "selected_pose_rmsd": r.get("selected_pose_rmsd", None),
@@ -1171,6 +1189,91 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
     })
 
     return out
+
+
+def _ensure_selected_structures(wdir: Path, meta: Dict[str, Any]) -> None:
+    for row in meta.get("results", []):
+        if row.get("status") != "ok" or row.get("viewer_3d_url"):
+            continue
+        try:
+            models = pose_access.pdbqt_models(pose_access.saved_file(wdir, row.get("out_pdbqt")))
+            rank, _, _ = pose_access.select_rank(row, models)
+            data = pose_access.structure(wdir, meta, row, rank, _public_url)
+            row.update(pose_access.compact_fields(data))
+        except Exception as exc:
+            row["structure_warning"] = getattr(exc, "detail", str(exc))
+
+
+def _completed_pose_context(job_id: str, ligand_name: Optional[str]):
+    wdir = _job_directory(job_id)
+    status = (JOBS.get(job_id) or {}).get("status") or (_read_status_file(job_id) or {}).get("status")
+    if status in ("queued", "running"):
+        raise HTTPException(409, "Docking is still running; pose structures are not available")
+    if status == "failed":
+        raise HTTPException(409, "Docking job failed")
+    path = wdir / "metadata.json"
+    if not path.is_file():
+        raise HTTPException(404, "Completed docking job not found")
+    meta = json.loads(path.read_text())
+    if meta.get("status") != "completed":
+        raise HTTPException(409, "Docking job has not completed")
+    rows = [r for r in meta.get("results", []) if r.get("status") == "ok"]
+    if ligand_name is not None:
+        rows = [r for r in rows if r.get("name") == ligand_name]
+    if not rows:
+        raise HTTPException(404, "Completed ligand not found")
+    if len(rows) != 1:
+        raise HTTPException(409, "Batch contains multiple ligands; specify ligand_name")
+    return wdir, meta, rows[0]
+
+
+@app.get("/jobs/{job_id}/poses/{pose_rank}/structure", dependencies=[Depends(require_api_key)],
+         operation_id="getDockingPoseStructure", summary="Retrieve exact saved Vina pose and receptor file URLs")
+def get_pose_structure(job_id: str, pose_rank: int, ligand_name: Optional[str] = None,
+                       pocket_distance: float = Query(default=4.5, ge=2.0, le=8.0)) -> Dict[str, Any]:
+    wdir, meta, row = _completed_pose_context(job_id, ligand_name)
+    return pose_access.structure(wdir, meta, row, pose_rank, _public_url, pocket_distance)
+
+
+@app.get("/jobs/{job_id}/selected-pose", dependencies=[Depends(require_api_key)],
+         operation_id="getSelectedDockingPose", summary="Retrieve the selected completed docking pose")
+def get_selected_pose(job_id: str, ligand_name: Optional[str] = None,
+                      pocket_distance: float = Query(default=4.5, ge=2.0, le=8.0)) -> Dict[str, Any]:
+    wdir, meta, row = _completed_pose_context(job_id, ligand_name)
+    models = pose_access.pdbqt_models(pose_access.saved_file(wdir, row.get("out_pdbqt")))
+    rank, _, _ = pose_access.select_rank(row, models)
+    return pose_access.structure(wdir, meta, row, rank, _public_url, pocket_distance)
+
+
+@app.get("/jobs/{job_id}/selected-pose/3d", dependencies=[Depends(require_api_key)],
+         operation_id="getDocking3DViewer", summary="Get compact 3D viewer and coordinate URLs for the selected pose")
+def get_selected_pose_3d(job_id: str, ligand_name: Optional[str] = None,
+                         pocket_distance: float = Query(default=4.5, ge=2.0, le=8.0)) -> Dict[str, Any]:
+    return get_selected_pose(job_id, ligand_name, pocket_distance)
+
+
+@app.get("/jobs/{job_id}/poses/{pose_rank}/interactions", dependencies=[Depends(require_api_key)],
+         operation_id="getDockingPoseInteractions", summary="Get calculated proximity contacts and interaction-analysis status")
+def get_pose_interactions(job_id: str, pose_rank: int, ligand_name: Optional[str] = None,
+                          pocket_distance: float = Query(default=4.5, ge=2.0, le=8.0)) -> Dict[str, Any]:
+    data = get_pose_structure(job_id, pose_rank, ligand_name, pocket_distance)
+    keys = ("job_id", "ligand_name", "pose_rank", "pose_sha256", "receptor_sha256", "interactions",
+            "interaction_analysis_source", "interaction_analysis_warning", "proximity_analysis_source",
+            "proximity_contacts", "proximity_contacts_total", "proximity_contacts_truncated",
+            "pocket_residues", "pocket_residues_total", "pocket_residues_truncated", "pocket_distance_angstrom")
+    return {key: data[key] for key in keys}
+
+
+@app.get("/jobs/{job_id}/view3d/{pose_rank}", response_class=HTMLResponse, include_in_schema=False)
+def view_pose_3d(job_id: str, pose_rank: int, ligand_name: Optional[str] = None):
+    # Public HTML shell contains no molecular data. Its fetches use API authentication.
+    _job_directory(job_id)
+    from urllib.parse import urlencode
+    query = urlencode({"ligand_name": ligand_name}) if ligand_name is not None else ""
+    endpoint = f"/jobs/{job_id}/poses/{pose_rank}/structure" + ("?" + query if query else "")
+    template = Path(__file__).with_name("viewer3d.html").read_text()
+    return HTMLResponse(template.replace("__STRUCTURE_ENDPOINT__", json.dumps(endpoint).replace("<", "\\u003c")),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/health")
@@ -1515,6 +1618,13 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
 def get_job(job_id: str) -> Dict[str, Any]:
     status_payload = _read_status_file(job_id)
     if status_payload:
+        if status_payload.get("status") == "completed":
+            wdir = _job_directory(job_id)
+            meta_path = wdir / "metadata.json"
+            if meta_path.is_file():
+                meta = json.loads(meta_path.read_text())
+                _ensure_selected_structures(wdir, meta)
+                status_payload = _ultra_compact_from_meta(job_id, meta)
         return status_payload
 
     job = JOBS.get(job_id) or _restore_completed_job_from_disk(job_id)
@@ -1560,6 +1670,17 @@ def get_job_file(job_id: str, filename: str) -> FileResponse:
         media_type=media_type,
         headers={"Content-Disposition": f'inline; filename="{safe_filename}"'},
     )
+
+
+@app.get("/jobs/{job_id}/files/{filename}/url", dependencies=[Depends(require_api_key)],
+         operation_id="getDockingJobFile", summary="Get a stable individual result-file URL and SHA256 without downloading a ZIP")
+def get_job_file_url(job_id: str, filename: str) -> Dict[str, Any]:
+    path = _job_directory(job_id) / Path(filename).name
+    if Path(filename).name != filename or not path.is_file() or not path.resolve().is_relative_to(_job_directory(job_id).resolve()):
+        raise HTTPException(404, "Result file not found")
+    from urllib.parse import quote
+    return {"job_id": job_id, "filename": filename, "url": _public_url(f"/jobs/{job_id}/files/{quote(filename)}"),
+            "sha256": pose_access.digest(path), "size_bytes": path.stat().st_size}
 
 
 @app.get("/jobs/{job_id}/view/{filename}", dependencies=[Depends(require_api_key)])

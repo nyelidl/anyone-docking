@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Anyone Can Dock · Exact docking pose</title>
+<script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+<style>
+:root{font-family:system-ui,-apple-system,sans-serif;color:#183038;background:#f1f5f5}*{box-sizing:border-box}body{margin:0}header{background:#fff;padding:20px 28px;border-bottom:1px solid #dbe4e4;display:flex;align-items:center;gap:20px}h1{font-size:20px;margin:0}header p{margin:5px 0 0;color:#62777b;font-size:13px}.badge{margin-left:auto;background:#e3f3ed;color:#17694d;border-radius:20px;padding:7px 13px;font-size:12px;font-weight:650}main{display:grid;grid-template-columns:285px 1fr;min-height:calc(100vh - 91px)}aside{padding:22px;background:white;border-right:1px solid #dbe4e4}label{display:block;font-size:13px;margin:18px 0 7px;font-weight:600}select,input[type=password],button{width:100%;padding:10px;border:1px solid #cbd9da;border-radius:8px;background:white;color:#183038}input[type=range]{width:100%;accent-color:#19766a}button{cursor:pointer;margin-top:12px;background:#19766a;color:white;border:0;font-weight:600}button.secondary{color:#19766a;background:#eaf4f1}.toggle{display:flex;gap:9px;align-items:center}.toggle input{accent-color:#19766a}.stage{position:relative;min-width:0;display:flex;flex-direction:column}#viewport{position:relative;height:70vh;min-height:420px;background:#f7fafb}#note,#evidence{padding:14px 22px;font-size:12px;color:#536d73;line-height:1.6;overflow-wrap:anywhere}#note{border-top:1px solid #dbe4e4}#status{font-size:13px;line-height:1.6;color:#526b71;margin:12px 0}#files a{color:#136e61;margin-right:16px;display:inline-block}.error{color:#a32626!important}small{font-size:11px;color:#64797e}.score{font-size:24px;font-weight:650;margin-top:15px}.score small{font-weight:400}#auth{display:none;border-top:1px solid #ddd;padding-top:8px}summary{cursor:pointer}details{margin-top:10px}@media(max-width:760px){main{grid-template-columns:1fr}aside{border:0}#viewport{height:60vh}header{padding:16px}.badge{display:none}}
+</style></head><body>
+<header><div><h1>Anyone Can Dock <span style="font-weight:400;color:#76888b">/ 3D pose</span></h1><p>Saved docking coordinates · Rotate, zoom and pan</p></div><span class="badge">Exact Vina pose</span></header>
+<main><aside>
+<div id="title">Loading completed pose…</div><div class="score" id="score">—</div><div id="status" role="status">Retrieving coordinate files</div>
+<div id="auth"><label for="key">API key</label><input id="key" type="password" autocomplete="off" placeholder="X-API-Key"><small>Used in memory for this page only.</small><button id="unlock">Load protected result</button></div>
+<label for="protein">Protein</label><select id="protein"><option value="cartoon">Cartoon</option><option value="surface">Surface</option><option value="sticks">Sticks</option></select>
+<label for="ligand">Ligand</label><select id="ligand"><option value="sticks">Sticks</option><option value="ball">Ball-and-stick</option></select>
+<label for="distance">Pocket distance: <span id="distanceValue">4.5</span> Å</label><input id="distance" type="range" min="2" max="8" step="0.5" value="4.5">
+<label class="toggle"><input id="pocket" type="checkbox" checked> Show pocket residues</label>
+<label class="toggle"><input id="interactions" type="checkbox" disabled> Classified interactions</label>
+<label class="toggle"><input id="contacts" type="checkbox"> Proximity lines (not bonds)</label>
+<label class="toggle"><input id="labels" type="checkbox" checked> Pocket residue labels</label>
+<button id="reset" class="secondary">Center binding pocket</button><button id="png">Save current view as PNG</button>
+<small>The PNG is rendered in your browser from these coordinates.</small>
+</aside><section class="stage"><div id="viewport"></div><div id="note">No calculated interactions have been loaded.</div><div id="evidence"><div id="files"></div><details><summary>Coordinate traceability</summary><div id="hashes"></div></details></div></section></main>
+<script>
+const endpoint=__STRUCTURE_ENDPOINT__;
+let data,viewer,recModel,ligModel,apiKey='',surfaceId=null,requestId=0;
+const el=id=>document.getElementById(id);
+function safeUrl(value){const url=new URL(value,location.origin);if(url.origin!==location.origin)throw new Error('Result URL has a different origin; check PUBLIC_BASE_URL.');return url.href;}
+async function retrieve(url,json=true){const r=await fetch(safeUrl(url),{headers:apiKey?{'X-API-Key':apiKey}:{}});if(r.status===401){el('auth').style.display='block';throw new Error('An API key is required to load coordinates.');}if(!r.ok){let err;try{err=await r.json();}catch{}throw new Error(err?.detail||`HTTP ${r.status}`);}return json?r.json():r.text();}
+function point(xyz){return {x:xyz[0],y:xyz[1],z:xyz[2]};}
+function pocketAtoms(){const rec=recModel.selectedAtoms({}),lig=ligModel.selectedAtoms({});const radius=Number(el('distance').value),keys=new Set();for(const a of rec){if(a.elem==='H')continue;for(const b of lig){if(b.elem==='H')continue;if((a.x-b.x)**2+(a.y-b.y)**2+(a.z-b.z)**2<=radius*radius){keys.add(`${a.chain}|${a.resi}|${a.icode||''}`);break;}}}return rec.filter(a=>keys.has(`${a.chain}|${a.resi}|${a.icode||''}`));}
+async function redraw(){if(!viewer||!data)return;const view=viewer.getView();viewer.removeAllLabels();viewer.removeAllShapes();viewer.removeAllSurfaces();recModel.setStyle({},{});const protein=el('protein').value;
+if(protein==='cartoon')recModel.setStyle({},{cartoon:{color:'#9ebbc0'}});
+if(protein==='sticks')recModel.setStyle({},{stick:{radius:0.12,colorscheme:'Jmol'}});
+if(protein==='surface'){recModel.setStyle({},{cartoon:{color:'#b6c9cc'}});viewer.addSurface($3Dmol.SurfaceType.VDW,{opacity:0.35,color:'#9ebbc0'},{model:recModel.getID()});}
+const pocket=pocketAtoms();if(el('pocket').checked)recModel.setStyle({serial:pocket.map(a=>a.serial)},{stick:{radius:0.17,colorscheme:'Jmol'}});
+const ligStyle={stick:{radius:el('ligand').value==='ball'?0.15:0.24,colorscheme:'greenCarbon'}};if(el('ligand').value==='ball')ligStyle.sphere={scale:0.27,colorscheme:'greenCarbon'};ligModel.setStyle({},ligStyle);
+if(el('labels').checked){const seen=new Set();for(const a of pocket){const k=`${a.chain}|${a.resi}|${a.icode||''}`;if(!seen.has(k)){seen.add(k);viewer.addLabel(`${a.resn} ${a.resi}${a.icode||''} · ${a.chain||'—'}`,{position:{x:a.x,y:a.y,z:a.z},fontSize:11,backgroundOpacity:0.75,backgroundColor:'white',fontColor:'#294d56',borderThickness:0});}}}
+const lines=[];if(el('contacts').checked)lines.push(...data.proximity_contacts.map(c=>({...c,color:'#b59250'})));if(el('interactions').checked)lines.push(...data.interactions.map(c=>({...c,color:'#7357ad'})));
+for(const c of lines){if(c.protein_xyz&&c.ligand_xyz)viewer.addLine({start:point(c.protein_xyz),end:point(c.ligand_xyz),color:c.color,dashed:true,linewidth:2});}
+viewer.addLabel(`${data.ligand_name} · pose ${data.pose_rank} · Vina ${data.affinity.toFixed(3)} kcal/mol (prediction)`,{position:{x:10,y:10,z:0},useScreen:true,fontSize:13,backgroundColor:'white',fontColor:'#183038',backgroundOpacity:0.9,borderThickness:0});
+viewer.setView(view);viewer.render();}
+function center(){viewer.zoomTo({model:ligModel.getID()});viewer.zoom(0.7);viewer.render();}
+async function load(){const token=++requestId;el('status').className='';try{const next=await retrieve(endpoint+(endpoint.includes('?')?'&':'?')+'pocket_distance='+el('distance').value);const [rec,lig]=await Promise.all([retrieve(next.receptor_pdb_url,false),retrieve(next.pose_pdb_url,false)]);if(token!==requestId)return;if(typeof $3Dmol==='undefined')throw new Error('3Dmol.js could not load. Coordinate files remain accessible through the API.');data=next;if(!viewer)viewer=$3Dmol.createViewer(el('viewport'),{backgroundColor:'#f7fafb'});viewer.removeAllModels();recModel=viewer.addModel(rec,'pdb',{keepH:true});ligModel=viewer.addModel(lig,'pdb',{keepH:true});
+el('title').textContent=`${data.receptor_pdb_id||'Uploaded receptor'} / ${data.ligand_name} · pose ${data.pose_rank}`;el('score').textContent=`${data.affinity.toFixed(3)} kcal/mol`;el('status').textContent='Vina computational prediction · '+data.pose_selection_method;el('note').textContent=data.interaction_analysis_warning+' '+data.structure_warning;
+el('interactions').disabled=!data.interactions.length;if(!data.interactions.length)el('interactions').checked=false;
+el('files').replaceChildren();for(const [label,key] of [['Complex PDB','complex_pdb_url'],['Pose PDB','pose_pdb_url'],['Pose SDF','pose_sdf_url'],['Pose PDBQT','pose_pdbqt_url']]){if(!data[key])continue;const a=document.createElement('a');a.href=safeUrl(data[key]);a.textContent=label;a.onclick=async e=>{if(!apiKey)return;e.preventDefault();try{const text=await retrieve(data[key],false);const u=URL.createObjectURL(new Blob([text],{type:'text/plain'}));const d=document.createElement('a');d.href=u;d.download=new URL(a.href).pathname.split('/').pop();d.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}catch(err){el('status').textContent=err.message;}};el('files').append(a);}
+el('hashes').textContent=`Receptor SHA256: ${data.receptor_sha256}\nPose PDBQT SHA256: ${data.pose_sha256}\nComplex SHA256: ${data.complex_sha256}`;await redraw();center();}catch(err){el('status').textContent=err.message;el('status').className='error';}}
+for(const id of ['protein','ligand','pocket','interactions','contacts','labels'])el(id).onchange=redraw;
+el('distance').oninput=()=>{el('distanceValue').textContent=Number(el('distance').value).toFixed(1);};el('distance').onchange=load;
+el('unlock').onclick=()=>{apiKey=el('key').value;load();};el('reset').onclick=()=>{if(viewer)center();};el('png').onclick=()=>{if(!viewer||!data)return;viewer.render();const a=document.createElement('a');a.href=viewer.pngURI();a.download=`pose_${data.pose_rank}_3d.png`;a.click();};
+const initialDistance=Number(new URLSearchParams(location.search).get('pocket_distance'));if(initialDistance>=2&&initialDistance<=8){el('distance').value=String(initialDistance);el('distanceValue').textContent=initialDistance.toFixed(1);}
+load();
+</script></body></html>
