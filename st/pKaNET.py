@@ -1099,6 +1099,10 @@ def find_ionizable_sites(mol):
                                   and mol.GetAtomWithIdx(idx).GetFormalCharge() == 0
                                   and mol.GetAtomWithIdx(idx).GetAtomicNum() == 7))
                          and idx not in seen_ion]
+            if lbl == "sulfonylurea_NH":
+                # Match atom 3 is N(H) bonded to BOTH sulfonyl S and carbonyl C.
+                # The distal urea N must not inherit the same acidic pKa.
+                ion_atoms = [match[3]] if match[3] in ion_atoms else []
             if not ion_atoms: continue
             # Mark the full SMARTS match as claimed so overlapping fallback
             # patterns cannot double-count the same acidic/basic motif.
@@ -1402,6 +1406,15 @@ def _find_fallback_ion_atom(rw, site):
 def _manual_deprotonate_site(smiles, site):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None: return None
+    if site.get("label") == "sulfonylurea_NH":
+        # Canonical SMILES can reorder atoms. Re-find only the sulfonyl-side NH;
+        # do not fall back to a different NH once this site is deprotonated.
+        pat = next(p for label, p, *_ in _IONIZABLE_SITES_COMPILED
+                   if label == "sulfonylurea_NH")
+        matches = mol.GetSubstructMatches(pat)
+        if not matches:
+            return None
+        site = dict(site, atom_indices=[matches[0][3]])
     rw = Chem.RWMol(mol); target_idx = None
     for idx in site["atom_indices"]:
         if idx >= rw.GetNumAtoms(): continue

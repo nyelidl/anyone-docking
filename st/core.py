@@ -2032,6 +2032,12 @@ def _find_ionizable_sites(mol):
                 and mol.GetAtomWithIdx(idx).GetTotalNumHs() > 0
                 and idx not in seen_ion
             ]
+            if lbl == "sulfonylurea_NH":
+                # Match atom 3 is N(H) bonded to BOTH sulfonyl S and carbonyl C.
+                # The distal urea N must not inherit the same acidic pKa.
+                ion_atoms = [match[3]] if match[3] in ion_atoms else []
+                if ion_atoms:
+                    claimed_atoms.update(match)
             if not ion_atoms:
                 continue
             for ion_idx in ion_atoms:
@@ -2275,6 +2281,15 @@ def _manual_deprotonate_site(smiles, site):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
+    if site.get("label") == "sulfonylurea_NH":
+        # Canonical SMILES can reorder atoms. Re-find only the sulfonyl-side NH;
+        # do not fall back to a different NH once this site is deprotonated.
+        pat = next(p for label, p, *_ in _IONIZABLE_SITES_COMPILED
+                   if label == "sulfonylurea_NH")
+        matches = mol.GetSubstructMatches(pat)
+        if not matches:
+            return None
+        site = dict(site, atom_indices=[matches[0][3]])
     rw = Chem.RWMol(mol)
     target_idx = None
     for idx in site["atom_indices"]:
