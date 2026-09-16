@@ -405,6 +405,8 @@ Ask ChatGPT to dock molecules using natural-language instructions.
 
 [![ChatGPT](https://img.shields.io/badge/ChatGPT-Anyone_Can_Dock_GPT-10a37f?logo=openai&logoColor=white)](https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt)
 
+**How to do:** https://scribehow.com/o/an3IFiDaRtmZANATDZDBFg/viewer/How_to_Dock_Gefitinib_to_PDB_1M17__mrZrG5ZmTbSab6g-FxdVRQ
+
 ### Anyone Can Dock in Claude
 
 Connect Claude to the ACD API as a custom MCP connector.
