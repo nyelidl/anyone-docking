@@ -446,7 +446,7 @@ Example prompts:
 If you use ACD in research, please cite the relevant methods used in your workflow.
 
 > **Anyone Can Dock: An Online Molecular Docking Tool for Everyone**  
-> Hengphasatporn, K.; Bunchuay T.; Duan, L.; Shigeta, Y., *J. Cheminformatics.*, 2026. DOI: [10.21203/rs.3.rs-9763995/v1](https://doi.org/10.21203/rs.3.rs-9763995/v1)
+> Hengphasatporn, K.; Bunchuay T.; Duan, L.; Shigeta, Y., *J. Cheminformatics.*, 2026. DOI: [10.1186/s13321-026-01306-2](https://doi.org/10.1186/s13321-026-01306-2)
 
 > **AutoDock Vina 1.2.7**  
 > Eberhardt et al., *J. Chem. Inf. Model.*, 2021. DOI: [10.1021/acs.jcim.1c00203](https://doi.org/10.1021/acs.jcim.1c00203)
