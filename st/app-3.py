@@ -4102,6 +4102,85 @@ def _render_pose_structure(pose_mol, receptor_pdb, crystal_pdb):
     except Exception as e:
         st.info(f"Viewer error: {e}")
 
+def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
+    """Shared preparation preview for Single, Batch and Redock."""
+    import py3Dmol
+    cx_v, cy_v, cz_v = center
+    _sx, _sy, _sz = size
+    with st.expander("🔭 3D: Receptor + Docking Box", expanded=True):
+        v3 = py3Dmol.view(width="100%", height=480)
+        v3.setBackgroundColor(_viewer_bg())
+        mi = 0
+
+        _rec_path = receptor_pdb
+        if _rec_path and os.path.exists(_rec_path):
+            v3.addModel(open(_rec_path).read(), "pdb")
+            v3.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.4}})
+            try:
+                from prody import parsePDB as _pPDB
+                _ra = _pPDB(_rec_path)
+                _hx, _hy, _hz = _sx / 2.0, _sy / 2.0, _sz / 2.0
+                _pocket = _ra.select(
+                    f"protein and "
+                    f"x > {cx_v - _hx:.2f} and x < {cx_v + _hx:.2f} and "
+                    f"y > {cy_v - _hy:.2f} and y < {cy_v + _hy:.2f} and "
+                    f"z > {cz_v - _hz:.2f} and z < {cz_v + _hz:.2f}"
+                )
+                if _pocket is not None and _pocket.numAtoms() > 0:
+                    _resi_list = sorted(set(int(r) for r in _pocket.getResnums()))
+                    v3.setStyle(
+                        {"model": mi, "resi": _resi_list},
+                        {"stick": {"colorscheme": "whiteCarbon", "radius": 0.18},
+                         "cartoon": {"color": "spectrum", "opacity": 0.75}},
+                    )
+            except Exception:
+                pass
+            mi += 1
+
+        _box_mi   = None
+        _box_path = box_pdb
+        if _box_path and os.path.exists(_box_path):
+            v3.addModel(open(_box_path).read(), "pdb")
+            v3.setStyle({"model": mi}, {"stick": {"radius": 0.2, "color": "gray"}})
+            _box_mi = mi
+            mi += 1
+
+        lig_p = ligand_pdb
+        if lig_p and os.path.exists(lig_p):
+            v3.addModel(open(lig_p).read(), "pdb")
+            v3.setStyle({"model": mi}, {
+                "stick": {"colorscheme": "magentaCarbon", "radius": 0.25}
+            })
+            mi += 1
+
+        # ── Heme cofactor ─────────────────────────────────────────────
+        mi = _add_metals_heme_to_view(v3, receptor_pdb, mi)
+
+        _add_box_to_view(v3, cx_v, cy_v, cz_v, _sx, _sy, _sz)
+        try:
+            for _end, _col, _lbl in [
+                ({"x": cx_v+8, "y": cy_v,   "z": cz_v},   "red",   "X"),
+                ({"x": cx_v,   "y": cy_v+8,  "z": cz_v},   "green", "Y"),
+                ({"x": cx_v,   "y": cy_v,    "z": cz_v+8}, "blue",  "Z"),
+            ]:
+                _st = {"x": cx_v, "y": cy_v, "z": cz_v}
+                v3.addArrow({"start": _st, "end": _end, "radius": 0.15, "color": _col, "radiusRatio": 3.0})
+                v3.addLabel(_lbl, {
+                    "fontSize": 14, "fontColor": _col,
+                    "backgroundColor": "black", "backgroundOpacity": 0.6,
+                    "inFront": True, "showBackground": True,
+                }, _end)
+        except Exception:
+            pass
+
+        if _box_mi is not None:
+            v3.zoomTo({"model": _box_mi})
+        else:
+            v3.zoomTo()
+            v3.center({"x": float(cx_v), "y": float(cy_v), "z": float(cz_v)})
+            v3.zoom(1.5)
+        show3d(v3, height=480)
+
 def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
     import py3Dmol
     from core import run_cmd as _run_cmd
@@ -4268,6 +4347,16 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             import core as _redock_core
             from redock_ui import receptor_setup
             receptor_setup(st, _redock_core, wdir, pfx, src, pdb_id, upload_file)
+            _prepared = st.session_state.get(pfx + "prepared")
+            _inspection = st.session_state.get(pfx + "inspection")
+            if _prepared and _inspection and _inspection.get("ready"):
+                with col_b:
+                    _render_receptor_setup(
+                        _prepared["rec_fh"], _prepared.get("box_pdb"),
+                        _inspection["reference_path"],
+                        tuple(_prepared[k] for k in ("cx", "cy", "cz")),
+                        tuple(_prepared[k] for k in ("sx", "sy", "sz")),
+                    )
             st.markdown('</div>', unsafe_allow_html=True)
             return
 
@@ -4720,79 +4809,12 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 f'</div>',
                 unsafe_allow_html=True,
             )
-        with st.expander("🔭 3D: Receptor + Docking Box", expanded=True):
-            v3 = py3Dmol.view(width="100%", height=480)
-            v3.setBackgroundColor(_viewer_bg())
-            mi = 0
-
-            _rec_path = st.session_state.get(pfx + "receptor_fh")
-            if _rec_path and os.path.exists(_rec_path):
-                v3.addModel(open(_rec_path).read(), "pdb")
-                v3.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.4}})
-                try:
-                    from prody import parsePDB as _pPDB
-                    _ra = _pPDB(_rec_path)
-                    _hx, _hy, _hz = _sx / 2.0, _sy / 2.0, _sz / 2.0
-                    _pocket = _ra.select(
-                        f"protein and "
-                        f"x > {cx_v - _hx:.2f} and x < {cx_v + _hx:.2f} and "
-                        f"y > {cy_v - _hy:.2f} and y < {cy_v + _hy:.2f} and "
-                        f"z > {cz_v - _hz:.2f} and z < {cz_v + _hz:.2f}"
-                    )
-                    if _pocket is not None and _pocket.numAtoms() > 0:
-                        _resi_list = sorted(set(int(r) for r in _pocket.getResnums()))
-                        v3.setStyle(
-                            {"model": mi, "resi": _resi_list},
-                            {"stick": {"colorscheme": "whiteCarbon", "radius": 0.18},
-                             "cartoon": {"color": "spectrum", "opacity": 0.75}},
-                        )
-                except Exception:
-                    pass
-                mi += 1
-
-            _box_mi   = None
-            _box_path = st.session_state.get(pfx + "box_pdb")
-            if _box_path and os.path.exists(_box_path):
-                v3.addModel(open(_box_path).read(), "pdb")
-                v3.setStyle({"model": mi}, {"stick": {"radius": 0.2, "color": "gray"}})
-                _box_mi = mi
-                mi += 1
-
-            lig_p = st.session_state.get(pfx + "ligand_pdb_path")
-            if lig_p and os.path.exists(lig_p):
-                v3.addModel(open(lig_p).read(), "pdb")
-                v3.setStyle({"model": mi}, {
-                    "stick": {"colorscheme": "magentaCarbon", "radius": 0.25}
-                })
-                mi += 1
-
-            # ── Heme cofactor ─────────────────────────────────────────────
-            mi = _add_metals_heme_to_view(v3, st.session_state.get(pfx + "receptor_fh"), mi)
-
-            _add_box_to_view(v3, cx_v, cy_v, cz_v, _sx, _sy, _sz)
-            try:
-                for _end, _col, _lbl in [
-                    ({"x": cx_v+8, "y": cy_v,   "z": cz_v},   "red",   "X"),
-                    ({"x": cx_v,   "y": cy_v+8,  "z": cz_v},   "green", "Y"),
-                    ({"x": cx_v,   "y": cy_v,    "z": cz_v+8}, "blue",  "Z"),
-                ]:
-                    _st = {"x": cx_v, "y": cy_v, "z": cz_v}
-                    v3.addArrow({"start": _st, "end": _end, "radius": 0.15, "color": _col, "radiusRatio": 3.0})
-                    v3.addLabel(_lbl, {
-                        "fontSize": 14, "fontColor": _col,
-                        "backgroundColor": "black", "backgroundOpacity": 0.6,
-                        "inFront": True, "showBackground": True,
-                    }, _end)
-            except Exception:
-                pass
-
-            if _box_mi is not None:
-                v3.zoomTo({"model": _box_mi})
-            else:
-                v3.zoomTo()
-                v3.center({"x": float(cx_v), "y": float(cy_v), "z": float(cz_v)})
-                v3.zoom(1.5)
-            show3d(v3, height=480)
+        _render_receptor_setup(
+            st.session_state.get(pfx + "receptor_fh"),
+            st.session_state.get(pfx + "box_pdb"),
+            st.session_state.get(pfx + "ligand_pdb_path"),
+            (cx_v, cy_v, cz_v), (_sx, _sy, _sz),
+        )
 
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
