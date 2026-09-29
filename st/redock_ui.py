@@ -83,12 +83,18 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file):
                     raise ValueError(result.get('error', 'Receptor preparation failed.'))
                 if hashlib.sha256(Path(inspection['reference_path']).read_bytes()).hexdigest() != inspection['reference_sha256']:
                     raise ValueError('Crystal reference changed unexpectedly during preparation.')
+                from pocket_completeness import assess_missing_residues, save_report
+                result['pocket_report'] = assess_missing_residues(
+                    inspection['raw_path'], inspection['reference_path'], result.get('rec_fh'))
+                save_report(result['pocket_report'], out)
                 st.session_state[pfx + 'prepared'] = result
                 st.session_state[pfx + 'prepared_settings'] = settings
             except Exception as exc:
                 st.error(str(exc))
         prepared = st.session_state.get(pfx + 'prepared')
         if prepared:
+            from pocket_completeness import show_report
+            show_report(st, prepared.get('pocket_report'))
             st.success('Receptor prepared. The original crystal reference is preserved separately.')
             with st.expander('Receptor preparation log', expanded=False):
                 st.code('\n'.join(prepared.get('log', [])))
@@ -143,7 +149,8 @@ def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
     with st.expander('Reproducibility (random seed)', expanded=False):
         seed = st.number_input('Vina seed (0 = automatic)', min_value=0, value=0, key=pfx + 'seed')
         conformer = st.number_input('Conformer seed (0 = automatic)', min_value=0, value=0, key=pfx + 'conformer_seed')
-    ready = bool(inspection and inspection['ready'] and prepared)
+    blocked = bool((prepared or {}).get('pocket_report', {}).get('blocked'))
+    ready = bool(inspection and inspection['ready'] and prepared and not blocked)
     st.markdown('<style>.st-key-r_btn_redock button:enabled {background-color:#198754!important;color:white!important;border-color:#198754!important;}</style>', unsafe_allow_html=True)
     if st.button('Redock', type='primary', disabled=not ready, key=pfx + 'btn_redock'):
         st.session_state.pop(pfx + 'result', None)
@@ -162,6 +169,8 @@ def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
             st.session_state[pfx + 'result'] = result
         except Exception as exc:
             st.error(f'Redocking failed: {exc}')
+    if blocked:
+        st.error('Redocking blocked: rebuild and validate the missing region near the binding site, then prepare the receptor again.')
     if not ready:
         st.caption('Redock becomes available after an eligible structure has been prepared.')
     result = st.session_state.get(pfx + 'result')
