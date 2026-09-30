@@ -17,6 +17,8 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from heme_state import HemeStateError, detect_heme_centers
+
 from core import (
     prepare_receptor,
     prepare_ligand,
@@ -187,7 +189,6 @@ def _prolif_profile_table_html(profile_rows, residue_columns) -> str:
         '</table></div>'
         f'<div style="padding-top:10px;">{legend_items}</div>'
     )
-
 
 
 
@@ -4446,6 +4447,41 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 with open(_scan_path, "wb") as _sf:
                     _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
 
+            _heme_states_for_prep = {}
+            if _scan_path and os.path.exists(_scan_path):
+                try:
+                    _heme_scan_path = _scan_path
+                    if is_cif_file(_heme_scan_path):
+                        _heme_scan_path = str(wdir / "heme_state_scan.pdb")
+                        _heme_cif = convert_cif_to_pdb(_scan_path, _heme_scan_path)
+                        if not _heme_cif.get("success"):
+                            raise HemeStateError(_heme_cif.get("error", "CIF conversion failed"))
+                    _heme_centers = detect_heme_centers(_heme_scan_path)
+                    if _heme_centers:
+                        st.markdown("**Heme state**")
+                    for _hc_i, _hc in enumerate(_heme_centers, 1):
+                        _heme_states_for_prep[_hc["key"]] = "auto"
+                        _state_label = "Compound I" if _hc["state"] == "CPD_I" else "Ferric/resting HEM"
+                        _oxo_text = (
+                            f" · Oxo {_hc['oxo_name']} #{_hc['oxo_serial']} · Fe-O {_hc['fe_o_distance']:.2f} Å"
+                            if _hc.get("oxo_serial") else " · Oxo none"
+                        )
+                        st.info(
+                            f"Center {_hc_i}: **{_state_label}** · {_hc['resname']} {_hc['chain']} {_hc['resid']} · "
+                            f"Fe #{_hc['fe_serial']}{_oxo_text} · "
+                            f"proximal {_hc['cys_resname']} {_hc['cys_chain']}:{_hc['cys_resid']} SG "
+                            f"(Fe-S {_hc['fe_s_distance']:.2f} Å)"
+                        )
+                        if _hc.get("oxo_h_serial"):
+                            st.warning(
+                                f"Axial oxo H #{_hc['oxo_h_serial']} detected at {_hc['oh_distance']:.2f} Å; "
+                                "only this hydrogen will be removed during preparation."
+                            )
+                    st.session_state[pfx + "heme_states"] = _heme_states_for_prep
+                except HemeStateError as _heme_error:
+                    st.error(f"Heme validation: {_heme_error}")
+                    st.session_state[pfx + "heme_states"] = {"__error__": str(_heme_error)}
+
             def _lig_label(_r):
                 _ch = _r.get("chain") or "—"
                 _lig_name = _r.get("full_resname") or _r.get("resname")
@@ -4705,6 +4741,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
         st.session_state[pfx + "pocket_report"] = None
         st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
 
+        _stored_heme_states = st.session_state.get(pfx + "heme_states", {})
+        if "__error__" in _stored_heme_states:
+            st.error(f"❌ Receptor preparation stopped: {_stored_heme_states['__error__']}")
+            st.stop()
+
         # ── Deduplicate identical protein chains ──────────────────────────
         try:
             from prody import parsePDB as _pPDB_ch, writePDB as _wPDB_ch
@@ -4790,6 +4831,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
                 hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
                 reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
+                heme_states       = _stored_heme_states,
             )
 
         if result["success"]:
@@ -4877,7 +4919,7 @@ st.markdown(
     "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown("**Single Dock** — one ligand. **Batch Dock** — multiple ligands. **Redock** — co-crystal pose validation.")
-st.markdown("**☁️ Cloud-ready | 📱 Mobile-compatible**")
+st.markdown("**🖥️ Run locally | 🌐 Web interface**")
 
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
@@ -6866,8 +6908,6 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 st.markdown(
     '<div style="text-align:center;color:#57606A;font-size:0.78rem;'
     'font-family:\'IBM Plex Mono\',monospace;">'
-    '<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" '
-    'alt="Anyone Can Dock" style="display:block;margin:0 auto 0.45rem auto;max-width:180px;width:100%;height:auto;">'
     'AutoDock Vina 1.2.7 · Meeko · RDKit · OpenBabel · py3Dmol<br>'
     'Eberhardt et al. J. Chem. Inf. Model. 2021, 61, 3891&#8211;3898 &nbsp;·&nbsp; '
     '<a href="https://pubs.acs.org/doi/10.1021/acs.jcim.5c02852" target="_blank" '
