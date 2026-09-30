@@ -207,16 +207,18 @@ def save_report(report, folder):
     return str(path)
 
 
-def show_report(st, report):
+def show_report(st, report, *, show_status=True, show_details=True):
     if not report: return
     report = normalize_report(report)
-    if report['blocked']: st.error(report['reason'])
-    elif report['status'] == 'complete': st.success(report['reason'])
-    else: st.warning(report['reason'])
-    if report.get('gaps'):
+    if show_status:
+        if report['blocked']: st.error(report['reason'])
+        elif report['status'] == 'complete': st.success(report['reason'])
+        else: st.warning(report['reason'])
+    if show_details and report.get('gaps'):
         st.dataframe(report['gaps'], hide_index=True)
         st.caption(f"Distances are measured from observed flanking residues to co-crystal ligand heavy atoms. A boundary within {report['cutoff_A']:g} Å blocks docking. Missing residues themselves have no coordinates.")
-    if report.get('missing_atoms'):
+    if show_details and report.get('missing_atoms'):
         st.caption('Annotated missing atoms (reported separately from entirely missing residues)')
         st.dataframe(report['missing_atoms'], hide_index=True)
-    for warning in report.get('warnings', []): st.caption(warning)
+    if show_details:
+        for warning in report.get('warnings', []): st.caption(warning)
