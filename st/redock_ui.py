@@ -119,7 +119,9 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                 st.dataframe(inspection['contacts'], hide_index=True)
             if inspection.get('pocket_report'):
                 from pocket_completeness import show_report
-                show_report(st, inspection['pocket_report'])
+                show_report(st, inspection['pocket_report'], show_details=False)
+                with st.expander('Missing residue details', expanded=False):
+                    show_report(st, inspection['pocket_report'], show_status=False)
             if inspection.get('ready') and choice_key == inspection.get('selected_ligand_key'):
                 st.success(inspection['message'])
                 chains = inspection.get('selected_chains') or [inspection.get('selected_chain', '')]
@@ -159,8 +161,6 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                 st.error(str(exc))
         prepared = st.session_state.get(pfx + 'prepared')
         if prepared:
-            from pocket_completeness import show_report
-            show_report(st, prepared.get('pocket_report'))
             st.success('Receptor prepared. The original crystal reference is preserved separately.')
             with st.expander('Receptor preparation log', expanded=False):
                 st.code('\n'.join(prepared.get('log', [])))
