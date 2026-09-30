@@ -45,21 +45,25 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
         st.session_state.pop(pfx + 'result', None)
         st.info(str(exc))
 
+    def assess_selected_ligand(current):
+        from pocket_completeness import assess_missing_residues
+        if current.get('ligand') and current.get('reference_path'):
+            current['pocket_report'] = assess_missing_residues(path, current['reference_path'])
+            if current['pocket_report'].get('blocked'):
+                current['contact_ready'] = current['ready']
+                current['ready'] = False
+                current['message'] = 'Redock is not ready: a missing residue boundary is within 5 Å of the selected co-crystal ligand. Rebuild and validate the region before docking.'
+        return current
+
     with st.expander('⚗️ Receptor setup panel', expanded=True):
         st.caption('One ligand residue instance is required. Heavy-atom contacts ≤4.5 Å identify the contacting protein chains. Only supplied chains in model 1 are inspected; no symmetry mates or biological assemblies are generated.')
         use_structure = st.button('Use this structure', key=pfx + 'use_structure', type='primary', disabled=path is None)
         if use_structure and path is not None:
             try:
-                with st.spinner('Inspecting ligand and protein-chain contacts…'):
+                with st.spinner('Finding bound ligand instances…'):
                     inspection = inspect_redock_structure(core, path, wdir / signature[:16])
-                from pocket_completeness import assess_missing_residues
-                if inspection.get('ligand') and inspection.get('reference_path'):
-                    inspection['pocket_report'] = assess_missing_residues(path, inspection['reference_path'])
-                    if inspection['pocket_report'].get('blocked'):
-                        inspection['contact_ready'] = inspection['ready']
-                        inspection['ready'] = False
-                        inspection['message'] = 'Redock is not ready: a missing residue boundary is within 5 Å of the co-crystal ligand. Rebuild and validate the region before docking.'
-                inspection['ligands'] = inspection.get('ligand_candidates', [])
+                if inspection.get('ligand'):
+                    inspection = assess_selected_ligand(inspection)
                 st.session_state[pfx + 'inspection'] = inspection
                 st.session_state.pop(pfx + 'prepared', None)
                 st.session_state.pop(pfx + 'result', None)
@@ -71,33 +75,63 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
         else:
             inspection = st.session_state.get(pfx + 'inspection')
 
+        candidates = (inspection or {}).get('ligand_candidates', [])
+        choice_key = None
+        if candidates:
+            labels = {
+                row['key']: f"{row.get('full_resname') or row['resname']} · chain {row.get('chain') or '(blank)'} · residue {row.get('resid')} · {row.get('n_atoms')} atoms"
+                for row in candidates
+            }
+            valid_keys = list(labels)
+            old_choice = st.session_state.get(pfx + 'ligand_choice')
+            if old_choice not in valid_keys:
+                st.session_state[pfx + 'ligand_choice'] = valid_keys[0]
+            choice_key = st.selectbox('Bound ligand instance to use', valid_keys,
+                                      format_func=lambda key: labels[key], key=pfx + 'ligand_choice')
+            inspected_key = (inspection or {}).get('selected_ligand_key')
+            if choice_key != inspected_key:
+                st.session_state.pop(pfx + 'prepared', None)
+                st.session_state.pop(pfx + 'result', None)
+                if st.button('Use selected ligand', key=pfx + 'use_ligand', type='primary'):
+                    try:
+                        with st.spinner('Checking ligand contacts and missing residues around the selected ligand…'):
+                            inspection = inspect_redock_structure(
+                                core, path, wdir / signature[:16], ligand_key=choice_key)
+                        inspection = assess_selected_ligand(inspection)
+                        st.session_state[pfx + 'inspection'] = inspection
+                        st.session_state.pop(pfx + 'prepared', None)
+                        st.session_state.pop(pfx + 'result', None)
+                    except Exception as exc:
+                        st.error(str(exc))
+                else:
+                    st.info('Choose a bound ligand instance, then click “Use selected ligand” to inspect its contacts and missing-residue proximity.')
+        elif inspection:
+            st.session_state.pop(pfx + 'prepared', None)
+            st.session_state.pop(pfx + 'result', None)
+
         if inspection:
             st.caption('Structure inspection: ' + inspection['structure_state'])
             st.write('Protein chains: ' + ', '.join(c or '(blank)' for c in inspection['chains']))
-            candidates = inspection.get('ligand_candidates') or inspection.get('ligands') or []
-            if candidates:
-                st.markdown('**Bound ligand instances**')
-                st.dataframe([{k: row.get(k) for k in ('resname', 'chain', 'resid', 'n_atoms')} for row in candidates], hide_index=True)
             if inspection.get('ligand'):
                 ligand = inspection['ligand']
-                st.write(f"Selected ligand: **{ligand['resname']} {ligand['chain'] or '(blank)'} {ligand['resid']}**")
+                st.write(f"Selected ligand: **{ligand.get('full_resname') or ligand['resname']} · {ligand['chain'] or '(blank)'} {ligand['resid']}**")
             if inspection.get('contacts'):
                 st.dataframe(inspection['contacts'], hide_index=True)
             if inspection.get('pocket_report'):
                 from pocket_completeness import show_report
                 show_report(st, inspection['pocket_report'])
-            if inspection['ready']:
+            if inspection.get('ready') and choice_key == inspection.get('selected_ligand_key'):
                 st.success(inspection['message'])
                 chains = inspection.get('selected_chains') or [inspection.get('selected_chain', '')]
                 st.write('Selected receptor chain' + ('s' if len(chains) != 1 else '') + ': **' + ', '.join(c or '(blank)' for c in chains) + '**')
-            else:
+            elif not inspection.get('ready'):
                 st.warning(inspection['message'])
 
         settings = (inspection or {}).get('source_sha256'), tuple(box)
         if st.session_state.get(pfx + 'prepared_settings') != settings:
             st.session_state.pop(pfx + 'prepared', None)
             st.session_state.pop(pfx + 'result', None)
-        ready = bool(inspection and inspection['ready'])
+        ready = bool(inspection and inspection['ready'] and choice_key == inspection.get('selected_ligand_key'))
         if st.button('▶ Prepare Receptor', key=pfx + 'btn_receptor', type='primary', disabled=not ready):
             st.session_state.pop(pfx + 'prepared', None)
             st.session_state.pop(pfx + 'result', None)
@@ -182,7 +216,8 @@ def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
         seed = st.number_input('Vina seed (0 = automatic)', min_value=0, value=0, key=pfx + 'seed')
         conformer = st.number_input('Conformer seed (0 = automatic)', min_value=0, value=0, key=pfx + 'conformer_seed')
     blocked = bool((prepared or {}).get('pocket_report', {}).get('blocked'))
-    ready = bool(inspection and inspection['ready'] and prepared and not blocked)
+    selected_key = st.session_state.get(pfx + 'ligand_choice')
+    ready = bool(inspection and inspection['ready'] and inspection.get('selected_ligand_key') == selected_key and prepared and not blocked)
     st.markdown('<style>.st-key-r_btn_redock button:enabled {background-color:#198754!important;color:white!important;border-color:#198754!important;}</style>', unsafe_allow_html=True)
     if st.button('Redock', type='primary', disabled=not ready, key=pfx + 'btn_redock'):
         st.session_state.pop(pfx + 'result', None)
