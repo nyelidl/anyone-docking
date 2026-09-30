@@ -63,7 +63,9 @@ def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5):
     chains = sorted(set(str(c).strip() for c in protein.getChids()))
     result = dict(ready=False, raw_path=str(raw_path), source_sha256=digest,
                   pdb_path=str(pdb), chains=chains, cutoff=cutoff, contacts=[],
-                  candidate_count=len(candidates), structure_state='holo' if candidates else 'no suitable ligand')
+                  candidate_count=len(candidates),
+                  ligand_candidates=[{k: r.get(k) for k in ('key','resname','full_resname','chain','resid','n_atoms')} for r in candidates],
+                  structure_state='holo' if candidates else 'no suitable ligand')
     if not candidates:
         result['message'] = 'Redock is not ready: no bound ligand was detected in this structure.'
         return result
@@ -92,18 +94,15 @@ def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5):
                                        contacting_atoms=int(near.sum()),
                                        contacting_residues=len(set(part.getResindices()[near]))))
     bound = [r['chain'] for r in result['contacts'] if r['contacting_atoms']]
-    if len(bound) > 1:
-        result['message'] = 'Redock is not ready: the bound ligand interacts with multiple protein chains.'
-        return result
     if not bound:
         result['message'] = 'Redock is not ready: no protein chain contacts the ligand within 4.5 Å.'
         return result
-    chain = bound[0]
-    # Keep the selected protein chain plus the exact ligand, irrespective of ligand chain ID.
+    selected_chains = bound
+    # Keep every protein chain contacting this exact ligand instance.
     prot_all = atoms.select('protein')
-    keep = set(prot_all.getIndices()[np.char.strip(prot_all.getChids().astype(str)) == chain])
+    keep = set(prot_all.getIndices()[np.isin(np.char.strip(prot_all.getChids().astype(str)), selected_chains)])
     keep.update(ligand.getIndices())
-    selected_protein = protein[np.flatnonzero(np.char.strip(protein.getChids().astype(str)) == chain)]
+    selected_protein = protein[np.flatnonzero(np.isin(np.char.strip(protein.getChids().astype(str)), selected_chains))]
     selected_tree = cKDTree(selected_protein.getCoords())
     # Retain complete associated metal/cofactor residues; never keep unrelated chains' compounds.
     for row in rows:
@@ -153,8 +152,9 @@ def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5):
     reference.write_text(''.join(l for l in lines if l.startswith(('ATOM  ', 'HETATM')) and int(l[6:11]) in ligand_serials) + 'END\n')
     policy = {r['key']: ('reference' if r['key'] == chosen['key'] else
                         'keep' if r['type_guess'] in ('metal', 'heme/cofactor', 'cofactor') else 'remove') for r in rows}
-    result.update(ready=True, message='Ready: one bound ligand contacts one protein chain.',
-                  selected_chain=chain, scoped_path=str(scoped), reference_path=str(reference),
+    result.update(ready=True, message=('Ready: one bound ligand contacts ' + str(len(selected_chains)) + ' protein chain(s).'),
+                  selected_chain=selected_chains[0] if len(selected_chains) == 1 else None,
+                  selected_chains=selected_chains, scoped_path=str(scoped), reference_path=str(reference),
                   reference_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(), hetatm_policy=policy)
     return result
 

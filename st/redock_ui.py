@@ -6,10 +6,11 @@ from pathlib import Path
 from redock_workflow import inspect_redock_structure, execute_prepared_redock
 
 
-def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file):
-    """Called inside the existing receptor component after its shared source widgets."""
+def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 18)):
+    """Inspect only after the user confirms a supplied structure."""
     wdir = Path(wdir); wdir.mkdir(parents=True, exist_ok=True)
     inspection = None
+    path = None
     try:
         if src == 'Download from RCSB':
             token = (pdb_id or '').strip().upper()
@@ -28,17 +29,16 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file):
                 raise ValueError('Upload a PDB or mmCIF structure to inspect it.')
             extension = '.cif' if Path(upload_file.name).suffix.lower() in ('.cif', '.mmcif') else '.pdb'
             path = wdir / ('uploaded' + extension)
-            path.write_bytes(upload_file.getvalue())
+            payload = upload_file.getvalue()
+            if not path.is_file() or path.read_bytes() != payload:
+                path.write_bytes(payload)
         signature = hashlib.sha256(path.read_bytes()).hexdigest()
         previous = st.session_state.get(pfx + 'inspection')
-        if previous and previous['source_sha256'] == signature and previous['raw_path'] == str(path):
-            inspection = previous
-        else:
+        if previous and (previous.get('source_sha256') != signature or previous.get('raw_path') != str(path)):
+            st.session_state.pop(pfx + 'inspection', None)
             st.session_state.pop(pfx + 'prepared', None)
             st.session_state.pop(pfx + 'result', None)
-            with st.spinner('Inspecting ligand and protein-chain contacts…'):
-                inspection = inspect_redock_structure(core, path, wdir / signature[:16])
-            st.session_state[pfx + 'inspection'] = inspection
+            previous = None
     except Exception as exc:
         st.session_state.pop(pfx + 'inspection', None)
         st.session_state.pop(pfx + 'prepared', None)
@@ -46,24 +46,54 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file):
         st.info(str(exc))
 
     with st.expander('⚗️ Receptor setup panel', expanded=True):
-        st.caption('One ligand instance only. Heavy-atom contacts ≤4.5 Å determine the receptor chain. Only supplied chains/model 1 are inspected; no symmetry mates or biological assemblies are generated.')
+        st.caption('One ligand residue instance is required. Heavy-atom contacts ≤4.5 Å identify the contacting protein chains. Only supplied chains in model 1 are inspected; no symmetry mates or biological assemblies are generated.')
+        use_structure = st.button('Use this structure', key=pfx + 'use_structure', type='primary', disabled=path is None)
+        if use_structure and path is not None:
+            try:
+                with st.spinner('Inspecting ligand and protein-chain contacts…'):
+                    inspection = inspect_redock_structure(core, path, wdir / signature[:16])
+                from pocket_completeness import assess_missing_residues
+                if inspection.get('ligand') and inspection.get('reference_path'):
+                    inspection['pocket_report'] = assess_missing_residues(path, inspection['reference_path'])
+                    if inspection['pocket_report'].get('blocked'):
+                        inspection['contact_ready'] = inspection['ready']
+                        inspection['ready'] = False
+                        inspection['message'] = 'Redock is not ready: a missing residue boundary is within 5 Å of the co-crystal ligand. Rebuild and validate the region before docking.'
+                inspection['ligands'] = inspection.get('ligand_candidates', [])
+                st.session_state[pfx + 'inspection'] = inspection
+                st.session_state.pop(pfx + 'prepared', None)
+                st.session_state.pop(pfx + 'result', None)
+            except Exception as exc:
+                st.session_state.pop(pfx + 'inspection', None)
+                st.session_state.pop(pfx + 'prepared', None)
+                st.session_state.pop(pfx + 'result', None)
+                st.error(str(exc))
+        else:
+            inspection = st.session_state.get(pfx + 'inspection')
+
         if inspection:
             st.caption('Structure inspection: ' + inspection['structure_state'])
             st.write('Protein chains: ' + ', '.join(c or '(blank)' for c in inspection['chains']))
+            candidates = inspection.get('ligand_candidates') or inspection.get('ligands') or []
+            if candidates:
+                st.markdown('**Bound ligand instances**')
+                st.dataframe([{k: row.get(k) for k in ('resname', 'chain', 'resid', 'n_atoms')} for row in candidates], hide_index=True)
             if inspection.get('ligand'):
                 ligand = inspection['ligand']
-                st.write(f"Detected ligand: **{ligand['resname']}**")
-                st.write(f"Ligand residue: **{ligand['resname']} {ligand['chain'] or '(blank)'} {ligand['resid']}**")
+                st.write(f"Selected ligand: **{ligand['resname']} {ligand['chain'] or '(blank)'} {ligand['resid']}**")
             if inspection.get('contacts'):
                 st.dataframe(inspection['contacts'], hide_index=True)
+            if inspection.get('pocket_report'):
+                from pocket_completeness import show_report
+                show_report(st, inspection['pocket_report'])
             if inspection['ready']:
                 st.success(inspection['message'])
-                st.write(f"Selected receptor chain: **{inspection['selected_chain'] or '(blank)'}**")
+                chains = inspection.get('selected_chains') or [inspection.get('selected_chain', '')]
+                st.write('Selected receptor chain' + ('s' if len(chains) != 1 else '') + ': **' + ', '.join(c or '(blank)' for c in chains) + '**')
             else:
                 st.warning(inspection['message'])
-        box = tuple(st.slider(f'{axis} size (Å)', 10, 40, 18, 1, key=pfx + axis) for axis in ('X', 'Y', 'Z'))
-        st.caption('The reference ligand centers the search box, matching the CLI auto redock mode (default 18 × 18 × 18 Å).')
-        settings = (inspection or {}).get('source_sha256'), box
+
+        settings = (inspection or {}).get('source_sha256'), tuple(box)
         if st.session_state.get(pfx + 'prepared_settings') != settings:
             st.session_state.pop(pfx + 'prepared', None)
             st.session_state.pop(pfx + 'result', None)
@@ -74,7 +104,7 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file):
             try:
                 out = Path(inspection['scoped_path']).parent / 'prepared'
                 out.mkdir(exist_ok=True)
-                with st.spinner('Preparing the ligand-bound receptor chain…'):
+                with st.spinner('Preparing the ligand-bound receptor chain(s)…'):
                     result = core.prepare_receptor(raw_pdb=inspection['scoped_path'], wdir=out,
                                                    center_mode='auto', box_size=box,
                                                    hetatm_policy=inspection['hetatm_policy'],
@@ -87,6 +117,8 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file):
                 result['pocket_report'] = assess_missing_residues(
                     inspection['raw_path'], inspection['reference_path'], result.get('rec_fh'))
                 save_report(result['pocket_report'], out)
+                if result['pocket_report'].get('blocked'):
+                    raise ValueError(result['pocket_report']['reason'])
                 st.session_state[pfx + 'prepared'] = result
                 st.session_state[pfx + 'prepared_settings'] = settings
             except Exception as exc:
