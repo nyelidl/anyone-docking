@@ -37,7 +37,7 @@ def rank_redock_scores(scores, rmsds):
     return sorted(rows, key=lambda r: (r['rmsd'] if r['rmsd'] is not None and math.isfinite(r['rmsd']) else math.inf, r['pose']))
 
 
-def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5):
+def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5, ligand_key=None):
     """Eligibility is based on supplied coordinates, before any chain deduplication."""
     import numpy as np
     from prody import parsePDB
@@ -69,10 +69,17 @@ def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5):
     if not candidates:
         result['message'] = 'Redock is not ready: no bound ligand was detected in this structure.'
         return result
-    if len(candidates) != 1:
-        result['message'] = 'Redock is not ready: multiple relevant bound ligands were detected.'
+    if ligand_key is None and len(candidates) != 1:
+        result['message'] = 'Select the bound ligand instance to use for redocking.'
         return result
-    chosen = candidates[0]
+    if ligand_key is None:
+        chosen = candidates[0]
+    else:
+        matches = [r for r in candidates if r.get('key') == ligand_key]
+        if len(matches) != 1:
+            result['message'] = 'Selected ligand instance could not be identified uniquely.'
+            return result
+        chosen = matches[0]
     # The historical key omits insertion codes. Do not silently combine distinct residues.
     ligmask = ((atoms.getResnames() == chosen['resname']) &
                (np.char.strip(atoms.getChids().astype(str)) == chosen['chain']) &
@@ -152,7 +159,7 @@ def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5):
     reference.write_text(''.join(l for l in lines if l.startswith(('ATOM  ', 'HETATM')) and int(l[6:11]) in ligand_serials) + 'END\n')
     policy = {r['key']: ('reference' if r['key'] == chosen['key'] else
                         'keep' if r['type_guess'] in ('metal', 'heme/cofactor', 'cofactor') else 'remove') for r in rows}
-    result.update(ready=True, message=('Ready: one bound ligand contacts ' + str(len(selected_chains)) + ' protein chain(s).'),
+    result.update(ready=True, selected_ligand_key=chosen['key'], message=('Ready: selected ligand contacts ' + str(len(selected_chains)) + ' protein chain(s).'),
                   selected_chain=selected_chains[0] if len(selected_chains) == 1 else None,
                   selected_chains=selected_chains, scoped_path=str(scoped), reference_path=str(reference),
                   reference_sha256=hashlib.sha256(reference.read_bytes()).hexdigest(), hetatm_policy=policy)
