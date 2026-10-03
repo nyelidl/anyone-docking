@@ -4349,7 +4349,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                                 _hashlib.sha256(upload_file.getvalue()).hexdigest() if upload_file is not None else None)
             if st.session_state.get(pfx + "assessed_source_identity") != _source_identity:
                 st.session_state[pfx + "receptor_done"] = False
-                st.session_state[pfx + "pocket_report"] = None
                 st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
                 st.session_state[pfx + "assessed_source_identity"] = _source_identity
 
@@ -4670,11 +4669,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
     )
     if st.session_state.get(pfx + "assessment_settings") != _assessment_settings:
         st.session_state[pfx + "receptor_done"] = False
-        st.session_state[pfx + "pocket_report"] = None
         st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
         st.session_state[pfx + "assessment_settings"] = _assessment_settings
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
+        (wdir / "pocket_completeness.json").unlink(missing_ok=True)
 
         if src == "Download from RCSB":
             token = pdb_id.strip().upper()
@@ -4700,9 +4699,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 f.write(upload_file.read())
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
-        _original_source_path = raw_path
         st.session_state[pfx + "receptor_done"] = False
-        st.session_state[pfx + "pocket_report"] = None
         st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
 
         # ── Deduplicate identical protein chains ──────────────────────────
@@ -4793,11 +4790,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             )
 
         if result["success"]:
-            from pocket_completeness import assess_missing_residues, save_report
-            _pocket_report = assess_missing_residues(
-                _original_source_path, result.get("ligand_pdb_path"), result.get("rec_fh"))
-            st.session_state[pfx + "pocket_report"] = _pocket_report
-            save_report(_pocket_report, wdir)
             _full_log = result["log"]
 
             st.session_state.update({
@@ -4822,9 +4814,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             st.error(f"❌ Receptor preparation failed: {result['error']}")
             st.session_state[pfx + "receptor_done"] = False
             st.session_state[pfx + "receptor_log"]  = "\n".join(result["log"])
-
-    from pocket_completeness import show_report
-    show_report(st, st.session_state.get(pfx + "pocket_report"))
 
     if st.session_state.get(pfx + "receptor_done"):
         token   = st.session_state.get(pfx + "pdb_token", "")
@@ -5489,12 +5478,8 @@ with tab_basic:
         st.caption("⚠ Complete Steps 1 & 2 first.")
     if st.button(
         "▶ Run Docking", key="btn_dock", type="primary",
-        disabled=(not st.session_state.ligand_done or not st.session_state.receptor_done
-                  or bool((st.session_state.get("pocket_report") or {}).get("blocked"))),
+        disabled=(not st.session_state.ligand_done or not st.session_state.receptor_done),
     ):
-        if (st.session_state.get("pocket_report") or {}).get("blocked"):
-            st.error("Docking blocked: rebuild the missing region near the binding site and prepare the receptor again.")
-            st.stop()
         base   = st.session_state.ligand_name
         pv_sdf = str(WORKDIR / f"{base}_pv_ready.sdf")
 
@@ -6238,10 +6223,7 @@ with tab_batch:
 
     if not b_rec_done:
         st.caption("⚠ Complete Step B1 first.")
-    if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=(not b_rec_done or bool((st.session_state.get("b_pocket_report") or {}).get("blocked")))):
-        if (st.session_state.get("b_pocket_report") or {}).get("blocked"):
-            st.error("Docking blocked: rebuild the missing region near the binding site and prepare the receptor again.")
-            st.stop()
+    if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=(not b_rec_done)):
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
