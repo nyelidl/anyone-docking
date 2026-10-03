@@ -17,8 +17,6 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from heme_state import HemeStateError, detect_heme_centers
-
 from core import (
     prepare_receptor,
     prepare_ligand,
@@ -189,6 +187,7 @@ def _prolif_profile_table_html(profile_rows, residue_columns) -> str:
         '</table></div>'
         f'<div style="padding-top:10px;">{legend_items}</div>'
     )
+
 
 
 
@@ -4350,7 +4349,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                                 _hashlib.sha256(upload_file.getvalue()).hexdigest() if upload_file is not None else None)
             if st.session_state.get(pfx + "assessed_source_identity") != _source_identity:
                 st.session_state[pfx + "receptor_done"] = False
-                st.session_state[pfx + "pocket_report"] = None
                 st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
                 st.session_state[pfx + "assessed_source_identity"] = _source_identity
 
@@ -4446,41 +4444,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 _scan_path = str(wdir / ("raw_upload_prescan.cif" if _up_ext in (".cif", ".mmcif") else "raw_upload_prescan.pdb"))
                 with open(_scan_path, "wb") as _sf:
                     _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
-
-            _heme_states_for_prep = {}
-            if _scan_path and os.path.exists(_scan_path):
-                try:
-                    _heme_scan_path = _scan_path
-                    if is_cif_file(_heme_scan_path):
-                        _heme_scan_path = str(wdir / "heme_state_scan.pdb")
-                        _heme_cif = convert_cif_to_pdb(_scan_path, _heme_scan_path)
-                        if not _heme_cif.get("success"):
-                            raise HemeStateError(_heme_cif.get("error", "CIF conversion failed"))
-                    _heme_centers = detect_heme_centers(_heme_scan_path)
-                    if _heme_centers:
-                        st.markdown("**Heme state**")
-                    for _hc_i, _hc in enumerate(_heme_centers, 1):
-                        _heme_states_for_prep[_hc["key"]] = "auto"
-                        _state_label = "Compound I" if _hc["state"] == "CPD_I" else "Ferric/resting HEM"
-                        _oxo_text = (
-                            f" · Oxo {_hc['oxo_name']} #{_hc['oxo_serial']} · Fe-O {_hc['fe_o_distance']:.2f} Å"
-                            if _hc.get("oxo_serial") else " · Oxo none"
-                        )
-                        st.info(
-                            f"Center {_hc_i}: **{_state_label}** · {_hc['resname']} {_hc['chain']} {_hc['resid']} · "
-                            f"Fe #{_hc['fe_serial']}{_oxo_text} · "
-                            f"proximal {_hc['cys_resname']} {_hc['cys_chain']}:{_hc['cys_resid']} SG "
-                            f"(Fe-S {_hc['fe_s_distance']:.2f} Å)"
-                        )
-                        if _hc.get("oxo_h_serial"):
-                            st.warning(
-                                f"Axial oxo H #{_hc['oxo_h_serial']} detected at {_hc['oh_distance']:.2f} Å; "
-                                "only this hydrogen will be removed during preparation."
-                            )
-                    st.session_state[pfx + "heme_states"] = _heme_states_for_prep
-                except HemeStateError as _heme_error:
-                    st.error(f"Heme validation: {_heme_error}")
-                    st.session_state[pfx + "heme_states"] = {"__error__": str(_heme_error)}
 
             def _lig_label(_r):
                 _ch = _r.get("chain") or "—"
@@ -4706,11 +4669,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
     )
     if st.session_state.get(pfx + "assessment_settings") != _assessment_settings:
         st.session_state[pfx + "receptor_done"] = False
-        st.session_state[pfx + "pocket_report"] = None
         st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
         st.session_state[pfx + "assessment_settings"] = _assessment_settings
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
+        (wdir / "pocket_completeness.json").unlink(missing_ok=True)
 
         if src == "Download from RCSB":
             token = pdb_id.strip().upper()
@@ -4736,15 +4699,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 f.write(upload_file.read())
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
-        _original_source_path = raw_path
         st.session_state[pfx + "receptor_done"] = False
-        st.session_state[pfx + "pocket_report"] = None
         st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
-
-        _stored_heme_states = st.session_state.get(pfx + "heme_states", {})
-        if "__error__" in _stored_heme_states:
-            st.error(f"❌ Receptor preparation stopped: {_stored_heme_states['__error__']}")
-            st.stop()
 
         # ── Deduplicate identical protein chains ──────────────────────────
         try:
@@ -4831,15 +4787,9 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
                 hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
                 reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
-                heme_states       = _stored_heme_states,
             )
 
         if result["success"]:
-            from pocket_completeness import assess_missing_residues, save_report
-            _pocket_report = assess_missing_residues(
-                _original_source_path, result.get("ligand_pdb_path"), result.get("rec_fh"))
-            st.session_state[pfx + "pocket_report"] = _pocket_report
-            save_report(_pocket_report, wdir)
             _full_log = result["log"]
 
             st.session_state.update({
@@ -4864,9 +4814,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             st.error(f"❌ Receptor preparation failed: {result['error']}")
             st.session_state[pfx + "receptor_done"] = False
             st.session_state[pfx + "receptor_log"]  = "\n".join(result["log"])
-
-    from pocket_completeness import show_report
-    show_report(st, st.session_state.get(pfx + "pocket_report"))
 
     if st.session_state.get(pfx + "receptor_done"):
         token   = st.session_state.get(pfx + "pdb_token", "")
@@ -4919,7 +4866,7 @@ st.markdown(
     "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown("**Single Dock** — one ligand. **Batch Dock** — multiple ligands. **Redock** — co-crystal pose validation.")
-st.markdown("**🖥️ Run locally | 🌐 Web interface**")
+st.markdown("**☁️ Cloud-ready | 📱 Mobile-compatible**")
 
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
@@ -5531,12 +5478,8 @@ with tab_basic:
         st.caption("⚠ Complete Steps 1 & 2 first.")
     if st.button(
         "▶ Run Docking", key="btn_dock", type="primary",
-        disabled=(not st.session_state.ligand_done or not st.session_state.receptor_done
-                  or bool((st.session_state.get("pocket_report") or {}).get("blocked"))),
+        disabled=(not st.session_state.ligand_done or not st.session_state.receptor_done),
     ):
-        if (st.session_state.get("pocket_report") or {}).get("blocked"):
-            st.error("Docking blocked: rebuild the missing region near the binding site and prepare the receptor again.")
-            st.stop()
         base   = st.session_state.ligand_name
         pv_sdf = str(WORKDIR / f"{base}_pv_ready.sdf")
 
@@ -6280,10 +6223,7 @@ with tab_batch:
 
     if not b_rec_done:
         st.caption("⚠ Complete Step B1 first.")
-    if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=(not b_rec_done or bool((st.session_state.get("b_pocket_report") or {}).get("blocked")))):
-        if (st.session_state.get("b_pocket_report") or {}).get("blocked"):
-            st.error("Docking blocked: rebuild the missing region near the binding site and prepare the receptor again.")
-            st.stop()
+    if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=(not b_rec_done)):
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
@@ -6908,6 +6848,8 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 st.markdown(
     '<div style="text-align:center;color:#57606A;font-size:0.78rem;'
     'font-family:\'IBM Plex Mono\',monospace;">'
+    '<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" '
+    'alt="Anyone Can Dock" style="display:block;margin:0 auto 0.45rem auto;max-width:180px;width:100%;height:auto;">'
     'AutoDock Vina 1.2.7 · Meeko · RDKit · OpenBabel · py3Dmol<br>'
     'Eberhardt et al. J. Chem. Inf. Model. 2021, 61, 3891&#8211;3898 &nbsp;·&nbsp; '
     '<a href="https://pubs.acs.org/doi/10.1021/acs.jcim.5c02852" target="_blank" '
