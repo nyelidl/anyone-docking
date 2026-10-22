@@ -6112,32 +6112,55 @@ with tab_batch:
     col_b1, col_b2 = st.columns([1.6, 1])
     with col_b1:
         b_input_mode = st.radio(
-            "Input mode", ["SMILES list (text)", "Upload .smi file", "Upload structure files (.pdb/.mol2)"],
+            "Input mode",
+            ["SMILES list (text)", "Compound name", "Upload .smi file",
+             "Upload structure files (.pdb/.mol2)"],
+            horizontal=True,
             key="b_input_mode",
             help=(
                 "How to provide multiple ligands for batch docking.\n\n"
-                "📖 SMILES list    : type directly, one per line.\n"
+                "📖 SMILES list: paste one SMILES [name] per line.\n"
+                "   Compound name: search up to four names in PubChem.\n"
                 "   Upload .smi    : file with one SMILES [name] per line.\n"
                 "   Structure files: .sdf/.mol2/.pdb files.\n"
-                "⚙️ SMILES list fastest for known compounds.\n"
                 "⚠️ All ligands share the same receptor, box, and parameters."
             ),
         )
         if b_input_mode == "SMILES list (text)":
             st.text_area("One `SMILES [name]` per line",
-                value=("O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12 Apigenin\n"
-                       "O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12 Baicalein\n"
-                       "O=c1cc(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12 Luteolin\n"
-                       "O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12 Kaempferol\n"
-                       "C=CC(=O)Nc1cc(Nc2nccc(-c3cn(C)c4ccccc34)n2)c(OC)cc1N(C)CCN(C)C Osimertinib\n"
-                       "COc1cc2c(cc1OCCCN1CCOCC1)ncnc2Nc1ccc(F)c(Cl)c1 Gefitinib\n"
-                       "CS(=O)(=O)CCNCc1ccc(-c2ccc3ncnc(Nc4ccc(OCc5cccc(F)c5)c(Cl)c4)c3c2)o1 Lapatinib\n"
-                       "CN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1O[C@H]1CCOC1 Afatinib\n"
-                       "O=c1c(O)c(-c2ccccc2)oc2cc(O)cc(O)c12 Galangin\n"
-                       "N#CC[C@@H](C1CCCC1)n1cc(-c2ncnc3[nH]ccc23)cn1 Ruxolitinib"
-                       ),
-
-                height=300, key="b_smiles_text")
+                placeholder="CCO ethanol\nCCN ethylamine",
+                height=160, key="b_smiles_text")
+        elif b_input_mode == "Compound name":
+            st.caption("Enter up to four compound names. Search each name to confirm its PubChem CID and SMILES before docking.")
+            from simultaneous_ui import _resolve_compound_name
+            for _slot in range(4):
+                _name_col, _search_col = st.columns([4, 1])
+                with _name_col:
+                    _query = st.text_input(
+                        f"Compound name {_slot + 1}",
+                        placeholder="e.g. aspirin",
+                        key=f"b_compound_name_{_slot}",
+                    ).strip()
+                with _search_col:
+                    st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
+                    _search = st.button("Search", key=f"b_compound_search_{_slot}")
+                _match_key = f"b_compound_match_{_slot}"
+                if _search:
+                    st.session_state.pop(_match_key, None)
+                    if not _query:
+                        st.warning(f"Enter compound name {_slot + 1} before searching.")
+                    else:
+                        try:
+                            with st.spinner(f"Searching PubChem for '{_query}'…"):
+                                _, _match = _resolve_compound_name(_query, _search_compound_pubchem)
+                            st.session_state[_match_key] = _match
+                        except Exception as _exc:
+                            st.error(f"PubChem search failed for {_query}: {_exc}")
+                _match = st.session_state.get(_match_key)
+                if _match and _match["input_name"] == _query:
+                    st.caption(f"✓ {_match['iupac']} · [PubChem CID {_match['cid']}]({_match['url']}) · SMILES: `{_match['smiles']}`")
+                elif _query and _match:
+                    st.caption("Name changed — search again to confirm this compound.")
         elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
         else:
@@ -6228,6 +6251,8 @@ with tab_batch:
     if not b_rec_done:
         st.caption("⚠ Complete Step B1 first.")
     if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=(not b_rec_done)):
+        st.session_state["b_batch_done"] = False
+        st.session_state["b_batch_results"] = None
         rec_pdbqt = st.session_state.get("b_receptor_pdbqt")
         config    = st.session_state.get("b_config_txt")
         b_ph_val      = st.session_state.get("b_ph", 7.4)
@@ -6241,6 +6266,7 @@ with tab_batch:
         _b_conformer_seed = int(st.session_state.get("b_conformer_seed", 0) or 0) or None
 
         smiles_pairs = []
+        _b_pubchem_matches = []
         struct_file_pairs = []
         _b_use_struct_files = False
         try:
@@ -6251,6 +6277,21 @@ with tab_batch:
                     pts = line.split(None, 1)
                     _nm = pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
                     smiles_pairs.append((pts[0], _nm))
+            elif st.session_state.get("b_input_mode") == "Compound name":
+                _seen_names = set()
+                for _slot in range(4):
+                    _query = st.session_state.get(f"b_compound_name_{_slot}", "").strip()
+                    if not _query:
+                        continue
+                    _match = st.session_state.get(f"b_compound_match_{_slot}")
+                    if not _match or _match.get("input_name") != _query:
+                        raise ValueError(f"Search compound name {_slot + 1} ({_query}) before docking.")
+                    _nm = _re.sub(r"[^A-Za-z0-9_.-]+", "_", _query).strip("._-")
+                    if not _nm or _nm in _seen_names:
+                        raise ValueError(f"Duplicate or invalid compound name: {_query}")
+                    _seen_names.add(_nm)
+                    smiles_pairs.append((_match["smiles"], _nm))
+                    _b_pubchem_matches.append(_match)
             elif st.session_state.get("b_input_mode") == "Upload .smi file":
                 fobj = st.session_state.get("b_smi_file")
                 if fobj is None: raise ValueError("No .smi file uploaded")
@@ -6392,6 +6433,7 @@ with tab_batch:
 
         st.session_state.update({
             "b_batch_done": True, "b_batch_results": results,
+            "b_pubchem_matches": _b_pubchem_matches,
             "b_batch_log": "\n".join(all_logs),
             "b_redock_score": redock_score, "b_redock_result": redock_result,
             "b_confirmed_ref_score": None, "b_confirmed_ref_pose": None, "b_confirmed_ref_name": None, "b_confirmed_ref_rmsd": None,
@@ -6418,6 +6460,12 @@ with tab_batch:
         from rdkit import Chem
 
         results       = st.session_state.get("b_batch_results", [])
+        _b_pubchem_matches = st.session_state.get("b_pubchem_matches", [])
+        if _b_pubchem_matches:
+            with st.expander("PubChem name matches", expanded=False):
+                st.dataframe([{"Input name": m["input_name"], "CID": m["cid"],
+                              "PubChem name": m["iupac"], "SMILES": m["smiles"]}
+                             for m in _b_pubchem_matches], use_container_width=True)
         redock_score  = st.session_state.get("b_redock_score")
         redock_result = st.session_state.get("b_redock_result")
         c_ref_score   = st.session_state.get("b_confirmed_ref_score")
@@ -6840,7 +6888,8 @@ with tab_joint:
     import core as _joint_core
     from simultaneous_ui import render_simultaneous_docking
     render_simultaneous_docking(st, _joint_core, _receptor_section, VINA_PATH,
-                                JOINT_WORKDIR, show3d, _viewer_bg)
+                                JOINT_WORKDIR, show3d, _viewer_bg,
+                                compound_lookup=_search_compound_pubchem)
 
 with tab_redock:
     import core as _redock_core

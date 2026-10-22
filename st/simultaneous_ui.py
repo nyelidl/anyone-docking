@@ -7,6 +7,49 @@ import re
 from pathlib import Path
 
 
+def _is_smiles(value: str) -> bool:
+    """Distinguish typed SMILES from compound names without noisy RDKit logs."""
+    from rdkit import Chem, rdBase
+
+    with rdBase.BlockLogs():
+        return Chem.MolFromSmiles(value) is not None
+
+
+def _parse_typed_ligand(line: str, index: int) -> tuple[str, str, None, str]:
+    """Accept a name, a SMILES, or a SMILES followed by a display label."""
+    line = line.strip()
+    if line.lower().startswith("name:"):
+        name = line[5:].strip()
+        return "name", name, None, name
+    if line.lower().startswith("smiles:"):
+        line = line[7:].strip()
+    first, _, rest = line.partition(" ")
+    if rest and _is_smiles(first):
+        return "smiles", first, None, rest.strip()
+    if _is_smiles(line):
+        return "smiles", line, None, f"lig_{index}"
+    return "name", line, None, line
+
+
+def _resolve_compound_name(name: str, lookup) -> tuple[str, dict]:
+    """Use Single Dock's PubChem lookup and reject missing or invalid SMILES."""
+    if not name or lookup is None:
+        raise ValueError("PubChem name lookup is unavailable for this entry.")
+    result = lookup(name)
+    if not result.get("found"):
+        raise ValueError(result.get("error") or f"'{name}' was not found in PubChem.")
+    smiles = (result.get("smiles") or "").strip()
+    if not smiles or not _is_smiles(smiles):
+        raise ValueError(f"PubChem did not return a usable SMILES for '{name}'.")
+    return smiles, {
+        "input_name": name,
+        "cid": result.get("cid"),
+        "iupac": result.get("iupac", ""),
+        "smiles": smiles,
+        "url": result.get("url", ""),
+    }
+
+
 def _pose_blocks(pdbqt_text: str) -> list[str]:
     blocks = []
     current = []
@@ -45,18 +88,20 @@ def _ligand_blocks(pose_text: str) -> list[str]:
 
 
 def render_simultaneous_docking(st, core, receptor_section, vina_path,
-                                 wdir: Path, show3d, viewer_bg):
+                                 wdir: Path, show3d, viewer_bg, compound_lookup=None):
     """Prepare 2–4 ligands and show the joint Vina poses without per-ligand scores."""
     wdir.mkdir(parents=True, exist_ok=True)
     receptor_section(pfx="m_", wdir=wdir, step_label="Step M1 of M2")
     st.markdown("### Co-Dock: dock ligands together")
     st.caption("Co-Dock places 2–4 ligands together in one pocket. The score is for "
                "their combined pose. **Hint:** Use Batch Dock to compare ligands one by one.")
-    mode = st.radio("Ligand input", ["SMILES list", "Upload .smi", "Upload structures"],
+    mode = st.radio("Ligand input", ["Type names / SMILES", "Upload .smi", "Upload structures"],
                     horizontal=True, key="m_input_mode")
-    if mode == "SMILES list":
-        st.text_area("One SMILES and label per line", key="m_smiles_text",
-                     placeholder="CCO ethanol\nCCN ethylamine")
+    if mode == "Type names / SMILES":
+        st.text_area("One compound name or SMILES per line", key="m_smiles_text",
+                     placeholder="aspirin\nacetylsalicylic acid\nCCO ethanol")
+        st.caption("Names are looked up in PubChem; SMILES can have an optional label. "
+                   "For an ambiguous name, start the line with `name:`.")
     elif mode == "Upload .smi":
         st.file_uploader("Upload .smi", type=["smi", "txt"], key="m_smi_upload")
     else:
@@ -75,6 +120,8 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
 
     ready = st.session_state.get("m_receptor_done", False)
     if st.button("▶ Run Co-Dock", type="primary", key="m_run", disabled=not ready):
+        st.session_state["m_joint_done"] = False
+        st.session_state.pop("m_joint_result", None)
         entries = []
         if mode == "Upload structures":
             for item in st.session_state.get("m_structure_uploads") or []:
@@ -88,9 +135,12 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
             for line in lines:
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    parts = line.split(None, 1)
-                    entries.append(("smiles", parts[0], None,
-                                    parts[1] if len(parts) > 1 else f"lig_{len(entries)+1}"))
+                    if mode == "Type names / SMILES":
+                        entries.append(_parse_typed_ligand(line, len(entries) + 1))
+                    else:
+                        parts = line.split(None, 1)
+                        entries.append(("smiles", parts[0], None,
+                                        parts[1] if len(parts) > 1 else f"lig_{len(entries)+1}"))
         if not 2 <= len(entries) <= 4:
             st.error("Provide 2–4 ligands for one simultaneous search.")
             return
@@ -99,6 +149,7 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
             return
         paths = []
         labels = []
+        resolved_compounds = []
         for idx, (kind, value, data, label) in enumerate(entries, 1):
             safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._-") or f"lig_{idx}"
             stem = f"{idx:02d}_{safe}"
@@ -109,6 +160,14 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                 source.write_bytes(data)
                 prep = core.prepare_ligand_from_file(str(source), stem, lig_dir)
             else:
+                if kind == "name":
+                    try:
+                        with st.spinner(f"Looking up '{value}' in PubChem…"):
+                            value, match = _resolve_compound_name(value, compound_lookup)
+                    except Exception as exc:
+                        st.error(f"Could not resolve {label} from PubChem: {exc}")
+                        return
+                    resolved_compounds.append(match)
                 prep = core.prepare_ligand(value, stem, ph, lig_dir,
                                            mode="neutral" if neutral else "pkanet")
             if not prep.get("success"):
@@ -135,15 +194,20 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
             return
         manifest = {"score_scope": "joint_ligand_complex", "ligand_labels": labels,
                     "ligand_pdbqts": paths, "scores": result["scores"],
-                    "top_score": result["top_score"], "out_pdbqt": result["out_pdbqt"]}
+                    "top_score": result["top_score"], "out_pdbqt": result["out_pdbqt"],
+                    "pubchem_matches": resolved_compounds}
         (wdir / "joint_results.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        st.session_state["m_joint_result"] = {**result, "labels": labels}
+        st.session_state["m_joint_result"] = {**result, "labels": labels,
+                                               "pubchem_matches": resolved_compounds}
         st.session_state["m_joint_done"] = True
 
     result = st.session_state.get("m_joint_result") if st.session_state.get("m_joint_done") else None
     if result:
         st.markdown("### Co-Dock results")
         st.write("Ligands: " + ", ".join(result["labels"]))
+        for match in result.get("pubchem_matches", []):
+            st.caption(f"PubChem match: {match['input_name']} → CID {match['cid']} "
+                       f"({match['iupac']})")
         st.info("All affinities below are for the complete ligand set. They cannot "
                 "be assigned to an individual ligand or compared with Batch Dock scores.")
         if result["scores"]:
