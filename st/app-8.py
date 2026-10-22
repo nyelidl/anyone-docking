@@ -1701,6 +1701,7 @@ _DEFAULTS = dict(
     b_pv2_image_png=None, b_pv2_image_svg=None, b_pv2_pose_key=None,
     b_pv2_ref_png=None, b_pv2_ref_svg=None,
     b_plot_png=None,
+    m_joint_done=False, m_joint_result=None,
 )
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
@@ -1711,6 +1712,8 @@ if st.session_state.workdir is None:
 WORKDIR       = Path(st.session_state.workdir)
 BATCH_WORKDIR = WORKDIR / "batch"
 BATCH_WORKDIR.mkdir(exist_ok=True)
+JOINT_WORKDIR = WORKDIR / "simultaneous"
+JOINT_WORKDIR.mkdir(exist_ok=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4349,7 +4352,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                                 _hashlib.sha256(upload_file.getvalue()).hexdigest() if upload_file is not None else None)
             if st.session_state.get(pfx + "assessed_source_identity") != _source_identity:
                 st.session_state[pfx + "receptor_done"] = False
-                st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
+                st.session_state[{"b_": "b_batch_done", "m_": "m_joint_done"}.get(pfx, "docking_done")] = False
                 st.session_state[pfx + "assessed_source_identity"] = _source_identity
 
         if redock_mode:
@@ -4669,7 +4672,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
     )
     if st.session_state.get(pfx + "assessment_settings") != _assessment_settings:
         st.session_state[pfx + "receptor_done"] = False
-        st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
+        st.session_state[{"b_": "b_batch_done", "m_": "m_joint_done"}.get(pfx, "docking_done")] = False
         st.session_state[pfx + "assessment_settings"] = _assessment_settings
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
@@ -4700,7 +4703,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
         st.session_state[pfx + "receptor_done"] = False
-        st.session_state["b_batch_done" if pfx == "b_" else "docking_done"] = False
+        st.session_state[{"b_": "b_batch_done", "m_": "m_joint_done"}.get(pfx, "docking_done")] = False
 
         # ── Deduplicate identical protein chains ──────────────────────────
         try:
@@ -4865,7 +4868,7 @@ st.markdown(
     "Molecular docking powered by **AutoDock Vina 1.2.7,** "
     "**pKaNET Cloud**, and **RDkit**."
 )
-st.markdown("**Single Dock** — one ligand. **Batch Dock** — multiple ligands. **Redock** — co-crystal pose validation.")
+st.markdown("**Single Dock** — one ligand. **Batch Dock** — compare ligands separately. **Co-Dock** — dock 2–4 ligands together in one pocket. **Redock** — check a co-crystal pose.")
 st.markdown("**☁️ Cloud-ready | 📱 Mobile-compatible**")
 
 if VINA_PATH is None:
@@ -4887,9 +4890,10 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════════════════════════════
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════════
-tab_basic, tab_batch, tab_redock = st.tabs([
+tab_basic, tab_batch, tab_joint, tab_redock = st.tabs([
     "🧪  Single Dock",
     "🔬  Batch Dock",
+    "🤝  Co-Dock",
     "🎯  Redock",
 ])
 
@@ -6831,6 +6835,12 @@ with tab_batch:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+
+with tab_joint:
+    import core as _joint_core
+    from simultaneous_ui import render_simultaneous_docking
+    render_simultaneous_docking(st, _joint_core, _receptor_section, VINA_PATH,
+                                JOINT_WORKDIR, show3d, _viewer_bg)
 
 with tab_redock:
     import core as _redock_core

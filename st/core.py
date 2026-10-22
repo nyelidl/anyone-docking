@@ -3294,6 +3294,67 @@ def smiles_from_file(file_path: str, wdir) -> str:
 #  DOCKING
 # ══════════════════════════════════════════════════════════════════════════════
 
+def run_vina_multi(
+    receptor_pdbqt: str,
+    ligand_pdbqts: list[str],
+    config_txt: str,
+    vina_path: str,
+    exhaustiveness: int = 32,
+    n_modes: int = 10,
+    energy_range: float = 3,
+    wdir = ".",
+    out_name: str = "joint",
+    seed: int | None = None,
+) -> dict:
+    """Dock ligands together in one Vina search; scores belong to the joint complex.
+
+    Keep the multi-ligand PDBQT intact. Converting it with the single-ligand
+    SDF pipeline would lose the association between ligands in each pose.
+    """
+    receptor_pdbqt = str(Path(receptor_pdbqt).resolve())
+    config_txt = str(Path(config_txt).resolve())
+    ligands = [str(Path(path).resolve()) for path in ligand_pdbqts]
+    if len(ligands) < 2:
+        return {"success": False, "error": "Simultaneous docking requires at least two ligand PDBQT files."}
+    for path in [receptor_pdbqt, config_txt, *ligands]:
+        if not Path(path).is_file():
+            return {"success": False, "error": f"Input file does not exist: {path}"}
+    wdir = Path(wdir)
+    wdir.mkdir(parents=True, exist_ok=True)
+    out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
+    cmd = [str(vina_path), "--receptor", str(receptor_pdbqt),
+           "--ligand", *ligands, "--config", str(config_txt),
+           "--exhaustiveness", str(exhaustiveness), "--num_modes", str(n_modes),
+           "--energy_range", str(energy_range)]
+    if seed is not None:
+        cmd.extend(["--seed", str(int(seed))])
+    cmd.extend(["--out", out_pdbqt])
+    try:
+        rc, log = run_cmd(cmd, cwd=str(wdir))
+    except OSError as exc:
+        return {"success": False, "error": f"Could not start Vina: {exc}"}
+    if rc != 0 or not Path(out_pdbqt).is_file():
+        return {"success": False, "error": f"Vina exit code {rc}", "log": log}
+    scores = []
+    model = None
+    for line in Path(out_pdbqt).read_text().splitlines():
+        if line.startswith("MODEL"):
+            try:
+                model = int(line.split()[1])
+            except (IndexError, ValueError):
+                model = None
+        elif line.startswith("REMARK VINA RESULT:"):
+            parts = line.split()
+            try:
+                scores.append({"pose": model, "affinity": float(parts[3]),
+                               "rmsd_lb": float(parts[4]), "rmsd_ub": float(parts[5])})
+            except (IndexError, ValueError):
+                pass
+    return {"success": True, "out_pdbqt": out_pdbqt, "ligand_pdbqts": ligands,
+            "scores": scores, "top_score": scores[0]["affinity"] if scores else None,
+            "seed": seed, "log": log, "score_scope": "joint_ligand_complex"}
+
+
 def run_vina(
     receptor_pdbqt: str,
     ligand_pdbqt: str,
