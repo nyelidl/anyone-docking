@@ -6141,7 +6141,7 @@ with tab_batch:
         if b_input_mode == "SMILES list (text)":
             st.text_area("One `SMILES [name]` per line",
                 value=_b_default_smiles,
-                height=520, key="b_smiles_text")
+                height=300, key="b_smiles_text")
         elif b_input_mode == "Compound name":
             st.caption("Search a compound in PubChem. Each result is added to the editable SMILES list below.")
             from simultaneous_ui import _resolve_compound_name
@@ -6194,7 +6194,7 @@ with tab_batch:
                     st.image(_sr["img_url"], width=140)
             st.text_area("One `SMILES [name]` per line",
                 placeholder="Search a compound above to add its SMILES here.",
-                height=520, key="b_compound_smiles_text")
+                height=300, key="b_compound_smiles_text")
         elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
         else:
