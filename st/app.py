@@ -6611,6 +6611,7 @@ with tab_batch:
                     if sel_res.get("out_pdbqt") and os.path.exists(sel_res["out_pdbqt"]):
                         st.download_button("⬇ All poses (.pdbqt)", open(sel_res["out_pdbqt"], "rb"),
                             file_name=f"{safe_nm}_out.pdbqt", key="b_dl_pdbqt", width='stretch')
+                    _rec_fh = st.session_state.get("b_receptor_fh", "")
                     if _rec_fh and os.path.exists(_rec_fh):
                         st.download_button("⬇ Receptor (.pdb)", open(_rec_fh, "rb"),
                             file_name="receptor.pdb", mime="chemical/x-pdb",
