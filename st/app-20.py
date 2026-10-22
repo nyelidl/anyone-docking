@@ -6120,47 +6120,81 @@ with tab_batch:
             help=(
                 "How to provide multiple ligands for batch docking.\n\n"
                 "📖 SMILES list: paste one SMILES [name] per line.\n"
-                "   Compound name: search up to four names in PubChem.\n"
+                "   Compound name: search PubChem and add each result to the SMILES list.\n"
                 "   Upload .smi    : file with one SMILES [name] per line.\n"
                 "   Structure files: .sdf/.mol2/.pdb files.\n"
                 "⚠️ All ligands share the same receptor, box, and parameters."
             ),
         )
+        _b_default_smiles = (
+            "O=c1cc(-c2ccc(O)cc2)oc2cc(O)cc(O)c12 Apigenin\n"
+            "O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12 Baicalein\n"
+            "O=c1cc(-c2ccc(O)c(O)c2)oc2cc(O)cc(O)c12 Luteolin\n"
+            "O=c1c(O)c(-c2ccc(O)cc2)oc2cc(O)cc(O)c12 Kaempferol\n"
+            "C=CC(=O)Nc1cc(Nc2nccc(-c3cn(C)c4ccccc34)n2)c(OC)cc1N(C)CCN(C)C Osimertinib\n"
+            "COc1cc2c(cc1OCCCN1CCOCC1)ncnc2Nc1ccc(F)c(Cl)c1 Gefitinib\n"
+            "CS(=O)(=O)CCNCc1ccc(-c2ccc3ncnc(Nc4ccc(OCc5cccc(F)c5)c(Cl)c4)c3c2)o1 Lapatinib\n"
+            "CN(C)C/C=C/C(=O)Nc1cc2c(Nc3ccc(F)c(Cl)c3)ncnc2cc1O[C@H]1CCOC1 Afatinib\n"
+            "O=c1c(O)c(-c2ccccc2)oc2cc(O)cc(O)c12 Galangin\n"
+            "N#CC[C@@H](C1CCCC1)n1cc(-c2ncnc3[nH]ccc23)cn1 Ruxolitinib"
+        )
         if b_input_mode == "SMILES list (text)":
             st.text_area("One `SMILES [name]` per line",
-                placeholder="CCO ethanol\nCCN ethylamine",
-                height=160, key="b_smiles_text")
+                value=_b_default_smiles,
+                height=300, key="b_smiles_text")
         elif b_input_mode == "Compound name":
-            st.caption("Enter up to four compound names. Search each name to confirm its PubChem CID and SMILES before docking.")
+            st.caption("Search a compound in PubChem. Each result is added to the editable SMILES list below.")
             from simultaneous_ui import _resolve_compound_name
-            for _slot in range(4):
-                _name_col, _search_col = st.columns([4, 1])
-                with _name_col:
-                    _query = st.text_input(
-                        f"Compound name {_slot + 1}",
-                        placeholder="e.g. aspirin",
-                        key=f"b_compound_name_{_slot}",
-                    ).strip()
-                with _search_col:
-                    st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
-                    _search = st.button("Search", key=f"b_compound_search_{_slot}")
-                _match_key = f"b_compound_match_{_slot}"
-                if _search:
-                    st.session_state.pop(_match_key, None)
-                    if not _query:
-                        st.warning(f"Enter compound name {_slot + 1} before searching.")
-                    else:
-                        try:
-                            with st.spinner(f"Searching PubChem for '{_query}'…"):
-                                _, _match = _resolve_compound_name(_query, _search_compound_pubchem)
-                            st.session_state[_match_key] = _match
-                        except Exception as _exc:
-                            st.error(f"PubChem search failed for {_query}: {_exc}")
-                _match = st.session_state.get(_match_key)
-                if _match and _match["input_name"] == _query:
-                    st.caption(f"✓ {_match['iupac']} · [PubChem CID {_match['cid']}]({_match['url']}) · SMILES: `{_match['smiles']}`")
-                elif _query and _match:
-                    st.caption("Name changed — search again to confirm this compound.")
+            _name_col, _search_col = st.columns([5, 1])
+            with _name_col:
+                _query = st.text_input(
+                    "Compound name", placeholder="e.g. aspirin, erlotinib, caffeine…",
+                    key="b_compound_name",
+                ).strip()
+            with _search_col:
+                st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
+                _search = st.button("Search", key="b_compound_search")
+            if _search:
+                st.session_state.pop("b_compound_result", None)
+                if not _query:
+                    st.warning("Enter a compound name before searching.")
+                else:
+                    try:
+                        with st.spinner(f"Searching PubChem for '{_query}'…"):
+                            _sr = _search_compound_pubchem(_query)
+                            _, _match = _resolve_compound_name(_query, lambda _name: _sr)
+                        _label = _re.sub(r"[^A-Za-z0-9_.-]+", "_", _query).strip("._-")
+                        if not _label:
+                            raise ValueError("The compound name cannot be used as a ligand label.")
+                        _entry = f"{_match['smiles']} {_label}"
+                        _lines = st.session_state.get("b_compound_smiles_text", "").splitlines()
+                        _lines = [line for line in _lines if not (
+                            line.strip() and not line.lstrip().startswith("#")
+                            and len(line.split(None, 1)) > 1
+                            and line.split(None, 1)[1].strip() == _label
+                        )]
+                        _lines.append(_entry)
+                        st.session_state["b_compound_smiles_text"] = "\n".join(_lines)
+                        st.session_state["b_compound_result"] = {**_sr, "input_name": _query}
+                        _catalog = st.session_state.setdefault("b_compound_catalog", {})
+                        _catalog[_label] = _match
+                    except Exception as _exc:
+                        st.error(f"PubChem search failed for {_query}: {_exc}")
+            _sr = st.session_state.get("b_compound_result")
+            if _sr and _sr.get("input_name") == _query:
+                _info_col, _image_col = st.columns([3, 1])
+                with _info_col:
+                    st.markdown(
+                        f"**{_sr['iupac']}**  \n"
+                        f"`{_sr['formula']}` · {_sr['mw']:.2f} g/mol · "
+                        f"[PubChem CID {_sr['cid']}]({_sr['url']})"
+                    )
+                    st.caption("Added to the SMILES list below. Search another name to add it.")
+                with _image_col:
+                    st.image(_sr["img_url"], width=140)
+            st.text_area("One `SMILES [name]` per line",
+                placeholder="Search a compound above to add its SMILES here.",
+                height=300, key="b_compound_smiles_text")
         elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
         else:
@@ -6270,28 +6304,20 @@ with tab_batch:
         struct_file_pairs = []
         _b_use_struct_files = False
         try:
-            if st.session_state.get("b_input_mode") == "SMILES list (text)":
-                for line in st.session_state.get("b_smiles_text", "").strip().splitlines():
+            if st.session_state.get("b_input_mode") in ("SMILES list (text)", "Compound name"):
+                _smiles_key = ("b_compound_smiles_text" if st.session_state.get("b_input_mode") == "Compound name"
+                               else "b_smiles_text")
+                for line in st.session_state.get(_smiles_key, "").strip().splitlines():
                     line = line.strip()
                     if not line or line.startswith("#"): continue
                     pts = line.split(None, 1)
                     _nm = pts[1].replace(" ", "_") if len(pts) > 1 else f"lig_{len(smiles_pairs)+1}"
                     smiles_pairs.append((pts[0], _nm))
-            elif st.session_state.get("b_input_mode") == "Compound name":
-                _seen_names = set()
-                for _slot in range(4):
-                    _query = st.session_state.get(f"b_compound_name_{_slot}", "").strip()
-                    if not _query:
-                        continue
-                    _match = st.session_state.get(f"b_compound_match_{_slot}")
-                    if not _match or _match.get("input_name") != _query:
-                        raise ValueError(f"Search compound name {_slot + 1} ({_query}) before docking.")
-                    _nm = _re.sub(r"[^A-Za-z0-9_.-]+", "_", _query).strip("._-")
-                    if not _nm or _nm in _seen_names:
-                        raise ValueError(f"Duplicate or invalid compound name: {_query}")
-                    _seen_names.add(_nm)
-                    smiles_pairs.append((_match["smiles"], _nm))
-                    _b_pubchem_matches.append(_match)
+                _catalog = st.session_state.get("b_compound_catalog", {})
+                _b_pubchem_matches = [
+                    _catalog[name] for smiles, name in smiles_pairs
+                    if name in _catalog and _catalog[name]["smiles"] == smiles
+                ]
             elif st.session_state.get("b_input_mode") == "Upload .smi file":
                 fobj = st.session_state.get("b_smi_file")
                 if fobj is None: raise ValueError("No .smi file uploaded")
