@@ -6141,7 +6141,7 @@ with tab_batch:
         if b_input_mode == "SMILES list (text)":
             st.text_area("One `SMILES [name]` per line",
                 value=_b_default_smiles,
-                height=160, key="b_smiles_text")
+                height=520, key="b_smiles_text")
         elif b_input_mode == "Compound name":
             st.caption("Search a compound in PubChem. Each result is added to the editable SMILES list below.")
             from simultaneous_ui import _resolve_compound_name
@@ -6167,14 +6167,14 @@ with tab_batch:
                         if not _label:
                             raise ValueError("The compound name cannot be used as a ligand label.")
                         _entry = f"{_match['smiles']} {_label}"
-                        _lines = st.session_state.get("b_smiles_text", _b_default_smiles).splitlines()
+                        _lines = st.session_state.get("b_compound_smiles_text", "").splitlines()
                         _lines = [line for line in _lines if not (
                             line.strip() and not line.lstrip().startswith("#")
                             and len(line.split(None, 1)) > 1
                             and line.split(None, 1)[1].strip() == _label
                         )]
                         _lines.append(_entry)
-                        st.session_state["b_smiles_text"] = "\n".join(_lines)
+                        st.session_state["b_compound_smiles_text"] = "\n".join(_lines)
                         st.session_state["b_compound_result"] = {**_sr, "input_name": _query}
                         _catalog = st.session_state.setdefault("b_compound_catalog", {})
                         _catalog[_label] = _match
@@ -6193,8 +6193,8 @@ with tab_batch:
                 with _image_col:
                     st.image(_sr["img_url"], width=140)
             st.text_area("One `SMILES [name]` per line",
-                value=_b_default_smiles,
-                height=160, key="b_smiles_text")
+                placeholder="Search a compound above to add its SMILES here.",
+                height=520, key="b_compound_smiles_text")
         elif b_input_mode == "Upload .smi file":
             st.file_uploader("Upload .smi file", type=["smi", "txt"], key="b_smi_file")
         else:
@@ -6305,7 +6305,9 @@ with tab_batch:
         _b_use_struct_files = False
         try:
             if st.session_state.get("b_input_mode") in ("SMILES list (text)", "Compound name"):
-                for line in st.session_state.get("b_smiles_text", "").strip().splitlines():
+                _smiles_key = ("b_compound_smiles_text" if st.session_state.get("b_input_mode") == "Compound name"
+                               else "b_smiles_text")
+                for line in st.session_state.get(_smiles_key, "").strip().splitlines():
                     line = line.strip()
                     if not line or line.startswith("#"): continue
                     pts = line.split(None, 1)
