@@ -4188,7 +4188,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
     import py3Dmol
     from core import run_cmd as _run_cmd
 
-    done     = st.session_state.get(pfx + "receptor_done", False)
+    done     = bool(st.session_state.get(pfx + "prepared")) if redock_mode else st.session_state.get(pfx + "receptor_done", False)
     card_cls = "step-card done" if done else "step-card"
 
     st.markdown(
@@ -4364,19 +4364,30 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                     st.slider(f"{axis} size", 10, 40, 18, 1, key=pfx + axis)
                     for axis in ("X", "Y", "Z")
                 )
+                st.markdown(f"Box volume: **{_redock_box[0] * _redock_box[1] * _redock_box[2]:,} Å³**")
                 st.caption("Default: 18 × 18 × 18 Å. The co-crystal ligand sets the box center.")
             receptor_setup(st, _redock_core, wdir, pfx, src, pdb_id, upload_file, box=_redock_box)
             _prepared = st.session_state.get(pfx + "prepared")
             _inspection = st.session_state.get(pfx + "inspection")
             if _prepared and _inspection and _inspection.get("ready"):
-                with col_b:
-                    _render_receptor_setup(
-                        _prepared["rec_fh"], _prepared.get("box_pdb"),
-                        _inspection["reference_path"],
-                        tuple(_prepared[k] for k in ("cx", "cy", "cz")),
-                        tuple(_prepared[k] for k in ("sx", "sy", "sz")),
-                    )
+                _redock_source = pdb_id or (Path(upload_file.name).stem if upload_file else "Uploaded structure")
+                _redock_center = f"Center ({_prepared['cx']:.2f}, {_prepared['cy']:.2f}, {_prepared['cz']:.2f})"
+                _redock_size = f"Box {_prepared['sx']}x{_prepared['sy']}x{_prepared['sz']} A"
+                st.markdown(
+                    f"{_pill('Receptor ready', 'success')} {_pill(_redock_source)} "
+                    f"{_pill(_redock_center)} {_pill(_redock_size)}",
+                    unsafe_allow_html=True,
+                )
+                with st.expander("📋 Preparation log", expanded=False):
+                    st.code("\n".join(_prepared.get("log", [])))
+                _render_receptor_setup(
+                    _prepared["rec_fh"], _prepared.get("box_pdb"),
+                    _inspection["reference_path"],
+                    tuple(_prepared[k] for k in ("cx", "cy", "cz")),
+                    tuple(_prepared[k] for k in ("sx", "sy", "sz")),
+                )
             st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
             return
 
         center_mode = st.radio(
@@ -4397,7 +4408,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             ),
         )
         # ── Receptor setup panel + HETATM action guide (combined) ────────
-        with st.expander("⚗️ Receptor setup panel", expanded=False):
+        with st.expander("⚗️ Receptor setup panel", expanded=True):
             st.caption(
                 "Select the co-crystal small molecule used to define the binding site. "
                 "The selected ligand is removed from the receptor but used to center the grid. "

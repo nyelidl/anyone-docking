@@ -72,19 +72,71 @@ def _pose_blocks(pdbqt_text: str) -> list[str]:
     return blocks or [pdbqt_text]
 
 
-def _ligand_blocks(pose_text: str) -> list[str]:
-    """Split one Vina joint pose at each ligand's TORSDOF record for viewing."""
-    ligands = []
-    current = []
+def _ligand_components(pose_text: str) -> list[dict]:
+    """Read each ligand and its actual identity from a Vina joint pose."""
+    ligands: list[dict] = []
+    current: list[str] = []
+    smiles = ""
     for line in pose_text.splitlines(keepends=True):
+        if line.startswith("REMARK SMILES ") and not line.startswith("REMARK SMILES IDX"):
+            smiles = line.removeprefix("REMARK SMILES ").strip()
         if line.startswith("ROOT") and not current:
             current = [line]
         elif current:
             current.append(line)
             if line.startswith("TORSDOF"):
-                ligands.append("".join(current))
+                pdbqt = "".join(current)
+                ligands.append({"pdbqt": pdbqt, "smiles": smiles,
+                                "atom_count": sum(row.startswith(("ATOM  ", "HETATM"))
+                                                  for row in current)})
                 current = []
+                smiles = ""
     return ligands
+
+
+def _ligand_blocks(pose_text: str) -> list[str]:
+    """Split one Vina joint pose at each ligand's TORSDOF record."""
+    return [component["pdbqt"] for component in _ligand_components(pose_text)]
+
+
+def _pdbqt_view_pdb(pdbqt: str) -> str:
+    """Give 3Dmol an explicitly supported PDB model with correct atom elements."""
+    ad4_elements = {"A": "C", "C": "C", "N": "N", "NA": "N", "O": "O",
+                    "OA": "O", "S": "S", "SA": "S", "H": "H", "HD": "H"}
+    rows = []
+    for row in pdbqt.splitlines():
+        if not row.startswith(("ATOM  ", "HETATM")):
+            continue
+        atom_type = row[76:].split()[-1] if row[76:].split() else ""
+        element = ad4_elements.get(atom_type, atom_type.title())
+        if not element:
+            raise ValueError("Joint pose contains an atom without an AutoDock element type")
+        rows.append(row[:66].ljust(76) + element.rjust(2))
+    if not rows:
+        raise ValueError("Joint pose contains no ligand atoms")
+    return "\n".join(rows) + "\nEND\n"
+
+
+def _input_smiles(path: str) -> str:
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("REMARK SMILES ") and not line.startswith("REMARK SMILES IDX"):
+            return line.removeprefix("REMARK SMILES ").strip()
+    return ""
+
+
+def _identity_errors(components: list[dict], labels: list[str], paths: list[str]) -> list[str]:
+    errors = []
+    if len(components) != len(labels):
+        errors.append(f"Expected {len(labels)} ligand components, found {len(components)}.")
+    for index, component in enumerate(components[:len(paths)]):
+        try:
+            expected_smiles = _input_smiles(paths[index])
+        except OSError:
+            errors.append(f"Prepared input for {labels[index]} is no longer available.")
+            continue
+        if expected_smiles and component["smiles"] != expected_smiles:
+            errors.append(f"Component {index + 1} does not match prepared {labels[index]}.")
+    return errors
 
 
 def render_simultaneous_docking(st, core, receptor_section, vina_path,
@@ -94,16 +146,71 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
     receptor_section(pfx="m_", wdir=wdir, step_label="Step M1 of M2")
     st.markdown("### Co-Dock: dock ligands together")
     st.caption("Co-Dock places 2–4 ligands together in one pocket. The score is for "
-               "their combined pose. **Hint:** Use Batch Dock to compare ligands one by one.")
-    mode = st.radio("Ligand input", ["Type names / SMILES", "Upload .smi", "Upload structures"],
-                    horizontal=True, key="m_input_mode")
-    if mode == "Type names / SMILES":
-        st.text_area("One compound name or SMILES per line", key="m_smiles_text",
-                     placeholder="aspirin\nacetylsalicylic acid\nCCO ethanol")
-        st.caption("Names are looked up in PubChem; SMILES can have an optional label. "
-                   "For an ambiguous name, start the line with `name:`.")
-    elif mode == "Upload .smi":
-        st.file_uploader("Upload .smi", type=["smi", "txt"], key="m_smi_upload")
+               "their combined pose. Each pose has one copy of every input ligand; "
+               "Co-Dock does not enumerate all pairings. **Hint:** Use Batch Dock to "
+               "compare ligands one by one.")
+    mode = st.radio(
+        "Ligand input",
+        ["Compound name", "SMILES list (text)", "Upload .smi file",
+         "Upload structure files (.pdb/.mol2)"],
+        horizontal=True, key="m_input_mode",
+    )
+    if mode == "Compound name":
+        st.caption("Search PubChem and add 2–4 compounds to the editable SMILES list below.")
+        name_col, search_col = st.columns([5, 1])
+        with name_col:
+            query = st.text_input("Compound name", placeholder="e.g. aspirin, baicalein…",
+                                  key="m_compound_name").strip()
+        with search_col:
+            st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
+            search = st.button("Search", key="m_compound_search")
+        if search:
+            st.session_state.pop("m_compound_result", None)
+            if not query:
+                st.warning("Enter a compound name before searching.")
+            else:
+                try:
+                    with st.spinner(f"Searching PubChem for '{query}'…"):
+                        match_result = compound_lookup(query) if compound_lookup else None
+                        smiles, match = _resolve_compound_name(
+                            query, lambda _name: match_result)
+                    label = re.sub(r"[^A-Za-z0-9_.-]+", "_", query).strip("._-")
+                    if not label:
+                        raise ValueError("The compound name cannot be used as a ligand label.")
+                    lines = st.session_state.get("m_compound_smiles_text", "").splitlines()
+                    lines = [line for line in lines if not (
+                        line.strip() and not line.lstrip().startswith("#")
+                        and len(line.split(None, 1)) > 1
+                        and line.split(None, 1)[1].strip() == label
+                    )]
+                    if len([line for line in lines if line.strip() and not line.lstrip().startswith("#")]) >= 4:
+                        raise ValueError("Co-Dock accepts at most four ligands; remove one from the list first.")
+                    lines.append(f"{smiles} {label}")
+                    st.session_state["m_compound_smiles_text"] = "\n".join(lines)
+                    st.session_state["m_compound_result"] = {**match_result, "input_name": query}
+                    st.session_state.setdefault("m_compound_catalog", {})[label] = match
+                except Exception as exc:
+                    st.error(f"PubChem search failed for {query}: {exc}")
+        searched = st.session_state.get("m_compound_result")
+        if searched and searched.get("input_name") == query:
+            info_col, image_col = st.columns([3, 1])
+            with info_col:
+                st.markdown(f"**{searched.get('iupac') or query}**  \n"
+                            f"{searched.get('formula', '')} · "
+                            f"[PubChem CID {searched.get('cid')}]({searched.get('url')})")
+                st.caption("Added to the SMILES list. Search another name to add it.")
+            with image_col:
+                if searched.get("img_url"):
+                    st.image(searched["img_url"], width=140)
+        st.text_area("One `SMILES [name]` per line", height=300,
+                     placeholder="Search a compound above to add its SMILES here.",
+                     key="m_compound_smiles_text")
+    elif mode == "SMILES list (text)":
+        st.text_area("One `SMILES [name]` per line", height=300, key="m_smiles_text",
+                     placeholder="CC(=O)Oc1ccccc1C(=O)O Aspirin\n"
+                                 "O=c1cc(-c2ccccc2)oc2cc(O)c(O)c(O)c12 Baicalein")
+    elif mode == "Upload .smi file":
+        st.file_uploader("Upload .smi file", type=["smi", "txt"], key="m_smi_upload")
     else:
         st.file_uploader("Upload 2–4 ligand files", type=["sdf", "mol2", "pdb", "pdbqt"],
                          accept_multiple_files=True, key="m_structure_uploads")
@@ -123,24 +230,26 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
         st.session_state["m_joint_done"] = False
         st.session_state.pop("m_joint_result", None)
         entries = []
-        if mode == "Upload structures":
+        if mode == "Upload structure files (.pdb/.mol2)":
             for item in st.session_state.get("m_structure_uploads") or []:
                 entries.append(("file", item.name, item.getvalue(), Path(item.name).stem))
         else:
-            if mode == "Upload .smi":
+            if mode == "Upload .smi file":
                 item = st.session_state.get("m_smi_upload")
                 lines = item.getvalue().decode("utf-8").splitlines() if item else []
             else:
-                lines = st.session_state.get("m_smiles_text", "").splitlines()
+                text_key = ("m_compound_smiles_text" if mode == "Compound name"
+                            else "m_smiles_text")
+                lines = st.session_state.get(text_key, "").splitlines()
             for line in lines:
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    if mode == "Type names / SMILES":
-                        entries.append(_parse_typed_ligand(line, len(entries) + 1))
-                    else:
-                        parts = line.split(None, 1)
-                        entries.append(("smiles", parts[0], None,
-                                        parts[1] if len(parts) > 1 else f"lig_{len(entries)+1}"))
+                    parts = line.split(None, 1)
+                    if not _is_smiles(parts[0]):
+                        st.error(f"Invalid SMILES on line {len(entries) + 1}: {parts[0]}")
+                        return
+                    entries.append(("smiles", parts[0], None,
+                                    parts[1] if len(parts) > 1 else f"lig_{len(entries)+1}"))
         if not 2 <= len(entries) <= 4:
             st.error("Provide 2–4 ligands for one simultaneous search.")
             return
@@ -150,7 +259,13 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
         paths = []
         labels = []
         resolved_compounds = []
+        compound_catalog = (st.session_state.get("m_compound_catalog", {})
+                            if mode == "Compound name" else {})
+        ligand_count = len(entries)
+        progress = st.progress(0, text=f"Preparing ligands 0/{ligand_count}…")
         for idx, (kind, value, data, label) in enumerate(entries, 1):
+            progress.progress((idx - 1) / (ligand_count + 1),
+                              text=f"Preparing {label} ({idx}/{ligand_count})…")
             safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._-") or f"lig_{idx}"
             stem = f"{idx:02d}_{safe}"
             lig_dir = wdir / "ligands" / stem
@@ -160,22 +275,30 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                 source.write_bytes(data)
                 prep = core.prepare_ligand_from_file(str(source), stem, lig_dir)
             else:
+                if label in compound_catalog and compound_catalog[label]["smiles"] == value:
+                    resolved_compounds.append(compound_catalog[label])
                 if kind == "name":
                     try:
                         with st.spinner(f"Looking up '{value}' in PubChem…"):
                             value, match = _resolve_compound_name(value, compound_lookup)
                     except Exception as exc:
+                        progress.empty()
                         st.error(f"Could not resolve {label} from PubChem: {exc}")
                         return
                     resolved_compounds.append(match)
                 prep = core.prepare_ligand(value, stem, ph, lig_dir,
                                            mode="neutral" if neutral else "pkanet")
             if not prep.get("success"):
+                progress.empty()
                 st.error(f"Could not prepare {label}: {prep.get('error', 'unknown error')}")
                 return
             paths.append(str(Path(prep["pdbqt"]).resolve()))
             labels.append(label)
-        with st.spinner("Running one joint Vina search…"):
+            progress.progress(idx / (ligand_count + 1),
+                              text=f"Prepared {idx}/{ligand_count} ligands")
+        progress.progress(ligand_count / (ligand_count + 1),
+                          text="Running one joint Vina search… (no live Vina percentage)")
+        try:
             result = core.run_vina_multi(
                 receptor_pdbqt=st.session_state["m_receptor_pdbqt"],
                 ligand_pdbqts=paths,
@@ -188,10 +311,15 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                 out_name="joint",
                 seed=int(seed) or None,
             )
+        except Exception:
+            progress.empty()
+            raise
         if not result["success"]:
+            progress.progress(1.0, text="Joint Vina search finished with an error")
             st.error(f"Simultaneous docking failed: {result['error']}")
             st.code(result.get("log", ""))
             return
+        progress.progress(1.0, text="Done — joint docking complete")
         manifest = {"score_scope": "joint_ligand_complex", "ligand_labels": labels,
                     "ligand_pdbqts": paths, "scores": result["scores"],
                     "top_score": result["top_score"], "out_pdbqt": result["out_pdbqt"],
@@ -225,7 +353,25 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
             st.download_button("Download selected combined pose (.pdbqt)", blocks[pose_idx],
                                file_name=f"joint_pose{pose_idx+1}.pdbqt",
                                mime="text/plain", key="m_download_pose")
+            components = _ligand_components(blocks[pose_idx])
+            expected_paths = result.get("ligand_pdbqts", [])
+            identity_errors = _identity_errors(components, result["labels"], expected_paths)
+            if identity_errors:
+                st.error("The combined pose does not match the prepared ligand inputs: "
+                         + " ".join(identity_errors))
+            else:
+                st.caption("This pose contains one copy of each ligand: " + " + ".join(
+                    f"{label} ({component['atom_count']} atoms)"
+                    for label, component in zip(result["labels"], components)))
+                with st.expander("Check ligand identities in this pose"):
+                    st.dataframe([
+                        {"Ligand": label, "SMILES in Vina output": component["smiles"],
+                         "PDBQT atoms": component["atom_count"]}
+                        for label, component in zip(result["labels"], components)
+                    ], use_container_width=True)
             try:
+                if identity_errors:
+                    raise ValueError("ligand identities in the joint pose do not match the inputs")
                 import py3Dmol
                 view = py3Dmol.view(width="100%", height=480)
                 view.setBackgroundColor(viewer_bg())
@@ -235,19 +381,16 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                     view.addModel(Path(rec_pdb).read_text(), "pdb")
                     view.setStyle({"model": 0}, {"cartoon": {"color": "lightgray", "opacity": 0.65}})
                     model_offset = 1
-                ligand_models = _ligand_blocks(blocks[pose_idx])
-                if len(ligand_models) != len(result["labels"]):
-                    raise ValueError("Joint pose could not be separated into its ligand components")
                 colors = ("cyanCarbon", "magentaCarbon", "greenCarbon", "orangeCarbon")
                 st.caption("3D colors: " + ", ".join(
                     f"{label} ({color.replace('Carbon', '')})"
                     for label, color in zip(result["labels"], colors)))
-                for index, ligand_text in enumerate(ligand_models):
+                for index, component in enumerate(components):
                     model_index = model_offset + index
-                    view.addModel(ligand_text, "pdbqt")
+                    view.addModel(_pdbqt_view_pdb(component["pdbqt"]), "pdb")
                     view.setStyle({"model": model_index},
                                   {"stick": {"colorscheme": colors[index], "radius": 0.22}})
-                view.zoomTo({"model": model_offset})
+                view.zoomTo({"model": list(range(model_offset, model_offset + len(components)))})
                 show3d(view, height=480)
             except Exception as exc:
                 st.caption(f"3D preview unavailable: {exc}")
