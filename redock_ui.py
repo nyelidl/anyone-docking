@@ -159,11 +159,6 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                 st.session_state[pfx + 'prepared_settings'] = settings
             except Exception as exc:
                 st.error(str(exc))
-        prepared = st.session_state.get(pfx + 'prepared')
-        if prepared:
-            st.success('Receptor prepared. The original crystal reference is preserved separately.')
-            with st.expander('Receptor preparation log', expanded=False):
-                st.code('\n'.join(prepared.get('log', [])))
     return inspection
 
 
