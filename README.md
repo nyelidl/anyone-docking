@@ -14,12 +14,21 @@ Anyone Can Dock makes protein-ligand docking accessible through a **zero-install
 
 ## 🚀 Four ways to use Anyone Can Dock (ACD)
 
-| Mode | Best for | Start here |
-|---|---|---|
-| 🌐 **ACD Online** | Beginners, teaching, demonstrations, quick docking | [Open in browser →](https://nyelidl.github.io/anyone-docking/) |
-| 🖥️ **ACD Local** | Private research and unrestricted local workflows | [Local installation](#-acd-local) |
-| ⌨️ **ACD CLI** | Automation, reproducible research, servers, screening, redocking, ensemble docking | `pip install anyonecandock` |
-| 📓 **ACD Google Colab** | Workshops, portable research, GPU docking | [Open in Colab →](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
+| Feature | 🌐 ACD Online | 🖥️ ACD Local | ⌨️ ACD CLI | 📓 Google Colab |
+|---|---|---|---|---|
+| Best for | Quick docking and teaching | Private, interactive research | Automation and large workflows | Workshops and GPU docking |
+| Setup | Open a browser | Install on your computer | `pip install anyonecandock` | Open the notebook |
+| Single and batch docking | ✅ | ✅ | ✅ | ✅ |
+| Co-Dock (ligands together) | ✅ | ✅ | ✅ | ✅ |
+| Co-crystal redocking | ✅ | ✅ | ✅ | ✅ |
+| Receptor-ensemble docking | — | — | ✅ | — |
+| Docking engines | AutoDock Vina | AutoDock Vina | AutoDock Vina | Vina, VinaXB, GNINA, Vina-GPU |
+| Results and interaction views | Interactive 3D and 2D | Interactive 3D and 2D | Exported structures, scores, and diagrams | Notebook 3D views and ProLIF analysis |
+| Automatic Gemini interpretation | — | — | — | Optional |
+| Where calculations run | Hosted server | Your computer | Your computer or server | Colab runtime |
+| Start here | [Open Online →](https://nyelidl.github.io/anyone-docking/) | [Local installation](#-acd-local) | `pip install anyonecandock` | [Open in Colab →](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
+
+**Tip:** Choose Online for the fastest start, Local for an interactive workflow on your computer, CLI for scripts, or Colab for its additional docking engines. Vina-GPU requires a compatible Colab GPU runtime.
 
 ---
 
