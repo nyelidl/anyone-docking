@@ -30,6 +30,8 @@ Anyone Can Dock makes protein-ligand docking accessible through a **zero-install
 
 **Tip:** Choose Online for the fastest start, Local for an interactive workflow on your computer, CLI for scripts, or Colab for its additional docking engines. Vina-GPU requires a compatible Colab GPU runtime.
 
+For the web-interfaced via Google colab: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1WtWYUUB1AREZMeB5qEJ9OD84AvWk1z4z?usp=sharing)
+
 ---
 
 ## 🌐 ACD Online
