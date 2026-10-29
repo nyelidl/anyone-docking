@@ -12,6 +12,17 @@ Anyone Can Dock makes protein-ligand docking accessible through a **zero-install
 
 ---
 
+### Interactive Tutorial & Hands-on Exercises
+
+**Ready to start docking?**
+
+📘 **[👉 CLICK HERE TO ACCESS THE TUTORIAL](https://nyelidl.github.io/docking_workshop/)**
+
+🌐 https://nyelidl.github.io/docking_workshop/
+
+
+---
+
 ## 🚀 Four ways to use Anyone Can Dock (ACD)
 
 | Feature | 🌐 ACD Online | 🖥️ ACD Local | ⌨️ ACD CLI | 📓 Google Colab |
