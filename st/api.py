@@ -585,6 +585,39 @@ def _select_pose_for_interaction(
     return pose_info
 
 
+MIN_RECEPTOR_ATOMS_IN_BOX = int(os.getenv("ACD_MIN_RECEPTOR_ATOMS_IN_BOX", "50"))
+
+
+def _receptor_heavy_atoms_in_box(rec: Dict[str, Any]):
+    """Count protein heavy atoms inside the Vina box. Returns (in_box, total);
+    (None, None) when it cannot be determined, so the check never blocks a job
+    because of a parsing problem."""
+    path = rec.get("rec_pdbqt") or rec.get("rec_fh") or ""
+    try:
+        cx, cy, cz = (float(rec[k]) for k in ("cx", "cy", "cz"))
+        hx, hy, hz = (float(rec[k]) / 2.0 for k in ("sx", "sy", "sz"))
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    if not path or not Path(path).exists():
+        return 0, 0
+    in_box = total = 0
+    for line in Path(path).read_text(errors="replace").splitlines():
+        if not line.startswith("ATOM"):
+            continue
+        name = line[12:16].strip()
+        kind = line[77:].strip() if len(line) > 77 else ""
+        if name.startswith("H") or kind in ("H", "HD", "HS"):
+            continue
+        try:
+            x, y, z = float(line[30:38]), float(line[38:46]), float(line[46:54])
+        except ValueError:
+            continue
+        total += 1
+        if abs(x - cx) <= hx and abs(y - cy) <= hy and abs(z - cz) <= hz:
+            in_box += 1
+    return in_box, total
+
+
 def _generate_2d_interaction(
     job_id: str,
     wdir: Path,
@@ -812,6 +845,17 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
         if not rec.get("success"):
             raise RuntimeError(f"Receptor preparation failed: {rec.get('error')}")
 
+        # Sanity gate: a docking box with (almost) no protein atoms gives
+        # meaningless 0.0 kcal/mol scores that still look like a "success".
+        n_in_box, n_total = _receptor_heavy_atoms_in_box(rec)
+        if n_total is not None and n_in_box is not None and n_in_box < MIN_RECEPTOR_ATOMS_IN_BOX:
+            raise RuntimeError(
+                f"Prepared receptor has only {n_in_box} protein heavy atoms inside the docking box "
+                f"(total heavy atoms: {n_total}; minimum: {MIN_RECEPTOR_ATOMS_IN_BOX}). "
+                "The receptor file is empty/truncated or the box is outside the protein. "
+                "Resubmit the job; if it repeats, choose another reference ligand or set the box manually."
+            )
+
         vina_path, vina_msg = get_vina_binary()
         if not vina_path:
             raise RuntimeError(f"Vina binary unavailable: {vina_msg}")
@@ -936,6 +980,14 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
 
                 if not dock.get("success"):
                     raise RuntimeError(dock.get("error", "Docking failed"))
+
+                _top = dock.get("top_score")
+                if _top is None or (isinstance(_top, (int, float)) and _top >= 0):
+                    raise RuntimeError(
+                        f"Docking returned no favourable pose (best Vina score = {_top}). "
+                        "This usually means the ligand was placed where there is no protein. "
+                        "The result was rejected so it is not reported as a binding affinity."
+                    )
 
                 if prep.get("direct_pdbqt"):
                     row["vina_input_sha256"] = prep["input_sha256"]
