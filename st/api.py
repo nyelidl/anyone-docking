@@ -20,6 +20,8 @@ Earlier fixes (retained):
 from __future__ import annotations
 
 import base64
+from contextlib import asynccontextmanager
+from job_retention import JobRetention, mark_created
 import binascii
 import tempfile
 import csv
@@ -91,7 +93,7 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 def _env_int(name: str, default: int = 0) -> int:
     try:
         return int(float(os.getenv(name, "") or default))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -206,7 +208,18 @@ def _apply_runtime_caps(req: "DockRequest") -> List[str]:
     return notes
 
 
+@asynccontextmanager
+async def _retention_lifespan(app):
+    retention = JobRetention(BASE_WORKDIR, JOBS)
+    retention.start()
+    try:
+        yield
+    finally:
+        retention.stop()
+
+
 app = FastAPI(
+    lifespan=_retention_lifespan,
     title=API_TITLE,
     version=API_VERSION,
     description="API wrapper for Anyone Can Dock.",
@@ -462,7 +475,7 @@ def _make_zip(wdir: Path, zip_path: Path) -> None:
     skip = {zip_path.resolve()}
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in wdir.rglob("*"):
-            if p.is_file() and p.resolve() not in skip and p.name != "status.json":
+            if p.is_file() and p.resolve() not in skip and p.name not in {"status.json", ".acd_created_at"}:
                 zf.write(p, arcname=p.relative_to(wdir))
 
 
@@ -585,37 +598,60 @@ def _select_pose_for_interaction(
     return pose_info
 
 
-MIN_RECEPTOR_ATOMS_IN_BOX = int(os.getenv("ACD_MIN_RECEPTOR_ATOMS_IN_BOX", "50"))
+MIN_RECEPTOR_ATOMS_IN_BOX = max(0, _env_int("ACD_MIN_RECEPTOR_ATOMS_IN_BOX", 50))
 
 
 def _receptor_heavy_atoms_in_box(rec: Dict[str, Any]):
-    """Count protein heavy atoms inside the Vina box. Returns (in_box, total);
-    (None, None) when it cannot be determined, so the check never blocks a job
-    because of a parsing problem."""
+    """Count protein heavy atoms in the prepared box; unknown parsing stays unknown."""
     path = rec.get("rec_pdbqt") or rec.get("rec_fh") or ""
     try:
         cx, cy, cz = (float(rec[k]) for k in ("cx", "cy", "cz"))
         hx, hy, hz = (float(rec[k]) / 2.0 for k in ("sx", "sy", "sz"))
-    except (KeyError, TypeError, ValueError):
+        import math
+        if not all(math.isfinite(v) for v in (cx, cy, cz, hx, hy, hz)) or min(hx, hy, hz) <= 0:
+            return None, None
+        if not path or not Path(path).exists():
+            return 0, 0
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except (KeyError, TypeError, ValueError, OSError):
         return None, None
-    if not path or not Path(path).exists():
-        return 0, 0
     in_box = total = 0
-    for line in Path(path).read_text(errors="replace").splitlines():
-        if not line.startswith("ATOM"):
+    for line in lines:
+        if not line.startswith("ATOM  "):
             continue
         name = line[12:16].strip()
         kind = line[77:].strip() if len(line) > 77 else ""
-        if name.startswith("H") or kind in ("H", "HD", "HS"):
+        element = line[76:78].strip() if not rec.get("rec_pdbqt") else ""
+        if name.startswith("H") or kind in ("H", "HD", "HS") or element == "H":
             continue
         try:
             x, y, z = float(line[30:38]), float(line[38:46]), float(line[46:54])
         except ValueError:
             continue
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            continue
         total += 1
         if abs(x - cx) <= hx and abs(y - cy) <= hy and abs(z - cz) <= hz:
             in_box += 1
     return in_box, total
+
+
+def _docking_score_warning(value):
+    """Reject invalid/missing output; retain valid, unfavourable scores with a warning."""
+    import math
+    try:
+        if value is None or isinstance(value, bool):
+            raise ValueError
+        score = float(value)
+        if not math.isfinite(score):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise RuntimeError(f"Docking returned a missing or invalid best Vina score: {value!r}")
+    if score >= 0:
+        return (f"Best Vina score is non-negative ({score:g} kcal/mol). No favourable pose was found. "
+                "Inspect receptor/ligand preparation and pocket placement before interpretation; "
+                "the score alone does not establish an empty docking box or experimental binding.")
+    return ""
 
 
 def _generate_2d_interaction(
@@ -852,8 +888,8 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
             raise RuntimeError(
                 f"Prepared receptor has only {n_in_box} protein heavy atoms inside the docking box "
                 f"(total heavy atoms: {n_total}; minimum: {MIN_RECEPTOR_ATOMS_IN_BOX}). "
-                "The receptor file is empty/truncated or the box is outside the protein. "
-                "Resubmit the job; if it repeats, choose another reference ligand or set the box manually."
+                "Check receptor completeness and pocket placement. For a genuinely small receptor or pocket, "
+                "configure ACD_MIN_RECEPTOR_ATOMS_IN_BOX appropriately (0 disables this gate)."
             )
 
         vina_path, vina_msg = get_vina_binary()
@@ -981,13 +1017,9 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 if not dock.get("success"):
                     raise RuntimeError(dock.get("error", "Docking failed"))
 
-                _top = dock.get("top_score")
-                if _top is None or (isinstance(_top, (int, float)) and _top >= 0):
-                    raise RuntimeError(
-                        f"Docking returned no favourable pose (best Vina score = {_top}). "
-                        "This usually means the ligand was placed where there is no protein. "
-                        "The result was rejected so it is not reported as a binding affinity."
-                    )
+                score_warning = _docking_score_warning(dock.get("top_score"))
+                if score_warning:
+                    all_logs.append(f"WARNING: {score_warning}")
 
                 if prep.get("direct_pdbqt"):
                     row["vina_input_sha256"] = prep["input_sha256"]
@@ -1065,7 +1097,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     selected_pose_rank=pose_info.get("selected_pose_rank"),
                     pose_selection_method=pose_info.get("pose_selection_method", ""),
                     selected_pose_rmsd=pose_info.get("selected_pose_rmsd"),
-                    pose_selection_warning=pose_info.get("warning", ""),
+                    pose_selection_warning=" ".join(filter(None, [pose_info.get("warning", ""), score_warning])),
                     selected_pose_sdf=pose_info.get("selected_pose_sdf", ""),
                     **interaction2d,
                 )
@@ -1651,6 +1683,8 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
     if cap_notes:
         message += " Note: some parameters were capped to instance limits (" + "; ".join(cap_notes) + ")."
 
+    _job_directory(job_id).mkdir(parents=True, exist_ok=True)
+    mark_created(_job_directory(job_id))
     _write_status_file(job_id, {
         "job_id": job_id,
         "status": "queued",

@@ -287,11 +287,13 @@ def _pose_mol(sdf_path, pdb_path, smiles):
                 mol = AllChem.AssignBondOrdersFromTemplate(template, Chem.RemoveHs(mol, sanitize=False))
                 mol = Chem.AddHs(mol, addCoords=True)
             except Exception:
-                pass
+                return None
+        else:
+            return None
     try:
         Chem.SanitizeMol(mol)
     except Exception:
-        pass
+        return None
     return mol if mol.GetNumConformers() else None
 
 
@@ -309,20 +311,36 @@ def classify_interactions(receptor_pdb, sdf_path, pdb_path, smiles):
         raw = _detect_all_interactions(mol, str(receptor_pdb)) or []
     except Exception as exc:
         return [], 'not_available', _IX_UNAVAILABLE + f' (classifier error: {exc})'
-    seen, out = set(), []
-    for ix in sorted(raw, key=lambda d: (d.get('itype',''), str(d.get('chain','')), int(d.get('resid',0)), d.get('distance',99))):
-        key = (ix.get('itype'), str(ix.get('chain','')), int(ix.get('resid',0)))
-        if key in seen:
-            continue
-        seen.add(key)
-        atom = ix.get('lig_atom_idx')
-        out.append(dict(type=ix.get('itype'), label=_IX_LABEL.get(ix.get('itype'), ix.get('itype')),
-                        protein_residue=f"{str(ix.get('resname','')).strip()}{int(ix.get('resid',0))}",
-                        protein_chain=str(ix.get('chain','')).strip(),
-                        distance_angstrom=ix.get('distance'),
-                        ligand_atom_index=None if atom is None else int(atom),
-                        protein_element=ix.get('prot_el')))
-    out.sort(key=lambda d: (d['distance_angstrom'] if d['distance_angstrom'] is not None else 99))
+    try:
+        # Validate classifier output too: malformed metadata must not break
+        # coordinate/pose access or leak NaN into JSON responses.
+        normalized = []
+        for ix in raw:
+            resid = int(ix.get('resid', 0))
+            distance = float(ix['distance'])
+            if not math.isfinite(distance) or distance < 0:
+                raise ValueError('Invalid interaction distance')
+            atom = ix.get('lig_atom_idx')
+            if atom is not None:
+                atom = int(atom)
+                if not 0 <= atom < mol.GetNumAtoms():
+                    raise ValueError('Invalid ligand atom index')
+            normalized.append(dict(type=ix.get('itype'),
+                label=_IX_LABEL.get(ix.get('itype'), ix.get('itype')),
+                protein_residue=f"{str(ix.get('resname', '')).strip()}{resid}",
+                protein_chain=str(ix.get('chain', '')).strip(),
+                distance_angstrom=distance, ligand_atom_index=atom,
+                protein_element=ix.get('prot_el')))
+        # Keep the closest representative of each type/residue, as in the
+        # supplied patch, and sort the public list by actual distance.
+        seen, out = set(), []
+        for ix in sorted(normalized, key=lambda d: d['distance_angstrom']):
+            key = (ix['type'], ix['protein_chain'], ix['protein_residue'])
+            if key not in seen:
+                seen.add(key)
+                out.append(ix)
+    except Exception as exc:
+        return [], 'not_available', _IX_UNAVAILABLE + f' (classifier result error: {exc})'
     warning = ('Geometric classification (distance/angle rules) on the docked pose; '
                'it describes the model, not experimentally observed contacts.')
     return out, 'ACD geometric interaction classifier (anyonecandock.core)', warning
@@ -335,6 +353,9 @@ def structure(wdir, meta, row, rank, public_url, cutoff=4.5):
     if rank not in models:
         raise HTTPException(404, 'Requested Vina pose rank does not exist')
     selected,method,fallback = select_rank(row,models)
+    existing_warning = row.get('pose_selection_warning', '')
+    if existing_warning and existing_warning != fallback:
+        fallback = ' '.join(filter(None, [existing_warning, fallback]))
     receptor_meta = meta.get('receptor',{})
     receptor_source = saved_file(wdir,receptor_meta.get('rec_pdbqt') or receptor_meta.get('rec_fh'))
     rec_atoms = atom_records(receptor_source.read_text(),pdbqt=receptor_source.suffix.lower()=='.pdbqt')
