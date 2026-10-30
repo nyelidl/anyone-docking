@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anyonecandock"
+version = "1.3.12"
+description = "Command-line molecular docking powered by AutoDock Vina 1.2.7, pKaNET Cloud+, and RDKit"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["molecular docking", "autodock vina", "online docking", "protein-ligand docking",
+            "virtual screening", "cheminformatics", "drug discovery", "pKa", "protonation"]
+authors = [{ name = "Kowit Hengphasatporn" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Chemistry",
+]
+
+dependencies = [
+    "rdkit>=2023.3",
+    "prody>=2.4",
+    "meeko==0.7.1",
+    "dimorphite-dl>=1.3",
+    "gemmi>=0.6",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "requests>=2.31",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+diagram = ["cairosvg>=2.7.1", "matplotlib>=3.7"]
+admet   = ["admet-ai"]
+rich    = ["rich>=13.0"]
+all     = ["anyonecandock[diagram,admet,rich]"]
+
+[project.scripts]
+acd = "anyonecandock.cli:main"
+
+[project.urls]
+Homepage   = "https://github.com/nyelidl/anyone-docking"
+Source     = "https://github.com/nyelidl/anyone-docking"
+"Web App"  = "https://nyelidl.github.io/anyone-docking/"
+Tutorial = "https://nyelidl.github.io/Docking_workshop/"
+Publication = "https://doi.org/10.1186/s13321-026-01306-2"
+"Bug Tracker" = "https://github.com/nyelidl/anyone-docking/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["anyonecandock*"]
+
+[tool.setuptools.package-data]
+anyonecandock = ["py.typed"]

@@ -6,7 +6,7 @@ for the updated Actions, and [GPT_INSTRUCTIONS.md](GPT_INSTRUCTIONS.md) for
 coordinate-grounded GPT behavior.
 
 This folder is self-contained and can be uploaded as `st/` in the GitHub
-repository. The deployable CLI package is `anyonecandock-1.3.1-py3-none-any.whl`, including
+repository. The deployable CLI package is `anyonecandock-1.3.12-py3-none-any.whl`, including
 `ligand_validation.py` and heme data. Upload this wheel beside api.py and Dockerfile
 in st/. The vendor/ directory is retained as source but is not needed by Docker.
 The root-level `api.py` outside this folder is a separate older copy.
@@ -179,7 +179,7 @@ Job file paths validate the job ID. Deleting a queued/running job returns HTTP
 ## Fix for missing vendor during deployment
 
 If Docker reports `/vendor/anyonecandock: not found`, the old Dockerfile is still
-in use. Upload the new Dockerfile and `anyonecandock-1.3.1-py3-none-any.whl`
+in use. Upload the new Dockerfile and `anyonecandock-1.3.12-py3-none-any.whl`
 together into st/. The new Dockerfile copies the wheel directly and has no
 COPY vendor instruction. Required build files are Dockerfile, Aptfile, api.py, pose_access.py,
 viewer3d.html, requirements-api.txt, and the wheel. Use st/ as the build context.

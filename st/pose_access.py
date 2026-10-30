@@ -93,7 +93,8 @@ def atom_records(text, pdbqt=False):
              'F':'F', 'Cl':'Cl', 'CL':'Cl', 'Br':'Br', 'BR':'Br', 'I':'I',
              'Mg':'Mg', 'MG':'Mg', 'Mn':'Mn', 'MN':'Mn', 'Zn':'Zn', 'ZN':'Zn',
              'Ca':'Ca', 'CA':'Ca', 'Fe':'Fe', 'FE':'Fe', 'Cu':'Cu', 'CU':'Cu',
-             'Si':'Si', 'B':'B', 'Se':'Se'}
+             'Si':'Si', 'B':'B', 'Se':'Se',
+             'Na': 'Na', 'K': 'K', 'Co': 'Co', 'CO': 'Co', 'Ni': 'Ni', 'NI': 'Ni', 'Cd': 'Cd', 'CD': 'Cd', 'Hg': 'Hg', 'HG': 'Hg', 'Ho': 'Ho', 'HO': 'Ho', 'La': 'La', 'LA': 'La', 'Ce': 'Ce', 'CE': 'Ce', 'Pr': 'Pr', 'PR': 'Pr', 'Nd': 'Nd', 'ND': 'Nd', 'Pm': 'Pm', 'PM': 'Pm', 'Sm': 'Sm', 'SM': 'Sm', 'Eu': 'Eu', 'EU': 'Eu', 'Gd': 'Gd', 'GD': 'Gd', 'Tb': 'Tb', 'TB': 'Tb', 'Dy': 'Dy', 'DY': 'Dy', 'Er': 'Er', 'ER': 'Er', 'Tm': 'Tm', 'TM': 'Tm', 'Yb': 'Yb', 'YB': 'Yb', 'Lu': 'Lu', 'LU': 'Lu'}
     atoms = []
     for line in text.splitlines():
         if not line.startswith(('ATOM  ', 'HETATM')):

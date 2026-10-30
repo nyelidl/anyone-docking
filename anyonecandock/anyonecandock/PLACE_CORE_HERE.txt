@@ -1,0 +1,9 @@
+Copy your  core.py  and  pKaNET.py  files into this directory.
+
+The package expects:
+  anyonecandock/core.py
+  anyonecandock/pKaNET.py
+
+These files are NOT included here because they contain your proprietary
+computation code from the anyone-docking repository.  Copy them from the
+same folder as app.py in your Streamlit project.

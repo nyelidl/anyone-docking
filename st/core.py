@@ -766,13 +766,15 @@ _MIN_LIG_ATOMS = 4
 BUFFER_RESNAMES = {
     "GOL", "EDO", "PEG", "PGE", "PG4", "MPD", "DMS", "DMSO", "ACT",
     "ACY", "ACE", "TRS", "MES", "EPE", "BME", "SO4", "PO4", "NO3",
-    "SCN", "FMT", "IPA", "EOH", "MOH", "CL", "BR", "IOD"
+    "SCN", "FMT", "IPA", "EOH", "MOH", "CL", "BR", "IOD",
+    'TAR', 'TLA', 'CIT', 'FLC', 'MLI', 'BTB', 'B3P', 'HEZ', 'IMD', 'NH4', 'AZI', 'PGO', 'PGR', 'BU3', 'ACN',
 }
 LIPID_ADDITIVE_RESNAMES = {
     "Y01",  # cholesterol hemisuccinate
     "CHS",  # cholesteryl hemisuccinate
     "CLR",  # cholesterol
-    "CHL",  # cholesterol / cholesteryl-like code in some entries
+    "CHL",  # cholesterol / cholesteryl-like code in some entries,
+    'OLC', 'OLA', 'OLB', 'MPG', 'LFA', 'D10', 'D12', 'HEX', 'UND', 'BOG', 'LMT', 'LDA', 'C8E', 'DMU', 'UMQ', 'SOG', 'P6G', '1PE', '2PE', '12P', '15P', 'PE4', 'PE5', 'PE8',
 }
 WATER_RESNAMES = {"HOH", "WAT", "DOD", "SOL"}
 
@@ -1008,7 +1010,7 @@ def _collect_removable_ligands(atoms) -> list:
     # ATP/SAM/SAH-like reference ligands are intentionally NOT excluded here so
     # they can be detected as grid-defining co-crystal ligands.
     excl = (
-        (EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES | LIPID_ADDITIVE_RESNAMES)
+        (EXCLUDE_IONS | GLYCAN_NAMES | COFACTOR_NAMES | HEME_RESNAMES | METAL_RESNAMES | LIPID_ADDITIVE_RESNAMES | BUFFER_RESNAMES)
         - REFERENCE_LIGAND_COFACTORS
     )
     het  = atoms.select("hetatm and not water")
@@ -1568,6 +1570,25 @@ def prepare_receptor(
             if _primary is None:
                 _primary = _all_ligs[0]
 
+        reference_warning = ""
+        if center_mode == "auto" and _primary is None:
+            # No genuine reference remains: retain a visible, explicit fallback.
+            additives = [d for d in _hetatm_rows
+                         if d["resname"].upper() in (LIPID_ADDITIVE_RESNAMES | BUFFER_RESNAMES)
+                         and d["n_atoms"] >= _MIN_LIG_ATOMS]
+            if additives:
+                candidate = max(additives, key=lambda d: d["n_atoms"])
+                _primary = dict(candidate)
+        if _primary is not None and _primary["resname"].upper() in (LIPID_ADDITIVE_RESNAMES | BUFFER_RESNAMES):
+            reference_warning = (f"Docking box reference {_primary['resname']} chain {_primary['chain']} "
+                                 f"residue {_primary['resid']} is a crystallization lipid/additive or buffer; "
+                                 "the reference may not identify a biological binding pocket.")
+            log.append("WARNING: " + reference_warning)
+        if center_mode == "auto" and _primary is None:
+            reference_warning = "No reference ligand found; the receptor geometric center is used. Define the binding pocket manually."
+            cx, cy, cz = (float(v) for v in calcCenter(atoms.select("protein") or atoms))
+            log.append("WARNING: " + reference_warning)
+
         if _primary is not None:
             rn  = _primary.get("full_resname") or _primary["resname"]
             ch  = _primary["chain"]
@@ -1692,6 +1713,7 @@ def prepare_receptor(
             "reference_ligand": {
                 "ligand_pdb_path": ligand_pdb_path,
                 "cocrystal_ligand_id": cocrystal_ligand_id,
+            "reference_warning": reference_warning,
             },
         }
         manifest_path = _write_preparation_manifest(wdir, manifest)
@@ -1707,6 +1729,7 @@ def prepare_receptor(
             "sx": sx, "sy": sy, "sz": sz,
             "ligand_pdb_path":     ligand_pdb_path,
             "cocrystal_ligand_id": cocrystal_ligand_id,
+            "reference_warning": reference_warning,
             "n_atoms":             rec_sel.numAtoms(),
             "all_ligands":         [
                 {"resname": d["resname"], "full_resname": d.get("full_resname"), "ligand_id": d.get("ligand_id"), "chain": d["chain"],
