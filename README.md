@@ -16,9 +16,9 @@ Anyone Can Dock makes protein-ligand docking accessible through a **zero-install
 
 **Ready to start docking?**
 
-📘 **[👉 CLICK HERE TO ACCESS THE TUTORIAL](https://nyelidl.github.io/docking_workshop/)**
+📘 **[👉 CLICK HERE TO ACCESS THE TUTORIAL](https://nyelidl.github.io/Docking_workshop/#en/intro)**
 
-🌐 https://nyelidl.github.io/docking_workshop/
+🌐 https://nyelidl.github.io/Docking_workshop/#en/intro
 
 ### 📢 Follow Anyone Can Dock
 
