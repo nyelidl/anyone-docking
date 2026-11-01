@@ -20,6 +20,12 @@ Anyone Can Dock makes protein-ligand docking accessible through a **zero-install
 
 🌐 https://nyelidl.github.io/docking_workshop/
 
+### 📢 Follow Anyone Can Dock
+
+Stay connected for software updates, tutorials,
+workshops, and research highlights.
+
+👉 [Follow us on Facebook](https://www.facebook.com/anyonecandock/)
 
 ---
 
@@ -493,6 +499,7 @@ If you use ACD in research, please cite the relevant methods used in your workfl
 ## 📜 License
 
 MIT License — see [LICENSE](LICENSE) for details.
+[![Facebook](https://img.shields.io/badge/Facebook-Follow_Anyone_Can_Dock-1877F2?logo=facebook&logoColor=white)](https://www.facebook.com/anyonecandock/)
 
 ---
 
