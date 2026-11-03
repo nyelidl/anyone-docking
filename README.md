@@ -39,7 +39,7 @@ workshops, and research highlights.
 | Co-Dock (ligands together) | ✅ | ✅ | ✅ | ✅ |
 | Co-crystal redocking | ✅ | ✅ | ✅ | ✅ |
 | Receptor-ensemble docking | — | — | ✅ | — |
-| Docking engines | AutoDock Vina | AutoDock Vina | Vina, VinaXB, GNINA, Vina-GPU  | Vina, VinaXB, GNINA, Vina-GPU |
+| Docking engines | AutoDock Vina | AutoDock Vina | AutoDock Vina | Vina, VinaXB, GNINA, Vina-GPU |
 | Results and interaction views | Interactive 3D and 2D | Interactive 3D and 2D | Exported structures, scores, and diagrams | Notebook 3D views and ProLIF analysis |
 | Automatic Gemini interpretation | — | — | — | Optional |
 | Where calculations run | Hosted server | Your computer | Your computer or server | Colab runtime |
@@ -504,3 +504,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 **Anyone Can Dock: from structure preparation to validated docking results, without making molecular docking harder than it needs to be.**
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" width="220">
+</div>
