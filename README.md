@@ -39,7 +39,7 @@ workshops, and research highlights.
 | Co-Dock (ligands together) | ✅ | ✅ | ✅ | ✅ |
 | Co-crystal redocking | ✅ | ✅ | ✅ | ✅ |
 | Receptor-ensemble docking | — | — | ✅ | — |
-| Docking engines | AutoDock Vina | AutoDock Vina | AutoDock Vina | Vina, VinaXB, GNINA, Vina-GPU |
+| Docking engines | AutoDock Vina | AutoDock Vina | Vina, VinaXB, GNINA, Vina-GPU  | Vina, VinaXB, GNINA, Vina-GPU |
 | Results and interaction views | Interactive 3D and 2D | Interactive 3D and 2D | Exported structures, scores, and diagrams | Notebook 3D views and ProLIF analysis |
 | Automatic Gemini interpretation | — | — | — | Optional |
 | Where calculations run | Hosted server | Your computer | Your computer or server | Colab runtime |
