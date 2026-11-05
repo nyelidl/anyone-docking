@@ -140,10 +140,13 @@ def _identity_errors(components: list[dict], labels: list[str], paths: list[str]
 
 
 def render_simultaneous_docking(st, core, receptor_section, vina_path,
-                                 wdir: Path, show3d, viewer_bg, compound_lookup=None):
+                                 wdir: Path, show3d, viewer_bg, compound_lookup=None, shared_receptor=False):
     """Prepare 2–4 ligands and show the joint Vina poses without per-ligand scores."""
     wdir.mkdir(parents=True, exist_ok=True)
-    receptor_section(pfx="m_", wdir=wdir, step_label="Step M1 of M2")
+    if not shared_receptor:
+        receptor_section(pfx="m_", wdir=wdir, step_label="Step M1 of M2")
+    else:
+        st.caption("Using the shared receptor and docking box prepared above.")
     st.markdown("### Co-Dock: dock ligands together")
     st.caption("Co-Dock places 2–4 ligands together in one pocket. The score is for "
                "their combined pose. Each pose has one copy of every input ligand; "
@@ -376,6 +379,9 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                 view = py3Dmol.view(width="100%", height=480)
                 view.setBackgroundColor(viewer_bg())
                 rec_pdb = st.session_state.get("m_receptor_fh")
+                rec_pdb = result.get("pose_receptors", {}).get(str(pose_idx + 1), rec_pdb)
+                if result.get("flexibility"):
+                    st.caption("Flexible receptor side chains: " + ", ".join(result["flexibility"]["residues"]))
                 model_offset = 0
                 if rec_pdb and Path(rec_pdb).is_file():
                     view.addModel(Path(rec_pdb).read_text(), "pdb")
@@ -390,6 +396,9 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                     view.addModel(_pdbqt_view_pdb(component["pdbqt"]), "pdb")
                     view.setStyle({"model": model_index},
                                   {"stick": {"colorscheme": colors[index], "radius": 0.22}})
+                if result.get("flexibility"):
+                    from flexible_ui import highlight_residues
+                    highlight_residues(view, result["flexibility"]["residues"])
                 view.zoomTo({"model": list(range(model_offset, model_offset + len(components)))})
                 show3d(view, height=480)
             except Exception as exc:

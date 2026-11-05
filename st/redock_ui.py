@@ -55,7 +55,7 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                 current['message'] = 'Redock is not ready: a missing residue boundary is within 5 Å of the selected co-crystal ligand. Rebuild and validate the region before docking.'
         return current
 
-    with st.expander('⚗️ Receptor setup panel', expanded=True):
+    with st.expander('⚗️ Receptor setup panel', expanded=False):
         st.caption('One ligand residue instance is required. Heavy-atom contacts ≤4.5 Å identify the contacting protein chains. Only supplied chains in model 1 are inspected; no symmetry mates or biological assemblies are generated.')
         use_structure = st.button('Use this structure', key=pfx + 'use_structure', type='primary', disabled=path is None)
         if use_structure and path is not None:
@@ -129,7 +129,9 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
             elif not inspection.get('ready'):
                 st.warning(inspection['message'])
 
-        settings = (inspection or {}).get('source_sha256'), tuple(box)
+        from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
+        _flex_controls(st, (inspection or {}).get('scoped_path') or path, pfx, online=True)
+        settings = ((inspection or {}).get('source_sha256'), tuple(box), st.session_state.get(pfx + 'flex_signature'))
         if st.session_state.get(pfx + 'prepared_settings') != settings:
             st.session_state.pop(pfx + 'prepared', None)
             st.session_state.pop(pfx + 'result', None)
@@ -144,7 +146,8 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                     result = core.prepare_receptor(raw_pdb=inspection['scoped_path'], wdir=out,
                                                    center_mode='auto', box_size=box,
                                                    hetatm_policy=inspection['hetatm_policy'],
-                                                   reference_hetatm_key=inspection['ligand']['key'])
+                                                   reference_hetatm_key=inspection['ligand']['key'],
+                                                   flexible_residues=_flex_require(st, pfx, online=True))
                 if not result.get('success'):
                     raise ValueError(result.get('error', 'Receptor preparation failed.'))
                 if hashlib.sha256(Path(inspection['reference_path']).read_bytes()).hexdigest() != inspection['reference_sha256']:
@@ -159,6 +162,8 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                 st.session_state[pfx + 'prepared_settings'] = settings
             except Exception as exc:
                 st.error(str(exc))
+        if st.session_state.get(pfx + 'prepared'):
+            _flex_download(st, st.session_state[pfx + 'prepared']['rec_pdbqt'], pfx, result_root=wdir)
     return inspection
 
 
@@ -179,7 +184,8 @@ def render_results(st, core, result, prepared, show_pose, pfx='r_'):
     st.write(f"Pose **{rank}** · Affinity **{row.get('affinity')} kcal/mol** · RMSD **{row['rmsd'] if row['rmsd'] is not None else 'unavailable'} Å**")
     mols = core.load_mols_from_sdf(result['sdf'], sanitize=False)
     mol = mols[rank - 1]
-    show_pose(mol, prepared['rec_fh'], result['reference'])
+    from flexible_docking import receptor_for_mol
+    show_pose(mol, receptor_for_mol(prepared['rec_fh'], mol), result['reference'])
     st.download_button('⬇ Selected pose SDF', Chem.MolToMolBlock(mol) + '\n$$$$\n',
                        file_name=f'redock_pose{rank}.sdf', key=pfx + 'sdf_download')
     st.download_button('⬇ Selected pose PDB', Chem.MolToPDBBlock(mol),
@@ -199,7 +205,7 @@ def render_results(st, core, result, prepared, show_pose, pfx='r_'):
 
 
 def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
-    st.markdown('### Step 2 — Redock the extracted ligand')
+    st.markdown('### Redock the selected crystal ligand')
     inspection = st.session_state.get(pfx + 'inspection')
     prepared = st.session_state.get(pfx + 'prepared')
     ph = st.number_input('pH', min_value=0.0, max_value=14.0, value=7.4, key=pfx + 'ph')
@@ -234,7 +240,7 @@ def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
     if blocked:
         st.error('Redocking blocked: rebuild and validate the missing region near the binding site, then prepare the receptor again.')
     if not ready:
-        st.caption('Redock becomes available after an eligible structure has been prepared.')
+        st.caption('Redock becomes available after preparing the shared receptor with an eligible crystal reference ligand.')
     result = st.session_state.get(pfx + 'result')
     if result and prepared:
         st.caption('Completed-run parameters: ' + json.dumps(result['settings']))

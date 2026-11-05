@@ -1998,6 +1998,8 @@ def _render_binding_pocket_panel(
     Render the Binding Pocket View.
     show_cryst=False (default for figure) suppresses the co-crystal ligand overlay.
     """
+    from flexible_docking import receptor_for_mol
+    rec_fh = receptor_for_mol(rec_fh, mol)
     import py3Dmol
     from rdkit import Chem
     try:
@@ -2036,6 +2038,8 @@ def _render_binding_pocket_panel(
                          "inFront": True, "showBackground": True},
                         _sel,
                     )
+        from flexible_ui import highlight_residues
+        highlight_residues(v, st.session_state.get("shared_flex_selection", []) if st.session_state.get("shared_flex_enabled") else [])
         v.zoomTo({"model": _lig_m})
         show3d(v, height=height)
     except Exception as _e:
@@ -2921,6 +2925,9 @@ def _ready_figure_section(
         _plot_fn = b_plot_draw_fn; _plot_n = b_plot_n
         _browsable_rtf = b_browsable
 
+    from flexible_docking import receptor_for_mol
+    _rec = receptor_for_mol(_rec, _mol)
+
     _capsule = (
         f"Pose {_p_idx + 1}  ·  {_lname}"
         + (f"  ·  {_score:.2f} kcal/mol" if _score is not None else "")
@@ -2965,6 +2972,8 @@ def _ready_figure_section(
                          "inFront": True, "showBackground": True},
                         sel,
                     )
+        from flexible_ui import highlight_residues
+        highlight_residues(v, st.session_state.get("shared_flex_selection", []) if st.session_state.get("shared_flex_enabled") else [])
         v.zoomTo({"model": lig_m})
         return v._make_html()
 
@@ -3018,6 +3027,9 @@ def _ready_figure_section(
         )
         _b_pi2 = max(0, min(_b_pi2, len(_b_mols2) - 1)) if _b_mols2 else 0
 
+        if _b_mols2:
+            from flexible_docking import receptor_for_mol
+            b_rec_fh = receptor_for_mol(b_rec_fh, _b_mols2[_b_pi2])
         _v3d_b_html = ""
         if _b_mols2:
             try:
@@ -4079,6 +4091,8 @@ def _poseview_ui(
 
 
 def _render_pose_structure(pose_mol, receptor_pdb, crystal_pdb):
+    from flexible_docking import receptor_for_mol
+    receptor_pdb = receptor_for_mol(receptor_pdb, pose_mol)
     import py3Dmol
     from rdkit import Chem
     try:
@@ -4101,6 +4115,8 @@ def _render_pose_structure(pose_mol, receptor_pdb, crystal_pdb):
         vb.setStyle({"model": bmi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
         vb.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": bmi})
         vb.zoomTo({"model": bmi}); vb.center({"model": bmi})
+        from flexible_ui import highlight_residues
+        highlight_residues(vb, st.session_state.get("shared_flex_selection", []) if st.session_state.get("shared_flex_enabled") else [])
         show3d(vb, height=420)
     except Exception as e:
         st.info(f"Viewer error: {e}")
@@ -4138,6 +4154,21 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
                     )
             except Exception:
                 pass
+            from flexible_docking import parse_residues
+            for _flex_pfx in ("shared_", "", "b_", "m_", "r_"):
+                if st.session_state.get(_flex_pfx + "receptor_fh") == receptor_pdb or (st.session_state.get(_flex_pfx + "prepared") or {}).get("rec_fh") == receptor_pdb:
+                    for _res in st.session_state.get(_flex_pfx + "flex_selection", []) if st.session_state.get(_flex_pfx + "flex_enabled") else []:
+                        _chain, _number = _res.split(":")
+                        import re as _flex_re
+                        _match = _flex_re.fullmatch(r"(-?\d+)([A-Za-z]?)", _number)
+                        if _match:
+                            # Replace the pocket colorscheme; addStyle merges and can retain it.
+                            v3.setStyle(
+                                {"model": 0, "chain": "" if _chain == "_" else _chain,
+                                 "resi": int(_match[1]), "icode": _match[2] or ["", " "]},
+                                {"stick": {"color": "#FFD600", "radius": 0.25},
+                                 "cartoon": {"color": "spectrum", "opacity": 0.75}},
+                            )
             mi += 1
 
         _box_mi   = None
@@ -4408,7 +4439,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             ),
         )
         # ── Receptor setup panel + HETATM action guide (combined) ────────
-        with st.expander("⚗️ Receptor setup panel", expanded=True):
+        with st.expander("⚗️ Receptor setup panel", expanded=False):
             st.caption(
                 "Select the co-crystal small molecule used to define the binding site. "
                 "The selected ligand is removed from the receptor but used to center the grid. "
@@ -4680,11 +4711,17 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
         st.session_state.get(pfx + "reference_hetatm_key"), center_mode, sx, sy, sz, blind,
         tuple(st.session_state.get(pfx + k) for k in ("mx", "my", "mz", "mda_sel")),
         repr(sorted(st.session_state.get(pfx + "hetatm_policy", {}).items())),
+        repr(sorted(st.session_state.get(pfx + "heme_states", {}).items())),
     )
     if st.session_state.get(pfx + "assessment_settings") != _assessment_settings:
         st.session_state[pfx + "receptor_done"] = False
         st.session_state[{"b_": "b_batch_done", "m_": "m_joint_done"}.get(pfx, "docking_done")] = False
         st.session_state[pfx + "assessment_settings"] = _assessment_settings
+
+    from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
+    _flex_controls(st, _scan_path, pfx, online=True)
+    if st.session_state.get(pfx + "receptor_done") and pfx != "shared_":
+        _flex_download(st, st.session_state.get(pfx + "receptor_pdbqt", ""), pfx, result_root=wdir.parent if pfx == "shared_" else wdir)
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
         (wdir / "pocket_completeness.json").unlink(missing_ok=True)
@@ -4710,7 +4747,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             _up_ext  = Path(upload_file.name).suffix.lower()
             raw_path = str(wdir / ("raw.cif" if _up_ext in (".cif", ".mmcif") else "raw.pdb"))
             with open(raw_path, "wb") as f:
-                f.write(upload_file.read())
+                f.write(upload_file.getvalue())
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
         st.session_state[pfx + "receptor_done"] = False
@@ -4720,7 +4757,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
         try:
             from prody import parsePDB as _pPDB_ch, writePDB as _wPDB_ch
             _atoms_ch = _pPDB_ch(raw_path)
-            if _atoms_ch is not None:
+            if _atoms_ch is not None and pfx != "shared_":
                 _hv_ch = _atoms_ch.getHierView()
                 _prot_chains = [
                     _c for _c in _hv_ch.iterChains()
@@ -4790,6 +4827,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             except Exception as _be:
                 st.warning(f"⚠️ Could not compute blind docking box: {_be}")
 
+        try:
+            _flex_require(st, pfx, online=True)
+        except ValueError as _flex_error:
+            st.error(str(_flex_error))
+            st.stop()
         with st.spinner("⏳ Preparing receptor…"):
             result = prepare_receptor(
                 raw_pdb          = raw_path,
@@ -4801,10 +4843,13 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
                 hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
                 reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
+                flexible_residues = _flex_require(st, pfx, online=True),
             )
 
         if result["success"]:
             _full_log = result["log"]
+            st.session_state[pfx + "prepared_result"] = result
+            st.session_state[pfx + "preparation_revision"] = st.session_state.get(pfx + "preparation_revision", 0) + 1
 
             st.session_state.update({
                 pfx + "raw_pdb_path":        raw_path,
@@ -4901,6 +4946,26 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════════════════════════════
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════════
+# One receptor preparation for all modes. Mode tabs contain only ligand/docking/results controls.
+_SHARED_RECEPTOR_DIR = WORKDIR / "shared_receptor"
+_SHARED_RECEPTOR_DIR.mkdir(exist_ok=True)
+st.caption("Prepare once, then choose Single Dock, Batch Dock, Co-Dock or Redock below. Flexible side chains are selected here.")
+_receptor_section(pfx="shared_", wdir=_SHARED_RECEPTOR_DIR, step_label="Step 1 — Shared receptor preparation")
+import core as _shared_core
+from shared_receptor import sync as _sync_shared_receptor, show_redock_status as _shared_redock_status
+_shared_status = _sync_shared_receptor(st.session_state, _shared_core, WORKDIR)
+if _shared_status["ready"]:
+    st.success(_shared_status["message"])
+    WORKDIR = Path(_shared_status["results_dir"])
+    BATCH_WORKDIR = WORKDIR / "batch"
+    JOINT_WORKDIR = WORKDIR / "simultaneous"
+    BATCH_WORKDIR.mkdir(exist_ok=True)
+    JOINT_WORKDIR.mkdir(exist_ok=True)
+    from flexible_ui import download as _shared_flex_download
+    _shared_flex_download(st, st.session_state["shared_receptor_pdbqt"], "shared_", result_root=WORKDIR)
+else:
+    st.info(_shared_status["message"])
+
 tab_basic, tab_batch, tab_joint, tab_redock = st.tabs([
     "🧪  Single Dock",
     "🔬  Batch Dock",
@@ -4914,7 +4979,6 @@ tab_basic, tab_batch, tab_joint, tab_redock = st.tabs([
 # ╚════════════════════════════════════════════════════════════════════════════╝
 with tab_basic:
 
-    _receptor_section(pfx="", wdir=WORKDIR, step_label="Step 1 of 4")
 
     # ── Step 2: Ligand ────────────────────────────────────────────────────────
     card_cls = "step-card done" if st.session_state.ligand_done else "step-card"
@@ -5165,7 +5229,7 @@ with tab_basic:
     # ─────────────────────────────────────────────────────────────────────────
 
     if not st.session_state.receptor_done:
-        st.caption("⚠ Complete Step 1 first.")
+        st.caption("⚠ Prepare the shared receptor above first.")
     if st.button(
         "▶ Prepare Ligand", key="btn_ligand", type="primary",
         disabled=not st.session_state.receptor_done,
@@ -5612,6 +5676,7 @@ with tab_basic:
                 "output_pdbqt": dock["out_pdbqt"], "output_sdf": dock["out_sdf"],
                 "output_pv_sdf": pv_sdf, "dock_base": base,
                 "docking_done": True, "docking_log": _full_log,
+                "docking_flexible": bool(dock.get("flexibility") and "--flex" in dock.get("command", [])),
                 "score_df": df, "pose_mols": mols,
                 "pv_image_png": None, "pv_image_svg": None, "pv_pose_key": None,
                 "dock_run_id": st.session_state.get("dock_run_id", 0) + 1,
@@ -5624,6 +5689,7 @@ with tab_basic:
         _redock_score = st.session_state.get("redock_score")
         st.markdown(
             _pill("Docking complete", "success")
+            + (" " + _pill("Flexible docking") if st.session_state.get("docking_flexible", False) else "")
             + (_pill(f"Ref: {_redock_score:.2f} kcal/mol", "warn") if _redock_score is not None else ""),
             unsafe_allow_html=True,
         )
@@ -5830,12 +5896,19 @@ with tab_basic:
         if not (_anim_sdf and os.path.exists(_anim_sdf) and os.path.getsize(_anim_sdf) > 10):
             _anim_sdf = st.session_state.output_sdf
         if st.session_state.output_sdf and os.path.exists(st.session_state.output_sdf):
+            from flexible_ui import receptor_frames as _receptor_frames, highlight_residues as _highlight_flex
+            from flexible_docking import receptor_for_mol as _pose_receptor
+            _animation_mols = load_mols_from_sdf(_anim_sdf, sanitize=False)
+            _animation_receptors = _receptor_frames(st.session_state.receptor_fh, _animation_mols)
             sdf_txt = open(_anim_sdf).read()
             va = py3Dmol.view(width="100%", height=440)
             va.setBackgroundColor(_viewer_bg())
             mai = 0
             if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                va.addModel(open(st.session_state.receptor_fh).read(), "pdb")
+                if _animation_receptors:
+                    va.addModelsAsFrames(_animation_receptors, "pdb")
+                else:
+                    va.addModel(open(st.session_state.receptor_fh).read(), "pdb")
                 va.setStyle({"model": mai}, {"cartoon": {"color": "spectrum", "opacity": 0.7}, "stick": {"radius": 0.1, "opacity": 0.2}})
                 mai += 1
             if st.session_state.ligand_pdb_path and os.path.exists(st.session_state.ligand_pdb_path):
@@ -5847,8 +5920,12 @@ with tab_basic:
             # ─────────────────────────────────────────────────────────────
             va.addModelsAsFrames(sdf_txt)
             va.setStyle({"model": mai}, {"stick": {"colorscheme": "greenCarbon", "radius": 0.25}})
+            if _animation_receptors:
+                _highlight_flex(va, st.session_state.get("flex_selection", []))
+                st.caption("Each frame pairs a ligand pose with its saved flexible receptor. Yellow sticks mark selected side chains; this is a pose slideshow, not molecular dynamics.")
+            else:
+                va.addSurface("SES", {"opacity": 0.18, "color": "lightblue"}, {"model": 0}, {"model": mai})
             va.animate({"interval": anim_spd, "loop": "forward"})
-            va.addSurface("SES", {"opacity": 0.18, "color": "lightblue"}, {"model": 0}, {"model": mai})
             va.zoomTo(); va.center({"model": mai}); va.rotate(30)
             show3d(va, height=440)
 
@@ -5869,6 +5946,11 @@ with tab_basic:
                 ),
             ) - 1
             sel_mol  = mols[pose_idx]
+            from flexible_docking import receptor_for_mol as _pose_receptor
+            from flexible_ui import highlight_residues as _highlight_flex
+            _selected_receptor = _pose_receptor(st.session_state.receptor_fh, sel_mol)
+            if _selected_receptor != st.session_state.receptor_fh:
+                st.caption("Displaying the receptor saved for this pose. Selected flexible side chains are yellow; the backbone stays fixed.")
 
             _cryst_pdb = st.session_state.get("ligand_pdb_path") or ""
             if df is not None:
@@ -5890,8 +5972,8 @@ with tab_basic:
                     v2 = py3Dmol.view(width="100%", height=400)
                     v2.setBackgroundColor(_viewer_bg())
                     mi2 = 0
-                    if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                        v2.addModel(open(st.session_state.receptor_fh).read(), "pdb")
+                    if _selected_receptor and os.path.exists(_selected_receptor):
+                        v2.addModel(open(_selected_receptor).read(), "pdb")
                         v2.setStyle({"model": mi2}, {"cartoon": {"color": "spectrum", "opacity": 0.5}, "stick": {"radius": 0.08, "opacity": 0.15}})
                         mi2 += 1
                     if _cryst_pdb and os.path.exists(_cryst_pdb):
@@ -5899,12 +5981,13 @@ with tab_basic:
                         v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.2}})
                         mi2 += 1
                     # ── Heme ──────────────────────────────────────────────
-                    mi2 = _add_metals_heme_to_view(v2, st.session_state.get("receptor_fh"), mi2)
+                    mi2 = _add_metals_heme_to_view(v2, _selected_receptor, mi2)
                     # ─────────────────────────────────────────────────────
                     v2.addModel(Chem.MolToPDBBlock(sel_mol), "pdb")
                     v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                     v2.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": mi2})
                     v2.zoomTo({"model": mi2})
+                    _highlight_flex(v2, st.session_state.get("flex_selection", []) if st.session_state.get("flex_enabled") else [])
                     show3d(v2, height=400)
                 except Exception as e:
                     st.info(f"Viewer error: {e}")
@@ -5930,8 +6013,8 @@ with tab_basic:
                     st.download_button("⬇ Scores (.csv)", df.to_csv(index=False).encode(),
                         file_name=f"{st.session_state.dock_base}_scores.csv", mime="text/csv",
                         key="dl_csv", width='stretch')
-                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    st.download_button("⬇ Receptor (.pdb)", open(st.session_state.receptor_fh, "rb"),
+                if _selected_receptor and os.path.exists(_selected_receptor):
+                    st.download_button("⬇ Receptor (.pdb)", open(_selected_receptor, "rb"),
                         file_name="receptor.pdb", key="dl_rec", width='stretch')
 
             st.markdown("---")
@@ -5977,21 +6060,21 @@ with tab_basic:
                 vbp = py3Dmol.view(width="100%", height=440)
                 vbp.setBackgroundColor(_viewer_bg())
                 mbp = 0
-                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    vbp.addModel(open(st.session_state.receptor_fh).read(), "pdb")
+                if _selected_receptor and os.path.exists(_selected_receptor):
+                    vbp.addModel(open(_selected_receptor).read(), "pdb")
                     vbp.setStyle({"model": mbp}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
                     if _show_surface:
                         vbp.addSurface(py3Dmol.SAS, {"opacity": 0.55, "color": "white"}, {"model": mbp})
                     mbp += 1
                 # ── Heme ──────────────────────────────────────────────────
-                mbp = _add_metals_heme_to_view(vbp, st.session_state.get("receptor_fh"), mbp)
+                mbp = _add_metals_heme_to_view(vbp, _selected_receptor, mbp)
                 # ─────────────────────────────────────────────────────────
                 vbp.addModel(Chem.MolToPDBBlock(sel_mol), "pdb")
                 _lig_m = mbp
                 vbp.setStyle({"model": _lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
 
-                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    _ir = get_interacting_residues(st.session_state.receptor_fh, sel_mol, cutoff=_cutoff)
+                if _selected_receptor and os.path.exists(_selected_receptor):
+                    _ir = get_interacting_residues(_selected_receptor, sel_mol, cutoff=_cutoff)
                     for _rb in _ir:
                         # ── Empty chain ID fix ────────────────────────────
                         _has_chain = bool(_rb["chain"] and _rb["chain"].strip())
@@ -6019,6 +6102,7 @@ with tab_basic:
                         unsafe_allow_html=True,
                     )
                 vbp.zoomTo({"model": _lig_m})
+                _highlight_flex(vbp, st.session_state.get("flex_selection", []) if st.session_state.get("flex_enabled") else [])
                 show3d(vbp, height=440)
             except Exception as _e:
                 st.info(f"Binding pocket viewer error: {_e}")
@@ -6109,13 +6193,12 @@ with tab_basic:
 # ╚════════════════════════════════════════════════════════════════════════════╝
 with tab_batch:
 
-    _receptor_section(pfx="b_", wdir=BATCH_WORKDIR, step_label="Step B1 of B3")
 
     b_rec_done   = st.session_state.get("b_receptor_done", False)
     b_batch_done = st.session_state.get("b_batch_done", False)
     card_cls = "step-card done" if b_batch_done else "step-card"
     st.markdown(
-        f'<div class="{card_cls}"><div class="step-title">Step B2 of B3</div>'
+        f'<div class="{card_cls}"><div class="step-title">Step 2 — Batch docking</div>'
         f'<div class="step-heading">⚗️ Batch Ligand Input & Docking</div>',
         unsafe_allow_html=True,
     )
@@ -6294,7 +6377,7 @@ with tab_batch:
         _b_dock_seed = b_vina_seed if b_vina_seed != 0 else None
 
     if not b_rec_done:
-        st.caption("⚠ Complete Step B1 first.")
+        st.caption("⚠ Prepare the shared receptor above first.")
     if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=(not b_rec_done)):
         st.session_state["b_batch_done"] = False
         st.session_state["b_batch_results"] = None
@@ -6485,13 +6568,13 @@ with tab_batch:
     b_batch_done = st.session_state.get("b_batch_done", False)
     card_cls = "step-card done" if b_batch_done else "step-card"
     st.markdown(
-        f'<div class="{card_cls}"><div class="step-title">Step B3 of B3</div>'
+        f'<div class="{card_cls}"><div class="step-title">Step 3 — Batch results</div>'
         f'<div class="step-heading">📊 Batch Results</div>',
         unsafe_allow_html=True,
     )
 
     if not b_batch_done:
-        st.info("Complete Step B2 to see batch results here.")
+        st.info("Run Batch Dock to see results here.")
     else:
         import py3Dmol
         from rdkit import Chem
@@ -6927,14 +7010,14 @@ with tab_joint:
     from simultaneous_ui import render_simultaneous_docking
     render_simultaneous_docking(st, _joint_core, _receptor_section, VINA_PATH,
                                 JOINT_WORKDIR, show3d, _viewer_bg,
-                                compound_lookup=_search_compound_pubchem)
+                                compound_lookup=_search_compound_pubchem, shared_receptor=True)
 
 with tab_redock:
     import core as _redock_core
     from redock_ui import docking_controls
     _redock_dir = WORKDIR / "redock_mode"
     _redock_dir.mkdir(exist_ok=True)
-    _receptor_section(pfx="r_", wdir=_redock_dir, step_label="Step 1 of 2", redock_mode=True)
+    _shared_redock_status(st)
     docking_controls(st, _redock_core, _redock_dir, VINA_PATH, _render_pose_structure)
 
 
