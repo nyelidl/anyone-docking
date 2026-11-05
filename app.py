@@ -5676,6 +5676,7 @@ with tab_basic:
                 "output_pdbqt": dock["out_pdbqt"], "output_sdf": dock["out_sdf"],
                 "output_pv_sdf": pv_sdf, "dock_base": base,
                 "docking_done": True, "docking_log": _full_log,
+                "docking_flexible": bool(dock.get("flexibility") and "--flex" in dock.get("command", [])),
                 "score_df": df, "pose_mols": mols,
                 "pv_image_png": None, "pv_image_svg": None, "pv_pose_key": None,
                 "dock_run_id": st.session_state.get("dock_run_id", 0) + 1,
@@ -5688,6 +5689,7 @@ with tab_basic:
         _redock_score = st.session_state.get("redock_score")
         st.markdown(
             _pill("Docking complete", "success")
+            + (" " + _pill("Flexible docking") if st.session_state.get("docking_flexible", False) else "")
             + (_pill(f"Ref: {_redock_score:.2f} kcal/mol", "warn") if _redock_score is not None else ""),
             unsafe_allow_html=True,
         )
