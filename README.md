@@ -1,4 +1,4 @@
-# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32"> nyone can dock, everyone can do!
+# <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/any-L.svg" width="32" alt="A"> nyone can dock, everyone can do!
 
 ***One molecular docking workflow, four ways to run.***
 
@@ -6,110 +6,114 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/anyonecandock/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Anyone Can Dock makes protein-ligand docking accessible through a **zero-install web app**, a **private local interface**, an **automation-friendly CLI**, and a **GPU-ready Google Colab notebook**.
+Anyone Can Dock (ACD) combines receptor and ligand preparation, molecular docking, pose visualization, and interaction analysis. Choose a **browser app**, a **local graphical interface**, an **automation-friendly CLI**, or a **Google Colab notebook with additional docking engines**.
 
-> From structure preparation to validated docking results, without making molecular docking harder than it needs to be.
+> From structure preparation to pose analysis, with fewer setup steps.
 
----
-
-### Interactive Tutorial & Hands-on Exercises
-
-**Ready to start docking?**
-
-📘 **[👉 CLICK HERE TO ACCESS THE TUTORIAL](https://nyelidl.github.io/Docking_workshop/#en/intro)**
-
-🌐 https://nyelidl.github.io/Docking_workshop/#en/intro
-
-### 📢 Follow Anyone Can Dock
-
-Stay connected for software updates, tutorials,
-workshops, and research highlights.
-
-👉 [Follow us on Facebook](https://www.facebook.com/anyonecandock/)
+📘 **[Interactive tutorial and hands-on exercises →](https://nyelidl.github.io/Docking_workshop/#en/intro)**  
+📢 **[Follow ACD on Facebook →](https://www.facebook.com/anyonecandock/)**
 
 ---
 
-## 🚀 Four ways to use Anyone Can Dock (ACD)
+## 🚀 Four ways to use Anyone Can Dock
 
-| Feature | 🌐 ACD Online | 🖥️ ACD Local | ⌨️ ACD CLI | 📓 Google Colab |
+| Feature | 🌐 Online | 🖥️ Local | ⌨️ CLI | 📓 Google Colab notebook |
 |---|---|---|---|---|
-| Best for | Quick docking and teaching | Private, interactive research | Automation and large workflows | Workshops and GPU docking |
-| Setup | Open a browser | Install on your computer | `pip install anyonecandock` | Open the notebook |
+| Best for | Quick docking and teaching | Interactive research on your computer | Scripts, servers, and screening | Workshops and additional engines |
+| Setup | Open a browser | Install and launch Streamlit | `python -m pip install anyonecandock` | Open and execute the notebook |
 | Single and batch docking | ✅ | ✅ | ✅ | ✅ |
-| Co-Dock (ligands together) | ✅ | ✅ | ✅ | ✅ |
+| Co-Dock: ligands together | ✅ | ✅ | ✅ | ✅ |
 | Co-crystal redocking | ✅ | ✅ | ✅ | ✅ |
+| Flexible receptor side chains | Vina only | Vina only | Vina only; CLI 1.4.1 | Vina only |
 | Receptor-ensemble docking | — | — | ✅ | — |
-| Docking engines | AutoDock Vina | AutoDock Vina | AutoDock Vina | Vina, VinaXB, GNINA, Vina-GPU |
-| Results and interaction views | Interactive 3D and 2D | Interactive 3D and 2D | Exported structures, scores, and diagrams | Notebook 3D views and ProLIF analysis |
-| Automatic Gemini interpretation | — | — | — | Optional |
-| Where calculations run | Hosted server | Your computer | Your computer or server | Colab runtime |
-| Start here | [Open Online →](https://nyelidl.github.io/anyone-docking/) | [Local installation](#-acd-local) | `pip install anyonecandock` | [Open in Colab →](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
+| Docking engines | Vina 1.2.7 | Vina 1.2.7 | Vina 1.2.7, VinaXB, GNINA¹ | Vina 1.2.7, VinaXB, GNINA, Vina-GPU 2.1 |
+| Results | Interactive 3D, 2D diagrams, tables, downloads | Interactive 3D, 2D diagrams, tables, downloads | Structure files, tables, diagrams, logs | Notebook 3D views, ProLIF analysis, downloads |
+| Automated Gemini interpretation | — | — | — | Optional; requires configuration |
+| Where docking runs | Hosted server | Your computer | Your computer or server | Colab runtime |
+| Start here | [Open Online →](https://nyelidl.github.io/anyone-docking/) | [Local installation](#-acd-local) | [CLI installation](#-acd-cli) | [Open notebook →](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing) |
 
-**Tip:** Choose Online for the fastest start, Local for an interactive workflow on your computer, CLI for scripts, or Colab for its additional docking engines. Vina-GPU requires a compatible Colab GPU runtime.
+¹ CLI engine downloads depend on the operating system. **Co-Dock and flexible receptor docking use Vina only.** GNINA's managed binary requires Linux x86-64; VinaXB has no native Apple Silicon binary. Engine binaries download on first use on supported platforms; they are not bundled in the Python wheel.
 
-For the web-interfaced via Google colab: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1WtWYUUB1AREZMeB5qEJ9OD84AvWk1z4z?usp=sharing)
+**Release note:** the latest PyPI release checked on November 5, 2026 is **1.4.0**. CLI flexible docking is included in the **1.4.1 source/release package** and requires that version; it is not yet available through the published 1.4.0 package. The table describes the updated project sources; deployed apps and saved Colab copies may need updating.
+
+**Prefer a web interface running on Colab?** Use the separate launcher:  
+[![Open web interface in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1WtWYUUB1AREZMeB5qEJ9OD84AvWk1z4z?usp=sharing)
 
 ---
 
 ## 🌐 ACD Online
 
-**Best for:** beginners, teaching, demonstrations, and quick docking without installation.
+**Best for:** beginners, teaching, demonstrations, and quick docking without local installation.
 
-- Runs directly in a web browser
-- Interactive **Basic Dock** and **Batch Dock** modes
-- Download structures from RCSB or upload PDB/mmCIF files
-- Automatic, manual, residue-selection, and blind-docking box placement
-- Meeko receptor preparation with Open Babel fallback
-- Metal, heme, cofactor, water, and HETATM handling
-- SMILES, PubChem name, SDF, MOL2, and PDB ligand input
-- pH-aware ligand protonation with pKaNET
-- AutoDock Vina docking and reproducible random seeds
-- Co-crystal redocking and RMSD validation
-- Interactive 3D receptor, binding-box, ligand, and pose visualization
-- Pose Browser with individual pose export
-- Download SDF or PDB poses with explicit hydrogens
-- Preserve all docked poses in the original PDBQT output
-- Interaction diagrams using ACD, RDKit, ProLIF, and PoseView
-- Batch ranking, score tables, ProLIF interaction barcodes, and ZIP export
-- RDKit physicochemical descriptors, drug-likeness rules, and structural alerts
-- Optional ADMET-AI predictions
+### Prepare once, then choose a docking mode
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://nyelidl.github.io/anyone-docking/)
+1. Enter a **PDB ID** or upload a **PDB/mmCIF** structure.
+2. Select the reference ligand or another supported method to define the docking box. Review chains, retained cofactors, and box dimensions.
+3. Optionally enable **Flexible docking: receptor flexibility — optional** and select side chains.
+4. Click **Prepare Receptor** and inspect the 3D receptor and docking box.
+5. Choose **Single Dock**, **Batch Dock**, **Co-Dock**, or **Redock**. The modes reuse the prepared receptor and box.
+
+Changing the receptor, reference ligand, box, or flexible-residue selection requires preparing the receptor again.
+
+| Mode | What it does |
+|---|---|
+| **Single Dock** | Dock one ligand against the receptor. |
+| **Batch Dock** | Dock each ligand independently, then compare scores and interactions. |
+| **Co-Dock: dock ligands together** | Dock 2–4 ligands together in one joint Vina search. |
+| **Redock** | Re-dock a selected co-crystal ligand and compare its predicted pose with the crystal coordinates. |
+
+### Ligand input
+
+For **Batch Dock**, the input choices are:
+
+**SMILES list (text) · Compound name · Upload .smi file · Upload structure files (.pdb/.mol2)**
+
+- **SMILES list:** enter one `SMILES name` per line. The editable area is 300 px tall.
+- **Compound name:** enter one name and click **Search**. Review the returned PubChem structure and information; the SMILES is added to the editable list. Repeat to build the batch.
+- **Upload .smi file:** use the same one-compound-per-line format.
+- **Upload structure files:** supply the supported file types shown in the interface.
+
+For **Co-Dock**, the same choices are available with **Compound name first**. Add 2–4 ligands for one joint docking run.
+
+```text
+CCO ethanol
+c1ccccc1O phenol
+```
+
+**Co-Dock is not a combination generator:** aspirin + baicalein produces joint poses containing both ligands. It does not automatically enumerate aspirin + aspirin, baicalein + baicalein, or all possible subsets. Scores describe the joint docking solution, rather than separate affinities for each component.
+
+### Preparation and results
+
+- Meeko receptor preparation, with Open Babel fallback where applicable
+- pH-aware and tautomer-aware ligand preparation with pKaNET
+- Automatic reference-ligand, manual XYZ, ProDy-selection, and blind-docking boxes
+- Metal, heme, cofactor, water, and other HETATM handling
+- Configurable exhaustiveness, pose count, energy range, and random seed
+- 3D pose animation, interactive pose selection, and binding-pocket views
+- ACD, RDKit, ProLIF, and PoseView interaction analysis, depending on the workflow
+- Batch ranking, interaction barcodes/profiles, and result archives
+- Individual pose exports, score CSVs, receptor files, and PDBQT outputs
+- RDKit descriptors, drug-likeness rules, structural alerts, and optional ADMET-AI predictions
+
+For heavy usage, use [Google Colab](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing), Local, or CLI.
 
 ---
 
 ## 🖥️ ACD Local
 
-**Best for:** private research, full graphical functionality, and unrestricted local workflows.
+**Best for:** interactive docking with compute and result storage on your computer.
 
-Includes all major Online features, plus:
+Local includes the shared receptor preparation panel, Single Dock, Batch Dock, Co-Dock, Redock, optional flexible side chains, 3D/2D analysis, and result downloads. The Colab web launcher uses `app-colab.py`.
 
-- Runs entirely on the user's own computer
-- Local control of receptor, ligand, result, and temporary files
-- Basic Dock and Batch Dock interfaces
-- Validated ferric-heme and Compound-I preparation
-- Automatic `HEME_FERRIC` versus `CPD_I` geometry detection
-- Geometric ferryl oxygen and proximal cysteine identification
-- Fe-O and Fe-S validation gates
-- Ferryl oxygen hydrogen removal
-- JSON-derived RESP charges for Fe, OXO, heme, and proximal cysteine
-- Final PDBQT reread and charge validation before docking
-- Fail-closed heme validation: docking starts only after required checks pass
-- Receptor PDB, scores, individual poses, hydrogenated poses, diagrams, and complete result archives
-- Optional local ADMET-AI analysis
-- No hosted-server runtime or storage restrictions
+Docking runs locally, but optional services can still send or retrieve data over the internet: RCSB downloads, PubChem searches, PoseView diagrams, and first-use engine downloads. Review these options before using confidential structures.
 
-### Linux (Ubuntu/Debian)
+### Linux: Ubuntu/Debian
+
+Install Python 3.11 and its virtual-environment package from a source appropriate for your Linux distribution, then install the system dependencies:
 
 ```bash
 sudo apt update
-sudo apt install -y \
-  python3.11 \
-  python3.11-venv \
-  openbabel \
-  libcairo2-dev \
-  libpango1.0-dev \
-  libpangocairo-1.0-0
+sudo apt install -y openbabel libcairo2-dev libpango1.0-dev libpangocairo-1.0-0
 
 git clone https://github.com/nyelidl/anyone-docking-local.git
 cd anyone-docking-local
@@ -125,7 +129,6 @@ streamlit run app.py
 ### macOS
 
 ```bash
-brew update
 brew install python@3.11 open-babel cairo pango
 
 git clone https://github.com/nyelidl/anyone-docking-local.git
@@ -139,372 +142,292 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-> **Apple Silicon (M1-M4):** supported with the native `aarch64` Vina binary.
+Vina supports Apple Silicon through a native `aarch64` binary. Availability of other engines differs by platform.
 
 ### Windows
 
-**Recommended:** use WSL2 with Ubuntu and follow the Linux instructions above.
+**Recommended:** use WSL2 with Ubuntu and follow the Linux workflow.
 
-For native Windows:
+For native Windows, install Python 3.10+ and Open Babel, add Open Babel to `PATH`, and provide Cairo/Pango if required by diagram export. Then:
 
-1. Install Open Babel and add it to `PATH`.
-2. Install Cairo/Pango, for example with `conda install -c conda-forge cairo pango`.
-3. Clone and run the app:
-
-```bash
+```powershell
 git clone https://github.com/nyelidl/anyone-docking-local.git
 cd anyone-docking-local
 python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
 ---
+
+## 🦾 Flexible docking: selected receptor side chains
+
+Flexible docking allows **selected receptor side chains and the ligand to move during Vina docking**. The protein backbone and unselected receptor atoms remain fixed. It is not whole-protein flexibility or molecular dynamics.
+
+### Online and Local
+
+1. Enable **Allow selected protein side chains to move**.
+2. Select residues by **chain and residue number**. Yellow tags correspond to yellow sticks in the 3D view.
+3. Click **Prepare Receptor**. The app checks the prepared flexible files against your selection.
+4. Confirm **Flexible docking ready**, then run Single Dock, Batch Dock, or Co-Dock.
+5. Inspect the selected pose's saved receptor conformation in the result viewers. A completed flexible single-docking run shows **Docking complete · Flexible docking**.
+
+- **Disabled:** rigid receptor docking.
+- **Enabled with no selection:** preparation stops and asks for residues.
+- **Selection/prepared-file mismatch:** docking is blocked until the receptor is prepared again.
+- **Online limit:** up to three selected flexible residues. Local and CLI do not impose that same fixed cap.
+- Missing side-chain atoms, alternative locations, disulfide cysteines, and metal-coordinating selected side chains can prevent flexible preparation.
+
+The updated Online/Local animation pairs each ligand pose with its saved receptor frame. The pose selector and pocket view use the matching receptor, with selected flexible residues highlighted yellow. A similar rotamer across poses can be a valid result; visible movement is not guaranteed.
+
+Flexible outputs include the original combined Vina PDBQT, ligand-only outputs, pose-specific receptor/complex PDBs, and a provenance manifest. These files require further preparation before MD simulations.
+
+---
+
 ## ⌨️ ACD CLI
 
-**Best for:** automation, reproducible research, scripting, servers, and large screening projects.
+**Best for:** automation, reproducible scripts, servers, batch screening, redocking, and receptor ensembles.
 
-- Commands for docking, ligand batch docking, receptor-ensemble docking, receptor preparation, ligand preparation, redocking, and diagrams
-- Accepts PDB IDs or local PDB/mmCIF structures
-- Accepts SMILES, PubChem names, SDF, MOL2, and PDB ligands
-- Automatic co-crystal, manual, selection-based, and blind-docking boxes
-- No artificial docking-box size limit
-- Preparation-only mode without starting Vina
-- Prepared-receptor JSON export and reuse
-- pH-aware, tautomer-aware ligand preparation using pKaNET
-- Microstate selection and configurable tautomer limits
-- Deterministic conformer and Vina random seeds
-- AutoDock Vina exhaustiveness, pose count, and energy-range controls
-- Batch-safe noninteractive operation
-- Protein-ensemble docking from receptor files, directories, glob patterns, or PDB IDs
-- Independent preparation, box generation, and heme/Compound-I validation for every ensemble member
-- Per-receptor failure isolation with combined raw-score and statistical summary CSV files
-- Automatic co-crystal redocking and heavy-atom RMSD verdicts
-- Validated ferric-heme and Compound-I preparation
-- RESP charge assignment and final PDBQT validation
-- Multi-heme-center support
-- PDBQT, SDF, bond-order-corrected SDF, PDB, CSV, and SVG output
-- Eight interaction classes, including hydrogen bonding, hydrophobic, aromatic, ionic, halogen, and metal/heme coordination
-- Python API access for integration into custom pipelines
+### Install
 
-### Install from PyPI
+Use **Python 3.10 or newer**; Python 3.11 is a practical choice. Open Babel and relevant system libraries must be installed separately.
 
 ```bash
-pip install anyonecandock
+python -m pip install --upgrade anyonecandock
+acd --version
+acd --help
 ```
+
+Installing the Python package does not install CUDA, OpenCL drivers, or every scientific system dependency. Vina, VinaXB, and GNINA are downloaded on first use on supported platforms. **Vina-GPU is not included in the current standard CLI release**; it remains available through the Colab workflow.
 
 ### Commands
 
 ```text
 acd <command> [options]
 
-  dock      Full pipeline: receptor + ligand + Vina (single ligand)
-  redock    Self-docking validation; no SMILES input needed
-  batch     Dock multiple ligands against one receptor
-  ensemble  Dock multiple ligands against multiple receptor conformations
-  receptor  Prepare receptor only
-  ligand    Prepare ligand only
-  diagram   Generate a 2D interaction diagram SVG
+  dock      Prepare and dock one ligand
+  redock    Re-dock a selected co-crystal ligand and calculate RMSD
+  batch     Dock ligands independently against one receptor
+  codock    Dock multiple ligands together in one joint Vina search
+  ensemble  Dock a ligand library against multiple receptor conformations
+  receptor  Prepare a receptor and save reusable preparation metadata
+  ligand    Prepare a ligand without docking
+  diagram   Generate a 2D interaction diagram
 ```
 
 ### Quick examples
 
 ```bash
-# Dock a single ligand by compound name
-acd dock --receptor 1M17 --compound erlotinib
+# Dock by PubChem compound name
+acd dock --receptor 1M17 --compound erlotinib --ph 7.4 --output ./erlotinib_dock
 
-# Dock by SMILES
-acd dock --receptor 4AGN --smiles "CCO" --name ethanol
-
-# Reuse a prepared receptor
-acd dock --receptor-json ./rec/receptor_summary.json --compound baicalein
-
-# Dock from local structure files
+# Dock a local ligand file
 acd dock --receptor structure.cif --ligand-file ligand.sdf --name mylig
 
-# Self-docking validation
+# Validate a setup by co-crystal redocking
 acd redock --receptor 4AGN
-acd redock --receptor structure.cif --fmt CIF
-acd redock --receptor 4AGN --resname DC3 --diagram
 
-# Batch docking
+# Prepare a receptor once and reuse it
+acd receptor --pdb 1M17 --output ./rec_1m17
+acd dock --receptor-json ./rec_1m17/receptor_summary.json --compound erlotinib
+
+# Batch docking: one SMILES [name] per line in compounds.smi
 acd batch --receptor 1M17 --ligands compounds.smi
-acd batch --receptor 4AGN --smiles-list "CCO ethanol" "c1ccccc1O phenol"
 
-# Receptor-ensemble docking
+# Choose an engine: Vina is the default when -e/--engine is omitted
+acd dock --receptor 1M17 --compound erlotinib -e vina
+acd dock --receptor 1M17 --compound erlotinib -e vinaxb
+acd dock --receptor 1M17 --compound erlotinib -e gnina
+
+# Dock against multiple receptor conformations
 acd ensemble --receptors "ensemble/*.pdb" --ligands compounds.smi --seed 42
-
-# Ensemble docking with aligned receptors and a shared box
-acd ensemble \
-  --receptors model1.pdb model2.cif model3.pdb \
-  --ligands compounds.smi \
-  --center manual --cx 14.2 --cy -3.8 --cz 22.1 \
-  --bx 22 --by 22 --bz 22 \
-  --seed 42 \
-  --output ./ensemble_screen
 ```
+
+### Co-Dock: one ligand option, several input formats
+
+Use `--ligand` for compound names, inline SMILES, structure files, a `.smi` file, or a mixture. Quote names containing spaces and quote each inline `SMILES name` entry.
+
+```bash
+# Compound names: resolved through PubChem
+acd codock --receptor 1M17 --ligand aspirin baicalein
+
+# Inline SMILES with labels
+acd codock --receptor 1M17 --ligand "CCO ethanol" "c1ccccc1O phenol"
+
+# Structure files
+acd codock --receptor protein.pdb --ligand ligand1.sdf ligand2.pdbqt
+
+# A .smi file containing at least two ligands
+acd codock --receptor 1M17 --ligand pair.smi
+
+# Mix input types
+acd codock --receptor 1M17 --ligand "CCO ethanol" aspirin ligand3.sdf
+```
+
+These are input-format examples, not claims that the compounds bind the selected target.
+
+### Flexible docking: CLI 1.4.1
+
+Requires the 1.4.1 source/release package until that version is published to PyPI:
+
+```bash
+acd dock --receptor 1M17 --compound erlotinib \
+  --engine vina --flex-residues "A:702,A:764" --save-poses
+```
+
+Use residue identifiers present in your structure and review the binding pocket before selecting them. `--flex-residues` is also available for receptor preparation, batch, Co-Dock, redock, and ensemble workflows. Unsupported engines reject flexible inputs.
 
 ### Receptor ensembles
 
-The `ensemble` workflow accepts local PDB/mmCIF files, directories, quoted glob patterns, and four-character PDB IDs. It runs the established ACD batch workflow independently for every receptor, so receptor preparation and validation are never shared or bypassed between conformations.
+`ensemble` accepts receptor files, directories, quoted glob patterns, or PDB IDs. Every receptor is prepared independently; failed preparations are recorded without silently bypassing validation. A shared manual box requires receptors aligned in the same coordinate frame.
 
-For heme-containing structures, each ensemble member independently undergoes ferric-heme or Compound-I detection, Fe-S/Fe-O geometry validation, RESP assignment, and final PDBQT reread validation. A receptor that fails preparation or geometry validation is recorded and skipped rather than passed to Vina.
-
-Use automatic or selection-based centering when each receptor requires its own box. A shared manual box should be used only when all receptor conformations are structurally aligned in the same coordinate frame.
+Typical summary outputs are:
 
 ```text
 ensemble_screen/
-  001_model1/                 Complete batch output for receptor 1
-  002_model2/                 Complete batch output for receptor 2
-  ensemble_receptors.csv      Receptor preparation and run status
-  ensemble_scores.csv         All receptor-ligand score rows
-  ensemble_summary.csv        Best, mean, median, and population SD per ligand
+  001_model1/
+  002_model2/
+  ensemble_receptors.csv
+  ensemble_scores.csv
+  ensemble_summary.csv
 ```
 
-The ensemble statistics are transparent ranking aids. They are not population-weighted thermodynamic binding energies.
+Summary statistics are ranking aids, not population-weighted binding free energies.
 
-### Redocking verdict
+### Redocking RMSD
 
-The `redock` workflow automatically identifies and re-docks the co-crystal ligand. SMILES are obtained in this order:
+ACD compares the re-docked ligand with its crystal coordinates using heavy-atom RMSD:
 
-1. RCSB Chemical Component Dictionary (CCD)
-2. CIF `_chem_comp.pdbx_smiles`
-3. 3D coordinate conversion as a fallback
+- **PASS:** ≤2.0 Å
+- **BORDERLINE:** >2.0 to 3.0 Å
+- **FAIL:** >3.0 Å
 
-The heavy-atom RMSD verdict is reported automatically:
+These are pose-recovery thresholds, not proof of experimental affinity or general validity for every ligand.
 
-- **PASS:** RMSD <= 2.0 Å
-- **BORDERLINE:** RMSD > 2.0 Å and <= 3.0 Å
-- **FAIL:** RMSD > 3.0 Å
-
-### Python API
-
-```python
-from anyonecandock import core
-
-SEED = 72
-BOX_SIZE = (18, 18, 18)
-vina_bin = "/path/to/vina"
-
-result = core.prepare_receptor(
-    raw_pdb="raw.pdb",
-    wdir="./rec",
-    box_size=BOX_SIZE,
-)
-
-lig = core.prepare_ligand(
-    smiles="c1ccc(cc1)O",
-    name="phenol",
-    ph=7.4,
-    wdir="./lig",
-    mode="pkanet",
-    use_pubchem=False,
-    max_tautomers=8,
-    ph_window=1.0,
-    conformer_seed=SEED,
-)
-
-dock = core.run_vina(
-    receptor_pdbqt=result["rec_pdbqt"],
-    ligand_pdbqt=lig["pdbqt"],
-    config_txt=result["config_txt"],
-    vina_path=vina_bin,
-    exhaustiveness=16,
-    n_modes=10,
-    energy_range=3,
-    seed=SEED,
-    wdir="./out",
-    out_name="phenol",
-)
-
-print("Top score:", dock["top_score"])
-```
+For complete options, use `acd <command> --help`. Python workflows can also use `from anyonecandock import core`.
 
 ---
 
 ## 📓 ACD Google Colab
 
-**Best for:** workshops, education, portable research, and GPU docking without local setup.
-
-- Guided notebook workflow with step-by-step preparation and analysis
-- Upload PDB/mmCIF structures or download them from RCSB
-- Receptor and pH-aware ligand preparation
-- Validated ferric-heme and Compound-I handling
-- Four supported docking engines:
-  - AutoDock Vina 1.2.7
-  - VinaXB
-  - GNINA
-  - Vina-GPU 2.1
-- Google T4 GPU support for Vina-GPU
-- Co-crystal redocking before production docking
-- Interactive ligand and pose selection
-- Binding-box validation
-- Heavy-atom RMSD analysis across poses
-- Engine-aware score extraction
-- Ranked CSV results and score plots
-- Individual result download or complete ZIP packaging
-- Mobile- and tablet-friendly result export
-- No additional `prepare_receptor.py` upload required; required preparation logic is included in the notebook/package
+**Best for:** workshops, education, portable research, and compatible GPU docking without local installation.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing)
 
----
+### Notebook workflow
 
-## 📊 Choose Your Version
+0. Run **Install Conda Colab**, **Install Dependencies and Docking Engines**, and **Import Modules & Verify Tools**. Follow any runtime-restart instructions.
+1. Download or upload the receptor, choose the pocket, and prepare the receptor and ligands.
+2. Select an engine and run docking.
+3. Inspect scores, poses, RMSD, and interaction analysis.
+4. Optionally run the configured Gemini interpretation and download the results.
 
-| Capability | Online | Local | CLI | Colab |
-|---|---:|---:|---:|---:|
-| Graphical workflow | Yes | Yes | No | Notebook |
-| No local installation | Yes | No | No | Yes |
-| Basic docking | Yes | Yes | Yes | Yes |
-| Batch docking | Yes | Yes | Yes | Yes |
-| AutoDock Vina | Yes | Yes | Yes | Yes |
-| VinaXB, GNINA, and Vina-GPU | No | No | No | Yes |
-| Automated scripting | No | No | Yes | Partial |
-| Interactive Pose Browser | Yes | Yes | File output | Yes |
-| ADME/ADMET analysis | Yes | Yes | Optional tools | No |
-| Strict ferric/Compound-I validation | Yes | Yes | Yes | Yes |
-| Private local processing | No | Yes | Yes | Colab runtime |
+### Features
 
----
+- **Four engines:** Vina 1.2.7, VinaXB, GNINA, and Vina-GPU 2.1
+- Vina-GPU setup occurs on first use in the docking step and is reused within the same runtime
+- Optional Vina receptor side-chain flexibility, configured during receptor preparation
+- Co-crystal redocking, batch docking, and joint Co-Dock
+- **1–10 iterative runs:** one run by default; repeated-run analysis uses each ligand's top-pose score per run in box plots
+- 3D pose inspection, heavy-atom RMSD analysis, and engine-aware score extraction
+- ProLIF interaction analysis, ranked CSVs, selected-pose exports, and ZIP downloads
+- Optional **automatic Gemini interpretation** when enabled and configured; API access/credentials may be required
 
-## 🧬 Heme-aware docking
-
-ACD Local, CLI, and Colab support validated preparation of ferric heme and Compound-I systems.
-
-For supported heme centers, ACD can:
-
-- Detect `HEME_FERRIC` versus `CPD_I` from local Fe coordination geometry
-- Identify a ferryl oxygen geometrically rather than relying only on atom names
-- Recognize ferryl oxygen labels such as `O`, `O1`, `OXY`, or `OXO`
-- Identify the proximal cysteine sulfur geometrically
-- Validate Fe-O and Fe-S distances before docking
-- Remove an incorrectly retained O-H hydrogen from the ferryl oxygen
-- Apply JSON-derived RESP charges to Fe, OXO, the heme group, and proximal cysteine
-- Re-read the final PDBQT and validate required charges before docking
-- Fail closed if required heme-state checks do not pass
-- Handle multiple heme centers in CLI workflows
+Gemini summarizes the computed outputs; it does not perform the docking or establish experimental binding. The notebook's latest viewer behavior can differ from the separate Colab-hosted web interface. GPU and engine availability depend on the allocated Colab runtime.
 
 ---
 
-## 🗺️ Interaction analysis
+## 🧬 Heme, metals, and receptor limitations
 
-ACD supports eight interaction classes in its geometry-based analysis, including:
+ACD includes preparation checks for supported ferric-heme and Compound-I centers, including geometry-based ferryl oxygen/proximal cysteine identification, Fe–O/Fe–S distance checks, removal of inappropriate ferryl O–H hydrogen, JSON-derived RESP charges, and final PDBQT validation. Required checks must pass before a supported heme workflow proceeds.
 
-- Hydrogen bonds
-- Hydrophobic contacts
-- Aromatic interactions
-- Cation-pi interactions
-- Ionic interactions
-- Metal/heme coordination
-- Halogen bonds
-- H···halogen contacts
+Common metal ions and selected cofactors can be retained during preparation. This does **not** imply that standard Vina uses a full metal coordination force field, 12-6-4 polarization potential, or a reactive heme model. Inspect coordination, protonation, oxidation state, and retained cofactors for your system.
 
-Depending on the interface, results can also be visualized with **RDKit**, **ProLIF**, and **PoseView**.
-
----
-
-## 🧬 Supported protein types
-
-| Protein class | Support | Notes |
-|---|---|---|
-| Standard single-chain proteins | ✅ Full | Primary use case |
-| Multi-chain / homo-oligomers | ✅ Full | Multi-chain structures supported |
-| Heme proteins | ✅ Full | Ferric heme and Compound-I supported in Local/CLI/Colab |
-| Metal-binding proteins | ✅ Full | Common metal ions can be retained during preparation |
-| MD simulation outputs | ✅ Full | PDB structures from common MD workflows can be used |
-| Non-standard ligand names | ✅ Full | Ligand-like HETATM records can be detected |
-| Modified amino acids | ✅ Full | Supported when retained as part of the receptor |
-| Multiple co-crystal ligands | ✅ Full | Ligand selection supported |
-| Cofactor-binding proteins | ✅ Full | Cofactors can be retained or removed as appropriate |
-| RNA / DNA targets | ⚠️ Partial | No nucleic-acid-specific interaction model |
-| Covalent docking | ❌ No | Standard Vina docking is non-covalent |
+| Structure or workflow | Practical guidance |
+|---|---|
+| Single- or multi-chain proteins | Supported; check that the required chains are retained. |
+| Multiple bound ligands | Select the intended reference ligand and pocket. |
+| Missing residues/atoms | Inspect pocket completeness and rebuild problematic regions where necessary. |
+| Modified residues or unusual cofactors | Preparation depends on available templates and atom typing; inspect the logs. |
+| MD-derived receptor snapshots | Use suitable PDB snapshots; align them before applying a shared manual box. |
+| RNA/DNA targets | No dedicated nucleic-acid preparation or interaction model is claimed. |
+| Covalent docking | Not provided by the standard non-covalent workflow. |
 
 ---
 
-## 🤖 AI interfaces
+## 🗺️ Understanding results
 
-AI interfaces are optional front ends to ACD rather than separate docking engines.
+- **Docking affinity (kcal/mol):** a scoring-function estimate. More negative Vina scores are generally more favorable within a comparable setup.
+- **RMSD (Å):** a coordinate difference whose meaning depends on the reference. RMSD versus the crystal ligand measures pose recovery; Vina's reported lower/upper bounds compare against its best pose.
+- **Predicted pose:** a candidate binding arrangement, not an experimentally observed complex.
+- **Interactions:** geometry-based contacts or tool-specific assignments. A close contact alone is not proof of a hydrogen bond.
+- **Flexible poses:** inspect the matching receptor/complex file; do not combine the ligand with an unrelated starting receptor.
+- **Co-Dock:** the score belongs to the joint ligand configuration; it is not an individual affinity for each ligand.
+
+Depending on the interface, diagrams use ACD, RDKit, ProLIF, or PoseView. ACD's geometric analysis includes hydrogen bonds, hydrophobic, aromatic, cation–π, ionic, metal/heme, halogen, and H···halogen contact categories.
+
+**Scientific caution:** docking scores do not prove experimental binding affinity, inhibition, selectivity, or biological activity. Scores from different engines or preparation protocols should not be treated as directly interchangeable.
+
+---
+
+## 🤖 Optional AI interfaces
+
+AI interfaces orchestrate the existing ACD backend; they are not separate docking engines.
 
 ### Anyone Can Dock GPT
 
-Ask ChatGPT to dock molecules using natural-language instructions.
+[Open Anyone Can Dock GPT →](https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt)
 
-[![ChatGPT](https://img.shields.io/badge/ChatGPT-Anyone_Can_Dock_GPT-10a37f?logo=openai&logoColor=white)](https://chatgpt.com/g/g-6a0455faa96481918503be2b696e13ce-anyone-can-dock-gpt)
+[Watch the docking walkthrough →](https://youtu.be/nic3YhyMyTE)
 
-**How to do:** [https://scribehow.com/o/an3IFiDaRtmZANATDZDBFg/viewer/How_to_Dock_Gefitinib_to_PDB_1M17__mrZrG5ZmTbSab6g-FxdVRQ](https://scribehow.com/embed-preview/How_to_Dock_Gefitinib_to_PDB_1M17__mrZrG5ZmTbSab6g-FxdVRQ?as=video&size=flexible&voice=marin&scaleMode=contain)
+### MCP clients
 
-### Anyone Can Dock in Claude
-
-Connect Claude to the ACD API as a custom MCP connector.
-
-**MCP server URL:**
+Compatible clients, including configured ChatGPT and Claude connections, can use the same ACD MCP service:
 
 ```text
-https://anyone-can-dock-mcp.anyonecandock.workers.dev
+https://anyone-can-dock-mcp.anyonecandock.workers.dev/mcp
 ```
 
-[![Add to Claude](https://img.shields.io/badge/Claude-Add_Anyone_Can_Dock-cc7b4b?logo=anthropic&logoColor=white)](https://claude.ai/customize/connectors)
+Availability depends on the client's account, connector permissions, and supported features. Connecting an MCP server does not automatically make a plugin publicly searchable.
 
-Example prompts:
+Example request:
 
 ```text
-"dock quercetin into JAK2 and report binding affinity"
-"compare erlotinib vs gefitinib binding to EGFR (1M17)"
+Dock erlotinib against PDB 1M17 at pH 7.4 using the co-crystal ligand to define the pocket.
 ```
 
----
-
-## 💻 Platform compatibility
-
-| Platform | Vina binary | Open Babel | Status |
-|---|---|---|---|
-| Linux x86_64 | Auto-download | `apt install openbabel` | Fully supported |
-| macOS Intel | Auto-download | `brew install open-babel` | Fully supported |
-| macOS Apple Silicon | Native `aarch64` | `brew install open-babel` | Fully supported |
-| Windows x86_64 | Auto-download | Installer / WSL2 | Supported; WSL2 recommended |
-| Streamlit Cloud | Auto-download | via `packages.txt` | Fully supported |
-| Google Colab | Auto-download | `apt install openbabel` | Fully supported |
+The workflow should resolve the compound through PubChem, scan the actual receptor's bound ligands, select an exact returned reference-ligand key, submit a docking job, and retrieve its status/results. Do not invent ligand keys, structures, scores, contacts, or box coordinates.
 
 ---
 
 ## 📄 Citation
 
-If you use ACD in research, please cite the relevant methods used in your workflow.
+Cite ACD and the methods actually used in your workflow:
 
-> **Anyone Can Dock: An Online Molecular Docking Tool for Everyone**  
-> Hengphasatporn, K.; Bunchuay T.; Duan, L.; Shigeta, Y., *J. Cheminformatics.*, 2026. DOI: [10.1186/s13321-026-01306-2](https://doi.org/10.1186/s13321-026-01306-2)
+- **Anyone Can Dock: An Online Molecular Docking Tool for Everyone.** Hengphasatporn, K.; Bunchuay, T.; Duan, L.; Shigeta, Y. *Journal of Cheminformatics*, 2026. [DOI: 10.1186/s13321-026-01306-2](https://doi.org/10.1186/s13321-026-01306-2)
+- **AutoDock Vina 1.2.0: New Docking Methods, Expanded Force Field, and Python Bindings.** Eberhardt et al. *Journal of Chemical Information and Modeling*, 2021. [DOI: 10.1021/acs.jcim.1c00203](https://doi.org/10.1021/acs.jcim.1c00203)
+- **DFDD.** Hengphasatporn, K.; Duan, L.; Harada, R.; Shigeta, Y. *Journal of Chemical Information and Modeling*, 2026. [DOI: 10.1021/acs.jcim.5c02852](https://doi.org/10.1021/acs.jcim.5c02852)
+- **RDKit:** [rdkit.org](https://www.rdkit.org/)
+- **ProDy:** Bakan et al. *Bioinformatics*, 2011. [DOI: 10.1093/bioinformatics/btr168](https://doi.org/10.1093/bioinformatics/btr168)
+- **stmol:** Nápoles-Duarte et al. *Frontiers in Molecular Biosciences*, 2022. [DOI: 10.3389/fmolb.2022.990846](https://doi.org/10.3389/fmolb.2022.990846)
+- **Dimorphite-DL:** Ropp et al. *Journal of Cheminformatics*, 2019. [DOI: 10.1186/s13321-019-0336-9](https://doi.org/10.1186/s13321-019-0336-9)
+- **Gemmi:** Wojdyr, M. *Journal of Open Source Software*, 2022. [DOI: 10.21105/joss.04200](https://doi.org/10.21105/joss.04200)
+- **pKaNET Cloud:** cite the corresponding manuscript when available.
 
-> **AutoDock Vina 1.2.7**  
-> Eberhardt et al., *J. Chem. Inf. Model.*, 2021. DOI: [10.1021/acs.jcim.1c00203](https://doi.org/10.1021/acs.jcim.1c00203)
-
-> **DFDD**  
-> Hengphasatporn, K.; Duan, L.; Harada, R.; Shigeta, Y., *J. Chem. Inf. Model.*, 2026. DOI: [10.1021/acs.jcim.5c02852](https://doi.org/10.1021/acs.jcim.5c02852)
-
-> **RDKit** · Landrum, G. (2023) · https://www.rdkit.org
-
-> **ProDy** · Bakan et al., *Bioinformatics*, 2011. DOI: [10.1093/bioinformatics/btr168](https://doi.org/10.1093/bioinformatics/btr168)
-
-> **stmol** · Nápoles-Duarte et al., *Front. Mol. Biosci.*, 2022. DOI: [10.3389/fmolb.2022.990846](https://doi.org/10.3389/fmolb.2022.990846)
-
-> **Dimorphite-DL** · Ropp et al., *J. Cheminform.*, 2019. DOI: [10.1186/s13321-019-0336-9](https://doi.org/10.1186/s13321-019-0336-9)
-
-> **pKaNET Cloud** · Please cite the corresponding manuscript when available.
-
-> **gemmi** *(optional, for CIF support)* · Wojdyr, M., *JOSS*, 2022. DOI: [10.21105/joss.04200](https://doi.org/10.21105/joss.04200)
+When using VinaXB, GNINA, Vina-GPU, Meeko, ProLIF, or PoseView, also cite the relevant software/method publication.
 
 ---
 
-## 📜 License
+## 📜 License and support
 
-MIT License — see [LICENSE](LICENSE) for details.
-[![Facebook](https://img.shields.io/badge/Facebook-Follow_Anyone_Can_Dock-1877F2?logo=facebook&logoColor=white)](https://www.facebook.com/anyonecandock/)
+ACD is distributed under the **MIT License**; see [LICENSE](LICENSE). Third-party engines and dependencies retain their own licenses.
 
----
-
-**Anyone Can Dock: from structure preparation to validated docking results, without making molecular docking harder than it needs to be.**
+- [Report an issue →](https://github.com/nyelidl/anyone-docking/issues)
+- [Follow ACD on Facebook →](https://www.facebook.com/anyonecandock/)
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" width="220">
+  <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" width="220" alt="Anyone Can Dock">
 </div>
+****
