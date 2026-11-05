@@ -4344,11 +4344,20 @@ def prolif_lignetwork_html(
     import io as _io
     plf, _mda, _py3Dmol, _Chem = _prolif_imports()
     rd_mols, plf_mols, idx = _prolif_pose_molecules_from_sdf(pose_sdf_path, pose_index)
+    try:
+        from .flexible_docking import receptor_for_mol
+    except ImportError:
+        from flexible_docking import receptor_for_mol
+    receptor_pdb = receptor_for_mol(receptor_pdb, rd_mols[idx])
     prot_pdb = _prolif_receptor_subset_path(receptor_pdb, [rd_mols[idx]])
     prot_mol = _prolif_protein_molecule(prot_pdb)
 
     fp = plf.Fingerprint(count=True)
-    fp.run_from_iterable(plf_mols, prot_mol, progress=False, n_jobs=1)
+    try:
+        from .flexible_docking import run_fingerprint
+    except ImportError:
+        from flexible_docking import run_fingerprint
+    run_fingerprint(fp, plf_mols, prot_mol, rd_mols, receptor_pdb, plf)
     ligplot = fp.plot_lignetwork(
         rd_mols[idx],
         kind="frame",
@@ -4419,7 +4428,11 @@ def prolif_barcode_png(
     prot_mol = _prolif_protein_molecule(prot_pdb)
 
     fp = plf.Fingerprint(count=True)
-    fp.run_from_iterable(ligands, prot_mol, progress=False, n_jobs=1)
+    try:
+        from .flexible_docking import run_fingerprint
+    except ImportError:
+        from flexible_docking import run_fingerprint
+    run_fingerprint(fp, ligands, prot_mol, rd_mols_all, receptor_pdb, plf)
 
     def _protein_residue_id(item):
         if isinstance(item, tuple) and len(item) >= 2:
@@ -4685,6 +4698,11 @@ def prolif_3d_view_html(
 ) -> dict:
     plf, _mda, py3Dmol, _Chem = _prolif_imports()
     rd_mols, plf_mols, idx = _prolif_pose_molecules_from_sdf(pose_sdf_path, pose_index)
+    try:
+        from .flexible_docking import receptor_for_mol
+    except ImportError:
+        from flexible_docking import receptor_for_mol
+    receptor_pdb = receptor_for_mol(receptor_pdb, rd_mols[idx])
     prot_pdb = _prolif_receptor_subset_path(receptor_pdb, [rd_mols[idx]])
     prot_mol = _prolif_protein_molecule(prot_pdb)
 
@@ -6108,3 +6126,11 @@ def draw_interaction_diagram_interactive(
     # Return minimal interactive HTML (full version in app.py _render_interactive_diagram)
     return json.dumps({"placements": residues_js, "W": W, "H": H,
                        "ligand_svg": lig_svg, "title": title})
+
+
+# Optional flexible receptor support; rigid workflows retain their original code paths.
+try:
+    from .flexible_docking import install as _install_flexible_docking
+except ImportError:
+    from flexible_docking import install as _install_flexible_docking
+_install_flexible_docking(globals())

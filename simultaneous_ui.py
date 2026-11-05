@@ -376,6 +376,9 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                 view = py3Dmol.view(width="100%", height=480)
                 view.setBackgroundColor(viewer_bg())
                 rec_pdb = st.session_state.get("m_receptor_fh")
+                rec_pdb = result.get("pose_receptors", {}).get(str(pose_idx + 1), rec_pdb)
+                if result.get("flexibility"):
+                    st.caption("Flexible receptor side chains: " + ", ".join(result["flexibility"]["residues"]))
                 model_offset = 0
                 if rec_pdb and Path(rec_pdb).is_file():
                     view.addModel(Path(rec_pdb).read_text(), "pdb")

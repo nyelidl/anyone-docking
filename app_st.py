@@ -1993,6 +1993,8 @@ def _render_binding_pocket_panel(
     Render the Binding Pocket View.
     show_cryst=False (default for figure) suppresses the co-crystal ligand overlay.
     """
+    from flexible_docking import receptor_for_mol
+    rec_fh = receptor_for_mol(rec_fh, mol)
     import py3Dmol
     from rdkit import Chem
     try:
@@ -2915,6 +2917,9 @@ def _ready_figure_section(
         _pv_svg_ = b_pv_svg;   _pv_png_ = b_pv_png
         _plot_fn = b_plot_draw_fn; _plot_n = b_plot_n
         _browsable_rtf = b_browsable
+
+    from flexible_docking import receptor_for_mol
+    _rec = receptor_for_mol(_rec, _mol)
 
     _capsule = (
         f"Pose {_p_idx + 1}  ·  {_lname}"
@@ -4498,6 +4503,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
         "structure or repair the missing residues before docking."
     )
 
+    from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
+    _flex_controls(st, _scan_path, pfx, online=True)
+    if st.session_state.get(pfx + "receptor_done"):
+        _flex_download(st, st.session_state.get(pfx + "receptor_pdbqt", ""), pfx)
+
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
 
         if src == "Download from RCSB":
@@ -4598,6 +4608,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
             except Exception as _be:
                 st.warning(f"⚠️ Could not compute blind docking box: {_be}")
 
+        try:
+            _flex_require(st, pfx, online=True)
+        except ValueError as _flex_error:
+            st.error(str(_flex_error))
+            st.stop()
         with st.spinner("⏳ Preparing receptor…"):
             result = prepare_receptor(
                 raw_pdb          = raw_path,
@@ -4609,6 +4624,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
                 hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
                 reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
+                flexible_residues = _flex_require(st, pfx, online=True),
             )
 
         if result["success"]:

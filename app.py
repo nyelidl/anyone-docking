@@ -1998,6 +1998,8 @@ def _render_binding_pocket_panel(
     Render the Binding Pocket View.
     show_cryst=False (default for figure) suppresses the co-crystal ligand overlay.
     """
+    from flexible_docking import receptor_for_mol
+    rec_fh = receptor_for_mol(rec_fh, mol)
     import py3Dmol
     from rdkit import Chem
     try:
@@ -2921,6 +2923,9 @@ def _ready_figure_section(
         _plot_fn = b_plot_draw_fn; _plot_n = b_plot_n
         _browsable_rtf = b_browsable
 
+    from flexible_docking import receptor_for_mol
+    _rec = receptor_for_mol(_rec, _mol)
+
     _capsule = (
         f"Pose {_p_idx + 1}  ·  {_lname}"
         + (f"  ·  {_score:.2f} kcal/mol" if _score is not None else "")
@@ -3018,6 +3023,9 @@ def _ready_figure_section(
         )
         _b_pi2 = max(0, min(_b_pi2, len(_b_mols2) - 1)) if _b_mols2 else 0
 
+        if _b_mols2:
+            from flexible_docking import receptor_for_mol
+            b_rec_fh = receptor_for_mol(b_rec_fh, _b_mols2[_b_pi2])
         _v3d_b_html = ""
         if _b_mols2:
             try:
@@ -4079,6 +4087,8 @@ def _poseview_ui(
 
 
 def _render_pose_structure(pose_mol, receptor_pdb, crystal_pdb):
+    from flexible_docking import receptor_for_mol
+    receptor_pdb = receptor_for_mol(receptor_pdb, pose_mol)
     import py3Dmol
     from rdkit import Chem
     try:
@@ -4138,6 +4148,12 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
                     )
             except Exception:
                 pass
+            from flexible_docking import parse_residues
+            for _flex_pfx in ("", "b_", "m_", "r_"):
+                if st.session_state.get(_flex_pfx + "receptor_fh") == receptor_pdb or (st.session_state.get(_flex_pfx + "prepared") or {}).get("rec_fh") == receptor_pdb:
+                    for _res in st.session_state.get(_flex_pfx + "flex_selection", []) if st.session_state.get(_flex_pfx + "flex_enabled") else []:
+                        _chain, _number = _res.split(":")
+                        v3.addStyle({"model": 0, "chain": "" if _chain == "_" else _chain, "resi": _number}, {"stick": {"color": "orange", "radius": 0.22}})
             mi += 1
 
         _box_mi   = None
@@ -4188,7 +4204,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
     import py3Dmol
     from core import run_cmd as _run_cmd
 
-    done     = st.session_state.get(pfx + "receptor_done", False)
+    done     = bool(st.session_state.get(pfx + "prepared")) if redock_mode else st.session_state.get(pfx + "receptor_done", False)
     card_cls = "step-card done" if done else "step-card"
 
     st.markdown(
@@ -4364,19 +4380,30 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                     st.slider(f"{axis} size", 10, 40, 18, 1, key=pfx + axis)
                     for axis in ("X", "Y", "Z")
                 )
+                st.markdown(f"Box volume: **{_redock_box[0] * _redock_box[1] * _redock_box[2]:,} Å³**")
                 st.caption("Default: 18 × 18 × 18 Å. The co-crystal ligand sets the box center.")
             receptor_setup(st, _redock_core, wdir, pfx, src, pdb_id, upload_file, box=_redock_box)
             _prepared = st.session_state.get(pfx + "prepared")
             _inspection = st.session_state.get(pfx + "inspection")
             if _prepared and _inspection and _inspection.get("ready"):
-                with col_b:
-                    _render_receptor_setup(
-                        _prepared["rec_fh"], _prepared.get("box_pdb"),
-                        _inspection["reference_path"],
-                        tuple(_prepared[k] for k in ("cx", "cy", "cz")),
-                        tuple(_prepared[k] for k in ("sx", "sy", "sz")),
-                    )
+                _redock_source = pdb_id or (Path(upload_file.name).stem if upload_file else "Uploaded structure")
+                _redock_center = f"Center ({_prepared['cx']:.2f}, {_prepared['cy']:.2f}, {_prepared['cz']:.2f})"
+                _redock_size = f"Box {_prepared['sx']}x{_prepared['sy']}x{_prepared['sz']} A"
+                st.markdown(
+                    f"{_pill('Receptor ready', 'success')} {_pill(_redock_source)} "
+                    f"{_pill(_redock_center)} {_pill(_redock_size)}",
+                    unsafe_allow_html=True,
+                )
+                with st.expander("📋 Preparation log", expanded=False):
+                    st.code("\n".join(_prepared.get("log", [])))
+                _render_receptor_setup(
+                    _prepared["rec_fh"], _prepared.get("box_pdb"),
+                    _inspection["reference_path"],
+                    tuple(_prepared[k] for k in ("cx", "cy", "cz")),
+                    tuple(_prepared[k] for k in ("sx", "sy", "sz")),
+                )
             st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
             return
 
         center_mode = st.radio(
@@ -4397,7 +4424,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             ),
         )
         # ── Receptor setup panel + HETATM action guide (combined) ────────
-        with st.expander("⚗️ Receptor setup panel", expanded=False):
+        with st.expander("⚗️ Receptor setup panel", expanded=True):
             st.caption(
                 "Select the co-crystal small molecule used to define the binding site. "
                 "The selected ligand is removed from the receptor but used to center the grid. "
@@ -4675,6 +4702,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
         st.session_state[{"b_": "b_batch_done", "m_": "m_joint_done"}.get(pfx, "docking_done")] = False
         st.session_state[pfx + "assessment_settings"] = _assessment_settings
 
+    from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
+    _flex_controls(st, _scan_path, pfx, online=True)
+    if st.session_state.get(pfx + "receptor_done"):
+        _flex_download(st, st.session_state.get(pfx + "receptor_pdbqt", ""), pfx)
+
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
         (wdir / "pocket_completeness.json").unlink(missing_ok=True)
 
@@ -4779,6 +4811,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             except Exception as _be:
                 st.warning(f"⚠️ Could not compute blind docking box: {_be}")
 
+        try:
+            _flex_require(st, pfx, online=True)
+        except ValueError as _flex_error:
+            st.error(str(_flex_error))
+            st.stop()
         with st.spinner("⏳ Preparing receptor…"):
             result = prepare_receptor(
                 raw_pdb          = raw_path,

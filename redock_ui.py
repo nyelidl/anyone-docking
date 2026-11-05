@@ -129,7 +129,9 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
             elif not inspection.get('ready'):
                 st.warning(inspection['message'])
 
-        settings = (inspection or {}).get('source_sha256'), tuple(box)
+        from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
+        _flex_controls(st, (inspection or {}).get('scoped_path') or path, pfx, online=True)
+        settings = ((inspection or {}).get('source_sha256'), tuple(box), st.session_state.get(pfx + 'flex_signature'))
         if st.session_state.get(pfx + 'prepared_settings') != settings:
             st.session_state.pop(pfx + 'prepared', None)
             st.session_state.pop(pfx + 'result', None)
@@ -144,7 +146,8 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                     result = core.prepare_receptor(raw_pdb=inspection['scoped_path'], wdir=out,
                                                    center_mode='auto', box_size=box,
                                                    hetatm_policy=inspection['hetatm_policy'],
-                                                   reference_hetatm_key=inspection['ligand']['key'])
+                                                   reference_hetatm_key=inspection['ligand']['key'],
+                                                   flexible_residues=_flex_require(st, pfx, online=True))
                 if not result.get('success'):
                     raise ValueError(result.get('error', 'Receptor preparation failed.'))
                 if hashlib.sha256(Path(inspection['reference_path']).read_bytes()).hexdigest() != inspection['reference_sha256']:
@@ -159,6 +162,8 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                 st.session_state[pfx + 'prepared_settings'] = settings
             except Exception as exc:
                 st.error(str(exc))
+        if st.session_state.get(pfx + 'prepared'):
+            _flex_download(st, st.session_state[pfx + 'prepared']['rec_pdbqt'], pfx, result_root=wdir)
     return inspection
 
 
@@ -179,7 +184,8 @@ def render_results(st, core, result, prepared, show_pose, pfx='r_'):
     st.write(f"Pose **{rank}** · Affinity **{row.get('affinity')} kcal/mol** · RMSD **{row['rmsd'] if row['rmsd'] is not None else 'unavailable'} Å**")
     mols = core.load_mols_from_sdf(result['sdf'], sanitize=False)
     mol = mols[rank - 1]
-    show_pose(mol, prepared['rec_fh'], result['reference'])
+    from flexible_docking import receptor_for_mol
+    show_pose(mol, receptor_for_mol(prepared['rec_fh'], mol), result['reference'])
     st.download_button('⬇ Selected pose SDF', Chem.MolToMolBlock(mol) + '\n$$$$\n',
                        file_name=f'redock_pose{rank}.sdf', key=pfx + 'sdf_download')
     st.download_button('⬇ Selected pose PDB', Chem.MolToPDBBlock(mol),
