@@ -205,7 +205,7 @@ def render_results(st, core, result, prepared, show_pose, pfx='r_'):
 
 
 def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
-    st.markdown('### Step 2 — Redock the extracted ligand')
+    st.markdown('### Redock the selected crystal ligand')
     inspection = st.session_state.get(pfx + 'inspection')
     prepared = st.session_state.get(pfx + 'prepared')
     ph = st.number_input('pH', min_value=0.0, max_value=14.0, value=7.4, key=pfx + 'ph')
@@ -240,7 +240,7 @@ def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
     if blocked:
         st.error('Redocking blocked: rebuild and validate the missing region near the binding site, then prepare the receptor again.')
     if not ready:
-        st.caption('Redock becomes available after an eligible structure has been prepared.')
+        st.caption('Redock becomes available after preparing the shared receptor with an eligible crystal reference ligand.')
     result = st.session_state.get(pfx + 'result')
     if result and prepared:
         st.caption('Completed-run parameters: ' + json.dumps(result['settings']))

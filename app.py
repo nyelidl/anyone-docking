@@ -4149,7 +4149,7 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
             except Exception:
                 pass
             from flexible_docking import parse_residues
-            for _flex_pfx in ("", "b_", "m_", "r_"):
+            for _flex_pfx in ("shared_", "", "b_", "m_", "r_"):
                 if st.session_state.get(_flex_pfx + "receptor_fh") == receptor_pdb or (st.session_state.get(_flex_pfx + "prepared") or {}).get("rec_fh") == receptor_pdb:
                     for _res in st.session_state.get(_flex_pfx + "flex_selection", []) if st.session_state.get(_flex_pfx + "flex_enabled") else []:
                         _chain, _number = _res.split(":")
@@ -4696,6 +4696,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
         st.session_state.get(pfx + "reference_hetatm_key"), center_mode, sx, sy, sz, blind,
         tuple(st.session_state.get(pfx + k) for k in ("mx", "my", "mz", "mda_sel")),
         repr(sorted(st.session_state.get(pfx + "hetatm_policy", {}).items())),
+        repr(sorted(st.session_state.get(pfx + "heme_states", {}).items())),
     )
     if st.session_state.get(pfx + "assessment_settings") != _assessment_settings:
         st.session_state[pfx + "receptor_done"] = False
@@ -4704,8 +4705,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
 
     from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
     _flex_controls(st, _scan_path, pfx, online=True)
-    if st.session_state.get(pfx + "receptor_done"):
-        _flex_download(st, st.session_state.get(pfx + "receptor_pdbqt", ""), pfx)
+    if st.session_state.get(pfx + "receptor_done") and pfx != "shared_":
+        _flex_download(st, st.session_state.get(pfx + "receptor_pdbqt", ""), pfx, result_root=wdir.parent if pfx == "shared_" else wdir)
 
     if st.button("▶ Prepare Receptor", key=pfx + "btn_receptor", type="primary"):
         (wdir / "pocket_completeness.json").unlink(missing_ok=True)
@@ -4731,7 +4732,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             _up_ext  = Path(upload_file.name).suffix.lower()
             raw_path = str(wdir / ("raw.cif" if _up_ext in (".cif", ".mmcif") else "raw.pdb"))
             with open(raw_path, "wb") as f:
-                f.write(upload_file.read())
+                f.write(upload_file.getvalue())
             st.session_state[pfx + "pdb_token"] = Path(upload_file.name).stem
 
         st.session_state[pfx + "receptor_done"] = False
@@ -4741,7 +4742,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
         try:
             from prody import parsePDB as _pPDB_ch, writePDB as _wPDB_ch
             _atoms_ch = _pPDB_ch(raw_path)
-            if _atoms_ch is not None:
+            if _atoms_ch is not None and pfx != "shared_":
                 _hv_ch = _atoms_ch.getHierView()
                 _prot_chains = [
                     _c for _c in _hv_ch.iterChains()
@@ -4831,6 +4832,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
 
         if result["success"]:
             _full_log = result["log"]
+            st.session_state[pfx + "prepared_result"] = result
+            st.session_state[pfx + "preparation_revision"] = st.session_state.get(pfx + "preparation_revision", 0) + 1
 
             st.session_state.update({
                 pfx + "raw_pdb_path":        raw_path,
@@ -4927,6 +4930,26 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════════════════════════════
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════════
+# One receptor preparation for all modes. Mode tabs contain only ligand/docking/results controls.
+_SHARED_RECEPTOR_DIR = WORKDIR / "shared_receptor"
+_SHARED_RECEPTOR_DIR.mkdir(exist_ok=True)
+st.caption("Prepare once, then choose Single Dock, Batch Dock, Co-Dock or Redock below. Flexible side chains are selected here.")
+_receptor_section(pfx="shared_", wdir=_SHARED_RECEPTOR_DIR, step_label="Step 1 — Shared receptor preparation")
+import core as _shared_core
+from shared_receptor import sync as _sync_shared_receptor, show_redock_status as _shared_redock_status
+_shared_status = _sync_shared_receptor(st.session_state, _shared_core, WORKDIR)
+if _shared_status["ready"]:
+    st.success(_shared_status["message"])
+    WORKDIR = Path(_shared_status["results_dir"])
+    BATCH_WORKDIR = WORKDIR / "batch"
+    JOINT_WORKDIR = WORKDIR / "simultaneous"
+    BATCH_WORKDIR.mkdir(exist_ok=True)
+    JOINT_WORKDIR.mkdir(exist_ok=True)
+    from flexible_ui import download as _shared_flex_download
+    _shared_flex_download(st, st.session_state["shared_receptor_pdbqt"], "shared_", result_root=WORKDIR)
+else:
+    st.info(_shared_status["message"])
+
 tab_basic, tab_batch, tab_joint, tab_redock = st.tabs([
     "🧪  Single Dock",
     "🔬  Batch Dock",
@@ -4940,7 +4963,6 @@ tab_basic, tab_batch, tab_joint, tab_redock = st.tabs([
 # ╚════════════════════════════════════════════════════════════════════════════╝
 with tab_basic:
 
-    _receptor_section(pfx="", wdir=WORKDIR, step_label="Step 1 of 4")
 
     # ── Step 2: Ligand ────────────────────────────────────────────────────────
     card_cls = "step-card done" if st.session_state.ligand_done else "step-card"
@@ -5191,7 +5213,7 @@ with tab_basic:
     # ─────────────────────────────────────────────────────────────────────────
 
     if not st.session_state.receptor_done:
-        st.caption("⚠ Complete Step 1 first.")
+        st.caption("⚠ Prepare the shared receptor above first.")
     if st.button(
         "▶ Prepare Ligand", key="btn_ligand", type="primary",
         disabled=not st.session_state.receptor_done,
@@ -6135,13 +6157,12 @@ with tab_basic:
 # ╚════════════════════════════════════════════════════════════════════════════╝
 with tab_batch:
 
-    _receptor_section(pfx="b_", wdir=BATCH_WORKDIR, step_label="Step B1 of B3")
 
     b_rec_done   = st.session_state.get("b_receptor_done", False)
     b_batch_done = st.session_state.get("b_batch_done", False)
     card_cls = "step-card done" if b_batch_done else "step-card"
     st.markdown(
-        f'<div class="{card_cls}"><div class="step-title">Step B2 of B3</div>'
+        f'<div class="{card_cls}"><div class="step-title">Step 2 — Batch docking</div>'
         f'<div class="step-heading">⚗️ Batch Ligand Input & Docking</div>',
         unsafe_allow_html=True,
     )
@@ -6320,7 +6341,7 @@ with tab_batch:
         _b_dock_seed = b_vina_seed if b_vina_seed != 0 else None
 
     if not b_rec_done:
-        st.caption("⚠ Complete Step B1 first.")
+        st.caption("⚠ Prepare the shared receptor above first.")
     if st.button("▶ Run Batch Docking", key="b_btn_dock", type="primary", disabled=(not b_rec_done)):
         st.session_state["b_batch_done"] = False
         st.session_state["b_batch_results"] = None
@@ -6511,13 +6532,13 @@ with tab_batch:
     b_batch_done = st.session_state.get("b_batch_done", False)
     card_cls = "step-card done" if b_batch_done else "step-card"
     st.markdown(
-        f'<div class="{card_cls}"><div class="step-title">Step B3 of B3</div>'
+        f'<div class="{card_cls}"><div class="step-title">Step 3 — Batch results</div>'
         f'<div class="step-heading">📊 Batch Results</div>',
         unsafe_allow_html=True,
     )
 
     if not b_batch_done:
-        st.info("Complete Step B2 to see batch results here.")
+        st.info("Run Batch Dock to see results here.")
     else:
         import py3Dmol
         from rdkit import Chem
@@ -6953,14 +6974,14 @@ with tab_joint:
     from simultaneous_ui import render_simultaneous_docking
     render_simultaneous_docking(st, _joint_core, _receptor_section, VINA_PATH,
                                 JOINT_WORKDIR, show3d, _viewer_bg,
-                                compound_lookup=_search_compound_pubchem)
+                                compound_lookup=_search_compound_pubchem, shared_receptor=True)
 
 with tab_redock:
     import core as _redock_core
     from redock_ui import docking_controls
     _redock_dir = WORKDIR / "redock_mode"
     _redock_dir.mkdir(exist_ok=True)
-    _receptor_section(pfx="r_", wdir=_redock_dir, step_label="Step 1 of 2", redock_mode=True)
+    _shared_redock_status(st)
     docking_controls(st, _redock_core, _redock_dir, VINA_PATH, _render_pose_structure)
 
 

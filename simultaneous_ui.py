@@ -140,10 +140,13 @@ def _identity_errors(components: list[dict], labels: list[str], paths: list[str]
 
 
 def render_simultaneous_docking(st, core, receptor_section, vina_path,
-                                 wdir: Path, show3d, viewer_bg, compound_lookup=None):
+                                 wdir: Path, show3d, viewer_bg, compound_lookup=None, shared_receptor=False):
     """Prepare 2–4 ligands and show the joint Vina poses without per-ligand scores."""
     wdir.mkdir(parents=True, exist_ok=True)
-    receptor_section(pfx="m_", wdir=wdir, step_label="Step M1 of M2")
+    if not shared_receptor:
+        receptor_section(pfx="m_", wdir=wdir, step_label="Step M1 of M2")
+    else:
+        st.caption("Using the shared receptor and docking box prepared above.")
     st.markdown("### Co-Dock: dock ligands together")
     st.caption("Co-Dock places 2–4 ligands together in one pocket. The score is for "
                "their combined pose. Each pose has one copy of every input ligand; "
