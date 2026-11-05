@@ -51,12 +51,14 @@ def controls(st, source, pfx, *, online=False):
                     st.markdown(
                         f"""<style>
                         .st-key-{pfx}flex_residue_picker [data-baseweb="tag"],
-                        .st-key-{pfx}flex_residue_picker [data-testid="stMultiSelectTag"] {{
+                        .st-key-{pfx}flex_residue_picker [data-testid="stMultiSelectTag"],
+                        .st-key-{pfx}flex_residue_picker [data-tag] {{
                             background: #FFD600 !important;
                             color: #1A1A1A !important;
                         }}
                         .st-key-{pfx}flex_residue_picker [data-baseweb="tag"] *,
-                        .st-key-{pfx}flex_residue_picker [data-testid="stMultiSelectTag"] * {{
+                        .st-key-{pfx}flex_residue_picker [data-testid="stMultiSelectTag"] *,
+                        .st-key-{pfx}flex_residue_picker [data-tag] * {{
                             color: #1A1A1A !important;
                         }}
                         </style>""",

@@ -4159,7 +4159,7 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
                             # Replace the pocket colorscheme; addStyle merges and can retain it.
                             v3.setStyle(
                                 {"model": 0, "chain": "" if _chain == "_" else _chain,
-                                 "resi": int(_match[1]), "icode": _match[2]},
+                                 "resi": int(_match[1]), "icode": _match[2] or ["", " "]},
                                 {"stick": {"color": "#FFD600", "radius": 0.25},
                                  "cartoon": {"color": "spectrum", "opacity": 0.75}},
                             )
