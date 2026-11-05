@@ -4153,7 +4153,16 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
                 if st.session_state.get(_flex_pfx + "receptor_fh") == receptor_pdb or (st.session_state.get(_flex_pfx + "prepared") or {}).get("rec_fh") == receptor_pdb:
                     for _res in st.session_state.get(_flex_pfx + "flex_selection", []) if st.session_state.get(_flex_pfx + "flex_enabled") else []:
                         _chain, _number = _res.split(":")
-                        v3.addStyle({"model": 0, "chain": "" if _chain == "_" else _chain, "resi": _number}, {"stick": {"color": "#FFD600", "radius": 0.22}})
+                        import re as _flex_re
+                        _match = _flex_re.fullmatch(r"(-?\d+)([A-Za-z]?)", _number)
+                        if _match:
+                            # Replace the pocket colorscheme; addStyle merges and can retain it.
+                            v3.setStyle(
+                                {"model": 0, "chain": "" if _chain == "_" else _chain,
+                                 "resi": int(_match[1]), "icode": _match[2]},
+                                {"stick": {"color": "#FFD600", "radius": 0.25},
+                                 "cartoon": {"color": "spectrum", "opacity": 0.75}},
+                            )
             mi += 1
 
         _box_mi   = None
