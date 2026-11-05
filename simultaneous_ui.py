@@ -396,6 +396,9 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                     view.addModel(_pdbqt_view_pdb(component["pdbqt"]), "pdb")
                     view.setStyle({"model": model_index},
                                   {"stick": {"colorscheme": colors[index], "radius": 0.22}})
+                if result.get("flexibility"):
+                    from flexible_ui import highlight_residues
+                    highlight_residues(view, result["flexibility"]["residues"])
                 view.zoomTo({"model": list(range(model_offset, model_offset + len(components)))})
                 show3d(view, height=480)
             except Exception as exc:

@@ -2038,6 +2038,8 @@ def _render_binding_pocket_panel(
                          "inFront": True, "showBackground": True},
                         _sel,
                     )
+        from flexible_ui import highlight_residues
+        highlight_residues(v, st.session_state.get("shared_flex_selection", []) if st.session_state.get("shared_flex_enabled") else [])
         v.zoomTo({"model": _lig_m})
         show3d(v, height=height)
     except Exception as _e:
@@ -2970,6 +2972,8 @@ def _ready_figure_section(
                          "inFront": True, "showBackground": True},
                         sel,
                     )
+        from flexible_ui import highlight_residues
+        highlight_residues(v, st.session_state.get("shared_flex_selection", []) if st.session_state.get("shared_flex_enabled") else [])
         v.zoomTo({"model": lig_m})
         return v._make_html()
 
@@ -4111,6 +4115,8 @@ def _render_pose_structure(pose_mol, receptor_pdb, crystal_pdb):
         vb.setStyle({"model": bmi}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
         vb.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": bmi})
         vb.zoomTo({"model": bmi}); vb.center({"model": bmi})
+        from flexible_ui import highlight_residues
+        highlight_residues(vb, st.session_state.get("shared_flex_selection", []) if st.session_state.get("shared_flex_enabled") else [])
         show3d(vb, height=420)
     except Exception as e:
         st.info(f"Viewer error: {e}")
@@ -4837,6 +4843,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
                 hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
                 reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
+                flexible_residues = _flex_require(st, pfx, online=True),
             )
 
         if result["success"]:
@@ -5887,12 +5894,19 @@ with tab_basic:
         if not (_anim_sdf and os.path.exists(_anim_sdf) and os.path.getsize(_anim_sdf) > 10):
             _anim_sdf = st.session_state.output_sdf
         if st.session_state.output_sdf and os.path.exists(st.session_state.output_sdf):
+            from flexible_ui import receptor_frames as _receptor_frames, highlight_residues as _highlight_flex
+            from flexible_docking import receptor_for_mol as _pose_receptor
+            _animation_mols = load_mols_from_sdf(_anim_sdf, sanitize=False)
+            _animation_receptors = _receptor_frames(st.session_state.receptor_fh, _animation_mols)
             sdf_txt = open(_anim_sdf).read()
             va = py3Dmol.view(width="100%", height=440)
             va.setBackgroundColor(_viewer_bg())
             mai = 0
             if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                va.addModel(open(st.session_state.receptor_fh).read(), "pdb")
+                if _animation_receptors:
+                    va.addModelsAsFrames(_animation_receptors, "pdb")
+                else:
+                    va.addModel(open(st.session_state.receptor_fh).read(), "pdb")
                 va.setStyle({"model": mai}, {"cartoon": {"color": "spectrum", "opacity": 0.7}, "stick": {"radius": 0.1, "opacity": 0.2}})
                 mai += 1
             if st.session_state.ligand_pdb_path and os.path.exists(st.session_state.ligand_pdb_path):
@@ -5904,8 +5918,12 @@ with tab_basic:
             # ─────────────────────────────────────────────────────────────
             va.addModelsAsFrames(sdf_txt)
             va.setStyle({"model": mai}, {"stick": {"colorscheme": "greenCarbon", "radius": 0.25}})
+            if _animation_receptors:
+                _highlight_flex(va, st.session_state.get("flex_selection", []))
+                st.caption("Each frame pairs a ligand pose with its saved flexible receptor. Yellow sticks mark selected side chains; this is a pose slideshow, not molecular dynamics.")
+            else:
+                va.addSurface("SES", {"opacity": 0.18, "color": "lightblue"}, {"model": 0}, {"model": mai})
             va.animate({"interval": anim_spd, "loop": "forward"})
-            va.addSurface("SES", {"opacity": 0.18, "color": "lightblue"}, {"model": 0}, {"model": mai})
             va.zoomTo(); va.center({"model": mai}); va.rotate(30)
             show3d(va, height=440)
 
@@ -5926,6 +5944,11 @@ with tab_basic:
                 ),
             ) - 1
             sel_mol  = mols[pose_idx]
+            from flexible_docking import receptor_for_mol as _pose_receptor
+            from flexible_ui import highlight_residues as _highlight_flex
+            _selected_receptor = _pose_receptor(st.session_state.receptor_fh, sel_mol)
+            if _selected_receptor != st.session_state.receptor_fh:
+                st.caption("Displaying the receptor saved for this pose. Selected flexible side chains are yellow; the backbone stays fixed.")
 
             _cryst_pdb = st.session_state.get("ligand_pdb_path") or ""
             if df is not None:
@@ -5947,8 +5970,8 @@ with tab_basic:
                     v2 = py3Dmol.view(width="100%", height=400)
                     v2.setBackgroundColor(_viewer_bg())
                     mi2 = 0
-                    if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                        v2.addModel(open(st.session_state.receptor_fh).read(), "pdb")
+                    if _selected_receptor and os.path.exists(_selected_receptor):
+                        v2.addModel(open(_selected_receptor).read(), "pdb")
                         v2.setStyle({"model": mi2}, {"cartoon": {"color": "spectrum", "opacity": 0.5}, "stick": {"radius": 0.08, "opacity": 0.15}})
                         mi2 += 1
                     if _cryst_pdb and os.path.exists(_cryst_pdb):
@@ -5956,12 +5979,13 @@ with tab_basic:
                         v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "magentaCarbon", "radius": 0.2}})
                         mi2 += 1
                     # ── Heme ──────────────────────────────────────────────
-                    mi2 = _add_metals_heme_to_view(v2, st.session_state.get("receptor_fh"), mi2)
+                    mi2 = _add_metals_heme_to_view(v2, _selected_receptor, mi2)
                     # ─────────────────────────────────────────────────────
                     v2.addModel(Chem.MolToPDBBlock(sel_mol), "pdb")
                     v2.setStyle({"model": mi2}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.28}})
                     v2.addSurface("SES", {"opacity": 0.2, "color": "lightblue"}, {"model": 0}, {"model": mi2})
                     v2.zoomTo({"model": mi2})
+                    _highlight_flex(v2, st.session_state.get("flex_selection", []) if st.session_state.get("flex_enabled") else [])
                     show3d(v2, height=400)
                 except Exception as e:
                     st.info(f"Viewer error: {e}")
@@ -5987,8 +6011,8 @@ with tab_basic:
                     st.download_button("⬇ Scores (.csv)", df.to_csv(index=False).encode(),
                         file_name=f"{st.session_state.dock_base}_scores.csv", mime="text/csv",
                         key="dl_csv", width='stretch')
-                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    st.download_button("⬇ Receptor (.pdb)", open(st.session_state.receptor_fh, "rb"),
+                if _selected_receptor and os.path.exists(_selected_receptor):
+                    st.download_button("⬇ Receptor (.pdb)", open(_selected_receptor, "rb"),
                         file_name="receptor.pdb", key="dl_rec", width='stretch')
 
             st.markdown("---")
@@ -6034,21 +6058,21 @@ with tab_basic:
                 vbp = py3Dmol.view(width="100%", height=440)
                 vbp.setBackgroundColor(_viewer_bg())
                 mbp = 0
-                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    vbp.addModel(open(st.session_state.receptor_fh).read(), "pdb")
+                if _selected_receptor and os.path.exists(_selected_receptor):
+                    vbp.addModel(open(_selected_receptor).read(), "pdb")
                     vbp.setStyle({"model": mbp}, {"cartoon": {"color": "spectrum", "opacity": 0.45}})
                     if _show_surface:
                         vbp.addSurface(py3Dmol.SAS, {"opacity": 0.55, "color": "white"}, {"model": mbp})
                     mbp += 1
                 # ── Heme ──────────────────────────────────────────────────
-                mbp = _add_metals_heme_to_view(vbp, st.session_state.get("receptor_fh"), mbp)
+                mbp = _add_metals_heme_to_view(vbp, _selected_receptor, mbp)
                 # ─────────────────────────────────────────────────────────
                 vbp.addModel(Chem.MolToPDBBlock(sel_mol), "pdb")
                 _lig_m = mbp
                 vbp.setStyle({"model": _lig_m}, {"stick": {"colorscheme": "cyanCarbon", "radius": 0.30}})
 
-                if st.session_state.receptor_fh and os.path.exists(st.session_state.receptor_fh):
-                    _ir = get_interacting_residues(st.session_state.receptor_fh, sel_mol, cutoff=_cutoff)
+                if _selected_receptor and os.path.exists(_selected_receptor):
+                    _ir = get_interacting_residues(_selected_receptor, sel_mol, cutoff=_cutoff)
                     for _rb in _ir:
                         # ── Empty chain ID fix ────────────────────────────
                         _has_chain = bool(_rb["chain"] and _rb["chain"].strip())
@@ -6076,6 +6100,7 @@ with tab_basic:
                         unsafe_allow_html=True,
                     )
                 vbp.zoomTo({"model": _lig_m})
+                _highlight_flex(vbp, st.session_state.get("flex_selection", []) if st.session_state.get("flex_enabled") else [])
                 show3d(vbp, height=440)
             except Exception as _e:
                 st.info(f"Binding pocket viewer error: {_e}")

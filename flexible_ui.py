@@ -118,3 +118,37 @@ def download(st, receptor_pdbqt, pfx, *, result_root=None):
                            file_name="flexible_docking_results.zip", mime="application/zip", key=pfx + "flex_download")
     except Exception as exc:
         st.warning("Flexible result download unavailable: " + str(exc))
+
+
+def highlight_residues(view, residues, *, model=0):
+    """Yellow sticks for exact chain/residue/insertion code, after pocket styles."""
+    import re
+    from flexible_docking import parse_residues
+    for residue in parse_residues(residues):
+        chain, number = residue.split(":")
+        match = re.fullmatch(r"(-?\d+)([A-Za-z]?)", number)
+        view.setStyle({"model": model, "chain": "" if chain == "_" else chain,
+                       "resi": int(match[1]), "icode": match[2] or ["", " "]},
+                      {"stick": {"color": "#FFD600", "radius": 0.25},
+                       "cartoon": {"color": "spectrum", "opacity": 0.65}})
+
+
+def receptor_frames(default, mols):
+    """One exact saved receptor frame per ligand pose; never interpolate coordinates."""
+    from flexible_docking import PROPERTY, receptor_for_mol
+    if not mols or not any(m.HasProp(PROPERTY) for m in mols):
+        return None
+    if not all(m.HasProp(PROPERTY) for m in mols):
+        raise ValueError("Some ligand poses lack flexible receptor provenance; restore the original result SDF.")
+    frames = []
+    identities = None
+    for index, mol in enumerate(mols, 1):
+        path = receptor_for_mol(default, mol)
+        lines = [l for l in Path(path).read_text().splitlines()
+                 if l.startswith(("ATOM  ", "HETATM", "TER   "))]
+        keys = [(l[21:27], l[12:20]) for l in lines if l.startswith(("ATOM  ", "HETATM"))]
+        if not keys or (identities is not None and keys != identities):
+            raise ValueError("Flexible receptor frame atom identities do not match.")
+        identities = keys
+        frames.append(f"MODEL     {index:4d}\n" + "\n".join(lines) + "\nENDMDL\n")
+    return "".join(frames)
