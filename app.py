@@ -4153,7 +4153,7 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
                 if st.session_state.get(_flex_pfx + "receptor_fh") == receptor_pdb or (st.session_state.get(_flex_pfx + "prepared") or {}).get("rec_fh") == receptor_pdb:
                     for _res in st.session_state.get(_flex_pfx + "flex_selection", []) if st.session_state.get(_flex_pfx + "flex_enabled") else []:
                         _chain, _number = _res.split(":")
-                        v3.addStyle({"model": 0, "chain": "" if _chain == "_" else _chain, "resi": _number}, {"stick": {"color": "orange", "radius": 0.22}})
+                        v3.addStyle({"model": 0, "chain": "" if _chain == "_" else _chain, "resi": _number}, {"stick": {"color": "#FFD600", "radius": 0.22}})
             mi += 1
 
         _box_mi   = None
@@ -4424,7 +4424,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
             ),
         )
         # ── Receptor setup panel + HETATM action guide (combined) ────────
-        with st.expander("⚗️ Receptor setup panel", expanded=True):
+        with st.expander("⚗️ Receptor setup panel", expanded=False):
             st.caption(
                 "Select the co-crystal small molecule used to define the binding site. "
                 "The selected ligand is removed from the receptor but used to center the grid. "

@@ -55,7 +55,7 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                 current['message'] = 'Redock is not ready: a missing residue boundary is within 5 Å of the selected co-crystal ligand. Rebuild and validate the region before docking.'
         return current
 
-    with st.expander('⚗️ Receptor setup panel', expanded=True):
+    with st.expander('⚗️ Receptor setup panel', expanded=False):
         st.caption('One ligand residue instance is required. Heavy-atom contacts ≤4.5 Å identify the contacting protein chains. Only supplied chains in model 1 are inspected; no symmetry mates or biological assemblies are generated.')
         use_structure = st.button('Use this structure', key=pfx + 'use_structure', type='primary', disabled=path is None)
         if use_structure and path is not None:

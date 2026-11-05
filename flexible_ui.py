@@ -7,7 +7,7 @@ from flexible_docking import candidate_residues, metadata
 
 
 def controls(st, source, pfx, *, online=False):
-    with st.expander("Receptor flexibility — optional", expanded=False):
+    with st.expander("Flexible docking: receptor flexibility — optional", expanded=False):
         enabled = st.checkbox("Allow selected protein side chains to move", key=pfx + "flex_enabled")
         selected = []
         if enabled:
@@ -47,7 +47,23 @@ def controls(st, source, pfx, *, online=False):
                     old = st.session_state.get(pfx + "flex_selection", [])
                     if any(k not in labels for k in old):
                         st.session_state[pfx + "flex_selection"] = [k for k in old if k in labels]
+                    # Scope the yellow tags to this selector; other ligand tags keep their styling.
+                    st.markdown(
+                        f"""<style>
+                        .st-key-{pfx}flex_selection [data-baseweb="tag"] {{
+                            background-color: #FFD600 !important;
+                            color: #1A1A1A !important;
+                        }}
+                        .st-key-{pfx}flex_selection [data-baseweb="tag"] span,
+                        .st-key-{pfx}flex_selection [data-baseweb="tag"] svg {{
+                            color: #1A1A1A !important;
+                            fill: currentColor;
+                        }}
+                        </style>""",
+                        unsafe_allow_html=True,
+                    )
                     selected = st.multiselect("Flexible residues", list(labels), format_func=labels.get, key=pfx + "flex_selection")
+                    st.caption("Selected flexible residues are shown as yellow sticks in the receptor 3D view.")
                 except Exception as exc:
                     st.error("Cannot list flexible residues: " + str(exc))
             else:
