@@ -62,6 +62,25 @@ Changing the receptor, reference ligand, box, or flexible-residue selection requ
 | **Co-Dock: dock ligands together** | Dock 2–4 ligands together in one joint Vina search. |
 | **Redock** | Re-dock a selected co-crystal ligand and compare its predicted pose with the crystal coordinates. |
 
+### Blind docking: automatic box calculation
+
+Blind docking covers the whole protein with **4 Å padding on each side**. For each coordinate axis (X, Y, Z), ACD calculates:
+
+```text
+Box center = (minimum coordinate + maximum coordinate) / 2
+Box size   = maximum coordinate − minimum coordinate + 8 Å
+```
+
+Box dimensions are rounded to whole Ångströms. For example, a protein spanning **40 × 50 × 60 Å** receives a **48 × 58 × 68 Å** box.
+
+The calculation uses protein atoms across the supplied chains; if no protein selection is available, it uses all parsed atoms. The center is the midpoint of the coordinate bounds, not the center of mass. Blind docking overrides the manually entered center and box sizes.
+
+In Online/Local, select **Blind docking (cover whole protein)** and prepare the receptor. In CLI, use:
+
+```bash
+acd dock --receptor 1M17 --compound erlotinib --blind
+```
+
 ### Ligand input
 
 For **Batch Dock**, the input choices are:
@@ -430,4 +449,3 @@ ACD is distributed under the **MIT License**; see [LICENSE](LICENSE). Third-part
 <div align="center">
   <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" width="220" alt="Anyone Can Dock">
 </div>
-****
