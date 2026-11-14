@@ -7106,7 +7106,7 @@ with tab_redock:
     _redock_dir = WORKDIR / "redock_mode"
     _redock_dir.mkdir(exist_ok=True)
     _shared_redock_status(st)
-    docking_controls(st, _redock_core, _redock_dir, VINA_PATH, _render_pose_structure)
+    docking_controls(st, _redock_core, _redock_dir, VINA_PATH, _render_pose_structure, show_interactions=_poseview_ui)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
