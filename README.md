@@ -43,7 +43,7 @@ Anyone Can Dock (ACD) combines receptor and ligand preparation, molecular dockin
 
 ## 🌐 ACD Online
 
-**Best for:** beginners, teaching, demonstrations, and quick docking without local installation.
+**Best for:** beginners, teaching, demonstrations, and quick docking without local installation. Registration-free use covers the hosted Streamlit + AutoDock Vina workflow. The Colab notebook requires a Google account; the GPT interface requires a third-party account.
 
 ### Prepare once, then choose a docking mode
 
@@ -331,7 +331,7 @@ For complete options, use `acd <command> --help`. Python workflows can also use 
 
 ## 📓 ACD Google Colab
 
-**Best for:** workshops, education, portable research, and compatible GPU docking without local installation.
+**Best for:** workshops, education, portable research, and compatible GPU docking without local installation. Registration-free use covers the hosted Streamlit + AutoDock Vina workflow. The Colab notebook requires a Google account; the GPT interface requires a third-party account.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1tApXZyT3CGziMTLG86oQe6Q7WSycK196?usp=sharing)
 
@@ -449,3 +449,18 @@ ACD is distributed under the **MIT License**; see [LICENSE](LICENSE). Third-part
 <div align="center">
   <img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" width="220" alt="Anyone Can Dock">
 </div>
+
+
+## Interface access and runtime
+
+Registration-free use covers the hosted Streamlit + AutoDock Vina workflow. The Colab notebook requires a Google account; the GPT interface requires a third-party account.
+
+No hard-coded limit on batch size or exhaustiveness — the practical ceiling is your Colab runtime resources and account quota.
+
+Typically 2–6 min; actual runtime depends on system size, sampling parameters, and current server load.
+
+## Metal reporting and reproducibility
+
+Metal proximities are reported as **Metal contact (distance-based; geometry not scored)**. Contacts shorter than 1.8 A generate a warning in results and exported summaries. For Zn receptors, pKaNET Cloud+ proposes an additional deprotonated sulfonamide/sulfamate candidate while retaining the pH-ranked selection.
+
+CLI docking supports `--replicate-seeds N` (default 5, use 1 for a single run). Colab defaults to five searches. The public web interface defaults to one search. Replicates report mean top-1 and minimum crystal RMSD and sample standard deviations when the existing 60% MCS gate permits RMSD calculation.
