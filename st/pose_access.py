@@ -17,6 +17,7 @@ COMPACT_FIELDS = (
     'selected_pose_pdb_url', 'selected_pose_sdf_url', 'complex_pdb_url',
     'viewer_3d_url', 'render_3d_png_url', 'interactions',
     'interaction_analysis_source', 'interaction_analysis_warning', 'structure_warning',
+    'metal_contacts', 'metal_warnings',
     'receptor_sha256', 'pose_sha256', 'complex_sha256',
 )
 
@@ -93,7 +94,8 @@ def atom_records(text, pdbqt=False):
              'F':'F', 'Cl':'Cl', 'CL':'Cl', 'Br':'Br', 'BR':'Br', 'I':'I',
              'Mg':'Mg', 'MG':'Mg', 'Mn':'Mn', 'MN':'Mn', 'Zn':'Zn', 'ZN':'Zn',
              'Ca':'Ca', 'CA':'Ca', 'Fe':'Fe', 'FE':'Fe', 'Cu':'Cu', 'CU':'Cu',
-             'Si':'Si', 'B':'B', 'Se':'Se'}
+             'Si':'Si', 'B':'B', 'Se':'Se',
+             'Na': 'Na', 'K': 'K', 'Co': 'Co', 'CO': 'Co', 'Ni': 'Ni', 'NI': 'Ni', 'Cd': 'Cd', 'CD': 'Cd', 'Hg': 'Hg', 'HG': 'Hg', 'Ho': 'Ho', 'HO': 'Ho', 'La': 'La', 'LA': 'La', 'Ce': 'Ce', 'CE': 'Ce', 'Pr': 'Pr', 'PR': 'Pr', 'Nd': 'Nd', 'ND': 'Nd', 'Pm': 'Pm', 'PM': 'Pm', 'Sm': 'Sm', 'SM': 'Sm', 'Eu': 'Eu', 'EU': 'Eu', 'Gd': 'Gd', 'GD': 'Gd', 'Tb': 'Tb', 'TB': 'Tb', 'Dy': 'Dy', 'DY': 'Dy', 'Er': 'Er', 'ER': 'Er', 'Tm': 'Tm', 'TM': 'Tm', 'Yb': 'Yb', 'YB': 'Yb', 'Lu': 'Lu', 'LU': 'Lu'}
     atoms = []
     for line in text.splitlines():
         if not line.startswith(('ATOM  ', 'HETATM')):
@@ -262,6 +264,89 @@ def export_sdf(wdir, row, model_order, rank, ligand, target):
     return 'No validated SDF for this pose; use exact PDB/PDBQT. '+ '; '.join(warnings)
 
 
+_IX_LABEL = {'hbond':'hydrogen bond','hbond_to_halogen':'H···halogen contact','pi_pi':'π–π stacking',
+             'cation_pi':'cation–π','hydrophobic':'hydrophobic','ionic':'ionic / salt bridge',
+             'metal':'Metal contact (distance-based; geometry not scored)','halogen':'halogen bond'}
+_IX_UNAVAILABLE = ('No chemical interaction classifier result is available for this pose. '
+                   'Proximity contacts are distances only, not hydrogen bonds or other classified interactions.')
+
+
+def _pose_mol(sdf_path, pdb_path, smiles):
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    if sdf_path and Path(sdf_path).exists():
+        mol = Chem.MolFromMolFile(str(sdf_path), removeHs=False, sanitize=True)
+        if mol is not None and mol.GetNumConformers():
+            return mol
+    mol = Chem.MolFromPDBFile(str(pdb_path), removeHs=False, sanitize=False)
+    if mol is None:
+        return None
+    if smiles:
+        template = Chem.MolFromSmiles(smiles)
+        if template is not None:
+            try:
+                mol = AllChem.AssignBondOrdersFromTemplate(template, Chem.RemoveHs(mol, sanitize=False))
+                mol = Chem.AddHs(mol, addCoords=True)
+            except Exception:
+                return None
+        else:
+            return None
+    try:
+        Chem.SanitizeMol(mol)
+    except Exception:
+        return None
+    return mol if mol.GetNumConformers() else None
+
+
+def classify_interactions(receptor_pdb, sdf_path, pdb_path, smiles):
+    """Classify protein–ligand interactions on the saved pose coordinates with the
+    same geometric rules used for the ACD 2D diagram. Never raises."""
+    try:
+        from anyonecandock.core import _detect_all_interactions
+    except Exception as exc:
+        return [], 'not_configured', _IX_UNAVAILABLE + f' (classifier import failed: {exc})'
+    try:
+        mol = _pose_mol(sdf_path, pdb_path, smiles)
+        if mol is None:
+            return [], 'not_available', _IX_UNAVAILABLE + ' (pose could not be read as a molecule)'
+        raw = _detect_all_interactions(mol, str(receptor_pdb)) or []
+    except Exception as exc:
+        return [], 'not_available', _IX_UNAVAILABLE + f' (classifier error: {exc})'
+    try:
+        # Validate classifier output too: malformed metadata must not break
+        # coordinate/pose access or leak NaN into JSON responses.
+        normalized = []
+        for ix in raw:
+            resid = int(ix.get('resid', 0))
+            distance = float(ix['distance'])
+            if not math.isfinite(distance) or distance < 0:
+                raise ValueError('Invalid interaction distance')
+            atom = ix.get('lig_atom_idx')
+            if atom is not None:
+                atom = int(atom)
+                if not 0 <= atom < mol.GetNumAtoms():
+                    raise ValueError('Invalid ligand atom index')
+            normalized.append(dict(type=ix.get('itype'),
+                label=_IX_LABEL.get(ix.get('itype'), ix.get('itype')),
+                protein_residue=f"{str(ix.get('resname', '')).strip()}{resid}",
+                protein_chain=str(ix.get('chain', '')).strip(),
+                distance_angstrom=distance, ligand_atom_index=atom,
+                protein_element=ix.get('prot_el')))
+        # Keep the closest representative of each type/residue, as in the
+        # supplied patch, and sort the public list by actual distance.
+        seen, out = set(), []
+        for ix in sorted(normalized, key=lambda d: d['distance_angstrom']):
+            key = (ix['type'], ix['protein_chain'], ix['protein_residue'])
+            if key not in seen:
+                seen.add(key)
+                out.append(ix)
+    except Exception as exc:
+        return [], 'not_available', _IX_UNAVAILABLE + f' (classifier result error: {exc})'
+    warning = ('Geometric classification (distance/angle rules) on the docked pose; '
+               'it describes the model, not experimentally observed contacts.')
+    return out, 'ACD geometric interaction classifier (anyonecandock.core)', warning
+
+
 def structure(wdir, meta, row, rank, public_url, cutoff=4.5):
     source = saved_file(wdir,row.get('out_pdbqt'))
     models = pdbqt_models(source)
@@ -269,6 +354,9 @@ def structure(wdir, meta, row, rank, public_url, cutoff=4.5):
     if rank not in models:
         raise HTTPException(404, 'Requested Vina pose rank does not exist')
     selected,method,fallback = select_rank(row,models)
+    existing_warning = row.get('pose_selection_warning', '')
+    if existing_warning and existing_warning != fallback:
+        fallback = ' '.join(filter(None, [existing_warning, fallback]))
     receptor_meta = meta.get('receptor',{})
     receptor_source = saved_file(wdir,receptor_meta.get('rec_pdbqt') or receptor_meta.get('rec_fh'))
     rec_atoms = atom_records(receptor_source.read_text(),pdbqt=receptor_source.suffix.lower()=='.pdbqt')
@@ -286,6 +374,8 @@ def structure(wdir, meta, row, rank, public_url, cutoff=4.5):
     atomic_write(files['complex'],complex_text)
     sdf_warning = export_sdf(wdir,row,list(models),rank,lig_atoms,files['sdf'])
     contacts,residues = proximity(rec_atoms,lig_atoms,cutoff)
+    interactions,ix_source,ix_warning = classify_interactions(
+        files['receptor'], None if sdf_warning else files['sdf'], files['pdb'], row.get('prepared_smiles',''))
     jid = meta['job_id']
     def url(kind):
         return public_url(f'/jobs/{jid}/files/{files[kind].name}')
@@ -307,12 +397,17 @@ def structure(wdir, meta, row, rank, public_url, cutoff=4.5):
         hash_definitions={'receptor_sha256':'exported receptor PDB','pose_sha256':'extracted ranked Vina PDBQT',
                           'complex_sha256':'exported receptor plus pose PDB'},
         complex_ligand_chain_map=chain_map,coordinates_source='saved Vina MODEL and prepared receptor; no conformer generation',
-        interactions=[],interaction_analysis_source='not_configured',
-        interaction_analysis_warning='No chemical interaction classifier is configured. Proximity contacts are distances only, not hydrogen bonds or other classified interactions.',
+        interactions=interactions,interaction_analysis_source=ix_source,
+        interaction_analysis_warning=ix_warning,
         proximity_analysis_source='ACD Euclidean nearest heavy-atom distance per receptor atom',
         proximity_contacts=contacts[:200],proximity_contacts_total=len(contacts),proximity_contacts_truncated=len(contacts)>200,
         pocket_residues=residues[:200],pocket_residues_total=len(residues),pocket_residues_truncated=len(residues)>200,
         pocket_distance_angstrom=cutoff,structure_warning=sdf_warning)
+    from anyonecandock.core import detect_metal_contacts
+    metal_contacts = detect_metal_contacts(
+        [dict(name=a['name'], element=a['element'], xyz=a['xyz']) for a in lig_atoms], files['receptor'])
+    result['metal_contacts'] = metal_contacts
+    result['metal_warnings'] = [c['warning'] for c in metal_contacts if c['warning']]
     return result
 
 

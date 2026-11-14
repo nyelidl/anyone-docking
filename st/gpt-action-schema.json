@@ -1,0 +1,1870 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Anyone Can Dock API",
+    "version": "0.3.0",
+    "description": "Docking tools with compound-name lookup, target-structure search, job submission/status, exact pose files, 3D viewer links and calculated contact data. Resolve names to structures before submitting a job. Metal proximities use the category Metal contact (distance-based; geometry not scored). Surface metal_warnings/warnings verbatim and describe metal_microstate_candidates as additional candidates alongside the pH-ranked selection."
+  },
+  "servers": [
+    {
+      "url": "https://anyone-docking-api-docker.onrender.com"
+    }
+  ],
+  "security": [],
+  "paths": {
+    "/ping": {
+      "get": {
+        "operationId": "pingServer",
+        "summary": "Check if the API server and tools are ready",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Server is ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "api": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "openbabel_available": {
+                      "type": "boolean"
+                    },
+                    "openbabel_message": {
+                      "type": "string"
+                    },
+                    "vina_available": {
+                      "type": "boolean"
+                    },
+                    "vina_message": {
+                      "type": "string"
+                    },
+                    "auth_enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/compound/smiles": {
+      "get": {
+        "operationId": "getCompoundSmiles",
+        "summary": "Look up a compound name and return its SMILES string",
+        "description": "Resolves a compound name through PubChem or built-in examples. Returns found, SMILES, source, CID and errors. prefer_builtin=false requests PubChem directly. Resolves ligand names before docking; does not perform docking or validate all identity ambiguity.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Compound or drug name, e.g. gefitinib"
+          },
+          {
+            "name": "prefer_builtin",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true
+            },
+            "description": "Use built-in example SMILES before PubChem lookup"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Compound SMILES lookup result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "found": {
+                      "type": "boolean"
+                    },
+                    "query": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "smiles": {
+                      "type": "string"
+                    },
+                    "canonical_smiles": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "cid": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "formula": {
+                      "type": "string"
+                    },
+                    "molecular_weight": {},
+                    "url": {
+                      "type": "string"
+                    },
+                    "warning": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pdb/search": {
+      "get": {
+        "operationId": "searchPdb",
+        "summary": "Search RCSB PDB for protein structures by name or target",
+        "description": "Search RCSB by target/protein name and supplied organism or variant. Returns candidate PDB IDs and limited structural metadata. Start with top_n=3; relevance and identity matter more than resolution alone.",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Search query, e.g. EGFR gefitinib or SARS-CoV-2 main protease"
+          },
+          {
+            "name": "top_n",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "minimum": 1,
+              "maximum": 25
+            },
+            "description": "Maximum number of PDB entries to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PDB search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string"
+                    },
+                    "found": {
+                      "type": "boolean"
+                    },
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "pdb_id": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "method": {
+                            "type": "string"
+                          },
+                          "resolution": {
+                            "type": "number"
+                          },
+                          "protein_name": {
+                            "type": "string"
+                          },
+                          "example_ligands": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "url": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "warning": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scan_hetatm": {
+      "post": {
+        "operationId": "scanHetatm",
+        "summary": "Scan a PDB structure for HETATM residues (ligands, cofactors, metals)",
+        "description": "Inspect non-protein residues in a supplied PDB structure. Returned keys identify reference ligands, cofactors and metals. A suitable bound reference ligand can guide the docking box; not every HETATM residue is a reference ligand.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "HETATM scan result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "hetatm_table": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dock": {
+      "post": {
+        "operationId": "submitDockingJob",
+        "summary": "Submit a molecular docking job",
+        "description": "Submit docking with a PDB ID or receptor text and resolved ligand SMILES or exact file contents. Compound names alone are insufficient. Returns job_id; inspect each ligand status via getDockingJob. Do not blindly repeat submission after an uncertain timeout.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DockRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Docking job submitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}": {
+      "get": {
+        "operationId": "getDockingJob",
+        "summary": "Get docking job status and result",
+        "description": "Poll for queued, running, completed, or failed. A completed batch may contain failed ligands: inspect each result status and error. Return atom_mapping_url and checksum evidence when present. Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored.",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Job ID returned by submitDockingJob"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status and result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompactJobResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteJob",
+        "summary": "Delete a docking job and its files",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Queued or running jobs cannot be deleted."
+          }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
+      }
+    },
+    "/jobs/{job_id}/summary": {
+      "get": {
+        "operationId": "getDockingJobSummary",
+        "summary": "Get ultra-compact docking job status (alias for getDockingJob)",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ultra-compact docking result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompactJobResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
+      }
+    },
+    "/jobs/{job_id}/download": {
+      "get": {
+        "operationId": "downloadJobResults",
+        "summary": "Download full docking results as a ZIP file",
+        "description": "Returns a ZIP archive containing all output files: PDBQT poses, SDF, bond-order corrected SDF, CSV summary, 2D interaction diagrams, and logs. Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored.",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ZIP file of all docking results",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job or result ZIP not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Job has not completed."
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/files/{filename}": {
+      "get": {
+        "operationId": "getJobFile",
+        "summary": "Fetch a result file or atom-mapping report",
+        "description": "Fetch a named result file using the returned URL, including atom_mapping.tsv reports, SVG/PNG diagrams, and other result files. Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored.",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filename, e.g. gefitinib_interaction2d.svg"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Requested file contents"
+          },
+          "404": {
+            "description": "File not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/selected-pose": {
+      "get": {
+        "summary": "Retrieve the selected completed docking pose",
+        "operationId": "getSelectedDockingPose",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "ligand_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact ligand name from the completed job result. Required for multi-ligand jobs."
+          },
+          {
+            "name": "pocket_distance",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 8.0,
+              "minimum": 2.0,
+              "default": 4.5,
+              "title": "Pocket Distance"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockingPoseStructure"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Saved job, ligand, pose, or coordinate file not found"
+          },
+          "409": {
+            "description": "Job unfinished, ligand selection ambiguous, or saved coordinate/score validation failed"
+          }
+        },
+        "description": "Use saved completed-job coordinates only. No ZIP download is required. Proximity contacts are not classified bonds. Return viewer_url to the user; an empty render_3d_png_url means no server-rendered PNG exists. Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
+      }
+    },
+    "/jobs/{job_id}/selected-pose/3d": {
+      "get": {
+        "summary": "Get compact 3D viewer and coordinate URLs for the selected pose",
+        "operationId": "getDocking3DViewer",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "ligand_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact ligand name from the completed job result. Required for multi-ligand jobs."
+          },
+          {
+            "name": "pocket_distance",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 8.0,
+              "minimum": 2.0,
+              "default": 4.5,
+              "title": "Pocket Distance"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockingPoseStructure"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Saved job, ligand, pose, or coordinate file not found"
+          },
+          "409": {
+            "description": "Job unfinished, ligand selection ambiguous, or saved coordinate/score validation failed"
+          }
+        },
+        "description": "Use saved completed-job coordinates only. No ZIP download is required. Proximity contacts are not classified bonds. Return viewer_url to the user; an empty render_3d_png_url means no server-rendered PNG exists. Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
+      }
+    },
+    "/jobs/{job_id}/poses/{pose_rank}/structure": {
+      "get": {
+        "summary": "Retrieve exact saved Vina pose and receptor file URLs",
+        "operationId": "getDockingPoseStructure",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "pose_rank",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Pose Rank"
+            }
+          },
+          {
+            "name": "ligand_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact ligand name from the completed job result. Required for multi-ligand jobs."
+          },
+          {
+            "name": "pocket_distance",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 8.0,
+              "minimum": 2.0,
+              "default": 4.5,
+              "title": "Pocket Distance"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockingPoseStructure"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Saved job, ligand, pose, or coordinate file not found"
+          },
+          "409": {
+            "description": "Job unfinished, ligand selection ambiguous, or saved coordinate/score validation failed"
+          }
+        },
+        "description": "Use saved completed-job coordinates only. No ZIP download is required. Proximity contacts are not classified bonds. Return viewer_url to the user; an empty render_3d_png_url means no server-rendered PNG exists. Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
+      }
+    },
+    "/jobs/{job_id}/poses/{pose_rank}/interactions": {
+      "get": {
+        "summary": "Get calculated proximity contacts and interaction-analysis status",
+        "operationId": "getDockingPoseInteractions",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "pose_rank",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Pose Rank"
+            }
+          },
+          {
+            "name": "ligand_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact ligand name from the completed job result. Required for multi-ligand jobs."
+          },
+          {
+            "name": "pocket_distance",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 8.0,
+              "minimum": 2.0,
+              "default": 4.5,
+              "title": "Pocket Distance"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DockingPoseInteractions"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Saved job, ligand, pose, or coordinate file not found"
+          },
+          "409": {
+            "description": "Job unfinished, ligand selection ambiguous, or saved coordinate/score validation failed"
+          }
+        },
+        "description": "Use saved completed-job coordinates only. No ZIP download is required. Proximity contacts are not classified bonds. Return viewer_url to the user; an empty render_3d_png_url means no server-rendered PNG exists. Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
+      }
+    },
+    "/jobs/{job_id}/files/{filename}/url": {
+      "get": {
+        "summary": "Get a stable individual result-file URL and SHA256 without downloading a ZIP",
+        "operationId": "getDockingJobFile",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Filename"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobFileLink"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Saved job, ligand, pose, or coordinate file not found"
+          },
+          "409": {
+            "description": "Job unfinished, ligand selection ambiguous, or saved coordinate/score validation failed"
+          }
+        },
+        "description": "Get an individual saved file URL and hash. Use the returned filename/URL from the pose response; never guess names. Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ScanRequest": {
+        "properties": {
+          "pdb_id": {
+            "title": "Pdb Id",
+            "type": "string"
+          },
+          "receptor_pdb_text": {
+            "title": "Receptor Pdb Text",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "title": "ScanRequest"
+      },
+      "LigandInput": {
+        "properties": {
+          "smiles": {
+            "title": "Smiles",
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": "ligand",
+            "description": "User-facing ligand label, unique within a batch. Does not resolve chemical identity or replace smiles/file contents."
+          },
+          "file_name": {
+            "title": "File Name",
+            "description": "Ligand filename ending in .pdb, .sdf, .mol2, or .pdbqt; never a server path",
+            "type": "string"
+          },
+          "file_content": {
+            "title": "File Content",
+            "description": "Exact structure-file text; JSON escapes preserve newlines",
+            "type": "string"
+          },
+          "file_content_base64": {
+            "title": "File Content Base64",
+            "description": "Base64 of original file bytes, recommended for exact PDBQT provenance",
+            "type": "string"
+          },
+          "no_add_h": {
+            "type": "boolean",
+            "title": "No Add H",
+            "description": "For PDB: add no H and preserve existing H; direct PDBQT always bypasses preparation",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "LigandInput",
+        "description": "Provide either nonempty smiles OR file_name and exactly one of file_content/file_content_base64. File names must end in .pdb, .sdf, .mol2, or .pdbqt. Never reconstruct or invent file bytes. no_add_h applies only to file input; for PDB it preserves existing hydrogens. Direct PDBQT bypasses all ligand preparation."
+      },
+      "GridBox": {
+        "properties": {
+          "center_x": {
+            "title": "Center X",
+            "type": "number"
+          },
+          "center_y": {
+            "title": "Center Y",
+            "type": "number"
+          },
+          "center_z": {
+            "title": "Center Z",
+            "type": "number"
+          },
+          "size_x": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Size X",
+            "default": 20.0
+          },
+          "size_y": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Size Y",
+            "default": 20.0
+          },
+          "size_z": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Size Z",
+            "default": 20.0
+          }
+        },
+        "type": "object",
+        "title": "GridBox"
+      },
+      "DockRequest": {
+        "properties": {
+          "pdb_id": {
+            "title": "Pdb Id",
+            "type": "string"
+          },
+          "receptor_pdb_text": {
+            "title": "Receptor Pdb Text",
+            "type": "string"
+          },
+          "receptor_name": {
+            "type": "string",
+            "title": "Receptor Name",
+            "default": "receptor"
+          },
+          "ligands": {
+            "items": {
+              "$ref": "#/components/schemas/LigandInput"
+            },
+            "type": "array",
+            "title": "Ligands",
+            "minItems": 1
+          },
+          "grid": {
+            "$ref": "#/components/schemas/GridBox"
+          },
+          "center_mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "manual",
+              "selection",
+              "blind"
+            ],
+            "title": "Center Mode",
+            "default": "auto"
+          },
+          "prody_sel": {
+            "type": "string",
+            "title": "Prody Sel",
+            "default": ""
+          },
+          "preferred_ligand": {
+            "type": "string",
+            "title": "Preferred Ligand",
+            "default": ""
+          },
+          "hetatm_policy": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Hetatm Policy"
+          },
+          "reference_hetatm_key": {
+            "type": "string",
+            "title": "Reference Hetatm Key",
+            "default": ""
+          },
+          "ph": {
+            "type": "number",
+            "title": "Ph",
+            "default": 7.4
+          },
+          "protonation_mode": {
+            "type": "string",
+            "enum": [
+              "pkanet",
+              "neutral",
+              "dimorphite"
+            ],
+            "title": "Protonation Mode",
+            "default": "pkanet"
+          },
+          "use_pubchem": {
+            "type": "boolean",
+            "title": "Use Pubchem",
+            "default": true,
+            "description": "Use PubChem pKa/preparation evidence. This does not resolve ligand names; use getCompoundSmiles before submission."
+          },
+          "max_tautomers": {
+            "type": "integer",
+            "maximum": 64.0,
+            "minimum": 1.0,
+            "title": "Max Tautomers",
+            "default": 8
+          },
+          "ph_window": {
+            "type": "number",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Ph Window",
+            "default": 1.0
+          },
+          "pkanet_selection_mode": {
+            "type": "string",
+            "enum": [
+              "auto_recommended",
+              "highest_score",
+              "manual_rank"
+            ],
+            "title": "Pkanet Selection Mode",
+            "default": "auto_recommended"
+          },
+          "pkanet_manual_rank": {
+            "title": "Pkanet Manual Rank",
+            "type": "integer",
+            "minimum": 1.0
+          },
+          "exhaustiveness": {
+            "type": "integer",
+            "maximum": 128.0,
+            "minimum": 1.0,
+            "title": "Exhaustiveness",
+            "default": 8
+          },
+          "num_modes": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Num Modes",
+            "default": 10
+          },
+          "energy_range": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Energy Range",
+            "default": 3
+          },
+          "seed": {
+            "title": "Seed",
+            "type": "integer"
+          },
+          "conformer_seed": {
+            "title": "Conformer Seed",
+            "type": "integer",
+            "minimum": 0.0
+          },
+          "fix_bond_orders": {
+            "type": "boolean",
+            "title": "Fix Bond Orders",
+            "default": true
+          },
+          "replicate_seeds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 1,
+            "description": "Independent search seeds. One search by default on shared hosting."
+          }
+        },
+        "type": "object",
+        "required": [
+          "ligands"
+        ],
+        "title": "DockRequest",
+        "description": "Supply pdb_id or receptor_pdb_text, and at least one ligand. File inputs do not use protonation settings. Manual centering requires all three center coordinates; selection centering requires prody_sel."
+      },
+      "DockSubmitResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "status_url": {
+            "type": "string",
+            "title": "Status Url"
+          },
+          "download_url": {
+            "type": "string",
+            "title": "Download Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "status",
+          "message",
+          "status_url",
+          "download_url"
+        ],
+        "title": "DockSubmitResponse"
+      },
+      "DockingScore": {
+        "type": "object",
+        "properties": {
+          "affinity": {
+            "type": "number"
+          },
+          "rmsd_lb": {
+            "type": "number"
+          },
+          "rmsd_ub": {
+            "type": "number"
+          },
+          "rmsd_vs_crystal": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pose": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": true
+      },
+      "CompactLigandResult": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "top_score": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DockingScore"
+            }
+          },
+          "num_poses": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "charge": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "prepared_smiles": {
+            "type": "string"
+          },
+          "protonation_mode_used": {
+            "type": "string"
+          },
+          "protonation_fallback": {
+            "type": "string"
+          },
+          "selected_pose_rank": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pose_selection_method": {
+            "type": "string"
+          },
+          "selected_pose_rmsd": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pose_selection_warning": {
+            "type": "string"
+          },
+          "two_d_interaction_available": {
+            "type": "boolean"
+          },
+          "two_d_interaction_svg_url": {
+            "type": "string"
+          },
+          "two_d_interaction_png_url": {
+            "type": "string"
+          },
+          "two_d_interaction_error": {
+            "type": "string"
+          },
+          "poseview_available": {
+            "type": "boolean"
+          },
+          "poseview_source": {
+            "type": "string"
+          },
+          "poseview_svg_url": {
+            "type": "string"
+          },
+          "poseview_png_url": {
+            "type": "string"
+          },
+          "poseview_error": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "ligand_mode": {
+            "type": "string"
+          },
+          "input_file_name": {
+            "type": "string"
+          },
+          "input_sha256": {
+            "type": "string"
+          },
+          "vina_input_sha256": {
+            "type": "string"
+          },
+          "atom_mapping_url": {
+            "type": "string"
+          },
+          "atom_mapping": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "input_atoms": {
+                "type": "integer"
+              },
+              "output_atoms": {
+                "type": "integer"
+              },
+              "mapped_original_atoms": {
+                "type": "integer"
+              },
+              "merged_original_h": {
+                "type": "integer"
+              },
+              "added_hydrogens": {
+                "type": "integer"
+              },
+              "reordered": {
+                "type": "boolean"
+              },
+              "restored_names": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": true
+          },
+          "selected_pose_pdb_url": {
+            "type": "string"
+          },
+          "selected_pose_sdf_url": {
+            "type": "string"
+          },
+          "complex_pdb_url": {
+            "type": "string"
+          },
+          "viewer_3d_url": {
+            "type": "string"
+          },
+          "render_3d_png_url": {
+            "type": "string"
+          },
+          "interaction_analysis_source": {
+            "type": "string"
+          },
+          "interaction_analysis_warning": {
+            "type": "string"
+          },
+          "structure_warning": {
+            "type": "string"
+          },
+          "receptor_sha256": {
+            "type": "string"
+          },
+          "pose_sha256": {
+            "type": "string"
+          },
+          "complex_sha256": {
+            "type": "string"
+          },
+          "interactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            },
+            "description": "Classified interactions only. Currently empty because no chemical classifier is configured."
+          }
+        },
+        "additionalProperties": true
+      },
+      "ReceptorResult": {
+        "type": "object",
+        "properties": {
+          "pdb_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "center": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "size": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "cocrystal_ligand_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "CompactJobResponse": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "status"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "download_url": {
+            "type": "string"
+          },
+          "receptor": {
+            "$ref": "#/components/schemas/ReceptorResult"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompactLigandResult"
+            }
+          },
+          "summary_csv": {
+            "type": "string"
+          },
+          "log_file": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "description": "Server error text or structured validation error list."
+          },
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "PoseProximityContact": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "protein_residue": {
+            "type": "string"
+          },
+          "protein_chain": {
+            "type": "string"
+          },
+          "protein_atom": {
+            "type": "string"
+          },
+          "ligand_atom": {
+            "type": "string"
+          },
+          "distance_angstrom": {
+            "type": "number"
+          },
+          "protein_serial": {
+            "type": "integer"
+          },
+          "ligand_serial": {
+            "type": "integer"
+          },
+          "protein_xyz": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "ligand_xyz": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          }
+        },
+        "description": "Calculated geometric proximity only. Never label this as a hydrogen bond or other chemical interaction."
+      },
+      "PocketResidue": {
+        "type": "object",
+        "properties": {
+          "chain": {
+            "type": "string"
+          },
+          "resnum": {
+            "type": "integer"
+          },
+          "icode": {
+            "type": "string"
+          },
+          "resname": {
+            "type": "string"
+          }
+        }
+      },
+      "DockingPoseStructure": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "ligand_name": {
+            "type": "string"
+          },
+          "pose_selection_method": {
+            "type": "string"
+          },
+          "pose_selection_warning": {
+            "type": "string"
+          },
+          "affinity_units": {
+            "type": "string"
+          },
+          "affinity_interpretation": {
+            "type": "string"
+          },
+          "prepared_smiles": {
+            "type": "string"
+          },
+          "protonation_mode": {
+            "type": "string"
+          },
+          "receptor_pdb_url": {
+            "type": "string"
+          },
+          "pose_pdb_url": {
+            "type": "string"
+          },
+          "pose_pdbqt_url": {
+            "type": "string"
+          },
+          "pose_sdf_url": {
+            "type": "string"
+          },
+          "complex_pdb_url": {
+            "type": "string"
+          },
+          "receptor_url": {
+            "type": "string"
+          },
+          "ligand_url": {
+            "type": "string"
+          },
+          "ligand_pdb_url": {
+            "type": "string"
+          },
+          "ligand_sdf_url": {
+            "type": "string"
+          },
+          "viewer_url": {
+            "type": "string"
+          },
+          "render_3d_png_url": {
+            "type": "string"
+          },
+          "receptor_sha256": {
+            "type": "string"
+          },
+          "pose_sha256": {
+            "type": "string"
+          },
+          "complex_sha256": {
+            "type": "string"
+          },
+          "receptor_source_sha256": {
+            "type": "string"
+          },
+          "vina_output_sha256": {
+            "type": "string"
+          },
+          "pose_pdb_sha256": {
+            "type": "string"
+          },
+          "pose_sdf_sha256": {
+            "type": "string"
+          },
+          "coordinates_source": {
+            "type": "string"
+          },
+          "interaction_analysis_source": {
+            "type": "string"
+          },
+          "interaction_analysis_warning": {
+            "type": "string"
+          },
+          "proximity_analysis_source": {
+            "type": "string"
+          },
+          "structure_warning": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "pose_rank": {
+            "type": "integer"
+          },
+          "selected_pose_rank": {
+            "type": "integer"
+          },
+          "affinity": {
+            "type": "number"
+          },
+          "charge": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "receptor_pdb_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grid_center": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "x": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "y": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "z": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "grid_size": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "x": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "y": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "z": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "hash_definitions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "complex_ligand_chain_map": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "interactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            },
+            "description": "Classified interactions only. Currently empty because no chemical classifier is configured."
+          },
+          "proximity_contacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PoseProximityContact"
+            }
+          },
+          "pocket_residues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PocketResidue"
+            }
+          },
+          "pocket_distance_angstrom": {
+            "type": "number"
+          },
+          "proximity_contacts_total": {
+            "type": "integer"
+          },
+          "pocket_residues_total": {
+            "type": "integer"
+          },
+          "proximity_contacts_truncated": {
+            "type": "boolean"
+          },
+          "pocket_residues_truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id",
+          "ligand_name",
+          "pose_rank",
+          "affinity",
+          "complex_pdb_url",
+          "pose_pdb_url",
+          "viewer_url"
+        ],
+        "additionalProperties": true
+      },
+      "DockingPoseInteractions": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "ligand_name": {
+            "type": "string"
+          },
+          "receptor_sha256": {
+            "type": "string"
+          },
+          "pose_sha256": {
+            "type": "string"
+          },
+          "interaction_analysis_source": {
+            "type": "string"
+          },
+          "interaction_analysis_warning": {
+            "type": "string"
+          },
+          "proximity_analysis_source": {
+            "type": "string"
+          },
+          "pose_rank": {
+            "type": "integer"
+          },
+          "interactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            },
+            "description": "Classified interactions only. Currently empty because no chemical classifier is configured."
+          },
+          "proximity_contacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PoseProximityContact"
+            }
+          },
+          "pocket_residues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PocketResidue"
+            }
+          },
+          "pocket_distance_angstrom": {
+            "type": "number"
+          },
+          "proximity_contacts_total": {
+            "type": "integer"
+          },
+          "pocket_residues_total": {
+            "type": "integer"
+          },
+          "proximity_contacts_truncated": {
+            "type": "boolean"
+          },
+          "pocket_residues_truncated": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      },
+      "JobFileLink": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

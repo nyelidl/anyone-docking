@@ -20,6 +20,8 @@ Earlier fixes (retained):
 from __future__ import annotations
 
 import base64
+from contextlib import asynccontextmanager
+from job_retention import JobRetention, mark_created
 import binascii
 import tempfile
 import csv
@@ -91,7 +93,7 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 def _env_int(name: str, default: int = 0) -> int:
     try:
         return int(float(os.getenv(name, "") or default))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -206,7 +208,18 @@ def _apply_runtime_caps(req: "DockRequest") -> List[str]:
     return notes
 
 
+@asynccontextmanager
+async def _retention_lifespan(app):
+    retention = JobRetention(BASE_WORKDIR, JOBS)
+    retention.start()
+    try:
+        yield
+    finally:
+        retention.stop()
+
+
 app = FastAPI(
+    lifespan=_retention_lifespan,
     title=API_TITLE,
     version=API_VERSION,
     description="API wrapper for Anyone Can Dock.",
@@ -300,6 +313,7 @@ class DockRequest(BaseModel):
     num_modes: int = Field(default=10, ge=1, le=50)
     energy_range: int = Field(default=3, ge=1, le=20)
 
+    replicate_seeds: int = Field(default=1, ge=1, le=10, description="Independent searches; 1 disables replicates on shared hosting")
     seed: Optional[int] = None
     conformer_seed: Optional[int] = Field(default=None, ge=0)
     fix_bond_orders: bool = True
@@ -462,7 +476,7 @@ def _make_zip(wdir: Path, zip_path: Path) -> None:
     skip = {zip_path.resolve()}
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in wdir.rglob("*"):
-            if p.is_file() and p.resolve() not in skip and p.name != "status.json":
+            if p.is_file() and p.resolve() not in skip and p.name not in {"status.json", ".acd_created_at"}:
                 zf.write(p, arcname=p.relative_to(wdir))
 
 
@@ -583,6 +597,62 @@ def _select_pose_for_interaction(
 
     pose_info["selected_pose_rank"] = int(pose_ranks[selected_idx])
     return pose_info
+
+
+MIN_RECEPTOR_ATOMS_IN_BOX = max(0, _env_int("ACD_MIN_RECEPTOR_ATOMS_IN_BOX", 50))
+
+
+def _receptor_heavy_atoms_in_box(rec: Dict[str, Any]):
+    """Count protein heavy atoms in the prepared box; unknown parsing stays unknown."""
+    path = rec.get("rec_pdbqt") or rec.get("rec_fh") or ""
+    try:
+        cx, cy, cz = (float(rec[k]) for k in ("cx", "cy", "cz"))
+        hx, hy, hz = (float(rec[k]) / 2.0 for k in ("sx", "sy", "sz"))
+        import math
+        if not all(math.isfinite(v) for v in (cx, cy, cz, hx, hy, hz)) or min(hx, hy, hz) <= 0:
+            return None, None
+        if not path or not Path(path).exists():
+            return 0, 0
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except (KeyError, TypeError, ValueError, OSError):
+        return None, None
+    in_box = total = 0
+    for line in lines:
+        if not line.startswith("ATOM  "):
+            continue
+        name = line[12:16].strip()
+        kind = line[77:].strip() if len(line) > 77 else ""
+        element = line[76:78].strip() if not rec.get("rec_pdbqt") else ""
+        if name.startswith("H") or kind in ("H", "HD", "HS") or element == "H":
+            continue
+        try:
+            x, y, z = float(line[30:38]), float(line[38:46]), float(line[46:54])
+        except ValueError:
+            continue
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            continue
+        total += 1
+        if abs(x - cx) <= hx and abs(y - cy) <= hy and abs(z - cz) <= hz:
+            in_box += 1
+    return in_box, total
+
+
+def _docking_score_warning(value):
+    """Reject invalid/missing output; retain valid, unfavourable scores with a warning."""
+    import math
+    try:
+        if value is None or isinstance(value, bool):
+            raise ValueError
+        score = float(value)
+        if not math.isfinite(score):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        raise RuntimeError(f"Docking returned a missing or invalid best Vina score: {value!r}")
+    if score >= 0:
+        return (f"Best Vina score is non-negative ({score:g} kcal/mol). No favourable pose was found. "
+                "Inspect receptor/ligand preparation and pocket placement before interpretation; "
+                "the score alone does not establish an empty docking box or experimental binding.")
+    return ""
 
 
 def _generate_2d_interaction(
@@ -720,6 +790,10 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "status": r.get("status", ""),
             "top_score": r.get("top_score", None),
             "scores": scores[:10],
+            "warnings": r.get("warnings", []),
+            "replicate_summary": r.get("replicate_summary"),
+            "metal_contacts": r.get("metal_contacts", []),
+            "metal_microstate_candidates": r.get("metal_microstate_candidates", []),
             "num_poses": r.get("num_poses", None),
             "charge": r.get("charge", None),
             "prepared_smiles": r.get("prepared_smiles", ""),
@@ -756,6 +830,7 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "center": receptor.get("center", {}),
             "size": receptor.get("size", {}),
             "cocrystal_ligand_id": receptor.get("cocrystal_ligand_id"),
+            "reference_warning": receptor.get("reference_warning", ""),
         },
         "results": results,
         "download_url": _public_url(f"/jobs/{job_id}/download"),
@@ -810,6 +885,17 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
 
         if not rec.get("success"):
             raise RuntimeError(f"Receptor preparation failed: {rec.get('error')}")
+
+        # Sanity gate: a docking box with (almost) no protein atoms gives
+        # meaningless 0.0 kcal/mol scores that still look like a "success".
+        n_in_box, n_total = _receptor_heavy_atoms_in_box(rec)
+        if n_total is not None and n_in_box is not None and n_in_box < MIN_RECEPTOR_ATOMS_IN_BOX:
+            raise RuntimeError(
+                f"Prepared receptor has only {n_in_box} protein heavy atoms inside the docking box "
+                f"(total heavy atoms: {n_total}; minimum: {MIN_RECEPTOR_ATOMS_IN_BOX}). "
+                "Check receptor completeness and pocket placement. For a genuinely small receptor or pocket, "
+                "configure ACD_MIN_RECEPTOR_ATOMS_IN_BOX appropriately (0 disables this gate)."
+            )
 
         vina_path, vina_msg = get_vina_binary()
         if not vina_path:
@@ -866,6 +952,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 else:
                     row["ligand_mode"] = "smiles"
                     prep = prepare_ligand(
+                        receptor_path=rec["rec_pdbqt"],
                         smiles=lig.smiles,
                         name=name,
                         ph=req.ph,
@@ -897,6 +984,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                         )
 
                         prep = prepare_ligand(
+                        receptor_path=rec["rec_pdbqt"],
                             smiles=lig.smiles,
                             name=f"{name}_neutral_fallback",
                             ph=req.ph,
@@ -928,6 +1016,9 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     wdir=wdir,
                     out_name=name,
                     seed=req.seed,
+                    replicate_seeds=req.replicate_seeds,
+                    crystal_pdb=(rec.get("ligand_pdb_path") if _is_redocking_case(name, rec, req) else None),
+                    smiles=prep.get("prot_smiles"),
                 )
 
                 all_logs.append(f"\n===== {name}: docking =====")
@@ -935,6 +1026,10 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
 
                 if not dock.get("success"):
                     raise RuntimeError(dock.get("error", "Docking failed"))
+
+                score_warning = _docking_score_warning(dock.get("top_score"))
+                if score_warning:
+                    all_logs.append(f"WARNING: {score_warning}")
 
                 if prep.get("direct_pdbqt"):
                     row["vina_input_sha256"] = prep["input_sha256"]
@@ -1001,6 +1096,10 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     out_sdf=dock.get("out_sdf", ""),
                     pv_sdf=pose_sdf_for_reading,
                     scores=raw_scores,
+                    warnings=dock.get("warnings", []),
+                    replicate_summary=dock.get("replicate_summary"),
+                    metal_contacts=dock.get("metal_contacts", []),
+                    metal_microstate_candidates=prep.get("metal_microstate_candidates", []),
                     pkanet_ranked_csv=prep.get("pkanet_ranked_csv", ""),
                     pkanet_decision_log=prep.get("pkanet_decision_log", ""),
                     pkanet_ambiguous=prep.get("pkanet_ambiguous", False),
@@ -1012,7 +1111,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     selected_pose_rank=pose_info.get("selected_pose_rank"),
                     pose_selection_method=pose_info.get("pose_selection_method", ""),
                     selected_pose_rmsd=pose_info.get("selected_pose_rmsd"),
-                    pose_selection_warning=pose_info.get("warning", ""),
+                    pose_selection_warning=" ".join(filter(None, [pose_info.get("warning", ""), score_warning])),
                     selected_pose_sdf=pose_info.get("selected_pose_sdf", ""),
                     **interaction2d,
                 )
@@ -1041,6 +1140,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                 "center": {"x": rec.get("cx"), "y": rec.get("cy"), "z": rec.get("cz")},
                 "size": {"x": rec.get("sx"), "y": rec.get("sy"), "z": rec.get("sz")},
                 "cocrystal_ligand_id": rec.get("cocrystal_ligand_id"),
+                "reference_warning": rec.get("reference_warning", ""),
                 "hetatm_table": rec.get("hetatm_table", []),
             },
             "results": results,
@@ -1172,6 +1272,10 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "poseview_png_url": r.get("poseview_png_url", ""),
             "poseview_error": r.get("poseview_error", ""),
             "scores": scores[:10],
+            "warnings": r.get("warnings", []),
+            "replicate_summary": r.get("replicate_summary"),
+            "metal_contacts": r.get("metal_contacts", []),
+            "metal_microstate_candidates": r.get("metal_microstate_candidates", []),
             "error": r.get("error", ""),
         })
 
@@ -1182,6 +1286,7 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "center": receptor.get("center"),
             "size": receptor.get("size"),
             "cocrystal_ligand_id": receptor.get("cocrystal_ligand_id"),
+            "reference_warning": receptor.get("reference_warning", ""),
         },
         "results": compact_results,
         "summary_csv": result.get("summary_csv") if isinstance(result, dict) else "",
@@ -1258,7 +1363,7 @@ def get_pose_interactions(job_id: str, pose_rank: int, ligand_name: Optional[str
                           pocket_distance: float = Query(default=4.5, ge=2.0, le=8.0)) -> Dict[str, Any]:
     data = get_pose_structure(job_id, pose_rank, ligand_name, pocket_distance)
     keys = ("job_id", "ligand_name", "pose_rank", "pose_sha256", "receptor_sha256", "interactions",
-            "interaction_analysis_source", "interaction_analysis_warning", "proximity_analysis_source",
+            "interaction_analysis_source", "interaction_analysis_warning", "proximity_analysis_source", "metal_contacts", "metal_warnings",
             "proximity_contacts", "proximity_contacts_total", "proximity_contacts_truncated",
             "pocket_residues", "pocket_residues_total", "pocket_residues_truncated", "pocket_distance_angstrom")
     return {key: data[key] for key in keys}
@@ -1596,6 +1701,8 @@ def submit_docking(req: DockRequest, background_tasks: BackgroundTasks) -> DockS
     if cap_notes:
         message += " Note: some parameters were capped to instance limits (" + "; ".join(cap_notes) + ")."
 
+    _job_directory(job_id).mkdir(parents=True, exist_ok=True)
+    mark_created(_job_directory(job_id))
     _write_status_file(job_id, {
         "job_id": job_id,
         "status": "queued",
@@ -1760,3 +1867,45 @@ if __name__ == "__main__":
         port=int(os.getenv("PORT", "8000")),
         reload=False,
     )
+
+# Preparation-only mobile workflow; existing docking routes are unchanged.
+_mobile_prepare_slot = threading.BoundedSemaphore(1)
+
+class MobilePreparationRequest(DockRequest):
+    heme_states: Dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_mobile(self):
+        if bool(self.pdb_id) == bool(self.receptor_pdb_text):
+            raise ValueError("Choose exactly one receptor source")
+        if self.pdb_id and not re.fullmatch(r"[A-Za-z0-9]{4}", self.pdb_id):
+            raise ValueError("Provide a four-character PDB ID")
+        if self.center_mode == "blind":
+            raise ValueError("Choose auto, manual, or selection pocket mode for mobile preparation")
+        if len(self.ligands) != 1:
+            raise ValueError("Mobile preparation currently accepts exactly one ligand")
+        if not math.isfinite(self.ph) or not 0 <= self.ph <= 14:
+            raise ValueError("pH must be finite and between 0 and 14")
+        values = self.grid.size_tuple()
+        if not all(math.isfinite(x) and 0 < x <= 60 for x in values):
+            raise ValueError("Mobile grid sizes must be finite and in (0, 60] angstrom")
+        if self.grid.has_manual_center() and not all(math.isfinite(x) for x in self.grid.center_tuple()):
+            raise ValueError("Mobile grid center must be finite")
+        if self.receptor_pdb_text and len(self.receptor_pdb_text.encode()) > 12*1024*1024:
+            raise ValueError("Receptor input exceeds 12 MiB")
+        return self
+
+@app.post("/mobile/prepare", dependencies=[Depends(require_api_key)], operation_id="prepareMobileInputs")
+def prepare_mobile_inputs(req: MobilePreparationRequest):
+    from mobile_preparation import prepare_package
+    if not _mobile_prepare_slot.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Preparation server is busy; retry later")
+    try:
+        with tempfile.TemporaryDirectory(prefix="acd_mobile_", dir=BASE_WORKDIR) as directory:
+            return prepare_package(req, directory, write_receptor=_write_receptor_input,
+                prepare_receptor=prepare_receptor, prepare_ligand=prepare_ligand,
+                prepare_ligand_from_file=prepare_ligand_from_file, safe_name=_safe_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=exc.args[0] if exc.args else str(exc)) from exc
+    finally:
+        _mobile_prepare_slot.release()

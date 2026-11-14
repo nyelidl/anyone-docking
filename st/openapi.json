@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Anyone Can Dock API",
-    "description": "API wrapper for Anyone Can Dock.",
+    "description": "API wrapper for Anyone Can Dock. Metal proximities use the category Metal contact (distance-based; geometry not scored). Surface metal_warnings/warnings verbatim and describe metal_microstate_candidates as additional candidates alongside the pH-ranked selection.",
     "version": "0.3.0"
   },
   "paths": {
@@ -97,7 +97,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/jobs/{job_id}/selected-pose": {
@@ -182,7 +183,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/jobs/{job_id}/selected-pose/3d": {
@@ -267,7 +269,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/jobs/{job_id}/poses/{pose_rank}/interactions": {
@@ -361,7 +364,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/health": {
@@ -708,7 +712,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       },
       "delete": {
         "summary": "Delete Job",
@@ -763,7 +768,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/jobs/{job_id}/summary": {
@@ -820,7 +826,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/jobs/{job_id}/files/{filename}": {
@@ -882,7 +889,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/jobs/{job_id}/files/{filename}/url": {
@@ -948,7 +956,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/jobs/{job_id}/view/{filename}": {
@@ -1010,7 +1019,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     },
     "/jobs/{job_id}/download": {
@@ -1063,7 +1073,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Preserve returned warnings and unavailable RMSD values. Metal contact distances describe proximity with geometry not scored."
       }
     }
   },
@@ -1245,6 +1256,13 @@
             "type": "boolean",
             "title": "Fix Bond Orders",
             "default": true
+          },
+          "replicate_seeds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 1,
+            "description": "Independent search seeds. One search by default on shared hosting."
           }
         },
         "type": "object",
