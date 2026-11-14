@@ -19,6 +19,7 @@ from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers, StereoEnum
 from rdkit.Chem.MolStandardize import rdMolStandardize
 
 __version__ = "81"
+__identity_patch__ = "2026-11-14"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -625,7 +626,7 @@ _PENALTY_DEF = [
     ("enol_simple",       -1.2, "[CX3](=[CX3])[OX2H1]"),
     ("pyrogallol_triketo",-W_PYROGALLOL_TRIKETO, "[#6;!a;R]1(=O)[#6;!a;R](=O)[#6;!a;R](=O)[#6;R][#6;R][#6;R]1"),
     ("catechol_diketo",   -W_CATECHOL_DIKETO,    "[#6;!a;R]1(=O)[#6;!a;R](=O)[#6;R][#6;R][#6;R][#6;R]1"),
-    ("ring_carbonyl_onaromring_former", -3.0, "[#6;!a;R](=O)[#6;!a;R]=[#6;!a;R]"),
+    # Cyclic enones are not evidence of former aromaticity; use reference-aware aromatic-loss checks.
 ]
 _CHEM_RULES = []
 for _lbl, _wt, _sma in _BONUS_DEF + _PENALTY_DEF:
@@ -698,12 +699,23 @@ def enumerate_and_filter_tautomers(smiles, max_states=8, cutoff=TAUTOMER_PLAUSIB
         smi = Chem.MolToSmiles(mol, isomericSmiles=True, canonical=True)
         sc, bd = score_tautomer_plausibility(smi, ref_mol=ref_mol)
         scored = [{"smiles": smi, "score": sc, "breakdown": bd}]
-    scored = sorted(scored, key=lambda x: -x["score"])[:max_states]
+    if isinstance(max_states, bool) or not isinstance(max_states, int) or max_states < 1:
+        raise ValueError("max_states must be a positive integer")
+    scored = sorted(scored, key=lambda x: -x["score"])
     best = scored[0]["score"]
     eff_cutoff = cutoff * (2.0 if tr_flag else 1.0)
-    kept = [t for t in scored if t["score"] >= best - eff_cutoff]
-    discarded = [t for t in scored if t["score"] < best - eff_cutoff]
-    return kept or [scored[0]], discarded, tr_flag, tr_motifs
+    eligible = [t for t in scored if t["score"] >= best - eff_cutoff]
+    kept = eligible[:max_states]
+    # Preserve input as a candidate, without altering its score or claiming it
+    # is the thermodynamically preferred state. Candidate cap includes input.
+    parent = next(t for t in scored if t["smiles"] == input_canon)
+    if not any(t["smiles"] == input_canon for t in kept):
+        kept = kept[:max_states-1] + [parent]
+    kept.sort(key=lambda t: (-t["score"], t["smiles"] != input_canon))
+    kept_smiles = {t["smiles"] for t in kept}
+    discarded = [t for t in scored if t["smiles"] not in kept_smiles]
+    return kept, discarded, tr_flag, tr_motifs
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Flavonoid A-ring phenols (unchanged from original)
@@ -1563,6 +1575,13 @@ def generate_ranked_microstates(base_smiles, target_ph=7.4, ph_window=1.0, max_t
     score_ambig = len(top) > 1 and top[1]["delta_from_best"] <= AMBIGUITY_SCORE_GAP
     ambiguous = score_ambig or any(r["flag_borderline_pka"] for r in top[:2]) or tr_flag
     for row in all_micro:
+        candidate=Chem.MolFromSmiles(row["microstate_smiles"])
+        row["strict_input_identity"] = _identity_key(ref_mol)==_identity_key(candidate)
+        row["heavy_bond_graph_preserved"] = _same_heavy_bond_graph(ref_mol,candidate)
+        row["tautomer_changed"] = not row["heavy_bond_graph_preserved"]
+        row["identity_note"] = ("unchanged input graph" if row["strict_input_identity"] else
+                                "different protonation microstate; not strict input identity" if row["heavy_bond_graph_preserved"] else
+                                "different heavy-bond/stereochemical state; explicit alternative-tautomer selection required")
         row["ambiguous_top_assignment"] = ambiguous; row["flag_multiprotic"] = len(ion_sites) >= 2
     return top, ambiguous, all_micro, tr_flag, tr_motifs, ml_preds
 
@@ -1660,11 +1679,22 @@ def _pkanet_conservative_flags(parent_smiles, all_micro, pubchem_result=None, ml
 def build_minimized_3d(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None: raise ValueError(f"Bad SMILES: {smiles[:60]}")
+    reference = Chem.Mol(mol)
     mol = Chem.AddHs(mol)
+    _require_identity(reference,mol,"hydrogen addition")
     p = AllChem.ETKDGv3(); p.randomSeed = 42
     if AllChem.EmbedMolecule(mol, p) != 0: raise ValueError("ETKDG embedding failed.")
-    AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
+    _require_identity(reference,mol,"ETKDG embedding")
+    code=AllChem.MMFFOptimizeMolecule(mol, maxIters=500)
+    _require_identity(reference,mol,"MMFF optimization")
+    if code < 0: raise ValueError("MMFF setup/parameterization failed")
+    mol.SetIntProp("MMFF_return_code",code)
+    # Check actual coordinate chirality, rather than trusting retained tags.
+    actual=Chem.Mol(mol)
+    Chem.AssignStereochemistryFrom3D(actual,replaceExistingTags=True)
+    _require_identity(reference,actual,"3D stereochemistry")
     return mol
+
 
 def mol_from_file(filepath):
     ext = os.path.splitext(filepath)[1].lower(); mol = None
@@ -1707,8 +1737,10 @@ def save_molecule_files(mol, base_path, formats):
     saved = {}; warnings = []; mol2_via_obabel = False
     try:
         sdf_path = f"{base_path}.sdf"
-        w = Chem.SDWriter(sdf_path); w.write(mol); w.close(); saved["sdf"] = sdf_path
-    except Exception as e: warnings.append(f"Could not save SDF: {e}")
+        w = Chem.SDWriter(sdf_path); w.write(mol); w.close()
+        _require_identity(mol,Chem.SDMolSupplier(sdf_path,removeHs=False)[0],"SDF write/readback")
+        saved["sdf"] = sdf_path
+    except Exception as e: raise ValueError(f"Required SDF identity certificate failed: {e}") from e
     for fmt in [f.upper() for f in formats]:
         if fmt == "SDF": continue
         try:
@@ -1730,6 +1762,7 @@ def save_molecule_files(mol, base_path, formats):
     if mol2_via_obabel: warnings.append("ℹ️ MOL2 generated via Open Babel (converted from PDB)")
     saved["warnings"] = warnings; return saved
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # run_job  —  main workflow adapter (kept for parity with the Colab notebook)
 # The local ACD Streamlit app does not use this — it drives protonate_pkanet
@@ -1738,7 +1771,8 @@ def save_molecule_files(mol, base_path, formats):
 # ─────────────────────────────────────────────────────────────────────────────
 def run_job(*, input_type, smiles_text, uploaded_bytes, uploaded_name, target_pH, output_name,
             out_dir, output_formats=None, enumerate_stereoisomers=True, use_pubchem=True,
-            ph_window=1.0, max_tautomers=8, top_n_microstates=5, write_alt_3d_for_top_k=3):
+            ph_window=1.0, max_tautomers=8, top_n_microstates=5, write_alt_3d_for_top_k=3,
+            allow_tautomer_changes=False):
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     if not output_formats: output_formats = ["PDB"]
     ligands_raw = []
@@ -1789,11 +1823,19 @@ def run_job(*, input_type, smiles_text, uploaded_bytes, uploaded_name, target_pH
                 max_tautomers=max_tautomers, top_n=top_n_microstates, pubchem_result=pc)
             if not top:
                 print("❌  No valid microstates generated."); format_warnings.append(f"No valid microstates for {pretty}"); continue
-            t = top[0]
+            eligible = all_m if allow_tautomer_changes else [row for row in all_m if row["heavy_bond_graph_preserved"]]
+            if not eligible:
+                raise ValueError("No microstate preserves the input heavy-bond graph; review required, no automatic replacement")
+            t = eligible[0]
+            export_rows = eligible[:max(1,write_alt_3d_for_top_k)]
+            # Display the selected state even if outside the requested ranked top-N.
+            if not any(row["microstate_smiles"]==t["microstate_smiles"] for row in top):top=[*top,t]
+            print("    Export policy: " + ("alternative tautomers explicitly enabled" if allow_tautomer_changes else "preserve input heavy-bond graph; protonation assessment retained"))
+            if not t["strict_input_identity"]:print("WARNING: selected state differs from input: "+t["identity_note"])
             print(f"\n🔬  Microstates generated : {len(all_m)}")
             print(f"⚠️   Ambiguous top state   : {'YES' if ambig else 'NO'}")
             if tr_flag: print(f"🔄  Tautomer-rich motifs  : {', '.join(tr_motifs)}")
-            print(f"\n🏆  Rank-1")
+            print(f"\n🏆  Selected export: ranked #{t['microstate_rank']}")
             for label, val in [
                 ("Score", f"{t['selection_score']:.3f}"), ("SMILES", t["microstate_smiles"]),
                 (f"Charge @ pH {target_pH}", f"{t['net_charge']:+d}"),
@@ -1812,22 +1854,30 @@ def run_job(*, input_type, smiles_text, uploaded_bytes, uploaded_name, target_pH
                 print(f"\n💾  {Path(micro_csv).name}")
             except Exception as e: print(f"CSV write failed: {e}"); micro_csv = None
             alt3d = []
-            for row in top[:max(1, write_alt_3d_for_top_k)]:
+            for row in export_rows:
                 rk = row["microstate_rank"]; bp = str(out / f"{pretty}_micro{rk}_min")
                 try:
                     m3d = build_minimized_3d(row["microstate_smiles"])
+                    _require_identity(Chem.MolFromSmiles(row["microstate_smiles"]),m3d,"selected microstate to 3D")
                     files = save_molecule_files(m3d, bp, output_formats)
                     for w in files.pop("warnings", []):
                         if w not in format_warnings: format_warnings.append(w)
                     save_2d_image(row["microstate_smiles"], f"{bp}_2D.png")
-                    alt3d.append((rk, files.get("pdb"), files.get("sdf"), files))
+                    alt3d.append((rk, files.get("pdb"), files.get("sdf"), files, row["microstate_smiles"]))
                 except Exception as e: print(f"⚠️  3D failed for rank {rk}: {e}")
-            sel_pdb  = alt3d[0][1] if alt3d else None
-            sel_sdf  = alt3d[0][2] if alt3d else None
-            sel_mol2 = alt3d[0][3].get("mol2") if alt3d else None
+            chosen = next((entry for entry in alt3d if entry[0]==t["microstate_rank"]),None)
+            sel_pdb  = chosen[1] if chosen else None
+            sel_sdf  = chosen[2] if chosen else None
+            sel_mol2 = chosen[3].get("mol2") if chosen else None
+            if not chosen:format_warnings.append(f"Selected rank {t['microstate_rank']} failed 3D export; alternatives were not substituted")
             if sel_pdb: print(f"💾  {Path(sel_pdb).name}, {Path(sel_sdf).name if sel_sdf else 'no sdf'}")
             results.append({
                 "name": pretty, "base_smiles": can_smi, "stereo": stereo_tag,
+                "selected_rank":t["microstate_rank"], "strict_input_identity":t["strict_input_identity"],
+                "tautomer_changed":t["tautomer_changed"], "identity_note":t["identity_note"],
+                "allow_tautomer_changes":bool(allow_tautomer_changes), "identity_policy_version":__identity_patch__,
+                "export_status":"PASS" if chosen else "BLOCKED_3D_EXPORT",
+
                 "selected_microstate_smiles": t["microstate_smiles"],
                 "selected_tautomer_smiles": t["tautomer_smiles"],
                 "pKa_source": t["pKa_source"], "decision_backend": t["decision_backend"], "decision_mode": t["decision_mode"],
@@ -1842,7 +1892,7 @@ def run_job(*, input_type, smiles_text, uploaded_bytes, uploaded_name, target_pH
                 "microstate_csv": micro_csv, "minimized_pdb": sel_pdb, "minimized_sdf": sel_sdf, "minimized_mol2": sel_mol2,
                 "selection_score": t["selection_score"], "n_all_microstates": len(all_m),
                 "top_microstates": [{k:v for k,v in r.items() if k != "charged_atom_rows"} for r in top],
-                "alt3d": [{"rank":r[0],"pdb":r[1],"sdf":r[2],"files":r[3],"smiles":top[i]["microstate_smiles"]}
+                "alt3d": [{"rank":r[0],"pdb":r[1],"sdf":r[2],"files":r[3],"smiles":r[4]}
                           for i,r in enumerate(alt3d)],
             })
             for row in top:
@@ -1877,6 +1927,10 @@ def run_job(*, input_type, smiles_text, uploaded_bytes, uploaded_name, target_pH
             f"   Imidic acid       : {'YES ⚠️' if r['flag_imidic_acid_penalty'] else 'NO'}",
             f"   [N-]C=O           : {'YES ⚠️' if r['flag_amide_n_deprotonation'] else 'NO'}",
             f"   Aromaticity lost  : {'YES ⚠️' if r.get('flag_aromaticity_lost') else 'NO'}", ""]
+    summary_lines.append("Export policy: " + ("alternative tautomers explicitly enabled" if allow_tautomer_changes else "input heavy-bond graph preserved; protonation changes remain separately identified"))
+    for r in results:
+        summary_lines.append(f"{r['name']}: rank={r['selected_rank']}; strict_input_identity={r['strict_input_identity']}; tautomer_changed={r['tautomer_changed']}; export_status={r['export_status']}")
+    (out/"identity_selection.json").write_text(json.dumps([dict(name=r['name'],input_smiles=r['base_smiles'],selected_smiles=r['selected_microstate_smiles'],selected_rank=r['selected_rank'],strict_input_identity=r['strict_input_identity'],tautomer_changed=r['tautomer_changed'],allow_tautomer_changes=r['allow_tautomer_changes'],export_status=r['export_status']) for r in results],indent=2))
     summary_text = "\n".join(summary_lines)
     (out / "summary.txt").write_text(summary_text + "\n")
     if input_type == "SMI_FILE" and results:
@@ -1889,6 +1943,7 @@ def run_job(*, input_type, smiles_text, uploaded_bytes, uploaded_name, target_pH
         (out / "processing.log").write_text("\n".join(log_lines) + "\n")
     return {"results": results, "summary_text": summary_text,
             "out_dir": str(out), "format_warnings": format_warnings, "pka_backend": _PKA_BACKEND}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ZIP helpers
@@ -2655,3 +2710,49 @@ if __name__ == "__main__":
               f"score={ms.get('selection_score', '?'):.3f}  "
               f"charge={ms['net_charge']:+d}")
     print(f"  ambiguous={amb}, tautomer_rich={tr}")
+
+
+# Shared molecular identity safeguards; local compatibility APIs remain intact.
+def _identity_key(molecule):
+    if molecule is None:
+        raise ValueError("Molecular identity cannot be checked: unreadable structure")
+    m = Chem.RemoveHs(Chem.Mol(molecule))
+    for atom in m.GetAtoms(): atom.SetAtomMapNum(0)
+    return Chem.MolToSmiles(m, canonical=True, isomericSmiles=True)
+
+
+def _require_identity(reference, output, stage):
+    if _identity_key(reference) != _identity_key(output):
+        raise ValueError(f"CHEMICAL_IDENTITY_MISMATCH at {stage}: graph, charge, isotope or specified stereochemistry changed")
+
+
+def _same_heavy_bond_graph(reference, output):
+    # Protonation may change H and charge; never silently change heavy bonds,
+    # isotope labels or specified stereochemistry under that label.
+    def neutral_graph(m):
+        m = Chem.RemoveHs(Chem.Mol(m))
+        for a in m.GetAtoms():
+            a.SetAtomMapNum(0);a.SetFormalCharge(0);a.SetNoImplicit(True);a.SetNumExplicitHs(0)
+        m.UpdatePropertyCache(strict=False)
+        return m
+    a,b=neutral_graph(reference),neutral_graph(output)
+    return (a.GetNumAtoms()==b.GetNumAtoms() and a.GetNumBonds()==b.GetNumBonds()
+            and a.HasSubstructMatch(b,useChirality=True) and b.HasSubstructMatch(a,useChirality=True))
+
+
+def zip_selected_structures(out_dir, zip_path, selected_formats, results):
+    """Package exactly the selected primary outputs, including SDF certificates."""
+    root=Path(out_dir).resolve();formats={x.lower() for x in selected_formats}|{"sdf"}
+    with zipfile.ZipFile(zip_path,"w",zipfile.ZIP_DEFLATED) as z:
+        for result in results:
+            if result.get("export_status")!="PASS":continue
+            for fmt in formats:
+                value=result.get("minimized_"+fmt)
+                if not value:continue
+                p=Path(value).resolve()
+                if p.parent!=root:raise ValueError("Selected structure is outside output directory")
+                if p.is_file():z.write(p,p.name)
+        manifest=root/"identity_selection.json"
+        if manifest.exists():z.write(manifest,manifest.name)
+    return str(zip_path)
+

@@ -2750,17 +2750,23 @@ def protonate_pkanet(
     elif selection_mode in {"manual", "manual_rank"}:
         selection_mode = "manual_rank"
 
-    if selection_mode == "manual_rank" and manual_rank is not None:
-        best = next((r for r in all_micro if int(r.get("microstate_rank", -1)) == int(manual_rank)), None)
+    # Identity policy 2026-11-14: score ranking is not permission to change heavy bonds.
+    if selection_mode == "manual_rank":
+        if manual_rank is None:
+            raise ValueError("Manual microstate selection requires an explicit rank")
+        best = next((r for r in all_micro if int(r.get("microstate_rank",-1)) == int(manual_rank)),None)
         if best is None:
-            log.append(f"⚠ Requested manual microstate rank {manual_rank} not found; using auto recommendation")
-            best = next((r for r in all_micro if r.get("recommended_default")), top[0])
-            selection_mode = "auto_recommended"
-    elif selection_mode == "highest_score":
-        best = top[0]
+            raise ValueError("Requested manual microstate rank is not available; no substitute selected")
+        if not best.get("heavy_bond_graph_preserved",False):
+            log.append("WARNING: manually selected different chemical microstate; not unchanged input identity")
     else:
-        best = next((r for r in all_micro if r.get("recommended_default")), top[0])
-        selection_mode = "auto_recommended"
+        eligible = [r for r in all_micro if r.get("heavy_bond_graph_preserved") is True]
+        if not eligible:
+            raise RuntimeError("No candidate preserves the input heavy-atom bonds/stereochemistry; explicit review required")
+        best = eligible[0] if selection_mode == "highest_score" else next((r for r in eligible if r.get("recommended_default")),eligible[0])
+        if selection_mode != "highest_score": selection_mode = "auto_recommended"
+    if "strict_input_identity" not in best:
+        raise RuntimeError("Unpatched pKaNET engine: molecular identity metadata missing")
 
     best_smi = best["microstate_smiles"]
     charge = int(best["net_charge"])
@@ -2816,6 +2822,9 @@ def protonate_pkanet(
         charge = actual_charge
 
     details = {
+        "identity_policy_version":"2026-11-14",
+        "strict_input_identity":bool(best["strict_input_identity"]),
+        "tautomer_changed":bool(best["tautomer_changed"]),
         "selection_mode": selection_mode,
         "stereo_choice": stereo_choice,
         "stereo_status": stereo_status,
@@ -2832,6 +2841,7 @@ def protonate_pkanet(
     if return_details:
         return best_smi, charge, log, details
     return best_smi, charge, log
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3299,7 +3309,7 @@ def run_vina_multi(
     ligand_pdbqts: list[str],
     config_txt: str,
     vina_path: str,
-    exhaustiveness: int = 32,
+    exhaustiveness: int = 8,
     n_modes: int = 10,
     energy_range: float = 3,
     wdir = ".",
@@ -3360,7 +3370,7 @@ def run_vina(
     ligand_pdbqt: str,
     config_txt: str,
     vina_path: str,
-    exhaustiveness: int = 16,
+    exhaustiveness: int = 8,
     n_modes: int = 10,
     energy_range: int = 3,
     wdir = ".",
