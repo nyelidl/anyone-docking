@@ -130,7 +130,7 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                 st.warning(inspection['message'])
 
         from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
-        _flex_controls(st, (inspection or {}).get('scoped_path') or path, pfx, online=False)
+        _flex_controls(st, (inspection or {}).get('scoped_path') or path, pfx, online=True)
         settings = ((inspection or {}).get('source_sha256'), tuple(box), st.session_state.get(pfx + 'flex_signature'))
         if st.session_state.get(pfx + 'prepared_settings') != settings:
             st.session_state.pop(pfx + 'prepared', None)
@@ -147,7 +147,7 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
                                                    center_mode='auto', box_size=box,
                                                    hetatm_policy=inspection['hetatm_policy'],
                                                    reference_hetatm_key=inspection['ligand']['key'],
-                                                   flexible_residues=_flex_require(st, pfx, online=False))
+                                                   flexible_residues=_flex_require(st, pfx, online=True))
                 if not result.get('success'):
                     raise ValueError(result.get('error', 'Receptor preparation failed.'))
                 if hashlib.sha256(Path(inspection['reference_path']).read_bytes()).hexdigest() != inspection['reference_sha256']:
@@ -217,7 +217,7 @@ def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
     prepared = st.session_state.get(pfx + 'prepared')
     ph = st.number_input('pH', min_value=0.0, max_value=14.0, value=7.4, key=pfx + 'ph')
     mode = st.selectbox('Protonation mode', ['pkanet', 'neutral'], key=pfx + 'prot')
-    exh = st.slider('Exhaustiveness', 1, 128, 16, key=pfx + 'exh')
+    exh = st.slider('Exhaustiveness', 1, 128, 8, key=pfx + 'exh')
     modes = st.slider('Maximum poses', 1, 50, 10, key=pfx + 'modes')
     energy = st.slider('Energy range (kcal/mol)', 1, 20, 3, key=pfx + 'energy')
     with st.expander('Reproducibility (random seed)', expanded=False):

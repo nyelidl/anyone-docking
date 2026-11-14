@@ -17,8 +17,6 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from heme_state import HemeStateError, detect_heme_centers
-
 from core import (
     prepare_receptor,
     prepare_ligand,
@@ -189,6 +187,7 @@ def _prolif_profile_table_html(profile_rows, residue_columns) -> str:
         '</table></div>'
         f'<div style="padding-top:10px;">{legend_items}</div>'
     )
+
 
 
 
@@ -1738,16 +1737,55 @@ _OBABEL_OK, _OBABEL_VER   = _cached_obabel()
 # ══════════════════════════════════════════════════════════════════════════════
 
 def show3d(view, height=480):
-    try:
-        from stmol import showmol
-        showmol(view, height=height)
-    except ImportError:
-        raw  = view._make_html()
-        resp = _re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', raw)
-        components.html(
-            f'<div style="width:100%;overflow:hidden">{resp}</div>',
-            height=height, scrolling=False,
-        )
+    """Render a responsive viewer and resize after its expander becomes visible."""
+    height = int(height)
+    raw = view._make_html()
+    layout = f'''<style>
+html, body {{ margin:0; width:100%; height:{height}px; overflow:hidden; }}
+div[id^="3dmolviewer_"] {{ width:100%!important; height:{height}px!important; }}
+#acd-viewer-error {{ position:absolute; inset:12px; padding:12px; background:#fff4e5;
+    color:#663c00; font:14px sans-serif; z-index:10; }}
+</style>'''
+    lifecycle = '''<script>
+(function () {
+    const container = document.querySelector('div[id^="3dmolviewer_"]');
+    if (!container) return;
+    const viewerName = container.id.replace('3dmolviewer_', 'viewer_');
+    let ready = false;
+    function showError() {
+        if (ready || document.getElementById('acd-viewer-error')) return;
+        const notice = document.createElement('div');
+        notice.id = 'acd-viewer-error';
+        notice.setAttribute('role', 'alert');
+        notice.textContent = 'The 3D viewer could not start. Check that WebGL is enabled and '
+            + 'cdn.jsdelivr.net is reachable, then reload the app.';
+        document.body.appendChild(notice);
+    }
+    function resizeViewer() {
+        const viewer = window[viewerName];
+        if (!viewer || container.clientWidth === 0) return;
+        try {
+            viewer.resize();
+            viewer.render();
+            ready = true;
+            const notice = document.getElementById('acd-viewer-error');
+            if (notice) notice.remove();
+        } catch (error) {
+            console.error('ACD 3D viewer:', error);
+            showError();
+        }
+    }
+    new ResizeObserver(resizeViewer).observe(container);
+    window.addEventListener('resize', resizeViewer);
+    if (window.$3Dmolpromise) {
+        window.$3Dmolpromise.then(function () {
+            requestAnimationFrame(resizeViewer);
+        }).catch(showError);
+    }
+    setTimeout(function () { resizeViewer(); showError(); }, 15000);
+})();
+</script>'''
+    components.html(layout + raw + lifecycle, height=height, scrolling=False)
 
 def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
     try:
@@ -4491,41 +4529,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 with open(_scan_path, "wb") as _sf:
                     _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
 
-            _heme_states_for_prep = {}
-            if _scan_path and os.path.exists(_scan_path):
-                try:
-                    _heme_scan_path = _scan_path
-                    if is_cif_file(_heme_scan_path):
-                        _heme_scan_path = str(wdir / "heme_state_scan.pdb")
-                        _heme_cif = convert_cif_to_pdb(_scan_path, _heme_scan_path)
-                        if not _heme_cif.get("success"):
-                            raise HemeStateError(_heme_cif.get("error", "CIF conversion failed"))
-                    _heme_centers = detect_heme_centers(_heme_scan_path)
-                    if _heme_centers:
-                        st.markdown("**Heme state**")
-                    for _hc_i, _hc in enumerate(_heme_centers, 1):
-                        _heme_states_for_prep[_hc["key"]] = "auto"
-                        _state_label = "Compound I" if _hc["state"] == "CPD_I" else "Ferric/resting HEM"
-                        _oxo_text = (
-                            f" · Oxo {_hc['oxo_name']} #{_hc['oxo_serial']} · Fe-O {_hc['fe_o_distance']:.2f} Å"
-                            if _hc.get("oxo_serial") else " · Oxo none"
-                        )
-                        st.info(
-                            f"Center {_hc_i}: **{_state_label}** · {_hc['resname']} {_hc['chain']} {_hc['resid']} · "
-                            f"Fe #{_hc['fe_serial']}{_oxo_text} · "
-                            f"proximal {_hc['cys_resname']} {_hc['cys_chain']}:{_hc['cys_resid']} SG "
-                            f"(Fe-S {_hc['fe_s_distance']:.2f} Å)"
-                        )
-                        if _hc.get("oxo_h_serial"):
-                            st.warning(
-                                f"Axial oxo H #{_hc['oxo_h_serial']} detected at {_hc['oh_distance']:.2f} Å; "
-                                "only this hydrogen will be removed during preparation."
-                            )
-                    st.session_state[pfx + "heme_states"] = _heme_states_for_prep
-                except HemeStateError as _heme_error:
-                    st.error(f"Heme validation: {_heme_error}")
-                    st.session_state[pfx + "heme_states"] = {"__error__": str(_heme_error)}
-
             def _lig_label(_r):
                 _ch = _r.get("chain") or "—"
                 _lig_name = _r.get("full_resname") or _r.get("resname")
@@ -4755,7 +4758,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
         st.session_state[pfx + "assessment_settings"] = _assessment_settings
 
     from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
-    _flex_controls(st, _scan_path, pfx, online=False)
+    _flex_controls(st, _scan_path, pfx, online=True)
     if st.session_state.get(pfx + "receptor_done") and pfx != "shared_":
         _flex_download(st, st.session_state.get(pfx + "receptor_pdbqt", ""), pfx, result_root=wdir.parent if pfx == "shared_" else wdir)
 
@@ -4788,11 +4791,6 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
 
         st.session_state[pfx + "receptor_done"] = False
         st.session_state[{"b_": "b_batch_done", "m_": "m_joint_done"}.get(pfx, "docking_done")] = False
-
-        _stored_heme_states = st.session_state.get(pfx + "heme_states", {})
-        if "__error__" in _stored_heme_states:
-            st.error(f"❌ Receptor preparation stopped: {_stored_heme_states['__error__']}")
-            st.stop()
 
         # ── Deduplicate identical protein chains ──────────────────────────
         try:
@@ -4869,7 +4867,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 st.warning(f"⚠️ Could not compute blind docking box: {_be}")
 
         try:
-            _flex_require(st, pfx, online=False)
+            _flex_require(st, pfx, online=True)
         except ValueError as _flex_error:
             st.error(str(_flex_error))
             st.stop()
@@ -4884,8 +4882,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
                 hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
                 reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
-                heme_states       = _stored_heme_states,
-                flexible_residues = _flex_require(st, pfx, online=False),
+                flexible_residues = _flex_require(st, pfx, online=True),
             )
 
         if result["success"]:
@@ -4967,7 +4964,7 @@ st.markdown(
     "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown("**Single Dock** — one ligand. **Batch Dock** — compare ligands separately. **Co-Dock** — dock 2–4 ligands together in one pocket. **Redock** — check a co-crystal pose.")
-st.markdown("**🖥️ Run locally | 🌐 Web interface**")
+st.markdown("**☁️ Cloud-ready | 📱 Mobile-compatible**")
 
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
@@ -5540,7 +5537,7 @@ with tab_basic:
     cd1, cd2 = st.columns([1.5, 1])
     with cd1:
         exh = st.slider(
-            "Exhaustiveness", 4, 64, 16, 2, key="exh_slider",
+            "Exhaustiveness", 4, 64, 8, 2, key="exh_slider",
             help=(
                 "Search thoroughness — higher = more reliable, slower.\n\n"
                 "📖 Controls number of Monte Carlo steps Vina performs.\n"
@@ -5592,13 +5589,13 @@ with tab_basic:
             )
         _dock_seed = vina_seed if vina_seed != 0 else None
     with cd2:
-        est = max(1, exh // 8)
         st.markdown(
             f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
             f'border-radius:8px;padding:16px;">'
             f'<div style="color:var(--text-muted);font-size:0.8rem">ESTIMATED TIME</div>'
             f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;'
-            f'color:var(--warn)">Typically 2–6 min; actual runtime depends on system size, sampling parameters, and current server load.</div>'
+            f'color:var(--warn)">Typically 2–6 min</div>'
+            f'<div style="color:var(--text-muted);font-size:0.8rem;margin-top:6px;">Noted: actual runtime depends on system size, sampling parameters, and current server load.</div>'
             f'<div style="color:var(--text-muted);font-size:0.8rem">'
             f'exhaustiveness = {exh}</div>'
             f'</div>',
@@ -7102,6 +7099,8 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 st.markdown(
     '<div style="text-align:center;color:#57606A;font-size:0.78rem;'
     'font-family:\'IBM Plex Mono\',monospace;">'
+    '<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" '
+    'alt="Anyone Can Dock" style="display:block;margin:0 auto 0.45rem auto;max-width:180px;width:100%;height:auto;">'
     'AutoDock Vina 1.2.7 · Meeko · RDKit · OpenBabel · py3Dmol<br>'
     'Eberhardt et al. J. Chem. Inf. Model. 2021, 61, 3891&#8211;3898 &nbsp;·&nbsp; '
     '<a href="https://pubs.acs.org/doi/10.1021/acs.jcim.5c02852" target="_blank" '

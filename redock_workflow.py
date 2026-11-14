@@ -167,7 +167,7 @@ def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5, ligand_key=None):
 
 
 def execute_prepared_redock(core, inspection, receptor, wdir, vina_path, *, ph=7.4,
-                            mode='pkanet', exhaustiveness=16, n_modes=10, energy_range=3,
+                            mode='pkanet', exhaustiveness=8, n_modes=10, energy_range=3,
                             seed=None, conformer_seed=None, replicate_seeds=1):
     """GUI orchestration using the same operations called by cmd_redock."""
     import csv

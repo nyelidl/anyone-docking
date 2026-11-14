@@ -395,7 +395,7 @@ def run_flexible(core, options, data, *, multiple=False):
         path.unlink(missing_ok=True)
     command = [str(options["vina_path"]), "--receptor", data["rigid_pdbqt"], "--flex", data["flex_pdbqt"],
                "--ligand", *[str(Path(p).resolve()) for p in ligands], "--config", str(Path(options["config_txt"]).resolve()),
-               "--exhaustiveness", str(options.get("exhaustiveness", 16)), "--num_modes", str(options.get("n_modes", 10)),
+               "--exhaustiveness", str(options.get("exhaustiveness", 8)), "--num_modes", str(options.get("n_modes", 10)),
                "--energy_range", str(options.get("energy_range", 3)), "--out", str(raw)]
     if options.get("seed") is not None:
         command += ["--seed", str(options["seed"])]

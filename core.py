@@ -8,7 +8,6 @@ Safe to import in Colab notebooks, pytest, or any UI framework.
 
 import json
 import os
-import platform as _platform
 import re as _re
 import subprocess
 import sys
@@ -16,16 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from heme_state import (
-    HemeStateError,
-    apply_and_validate_pdbqt,
-    detect_heme_centers,
-    prepare_heme_centers,
-)
-
-_SYS = _platform.system().lower()
-_IS_WIN = _SYS == "windows"
-_NULL = "2>NUL" if _IS_WIN else "2>/dev/null"
+from heme_state import apply_and_validate_pdbqt, prepare_heme_centers
 
 
 def _silence_rdkit_logs():
@@ -218,16 +208,10 @@ def _capture_connectivity_annotations(struct_path: str, wdir) -> dict:
                 for line in f:
                     rec = line[:6].strip()
                     if rec == "LINK":
-                        records.append({
-                            "kind": "LINK",
-                            "raw": line.rstrip(),
-                        })
+                        records.append({"kind": "LINK", "raw": line.rstrip()})
                         summary["link_count"] += 1
                     elif rec == "SSBOND":
-                        records.append({
-                            "kind": "SSBOND",
-                            "raw": line.rstrip(),
-                        })
+                        records.append({"kind": "SSBOND", "raw": line.rstrip()})
                         summary["ssbond_count"] += 1
     except Exception as e:
         summary["error"] = str(e)
@@ -717,7 +701,7 @@ def is_cif_file(filepath: str) -> bool:
 def check_obabel():
     import shutil
     if shutil.which("obabel") is None:
-        return False, "obabel not found — install OpenBabel and ensure it is on PATH"
+        return False, "obabel not found — add 'openbabel' to packages.txt"
     _, out = run_cmd("obabel --version")
     return True, (out.splitlines()[0] if out else "ok")
 
@@ -727,13 +711,9 @@ def check_obabel():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_vina_binary(path: str = ""):
-    import shutil as _shutil
-    _vina_in_path = _shutil.which("vina") or _shutil.which("vina_1.2.7") or _shutil.which("AutoDock-Vina")
-    if _vina_in_path and os.path.getsize(_vina_in_path) > 100_000:
-        return _vina_in_path, f"ok (found on PATH: {_vina_in_path})"
-
-    system  = _SYS
-    machine = _platform.machine().lower()
+    import platform
+    system  = platform.system().lower()
+    machine = platform.machine().lower()
     _BASE = "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/"
     if system == "linux":
         _FNAME = "vina_1.2.7_linux_x86_64"
@@ -1364,8 +1344,7 @@ def strip_and_convert_receptor(rec_raw: str, wdir, heme_preparation: dict | None
                 pdbqt_lines.extend(heme_prepared["pdbqt_lines"])
                 heme_injected = len(heme_prepared["pdbqt_lines"])
             else:
-                # Last-resort fallback if isolated Heme PDBQT preparation fails:
-                # preserve any hydrogens present in the hydrogenated Heme PDB block.
+                # Preserve any hydrogens present in the hydrogenated heme block.
                 fallback_heme_lines = heme_prepared["display_lines"] or heme_lines
                 for hl in fallback_heme_lines:
                     try:
@@ -1526,8 +1505,7 @@ def prepare_receptor(
                 raise ValueError(f"CIF -> PDB conversion failed: {cif_result.get('error', 'unknown')}")
             raw_pdb = converted_pdb
 
-        # Inspect the complete structure before ligand/HETATM filtering so a
-        # standalone ferryl oxygen cannot be mistaken for a removable ligand.
+        # Detect before HETATM filtering so standalone ferryl oxygen is retained.
         heme_preparation = prepare_heme_centers(raw_pdb, heme_states, remove_oxo_h=False)
 
         atoms = parsePDB(raw_pdb)
@@ -1657,8 +1635,7 @@ def prepare_receptor(
 
         rec_raw_path = str(wdir / "receptor_atoms.pdb")
         writePDB(rec_raw_path, rec_sel)
-        # ProDy may renumber atoms. Refresh geometric identities on the written
-        # receptor before oxo-H removal and final PDBQT charge mapping.
+        # ProDy may renumber atoms; refresh identities before cleanup and mapping.
         heme_preparation = prepare_heme_centers(rec_raw_path, heme_states)
         log.extend(heme_preparation["log"])
         log.append(f"✓ Receptor: {rec_sel.numAtoms()} atoms")
@@ -2576,16 +2553,10 @@ def _load_local_pkanet_module(log=None):
     import hashlib
     from pathlib import Path
 
-    core_dir = Path(__file__).resolve().parent
-    pkanet_path = None
-    for name in ("pKaNET.py", "pkanet.py"):
-        candidate = core_dir / name
-        if candidate.exists():
-            pkanet_path = candidate
-            break
+    pkanet_path = Path(__file__).resolve().with_name("pKaNET.py")
 
-    if pkanet_path is None:
-        raise FileNotFoundError(f"pKaNET.py/pkanet.py not found next to core.py: {core_dir}")
+    if not pkanet_path.exists():
+        raise FileNotFoundError(f"pKaNET.py not found next to core.py: {pkanet_path}")
 
     module_name = "pKaNET_local_ACD"
 
@@ -2595,7 +2566,7 @@ def _load_local_pkanet_module(log=None):
 
     spec = importlib.util.spec_from_file_location(module_name, str(pkanet_path))
     if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load pKaNET module from: {pkanet_path}")
+        raise ImportError(f"Cannot load pKaNET.py from: {pkanet_path}")
 
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -3108,8 +3079,8 @@ def prepare_ligand(
         except Exception as e_meeko:
             log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
             subprocess.run(
-                ["obabel", out_sdf, "-O", out_pdbqt, "-xh"],
-                capture_output=True, timeout=30,
+                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
+                shell=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
@@ -3175,8 +3146,8 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir,
             _ob_sdf = str(wdir / f"{name}_ob.sdf")
             import subprocess
             subprocess.run(
-                ["obabel", file_path, "-O", _ob_sdf],
-                capture_output=True, timeout=30,
+                f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
+                shell=True, timeout=30,
             )
             if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
                 supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
@@ -3277,8 +3248,8 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir,
             log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
             import subprocess
             subprocess.run(
-                ["obabel", out_sdf, "-O", out_pdbqt, "-xh"],
-                capture_output=True, timeout=30,
+                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
+                shell=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
@@ -3311,7 +3282,7 @@ def smiles_from_file(file_path: str, wdir) -> str:
         return Chem.MolToSmiles(mols[0])
     else:
         smi_tmp = str(wdir / "lig_upload.smi")
-        run_cmd(f'obabel "{file_path}" -O "{smi_tmp}" --canonical {_NULL}')
+        run_cmd(f'obabel "{file_path}" -O "{smi_tmp}" --canonical 2>/dev/null')
         for line in open(smi_tmp):
             pts = line.strip().split(None, 1)
             if pts:
@@ -3328,7 +3299,7 @@ def run_vina_multi(
     ligand_pdbqts: list[str],
     config_txt: str,
     vina_path: str,
-    exhaustiveness: int = 32,
+    exhaustiveness: int = 8,
     n_modes: int = 10,
     energy_range: float = 3,
     wdir = ".",
@@ -3389,12 +3360,13 @@ def run_vina(
     ligand_pdbqt: str,
     config_txt: str,
     vina_path: str,
-    exhaustiveness: int = 16,
+    exhaustiveness: int = 8,
     n_modes: int = 10,
     energy_range: int = 3,
     wdir = ".",
     out_name: str = "out",
     seed: int | None = None,
+    cpu: int | None = None,
 ) -> dict:
     wdir      = Path(wdir)
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
@@ -3402,6 +3374,14 @@ def run_vina(
 
     # --seed: when set, makes docking deterministic for the same input.
     _seed_flag = f" --seed {int(seed)}" if seed is not None else ""
+    if cpu is None:
+        _cpu_env = os.environ.get("ACD_VINA_CPU", "").strip()
+        if _cpu_env:
+            try:
+                cpu = max(1, int(_cpu_env))
+            except ValueError:
+                cpu = None
+    _cpu_flag = f" --cpu {int(cpu)}" if cpu is not None else ""
 
     rc, vlog = run_cmd(
         f'"{vina_path}" '
@@ -3411,6 +3391,7 @@ def run_vina(
         f'--exhaustiveness {exhaustiveness} '
         f'--num_modes {n_modes} '
         f'--energy_range {energy_range}'
+        f'{_cpu_flag} '
         f'{_seed_flag} '
         f'--out "{out_pdbqt}"',
         cwd=str(wdir),
@@ -3419,7 +3400,7 @@ def run_vina(
     if rc != 0 or not os.path.exists(out_pdbqt):
         return {"success": False, "error": f"Vina exit code {rc}", "log": vlog}
 
-    run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" {_NULL}')
+    run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" 2>/dev/null')
 
     scores    = []
     cur_model = None
@@ -3449,6 +3430,7 @@ def run_vina(
         "scores":    scores,
         "top_score": scores[0]["affinity"] if scores else None,
         "seed":      int(seed) if seed is not None else None,
+        "cpu":       int(cpu) if cpu is not None else None,
         "log":       vlog,
     }
 
@@ -3878,7 +3860,7 @@ def convert_sdf_to_v2000(sdf_path: str) -> str:
     except Exception:
         pass
     RDLogger.EnableLog("rdApp.error")
-    rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" {_NULL}')
+    rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" 2>/dev/null')
     if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
         return out
     return sdf_path
@@ -4952,13 +4934,6 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
             ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 28),
             ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28),
             ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 26),
-            ("/System/Library/Fonts/Supplemental/Arial.ttf", 28),
-            ("/System/Library/Fonts/Helvetica.ttc", 28),
-            ("/Library/Fonts/Arial.ttf", 28),
-            ("/opt/homebrew/share/fonts/liberation-fonts/LiberationSans-Regular.ttf", 28),
-            ("C:/Windows/Fonts/arial.ttf", 28),
-            ("C:/Windows/Fonts/segoeui.ttf", 28),
-            ("C:/Windows/Fonts/calibri.ttf", 28),
         ]:
             try:
                 font = ImageFont.truetype(fp, sz); break
@@ -5823,8 +5798,6 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
                 parts.append(f'<line x1="{line_x1:.1f}" y1="{ly0+10}" x2="{line_x2:.1f}" y2="{ly0+10}" stroke="{clr}" stroke-width="2" stroke-dasharray="5 3" opacity="0.85"/>')
             text_x=(line_x2 if it!="hydrophobic" else circ_cx+9.54)+6
             parts.append(f'<text x="{text_x:.1f}" y="{ly0+10}" text-anchor="start" dominant-baseline="central" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#555">{lbl}</text>')
-    if any(p["itype"] == "metal" for p in placements):
-        parts.append(f'<text x="{W//2}" y="{H-5}" text-anchor="middle" font-size="12" fill="#555">{METAL_CONTACT_LABEL}</text>')
     if any(p["itype"] == "metal" for p in placements):
         parts.append(f'<text x="{W//2}" y="{H-5}" text-anchor="middle" font-size="12" fill="#555">{METAL_CONTACT_LABEL}</text>')
     parts.append('</svg>')

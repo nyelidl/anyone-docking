@@ -222,7 +222,7 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
         ph = st.number_input("pH", 0.0, 14.0, 7.4, 0.1, key="m_ph")
         neutral = st.checkbox("Keep input charge state", key="m_neutral")
     with col2:
-        exhaustiveness = st.slider("Exhaustiveness", 8, 64, 32, 4, key="m_exh")
+        exhaustiveness = st.slider("Exhaustiveness", 8, 64, 8, 4, key="m_exh")
         n_modes = st.slider("Combined poses", 1, 20, 10, key="m_modes")
     with col3:
         energy_range = st.slider("Energy range (kcal/mol)", 1, 10, 3, key="m_range")
