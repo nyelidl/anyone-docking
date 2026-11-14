@@ -1740,6 +1740,22 @@ def show3d(view, height=480):
     """Render a responsive viewer and resize after its expander becomes visible."""
     height = int(height)
     raw = view._make_html()
+    bundle_path = Path(__file__).with_name("3Dmol-min.js")
+    if not bundle_path.is_file():
+        st.error("The 3D renderer file is missing. Deploy 3Dmol-min.js alongside app.py.")
+        return
+    library = bundle_path.read_text(encoding="utf-8").replace("</script", "<\\/script")
+    # Load the bundled library in the iframe before py3Dmol creates its viewer.
+    raw, replaced = _re.subn(
+        r"if\s*\(typeof \$3Dmolpromise === 'undefined'\)\s*\{.*?\n\}",
+        "var $3Dmolpromise = Promise.resolve();", raw, count=1, flags=_re.S,
+    )
+    if replaced != 1:
+        st.error("The installed py3Dmol HTML format is unsupported. Update the app and py3Dmol together.")
+        return
+    raw = raw.replace("$3Dmolpromise.then(function() {",
+                      "$3Dmolpromise = $3Dmolpromise.then(function() {")
+    raw = "<script>" + library + "</script>" + raw
     layout = f'''<style>
 html, body {{ margin:0; width:100%; height:{height}px; overflow:hidden; }}
 div[id^="3dmolviewer_"] {{ width:100%!important; height:{height}px!important; }}
@@ -1752,13 +1768,14 @@ div[id^="3dmolviewer_"] {{ width:100%!important; height:{height}px!important; }}
     if (!container) return;
     const viewerName = container.id.replace('3dmolviewer_', 'viewer_');
     let ready = false;
-    function showError() {
+    function showError(error) {
         if (ready || document.getElementById('acd-viewer-error')) return;
         const notice = document.createElement('div');
         notice.id = 'acd-viewer-error';
         notice.setAttribute('role', 'alert');
-        notice.textContent = 'The 3D viewer could not start. Check that WebGL is enabled and '
-            + 'cdn.jsdelivr.net is reachable, then reload the app.';
+        notice.textContent = error && error.message
+            ? '3D viewer initialization failed: ' + error.message
+            : '3D viewer initialization has not completed. Reopen this panel or reload the app.';
         document.body.appendChild(notice);
     }
     function resizeViewer() {
