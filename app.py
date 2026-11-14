@@ -17,6 +17,8 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from heme_state import HemeStateError, detect_heme_centers
+
 from core import (
     prepare_receptor,
     prepare_ligand,
@@ -174,7 +176,7 @@ def _prolif_profile_table_html(profile_rows, residue_columns) -> str:
 
     return (
         '<div style="padding:10px 0 6px 0;color:#111;font-size:12px;">'
-        'Hover a colored cell to see interaction type(s). Black = no interaction.'
+        'Hover a colored cell to see interaction type(s). White = no interaction.'
         '</div>'
         '<div style="overflow:auto;border:1px solid #666;border-radius:8px;background:#fff;">'
         '<table style="border-collapse:collapse;width:max-content;min-width:100%;table-layout:fixed;">'
@@ -187,7 +189,6 @@ def _prolif_profile_table_html(profile_rows, residue_columns) -> str:
         '</table></div>'
         f'<div style="padding-top:10px;">{legend_items}</div>'
     )
-
 
 
 
@@ -1125,7 +1126,7 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
         "hbond": "H-bond", "hbond_to_halogen": "H···Halogen",
         "pi_pi": "π-π", "cation_pi": "Cation-π",
         "hydrophobic": "Hydrophobic", "ionic": "Ionic",
-        "metal": "Metal", "halogen": "Halogen",
+        "metal": "Metal contact (distance-based; geometry not scored)", "halogen": "Halogen",
     }
     legend_items = []
     for it in active_types:
@@ -1898,7 +1899,7 @@ _LEGEND_FULL = """
       <span>ionic interaction</span></div>
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7" stroke="#F5C400" stroke-width="2" stroke-dasharray="5,3"/></svg>
-      <span>metal interaction</span></div>
+      <span>Metal contact (distance-based; geometry not scored)</span></div>
   </div>
   <div style="display:flex;align-items:center;gap:40px;">
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
@@ -4490,6 +4491,41 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 with open(_scan_path, "wb") as _sf:
                     _sf.write(upload_file.getvalue() if hasattr(upload_file, "getvalue") else upload_file.read())
 
+            _heme_states_for_prep = {}
+            if _scan_path and os.path.exists(_scan_path):
+                try:
+                    _heme_scan_path = _scan_path
+                    if is_cif_file(_heme_scan_path):
+                        _heme_scan_path = str(wdir / "heme_state_scan.pdb")
+                        _heme_cif = convert_cif_to_pdb(_scan_path, _heme_scan_path)
+                        if not _heme_cif.get("success"):
+                            raise HemeStateError(_heme_cif.get("error", "CIF conversion failed"))
+                    _heme_centers = detect_heme_centers(_heme_scan_path)
+                    if _heme_centers:
+                        st.markdown("**Heme state**")
+                    for _hc_i, _hc in enumerate(_heme_centers, 1):
+                        _heme_states_for_prep[_hc["key"]] = "auto"
+                        _state_label = "Compound I" if _hc["state"] == "CPD_I" else "Ferric/resting HEM"
+                        _oxo_text = (
+                            f" · Oxo {_hc['oxo_name']} #{_hc['oxo_serial']} · Fe-O {_hc['fe_o_distance']:.2f} Å"
+                            if _hc.get("oxo_serial") else " · Oxo none"
+                        )
+                        st.info(
+                            f"Center {_hc_i}: **{_state_label}** · {_hc['resname']} {_hc['chain']} {_hc['resid']} · "
+                            f"Fe #{_hc['fe_serial']}{_oxo_text} · "
+                            f"proximal {_hc['cys_resname']} {_hc['cys_chain']}:{_hc['cys_resid']} SG "
+                            f"(Fe-S {_hc['fe_s_distance']:.2f} Å)"
+                        )
+                        if _hc.get("oxo_h_serial"):
+                            st.warning(
+                                f"Axial oxo H #{_hc['oxo_h_serial']} detected at {_hc['oh_distance']:.2f} Å; "
+                                "only this hydrogen will be removed during preparation."
+                            )
+                    st.session_state[pfx + "heme_states"] = _heme_states_for_prep
+                except HemeStateError as _heme_error:
+                    st.error(f"Heme validation: {_heme_error}")
+                    st.session_state[pfx + "heme_states"] = {"__error__": str(_heme_error)}
+
             def _lig_label(_r):
                 _ch = _r.get("chain") or "—"
                 _lig_name = _r.get("full_resname") or _r.get("resname")
@@ -4719,7 +4755,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
         st.session_state[pfx + "assessment_settings"] = _assessment_settings
 
     from flexible_ui import controls as _flex_controls, require_selection as _flex_require, download as _flex_download
-    _flex_controls(st, _scan_path, pfx, online=True)
+    _flex_controls(st, _scan_path, pfx, online=False)
     if st.session_state.get(pfx + "receptor_done") and pfx != "shared_":
         _flex_download(st, st.session_state.get(pfx + "receptor_pdbqt", ""), pfx, result_root=wdir.parent if pfx == "shared_" else wdir)
 
@@ -4752,6 +4788,11 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
 
         st.session_state[pfx + "receptor_done"] = False
         st.session_state[{"b_": "b_batch_done", "m_": "m_joint_done"}.get(pfx, "docking_done")] = False
+
+        _stored_heme_states = st.session_state.get(pfx + "heme_states", {})
+        if "__error__" in _stored_heme_states:
+            st.error(f"❌ Receptor preparation stopped: {_stored_heme_states['__error__']}")
+            st.stop()
 
         # ── Deduplicate identical protein chains ──────────────────────────
         try:
@@ -4828,7 +4869,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 st.warning(f"⚠️ Could not compute blind docking box: {_be}")
 
         try:
-            _flex_require(st, pfx, online=True)
+            _flex_require(st, pfx, online=False)
         except ValueError as _flex_error:
             st.error(str(_flex_error))
             st.stop()
@@ -4843,7 +4884,8 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str, redock_mode=False):
                 preferred_ligand = st.session_state.get(pfx + "preferred_ligand", ""),
                 hetatm_policy    = st.session_state.get(pfx + "hetatm_policy", {}),
                 reference_hetatm_key = st.session_state.get(pfx + "reference_hetatm_key", ""),
-                flexible_residues = _flex_require(st, pfx, online=True),
+                heme_states       = _stored_heme_states,
+                flexible_residues = _flex_require(st, pfx, online=False),
             )
 
         if result["success"]:
@@ -4925,7 +4967,7 @@ st.markdown(
     "**pKaNET Cloud**, and **RDkit**."
 )
 st.markdown("**Single Dock** — one ligand. **Batch Dock** — compare ligands separately. **Co-Dock** — dock 2–4 ligands together in one pocket. **Redock** — check a co-crystal pose.")
-st.markdown("**☁️ Cloud-ready | 📱 Mobile-compatible**")
+st.markdown("**🖥️ Run locally | 🌐 Web interface**")
 
 if VINA_PATH is None:
     st.error(f"❌ Could not download Vina binary: {_vina_err}")
@@ -4947,10 +4989,34 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════════
 # One receptor preparation for all modes. Mode tabs contain only ligand/docking/results controls.
+
+# Reporting uses the shared core; widget state remains local to each session.
+import core as _report_core
+_raw_reporting_vina = run_vina
+def run_vina(*args, **kwargs):
+    kwargs.setdefault("replicate_seeds", int(st.session_state.get("replicate_seeds", 1)))
+    kwargs.setdefault("crystal_pdb", st.session_state.get("ligand_pdb_path") or st.session_state.get("b_ligand_pdb_path"))
+    ligand_path = kwargs.get("ligand_pdbqt") or (args[1] if len(args) > 1 else None)
+    kwargs.setdefault("smiles", st.session_state.get("prepared_reporting_smiles", {}).get(str(ligand_path)))
+    result = _raw_reporting_vina(*args, **kwargs)
+    st.session_state.setdefault("docking_reports", []).append(result)
+    return result
+_raw_reporting_prepare = prepare_ligand
+def prepare_ligand(*args, **kwargs):
+    kwargs.setdefault("receptor_path", st.session_state.get("receptor_pdbqt") or st.session_state.get("b_receptor_pdbqt"))
+    result = _raw_reporting_prepare(*args, **kwargs)
+    if result.get("success"):
+        st.session_state.setdefault("prepared_reporting_smiles", {})[str(result.get("pdbqt"))] = result.get("prot_smiles")
+    for candidate in result.get("metal_microstate_candidates", []):
+        st.info(candidate["note"])
+        st.code(candidate["smiles"], language="text")
+    return result
+
 _SHARED_RECEPTOR_DIR = WORKDIR / "shared_receptor"
 _SHARED_RECEPTOR_DIR.mkdir(exist_ok=True)
 st.caption("Prepare once, then choose Single Dock, Batch Dock, Co-Dock or Redock below. Flexible side chains are selected here.")
 _receptor_section(pfx="shared_", wdir=_SHARED_RECEPTOR_DIR, step_label="Step 1 — Shared receptor preparation")
+st.number_input("Replicate seeds (1 = off)", min_value=1, max_value=10, value=1, step=1, key="replicate_seeds", help="Repeated searches multiply shared-server usage.")
 import core as _shared_core
 from shared_receptor import sync as _sync_shared_receptor, show_redock_status as _shared_redock_status
 _shared_status = _sync_shared_receptor(st.session_state, _shared_core, WORKDIR)
@@ -5532,7 +5598,7 @@ with tab_basic:
             f'border-radius:8px;padding:16px;">'
             f'<div style="color:var(--text-muted);font-size:0.8rem">ESTIMATED TIME</div>'
             f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;'
-            f'color:var(--warn)">~{est}&#8211;{est*3} min</div>'
+            f'color:var(--warn)">Typically 2–6 min; actual runtime depends on system size, sampling parameters, and current server load.</div>'
             f'<div style="color:var(--text-muted);font-size:0.8rem">'
             f'exhaustiveness = {exh}</div>'
             f'</div>',
@@ -6881,6 +6947,14 @@ with tab_batch:
         with c_zip:
             zb = io.BytesIO()
             with zipfile.ZipFile(zb, "w", zipfile.ZIP_DEFLATED) as zf:
+                for report_index, report in enumerate(st.session_state.get("docking_reports", [])):
+                    report_path = report.get("summary_file")
+                    if report_path and Path(report_path).is_file():
+                        zf.write(report_path, f"summaries/run_{report_index}.txt")
+                    for seed_index, seed_report in enumerate(report.get("replicate_summary", {}).get("runs", [])):
+                        seed_path = seed_report.get("summary_file")
+                        if seed_path and Path(seed_path).is_file():
+                            zf.write(seed_path, f"summaries/run_{report_index}_seed{seed_index+1}.txt")
                 for r in ([redock_result] if redock_result else []) + ok_results:
                     sn = r["Name"].replace("⭐ ", "").replace(" (co-crystal ref)", "")
                     for src_path, arc in [
@@ -7028,8 +7102,6 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 st.markdown(
     '<div style="text-align:center;color:#57606A;font-size:0.78rem;'
     'font-family:\'IBM Plex Mono\',monospace;">'
-    '<img src="https://raw.githubusercontent.com/nyelidl/anyone-docking/main/st/any-Y.svg" '
-    'alt="Anyone Can Dock" style="display:block;margin:0 auto 0.45rem auto;max-width:180px;width:100%;height:auto;">'
     'AutoDock Vina 1.2.7 · Meeko · RDKit · OpenBabel · py3Dmol<br>'
     'Eberhardt et al. J. Chem. Inf. Model. 2021, 61, 3891&#8211;3898 &nbsp;·&nbsp; '
     '<a href="https://pubs.acs.org/doi/10.1021/acs.jcim.5c02852" target="_blank" '
@@ -7038,3 +7110,20 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
+
+# Persist scientific notices on results reruns and make the same report downloadable.
+if st.session_state.get("docking_reports"):
+    with st.expander("Metal contacts and replicate RMSD reports", expanded=True):
+        for _report_index, _report in enumerate(st.session_state["docking_reports"]):
+            for _warning in _report.get("warnings", []):
+                st.warning(_warning)
+            _summary = _report.get("replicate_summary")
+            if _summary:
+                st.json(_summary)
+                for _seed_report in _summary["runs"]:
+                    for _warning in _seed_report.get("warnings", []):
+                        st.warning(_warning)
+            _report_path = _report.get("summary_file")
+            if _report_path and Path(_report_path).is_file():
+                st.download_button("Scientific report", Path(_report_path).read_bytes(),
+                    file_name=Path(_report_path).name, key=f"scientific_report_{_report_index}")

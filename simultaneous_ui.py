@@ -303,6 +303,7 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
                           text="Running one joint Vina search… (no live Vina percentage)")
         try:
             result = core.run_vina_multi(
+                replicate_seeds=int(st.session_state.get("replicate_seeds", 1)),
                 receptor_pdbqt=st.session_state["m_receptor_pdbqt"],
                 ligand_pdbqts=paths,
                 config_txt=st.session_state["m_config_txt"],
@@ -317,6 +318,7 @@ def render_simultaneous_docking(st, core, receptor_section, vina_path,
         except Exception:
             progress.empty()
             raise
+        st.session_state.setdefault("docking_reports", []).append(result)
         if not result["success"]:
             progress.progress(1.0, text="Joint Vina search finished with an error")
             st.error(f"Simultaneous docking failed: {result['error']}")

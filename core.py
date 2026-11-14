@@ -8,6 +8,7 @@ Safe to import in Colab notebooks, pytest, or any UI framework.
 
 import json
 import os
+import platform as _platform
 import re as _re
 import subprocess
 import sys
@@ -15,7 +16,16 @@ import tempfile
 import time
 from pathlib import Path
 
-from heme_state import apply_and_validate_pdbqt, prepare_heme_centers
+from heme_state import (
+    HemeStateError,
+    apply_and_validate_pdbqt,
+    detect_heme_centers,
+    prepare_heme_centers,
+)
+
+_SYS = _platform.system().lower()
+_IS_WIN = _SYS == "windows"
+_NULL = "2>NUL" if _IS_WIN else "2>/dev/null"
 
 
 def _silence_rdkit_logs():
@@ -208,10 +218,16 @@ def _capture_connectivity_annotations(struct_path: str, wdir) -> dict:
                 for line in f:
                     rec = line[:6].strip()
                     if rec == "LINK":
-                        records.append({"kind": "LINK", "raw": line.rstrip()})
+                        records.append({
+                            "kind": "LINK",
+                            "raw": line.rstrip(),
+                        })
                         summary["link_count"] += 1
                     elif rec == "SSBOND":
-                        records.append({"kind": "SSBOND", "raw": line.rstrip()})
+                        records.append({
+                            "kind": "SSBOND",
+                            "raw": line.rstrip(),
+                        })
                         summary["ssbond_count"] += 1
     except Exception as e:
         summary["error"] = str(e)
@@ -701,7 +717,7 @@ def is_cif_file(filepath: str) -> bool:
 def check_obabel():
     import shutil
     if shutil.which("obabel") is None:
-        return False, "obabel not found — add 'openbabel' to packages.txt"
+        return False, "obabel not found — install OpenBabel and ensure it is on PATH"
     _, out = run_cmd("obabel --version")
     return True, (out.splitlines()[0] if out else "ok")
 
@@ -711,9 +727,13 @@ def check_obabel():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_vina_binary(path: str = ""):
-    import platform
-    system  = platform.system().lower()
-    machine = platform.machine().lower()
+    import shutil as _shutil
+    _vina_in_path = _shutil.which("vina") or _shutil.which("vina_1.2.7") or _shutil.which("AutoDock-Vina")
+    if _vina_in_path and os.path.getsize(_vina_in_path) > 100_000:
+        return _vina_in_path, f"ok (found on PATH: {_vina_in_path})"
+
+    system  = _SYS
+    machine = _platform.machine().lower()
     _BASE = "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.7/"
     if system == "linux":
         _FNAME = "vina_1.2.7_linux_x86_64"
@@ -1344,7 +1364,8 @@ def strip_and_convert_receptor(rec_raw: str, wdir, heme_preparation: dict | None
                 pdbqt_lines.extend(heme_prepared["pdbqt_lines"])
                 heme_injected = len(heme_prepared["pdbqt_lines"])
             else:
-                # Preserve any hydrogens present in the hydrogenated heme block.
+                # Last-resort fallback if isolated Heme PDBQT preparation fails:
+                # preserve any hydrogens present in the hydrogenated Heme PDB block.
                 fallback_heme_lines = heme_prepared["display_lines"] or heme_lines
                 for hl in fallback_heme_lines:
                     try:
@@ -1505,7 +1526,8 @@ def prepare_receptor(
                 raise ValueError(f"CIF -> PDB conversion failed: {cif_result.get('error', 'unknown')}")
             raw_pdb = converted_pdb
 
-        # Detect before HETATM filtering so standalone ferryl oxygen is retained.
+        # Inspect the complete structure before ligand/HETATM filtering so a
+        # standalone ferryl oxygen cannot be mistaken for a removable ligand.
         heme_preparation = prepare_heme_centers(raw_pdb, heme_states, remove_oxo_h=False)
 
         atoms = parsePDB(raw_pdb)
@@ -1635,7 +1657,8 @@ def prepare_receptor(
 
         rec_raw_path = str(wdir / "receptor_atoms.pdb")
         writePDB(rec_raw_path, rec_sel)
-        # ProDy may renumber atoms; refresh identities before cleanup and mapping.
+        # ProDy may renumber atoms. Refresh geometric identities on the written
+        # receptor before oxo-H removal and final PDBQT charge mapping.
         heme_preparation = prepare_heme_centers(rec_raw_path, heme_states)
         log.extend(heme_preparation["log"])
         log.append(f"✓ Receptor: {rec_sel.numAtoms()} atoms")
@@ -2553,10 +2576,16 @@ def _load_local_pkanet_module(log=None):
     import hashlib
     from pathlib import Path
 
-    pkanet_path = Path(__file__).resolve().with_name("pKaNET.py")
+    core_dir = Path(__file__).resolve().parent
+    pkanet_path = None
+    for name in ("pKaNET.py", "pkanet.py"):
+        candidate = core_dir / name
+        if candidate.exists():
+            pkanet_path = candidate
+            break
 
-    if not pkanet_path.exists():
-        raise FileNotFoundError(f"pKaNET.py not found next to core.py: {pkanet_path}")
+    if pkanet_path is None:
+        raise FileNotFoundError(f"pKaNET.py/pkanet.py not found next to core.py: {core_dir}")
 
     module_name = "pKaNET_local_ACD"
 
@@ -2566,7 +2595,7 @@ def _load_local_pkanet_module(log=None):
 
     spec = importlib.util.spec_from_file_location(module_name, str(pkanet_path))
     if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load pKaNET.py from: {pkanet_path}")
+        raise ImportError(f"Cannot load pKaNET module from: {pkanet_path}")
 
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -3079,8 +3108,8 @@ def prepare_ligand(
         except Exception as e_meeko:
             log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
             subprocess.run(
-                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
-                shell=True, timeout=30,
+                ["obabel", out_sdf, "-O", out_pdbqt, "-xh"],
+                capture_output=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
@@ -3146,8 +3175,8 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir,
             _ob_sdf = str(wdir / f"{name}_ob.sdf")
             import subprocess
             subprocess.run(
-                f'obabel "{file_path}" -O "{_ob_sdf}" 2>/dev/null',
-                shell=True, timeout=30,
+                ["obabel", file_path, "-O", _ob_sdf],
+                capture_output=True, timeout=30,
             )
             if Path(_ob_sdf).exists() and Path(_ob_sdf).stat().st_size > 10:
                 supp = Chem.SDMolSupplier(_ob_sdf, removeHs=False, sanitize=True)
@@ -3248,8 +3277,8 @@ def prepare_ligand_from_file(file_path: str, name: str, wdir,
             log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
             import subprocess
             subprocess.run(
-                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
-                shell=True, timeout=30,
+                ["obabel", out_sdf, "-O", out_pdbqt, "-xh"],
+                capture_output=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
@@ -3282,7 +3311,7 @@ def smiles_from_file(file_path: str, wdir) -> str:
         return Chem.MolToSmiles(mols[0])
     else:
         smi_tmp = str(wdir / "lig_upload.smi")
-        run_cmd(f'obabel "{file_path}" -O "{smi_tmp}" --canonical 2>/dev/null')
+        run_cmd(f'obabel "{file_path}" -O "{smi_tmp}" --canonical {_NULL}')
         for line in open(smi_tmp):
             pts = line.strip().split(None, 1)
             if pts:
@@ -3366,7 +3395,6 @@ def run_vina(
     wdir = ".",
     out_name: str = "out",
     seed: int | None = None,
-    cpu: int | None = None,
 ) -> dict:
     wdir      = Path(wdir)
     out_pdbqt = str(wdir / f"{out_name}_out.pdbqt")
@@ -3374,14 +3402,6 @@ def run_vina(
 
     # --seed: when set, makes docking deterministic for the same input.
     _seed_flag = f" --seed {int(seed)}" if seed is not None else ""
-    if cpu is None:
-        _cpu_env = os.environ.get("ACD_VINA_CPU", "").strip()
-        if _cpu_env:
-            try:
-                cpu = max(1, int(_cpu_env))
-            except ValueError:
-                cpu = None
-    _cpu_flag = f" --cpu {int(cpu)}" if cpu is not None else ""
 
     rc, vlog = run_cmd(
         f'"{vina_path}" '
@@ -3391,7 +3411,6 @@ def run_vina(
         f'--exhaustiveness {exhaustiveness} '
         f'--num_modes {n_modes} '
         f'--energy_range {energy_range}'
-        f'{_cpu_flag} '
         f'{_seed_flag} '
         f'--out "{out_pdbqt}"',
         cwd=str(wdir),
@@ -3400,7 +3419,7 @@ def run_vina(
     if rc != 0 or not os.path.exists(out_pdbqt):
         return {"success": False, "error": f"Vina exit code {rc}", "log": vlog}
 
-    run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" 2>/dev/null')
+    run_cmd(f'obabel "{out_pdbqt}" -O "{out_sdf}" {_NULL}')
 
     scores    = []
     cur_model = None
@@ -3430,7 +3449,6 @@ def run_vina(
         "scores":    scores,
         "top_score": scores[0]["affinity"] if scores else None,
         "seed":      int(seed) if seed is not None else None,
-        "cpu":       int(cpu) if cpu is not None else None,
         "log":       vlog,
     }
 
@@ -3860,7 +3878,7 @@ def convert_sdf_to_v2000(sdf_path: str) -> str:
     except Exception:
         pass
     RDLogger.EnableLog("rdApp.error")
-    rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" 2>/dev/null')
+    rc, _ = run_cmd(f'obabel "{sdf_path}" -O "{out}" {_NULL}')
     if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 10:
         return out
     return sdf_path
@@ -4934,6 +4952,13 @@ def stamp_png(png_bytes: bytes, text: str) -> bytes:
             ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 28),
             ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28),
             ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 26),
+            ("/System/Library/Fonts/Supplemental/Arial.ttf", 28),
+            ("/System/Library/Fonts/Helvetica.ttc", 28),
+            ("/Library/Fonts/Arial.ttf", 28),
+            ("/opt/homebrew/share/fonts/liberation-fonts/LiberationSans-Regular.ttf", 28),
+            ("C:/Windows/Fonts/arial.ttf", 28),
+            ("C:/Windows/Fonts/segoeui.ttf", 28),
+            ("C:/Windows/Fonts/calibri.ttf", 28),
         ]:
             try:
                 font = ImageFont.truetype(fp, sz); break
@@ -5771,7 +5796,7 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
         lbl_clr=_LBL_CLR.get(itype,"#333")
         parts.append(f'<text x="{cbx:.1f}" y="{cby:.1f}" text-anchor="middle" dominant-baseline="central" font-family="Arial,sans-serif" font-size="14.29" font-weight="700" fill="{lbl_clr}">{lbl}</text>')
     _LEG_ORDER=["hydrophobic","hbond","pi_pi","cation_pi","hbond_to_halogen","ionic","metal","halogen"]
-    _LEG_LABEL={"hydrophobic":"Hydrophobic","hbond":"Hydrogen bond","hbond_to_halogen":"H\u00b7\u00b7\u00b7Halogen","pi_pi":"\u03c0-\u03c0 stacking","cation_pi":"Cation-\u03c0","ionic":"Ionic","metal":"Metal","halogen":"Halogen bond"}
+    _LEG_LABEL={"hydrophobic":"Hydrophobic","hbond":"Hydrogen bond","hbond_to_halogen":"H\u00b7\u00b7\u00b7Halogen","pi_pi":"\u03c0-\u03c0 stacking","cation_pi":"Cation-\u03c0","ionic":"Ionic","metal":"Metal contact","halogen":"Halogen bond"}
     active=[t for t in _LEG_ORDER if any(p["itype"]==t for p in placements)]
     if active:
         ly0=H-52
@@ -5798,6 +5823,10 @@ def _render_diagram_svg(mol2d, svg_coords, placements, title, W, H):
                 parts.append(f'<line x1="{line_x1:.1f}" y1="{ly0+10}" x2="{line_x2:.1f}" y2="{ly0+10}" stroke="{clr}" stroke-width="2" stroke-dasharray="5 3" opacity="0.85"/>')
             text_x=(line_x2 if it!="hydrophobic" else circ_cx+9.54)+6
             parts.append(f'<text x="{text_x:.1f}" y="{ly0+10}" text-anchor="start" dominant-baseline="central" font-family="Arial,sans-serif" font-size="16" font-weight="700" fill="#555">{lbl}</text>')
+    if any(p["itype"] == "metal" for p in placements):
+        parts.append(f'<text x="{W//2}" y="{H-5}" text-anchor="middle" font-size="12" fill="#555">{METAL_CONTACT_LABEL}</text>')
+    if any(p["itype"] == "metal" for p in placements):
+        parts.append(f'<text x="{W//2}" y="{H-5}" text-anchor="middle" font-size="12" fill="#555">{METAL_CONTACT_LABEL}</text>')
     parts.append('</svg>')
     return "\n".join(parts)
 
@@ -6134,3 +6163,263 @@ try:
 except ImportError:
     from flexible_docking import install as _install_flexible_docking
 _install_flexible_docking(globals())
+
+# Shared reporting and reproducibility support (synchronized across distributions).
+METAL_CONTACT_LABEL = "Metal contact (distance-based; geometry not scored)"
+RANKING_INTERPRETATION = (
+    "A large gap between top-1 RMSD and minimum RMSD indicates a ranking problem, "
+    "not a sampling problem. Increasing exhaustiveness will not fix it."
+)
+METAL_MICROSTATE_RULES = [{
+    "name": "sulfonamide_Zn",
+    "smarts": "[S:1](=[O:2])(=[O:3])[N;H1,H2;+0:4]",
+    "metal": "ZN", "atom_map": 4, "suggested_charge": -1,
+    "note": "Metal-induced deprotonation is not predicted by bulk-pH protonation models. "
+            "For Zn-dependent enzymes (e.g. carbonic anhydrases), the bound state of a "
+            "sulfonamide is commonly the deprotonated nitrogen coordinating the metal, "
+            "even though its solution pKa is above 7.4.",
+}]
+
+
+def receptor_metal_atoms(receptor_path):
+    """Read PDB/PDBQT metal coordinates, including Fe within retained heme."""
+    metals = {"ZN", "MG", "CA", "MN", "FE", "CU", "NI", "CO"}
+    atoms = []
+    for line in Path(receptor_path).read_text().splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        name, resname = line[12:16].strip(), line[17:20].strip()
+        if str(receptor_path).lower().endswith(".pdbqt"):
+            element = line.split()[-1].upper()
+        else:
+            element = line[76:78].strip().upper()
+        # CA in a protein ATOM record is the alpha carbon, never calcium.
+        if not element and line.startswith("HETATM"):
+            element = name.upper() if name.upper() in metals else resname.upper()
+        if element not in metals:
+            continue
+        chain = line[21:22].strip()
+        try:
+            resid = int(line[22:26])
+            xyz = tuple(float(line[a:b]) for a, b in ((30,38),(38,46),(46,54)))
+        except ValueError:
+            fields = line.split()
+            chain, resid = (fields[4], int(fields[5])) if not fields[4].lstrip('-').isdigit() else ('', int(fields[4]))
+            start = 6 if chain else 5
+            xyz = tuple(float(v) for v in fields[start:start+3])
+        atoms.append(dict(element=element, name=name, resname=resname,
+                          chain=chain, resid=resid, xyz=xyz))
+    return atoms
+
+
+def detect_metal_contacts(ligand, receptor_path, cutoff=3.0):
+    """Distance-only contacts for every ligand heavy atom, without changing scores.
+
+    Accept an RDKit conformer molecule or a list of atom dictionaries with xyz,
+    element and name. The 3.0 A reporting shell is distinct from the <1.8 A warning.
+    """
+    import math
+    if hasattr(ligand, "GetAtoms"):
+        conf = ligand.GetConformer()
+        ligand = [dict(element=a.GetSymbol(), name=f"{a.GetSymbol()}{a.GetIdx()+1}",
+                       index=a.GetIdx(), xyz=tuple(conf.GetAtomPosition(a.GetIdx())))
+                  for a in ligand.GetAtoms() if a.GetAtomicNum() > 1]
+    contacts = []
+    for metal in receptor_metal_atoms(receptor_path):
+        for index, atom in enumerate(ligand):
+            if atom["element"].upper() in {"H", "HD", "HS", "D"}:
+                continue
+            distance = math.dist(atom["xyz"], metal["xyz"])
+            if distance > cutoff:
+                continue
+            label = f"{metal['element']} {metal['resname']}{metal['resid']}{metal['chain']}"
+            warning = ""
+            if distance < 1.8:
+                warning = (f"Ligand atom {atom['name']} is {distance:.2f} A from {label} — shorter than typical "
+                           "coordination distances (~1.9-2.1 A). The Vina scoring function contains no "
+                           "metal-coordination term, so this distance is not physically restrained. "
+                           "Do not interpret it as a coordination bond without independent QM/MM or "
+                           "experimental support.")
+            contacts.append(dict(itype="metal", category=METAL_CONTACT_LABEL,
+                distance=distance, lig_atom_idx=atom.get("index", index), ligand_atom=atom["name"],
+                resname=metal["resname"], resid=metal["resid"], chain=metal["chain"],
+                prot_el=metal["element"], is_donor=False, ring_atom_indices=None, warning=warning))
+    return contacts
+
+
+def metal_microstate_candidates(smiles, receptor_path=None, metals=None):
+    """Additional metal-aware candidates. Leave the bulk-pH selection untouched."""
+    from rdkit import Chem
+    available = {str(m).upper() for m in (metals or [])}
+    if receptor_path:
+        available.update(m["element"] for m in receptor_metal_atoms(receptor_path))
+    if not available:
+        return []
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return []
+    candidates, seen = [], set()
+    for rule in METAL_MICROSTATE_RULES:
+        if rule["metal"] not in available:
+            continue
+        query = Chem.MolFromSmarts(rule["smarts"])
+        site = next(a.GetIdx() for a in query.GetAtoms() if a.GetAtomMapNum() == rule["atom_map"])
+        for match in mol.GetSubstructMatches(query):
+            copy = Chem.RWMol(mol)
+            atom = copy.GetAtomWithIdx(match[site])
+            hydrogens = atom.GetTotalNumHs()
+            atom.SetFormalCharge(rule["suggested_charge"])
+            atom.SetNumExplicitHs(hydrogens - 1)
+            atom.SetNoImplicit(True)
+            Chem.SanitizeMol(copy)
+            candidate = Chem.MolToSmiles(copy)
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(dict(smiles=candidate, rule=rule["name"], metal=rule["metal"],
+                                   note=rule["note"], additional_candidate=True))
+    return candidates
+
+
+def summarize_seed_rmsds(runs):
+    """Sample SD across valid seeds. Missing RMSD remains unavailable."""
+    import statistics
+    summary = {"runs": runs, "interpretation": RANKING_INTERPRETATION}
+    for metric in ("top1_rmsd", "minimum_rmsd"):
+        values = [r[metric] for r in runs if r.get(metric) is not None]
+        summary[metric] = dict(mean=statistics.mean(values) if values else None,
+                               sd=statistics.stdev(values) if len(values) > 1 else None,
+                               available_seeds=len(values))
+    return summary
+
+
+def annotate_docking_result(result, receptor_path, crystal_pdb=None):
+    """Annotate exact saved poses and save an exportable report beside each run."""
+    if not result.get("success"):
+        return result
+    import json
+    path = result.get("out_pdbqt")
+    contacts = []
+    has_metals = Path(receptor_path).is_file() and bool(receptor_metal_atoms(receptor_path))
+    if has_metals and path and Path(path).is_file():
+        pose, atoms = 1, []
+        def collect():
+            if not atoms:
+                return
+            for contact in detect_metal_contacts(atoms, receptor_path):
+                contacts.append(dict(contact, pose=pose))
+        for line in Path(path).read_text().splitlines():
+            if line.startswith("MODEL"):
+                pose = int(line.split()[1])
+            elif line.startswith(("ATOM  ", "HETATM")):
+                atoms.append(dict(name=line[12:16].strip(), element=line.split()[-1],
+                    xyz=tuple(float(line[a:b]) for a,b in ((30,38),(38,46),(46,54)))))
+            elif line.startswith("ENDMDL"):
+                collect()
+                atoms = []
+        if atoms:
+            collect()
+    elif has_metals and result.get("out_sdf") and Path(result["out_sdf"]).is_file():
+        from rdkit import Chem
+        for rank, mol in enumerate(Chem.SDMolSupplier(result["out_sdf"], sanitize=False, removeHs=False), 1):
+            if mol is not None:
+                contacts.extend(dict(contact, pose=rank) for contact in detect_metal_contacts(mol, receptor_path))
+    result["metal_contacts"] = contacts
+    result["warnings"] = list(dict.fromkeys(c["warning"] for c in contacts if c["warning"]))
+    result["metal_contact_category"] = METAL_CONTACT_LABEL
+    report_source = path or result.get("out_sdf")
+    if report_source:
+        report = Path(report_source).with_suffix(".summary.txt")
+        lines = [METAL_CONTACT_LABEL] if contacts else []
+        lines += [f"Pose {c['pose']}, {c['ligand_atom']} -> {c['prot_el']} "
+                  f"{c['resname']}{c['resid']}{c['chain']}: {c['distance']:.2f} A" for c in contacts]
+        lines += result["warnings"]
+        if result.get("replicate_summary"):
+            lines += [json.dumps(result["replicate_summary"], indent=2)]
+        report.write_text("\n".join(lines) + "\n")
+        result["summary_file"] = str(report)
+    return result
+
+
+def run_seed_replicates(runner, options, replicate_seeds=1, crystal_pdb=None, smiles=None):
+    """Execute isolated seed runs with the selected engine and unchanged RMSD gate."""
+    import secrets
+    if isinstance(replicate_seeds, bool) or int(replicate_seeds) != replicate_seeds or replicate_seeds < 1:
+        raise ValueError("replicate_seeds must be a positive integer")
+    options = dict(options)
+    base = options.get("seed")
+    if replicate_seeds > 1 and base is None:
+        base = secrets.randbelow(2**30)
+    runs, primary = [], None
+    for index in range(replicate_seeds):
+        current = dict(options)
+        if replicate_seeds > 1:
+            current.update(seed=(base + index) % (2**31 - 1),
+                           out_name=(options.get('out_name', 'out') if index == 0
+                                     else f"{options.get('out_name', 'out')}_seed{index+1}"))
+        result = runner(**current)
+        if primary is None:
+            primary = result
+        row = dict(seed=current.get("seed"), success=result.get("success", False),
+                   out_sdf=result.get("out_sdf"), top1_rmsd=None, minimum_rmsd=None,
+                   error=result.get("error"))
+        if result.get("success") and crystal_pdb and result.get("out_sdf"):
+            sdf = result["out_sdf"]
+            if smiles:
+                fixed = str(Path(sdf).with_suffix(".rmsd.sdf"))
+                fix_sdf_bond_orders(sdf, smiles, fixed)
+                if Path(fixed).is_file():
+                    sdf = fixed
+            from rdkit import Chem
+            mols = list(Chem.SDMolSupplier(sdf, sanitize=False, removeHs=False))
+            values = [calc_rmsd_heavy(mol, crystal_pdb) if mol is not None else None for mol in mols]
+            row["top1_rmsd"] = values[0] if values else None
+            valid = [v for v in values if v is not None]
+            row["minimum_rmsd"] = min(valid) if valid else None
+        annotate_docking_result(result, current["receptor_pdbqt"])
+        row["warnings"] = result.get("warnings", [])
+        row["summary_file"] = result.get("summary_file")
+        runs.append(row)
+    if replicate_seeds > 1:
+        primary["replicate_summary"] = summarize_seed_rmsds(runs)
+        annotate_docking_result(primary, options["receptor_pdbqt"])
+    return primary
+
+
+def _install_reporting_support():
+    import functools
+    import inspect
+    original = run_vina
+    @functools.wraps(original)
+    def reporting_run(*args, replicate_seeds=1, crystal_pdb=None, smiles=None, **kwargs):
+        bound = inspect.signature(original).bind(*args, **kwargs)
+        bound.apply_defaults()
+        return run_seed_replicates(original, bound.arguments, replicate_seeds, crystal_pdb, smiles)
+    globals()["run_vina"] = reporting_run
+    original_multi = globals().get("run_vina_multi")
+    def reporting_multi(*args, replicate_seeds=1, **kwargs):
+        bound = inspect.signature(original_multi).bind(*args, **kwargs)
+        bound.apply_defaults()
+        return run_seed_replicates(original_multi, bound.arguments, replicate_seeds)
+    if original_multi is not None:
+        globals()["run_vina_multi"] = functools.wraps(original_multi)(reporting_multi)
+    original_prepare = prepare_ligand
+    @functools.wraps(original_prepare)
+    def prepare(*args, receptor_path=None, **kwargs):
+        result = original_prepare(*args, **kwargs)
+        if result.get("success") and receptor_path and result.get("protonation_mode") == "pkanet":
+            result["metal_microstate_candidates"] = metal_microstate_candidates(
+                result.get("prot_smiles", ""), receptor_path)
+            result.setdefault("log", []).extend(c["note"] for c in result["metal_microstate_candidates"])
+        return result
+    globals()["prepare_ligand"] = prepare
+    original_interactions = _detect_all_interactions
+    @functools.wraps(original_interactions)
+    def interactions(ligand, receptor_pdb, cutoff=4.5):
+        raw = original_interactions(ligand, receptor_pdb, cutoff=cutoff)
+        raw = [ix for ix in raw if ix.get("itype") != "metal"]
+        return raw + detect_metal_contacts(ligand, receptor_pdb)
+    globals()["_detect_all_interactions"] = interactions
+
+
+_install_reporting_support()

@@ -16,6 +16,7 @@ FIELDS = ("raw_pdb_path", "receptor_fh", "receptor_pdbqt", "box_pdb", "config_tx
 
 
 def _reset_results(state):
+    state.pop("docking_reports", None)
     for key in ("docking_done", "redock_done", "b_batch_done", "m_joint_done"):
         state[key] = False
     for key in ("redock_result", "b_redock_result", "r_result", "m_joint_result",
@@ -90,6 +91,16 @@ def sync(state, core, wdir):
         state.pop("shared_active_signature", None)
         return {"ready": False, "message": "Prepare the receptor above to enable docking."}
     try:
+        from flexible_docking import metadata, parse_residues
+        selected = parse_residues(state.get(PREFIX + "flex_selection", [])) if state.get(PREFIX + "flex_enabled") else []
+        if state.get(PREFIX + "flex_enabled") and not selected:
+            raise ValueError("Select flexible residues and prepare the receptor again.")
+        flex = metadata(prepared["rec_pdbqt"])
+        actual = parse_residues(flex.get("residues", [])) if flex else []
+        if set(selected) != set(actual):
+            raise ValueError("Flexible residue selection does not match the prepared receptor. Click Prepare Receptor again; rigid fallback is blocked.")
+        if selected and not flex:
+            raise ValueError("Flexible receptor files are missing. Click Prepare Receptor again; rigid fallback is blocked.")
         signature = _signature(state, prepared)
     except (OSError, ValueError, KeyError) as exc:
         state[PREFIX + "receptor_done"] = False
@@ -132,7 +143,9 @@ def sync(state, core, wdir):
     results = Path(wdir) / "docking_runs" / signature[:20]
     results.mkdir(parents=True, exist_ok=True)
     state["shared_active_results_dir"] = str(results)
-    return {"ready": True, "message": "All docking modes use the receptor and box prepared above.",
+    mode_message = ("Flexible docking ready — selected side chains: " + ", ".join(actual) + ". "
+                    if flex else "Rigid docking ready — receptor side chains are fixed. ")
+    return {"ready": True, "message": mode_message + "All docking modes use this prepared receptor and box.",
             "redock_ready": bool(state.get("r_prepared")), "results_dir": str(results)}
 
 
