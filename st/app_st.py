@@ -172,7 +172,7 @@ def _prolif_profile_table_html(profile_rows, residue_columns) -> str:
 
     return (
         '<div style="padding:10px 0 6px 0;color:#111;font-size:12px;">'
-        'Hover a colored cell to see interaction type(s). Black = no interaction.'
+        'Hover a colored cell to see interaction type(s). White = no interaction.'
         '</div>'
         '<div style="overflow:auto;border:1px solid #666;border-radius:8px;background:#fff;">'
         '<table style="border-collapse:collapse;width:max-content;min-width:100%;table-layout:fixed;">'
@@ -1123,7 +1123,7 @@ def _render_interactive_diagram(data: dict, height: int = 800) -> str:
         "hbond": "H-bond", "hbond_to_halogen": "H···Halogen",
         "pi_pi": "π-π", "cation_pi": "Cation-π",
         "hydrophobic": "Hydrophobic", "ionic": "Ionic",
-        "metal": "Metal", "halogen": "Halogen",
+        "metal": "Metal contact (distance-based; geometry not scored)", "halogen": "Halogen",
     }
     legend_items = []
     for it in active_types:
@@ -1893,7 +1893,7 @@ _LEGEND_FULL = """
       <span>ionic interaction</span></div>
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
       <svg width="48" height="14"><line x1="0" y1="7" x2="48" y2="7" stroke="#F5C400" stroke-width="2" stroke-dasharray="5,3"/></svg>
-      <span>metal interaction</span></div>
+      <span>Metal contact (distance-based; geometry not scored)</span></div>
   </div>
   <div style="display:flex;align-items:center;gap:40px;">
     <div style="display:flex;align-items:center;gap:10px;white-space:nowrap;">
@@ -4795,10 +4795,34 @@ st.markdown('<hr class="step-divider">', unsafe_allow_html=True)
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════════
 # One receptor preparation for all modes. Mode tabs contain only ligand/docking/results controls.
+
+# Reporting uses the shared core; widget state remains local to each session.
+import core as _report_core
+_raw_reporting_vina = run_vina
+def run_vina(*args, **kwargs):
+    kwargs.setdefault("replicate_seeds", int(st.session_state.get("replicate_seeds", 1)))
+    kwargs.setdefault("crystal_pdb", st.session_state.get("ligand_pdb_path") or st.session_state.get("b_ligand_pdb_path"))
+    ligand_path = kwargs.get("ligand_pdbqt") or (args[1] if len(args) > 1 else None)
+    kwargs.setdefault("smiles", st.session_state.get("prepared_reporting_smiles", {}).get(str(ligand_path)))
+    result = _raw_reporting_vina(*args, **kwargs)
+    st.session_state.setdefault("docking_reports", []).append(result)
+    return result
+_raw_reporting_prepare = prepare_ligand
+def prepare_ligand(*args, **kwargs):
+    kwargs.setdefault("receptor_path", st.session_state.get("receptor_pdbqt") or st.session_state.get("b_receptor_pdbqt"))
+    result = _raw_reporting_prepare(*args, **kwargs)
+    if result.get("success"):
+        st.session_state.setdefault("prepared_reporting_smiles", {})[str(result.get("pdbqt"))] = result.get("prot_smiles")
+    for candidate in result.get("metal_microstate_candidates", []):
+        st.info(candidate["note"])
+        st.code(candidate["smiles"], language="text")
+    return result
+
 _SHARED_RECEPTOR_DIR = WORKDIR / "shared_receptor"
 _SHARED_RECEPTOR_DIR.mkdir(exist_ok=True)
 st.caption("Prepare once, then choose Single Dock or Batch Dock below. Flexible side chains are selected here.")
 _receptor_section(pfx="shared_", wdir=_SHARED_RECEPTOR_DIR, step_label="Step 1 — Shared receptor preparation")
+st.number_input("Replicate seeds (1 = off)", min_value=1, max_value=10, value=1, step=1, key="replicate_seeds", help="Repeated searches multiply shared-server usage.")
 import core as _shared_core
 from shared_receptor import sync as _sync_shared_receptor, show_redock_status as _shared_redock_status
 _shared_status = _sync_shared_receptor(st.session_state, _shared_core, WORKDIR)
@@ -5378,7 +5402,7 @@ with tab_basic:
             f'border-radius:8px;padding:16px;">'
             f'<div style="color:var(--text-muted);font-size:0.8rem">ESTIMATED TIME</div>'
             f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;'
-            f'color:var(--warn)">~{est}&#8211;{est*3} min</div>'
+            f'color:var(--warn)">Typically 2–6 min; actual runtime depends on system size, sampling parameters, and current server load.</div>'
             f'<div style="color:var(--text-muted);font-size:0.8rem">'
             f'exhaustiveness = {exh}</div>'
             f'</div>',
@@ -6662,6 +6686,14 @@ with tab_batch:
         with c_zip:
             zb = io.BytesIO()
             with zipfile.ZipFile(zb, "w", zipfile.ZIP_DEFLATED) as zf:
+                for report_index, report in enumerate(st.session_state.get("docking_reports", [])):
+                    report_path = report.get("summary_file")
+                    if report_path and Path(report_path).is_file():
+                        zf.write(report_path, f"summaries/run_{report_index}.txt")
+                    for seed_index, seed_report in enumerate(report.get("replicate_summary", {}).get("runs", [])):
+                        seed_path = seed_report.get("summary_file")
+                        if seed_path and Path(seed_path).is_file():
+                            zf.write(seed_path, f"summaries/run_{report_index}_seed{seed_index+1}.txt")
                 for r in ([redock_result] if redock_result else []) + ok_results:
                     sn = r["Name"].replace("⭐ ", "").replace(" (co-crystal ref)", "")
                     for src_path, arc in [
@@ -6801,3 +6833,20 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
+
+# Persist scientific notices on results reruns and make the same report downloadable.
+if st.session_state.get("docking_reports"):
+    with st.expander("Metal contacts and replicate RMSD reports", expanded=True):
+        for _report_index, _report in enumerate(st.session_state["docking_reports"]):
+            for _warning in _report.get("warnings", []):
+                st.warning(_warning)
+            _summary = _report.get("replicate_summary")
+            if _summary:
+                st.json(_summary)
+                for _seed_report in _summary["runs"]:
+                    for _warning in _seed_report.get("warnings", []):
+                        st.warning(_warning)
+            _report_path = _report.get("summary_file")
+            if _report_path and Path(_report_path).is_file():
+                st.download_button("Scientific report", Path(_report_path).read_bytes(),
+                    file_name=Path(_report_path).name, key=f"scientific_report_{_report_index}")

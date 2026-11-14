@@ -168,7 +168,7 @@ def inspect_redock_structure(core, raw_path, wdir, cutoff=4.5, ligand_key=None):
 
 def execute_prepared_redock(core, inspection, receptor, wdir, vina_path, *, ph=7.4,
                             mode='pkanet', exhaustiveness=16, n_modes=10, energy_range=3,
-                            seed=None, conformer_seed=None):
+                            seed=None, conformer_seed=None, replicate_seeds=1):
     """GUI orchestration using the same operations called by cmd_redock."""
     import csv
     wdir = Path(wdir); wdir.mkdir(parents=True, exist_ok=True)
@@ -181,9 +181,9 @@ def execute_prepared_redock(core, inspection, receptor, wdir, vina_path, *, ph=7
     if not smiles:
         raise ValueError(f'Could not obtain reference ligand SMILES: {warning}')
     prep = prepare_reference_ligand(core, smiles=smiles, name=name, ph=ph, wdir=wdir,
-                                    mode=mode, conformer_seed=conformer_seed)
+                                    mode=mode, conformer_seed=conformer_seed, receptor_path=receptor["rec_pdbqt"])
     if not prep.get('success'): raise ValueError(prep.get('error', 'Ligand preparation failed.'))
-    dock = run_reference_vina(core, receptor_pdbqt=str(Path(receptor['rec_pdbqt']).resolve()),
+    dock = run_reference_vina(core, replicate_seeds=replicate_seeds, crystal_pdb=ref, smiles=prep.get("prot_smiles"), receptor_pdbqt=str(Path(receptor['rec_pdbqt']).resolve()),
                              ligand_pdbqt=str(Path(prep['pdbqt']).resolve()),
                              config_txt=str(Path(receptor['config_txt']).resolve()), vina_path=vina_path,
                              exhaustiveness=exhaustiveness, n_modes=n_modes, energy_range=energy_range,

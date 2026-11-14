@@ -16,6 +16,7 @@ FIELDS = ("raw_pdb_path", "receptor_fh", "receptor_pdbqt", "box_pdb", "config_tx
 
 
 def _reset_results(state):
+    state.pop("docking_reports", None)
     for key in ("docking_done", "redock_done", "b_batch_done", "m_joint_done"):
         state[key] = False
     for key in ("redock_result", "b_redock_result", "r_result", "m_joint_result",

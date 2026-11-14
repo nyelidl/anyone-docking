@@ -107,7 +107,7 @@ def download(st, receptor_pdbqt, pfx, *, result_root=None):
         files.add(Path(str(receptor_pdbqt) + ".flex.json"))
         # ACD run outputs live in this work directory or its descendants.
         search_root = Path(result_root).resolve() if result_root else root
-        for pattern in ("*_pose*_receptor.pdb", "*_pose*_complex.pdb", "*_flex_results.json", "*_out.pdbqt"):
+        for pattern in ("*_pose*_receptor.pdb", "*_pose*_complex.pdb", "*_flex_results.json", "*_out.pdbqt", "*.summary.txt"):
             files.update(search_root.rglob(pattern))
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:

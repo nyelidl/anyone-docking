@@ -171,6 +171,13 @@ def render_results(st, core, result, prepared, show_pose, pfx='r_'):
     from rdkit import Chem
     import pandas as pd
     st.markdown('### 🔎 Pose Browser')
+    for warning in result['dock'].get('warnings', []):
+        st.warning(warning)
+    if result['dock'].get('replicate_summary'):
+        st.json(result['dock']['replicate_summary'])
+    for candidate in result['prep'].get('metal_microstate_candidates', []):
+        st.info(candidate['note'])
+        st.code(candidate['smiles'])
     rows = result['scores']
     table = pd.DataFrame([{'Pose': r['pose'], 'Binding affinity (kcal/mol)': r.get('affinity'),
                            'RMSD vs crystal (Å)': r['rmsd']} for r in rows])
@@ -230,7 +237,8 @@ def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
                 result = execute_prepared_redock(core, inspection, prepared, out, vina_path,
                                                 ph=ph, mode=mode, exhaustiveness=exh, n_modes=modes,
                                                 energy_range=energy, seed=int(seed) or None,
-                                                conformer_seed=int(conformer) or None)
+                                                conformer_seed=int(conformer) or None,
+                                                replicate_seeds=int(st.session_state.get("replicate_seeds", 1)))
             result['settings'] = dict(ph=ph, mode=mode, exhaustiveness=exh, n_modes=modes,
                                       energy_range=energy, seed=seed, conformer_seed=conformer)
             (out / 'redock_manifest.json').write_text(json.dumps({'inspection': inspection, 'settings': result['settings']}, indent=2))
