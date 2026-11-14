@@ -167,7 +167,7 @@ def receptor_setup(st, core, wdir, pfx, src, pdb_id, upload_file, box=(18, 18, 1
     return inspection
 
 
-def render_results(st, core, result, prepared, show_pose, pfx='r_'):
+def render_results(st, core, result, prepared, show_pose, pfx='r_', show_interactions=None):
     from rdkit import Chem
     import pandas as pd
     st.markdown('### 🔎 Pose Browser')
@@ -175,7 +175,7 @@ def render_results(st, core, result, prepared, show_pose, pfx='r_'):
         st.warning(warning)
     if result['dock'].get('replicate_summary'):
         st.json(result['dock']['replicate_summary'])
-    for candidate in result['prep'].get('metal_microstate_candidates', []):
+    for candidate in result.get('prep', {}).get('metal_microstate_candidates', []):
         st.info(candidate['note'])
         st.code(candidate['smiles'])
     rows = result['scores']
@@ -192,7 +192,10 @@ def render_results(st, core, result, prepared, show_pose, pfx='r_'):
     mols = core.load_mols_from_sdf(result['sdf'], sanitize=False)
     mol = mols[rank - 1]
     from flexible_docking import receptor_for_mol
-    show_pose(mol, receptor_for_mol(prepared['rec_fh'], mol), result['reference'])
+    receptor = receptor_for_mol(prepared['rec_fh'], mol)
+    show_pose(mol, receptor, result['reference'])
+    if show_interactions is not None:
+        render_interactions(st, core, result, prepared, mol, row, receptor, show_interactions, pfx)
     st.download_button('⬇ Selected pose SDF', Chem.MolToMolBlock(mol) + '\n$$$$\n',
                        file_name=f'redock_pose{rank}.sdf', key=pfx + 'sdf_download')
     st.download_button('⬇ Selected pose PDB', Chem.MolToPDBBlock(mol),
@@ -211,7 +214,42 @@ def render_results(st, core, result, prepared, show_pose, pfx='r_'):
         st.code(result['dock'].get('log', ''))
 
 
-def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
+
+def render_interactions(st, core, result, prepared, mol, row, receptor, show_interactions, pfx):
+    """Adapt the selected redocking pose to Single Dock's existing 2D panel."""
+    rank = row['pose']
+    source = Path(result['sdf']).resolve()
+    pose_sdf = source.with_name(f'redock_pose{rank}_2d.sdf')
+    core.write_single_pose(mol, str(pose_sdf))
+    image_key = pfx + '2d_image'
+    reference_key = pfx + '2d_reference'
+    pose_key = pfx + '2d_pose'
+    context = (str(source), rank, str(receptor))
+    if st.session_state.get(pfx + '2d_context') != context:
+        for key in list(st.session_state):
+            if key.startswith((image_key, reference_key, pose_key)):
+                st.session_state.pop(key, None)
+        st.session_state[pfx + '2d_context'] = context
+    prep = result.get('prep', {})
+    smiles = prep.get('prot_smiles') or prep.get('prepared_smiles', '')
+    ligand_id = prepared.get('cocrystal_ligand_id', '')
+    name = ligand_id.rsplit('_', 2)[0] if ligand_id else Path(result['reference']).stem
+    st.session_state[pfx + 'receptor_fh'] = str(receptor)
+    st.session_state[pfx + 'ligand_pdb_path'] = result['reference']
+    st.session_state[pfx + '2d_smiles'] = smiles
+    show_interactions(
+        rec_key=pfx + 'receptor_fh', pose_sdf_path=str(pose_sdf),
+        pdb_id=st.session_state.get('shared_pdb_token') or st.session_state.get('pdb_token', ''),
+        cocrystal_ligand_id=ligand_id, smiles_key=pfx + '2d_smiles', pose_idx=rank - 1,
+        img_png_key=image_key + '_png', img_svg_key=image_key + '_svg', pose_key_key=pose_key,
+        btn_key=pfx + '2d_generate', dl_png_key=pfx + '2d_download_png', dl_svg_key=pfx + '2d_download_svg',
+        ref_png_key=reference_key + '_png', ref_svg_key=reference_key + '_svg',
+        label_suffix=str(source), lig_name=name, lig_smiles=smiles,
+        binding_energy=row.get('affinity'), rmsd_crystal=row.get('rmsd'),
+        ref_lig_name=name, ref_lig_smiles=smiles,
+    )
+
+def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_', show_interactions=None):
     st.markdown('### Redock the selected crystal ligand')
     inspection = st.session_state.get(pfx + 'inspection')
     prepared = st.session_state.get(pfx + 'prepared')
@@ -252,4 +290,4 @@ def docking_controls(st, core, wdir, vina_path, show_pose, pfx='r_'):
     result = st.session_state.get(pfx + 'result')
     if result and prepared:
         st.caption('Completed-run parameters: ' + json.dumps(result['settings']))
-        render_results(st, core, result, prepared, show_pose, pfx)
+        render_results(st, core, result, prepared, show_pose, pfx, show_interactions=show_interactions)
