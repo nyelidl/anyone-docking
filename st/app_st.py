@@ -4763,7 +4763,7 @@ def _receptor_section(pfx: str, wdir: Path, step_label: str):
                         v3.setStyle(
                             {"model": mi, "resi": _resi_list},
                             {"stick": {"colorscheme": "whiteCarbon", "radius": 0.18},
-                             "cartoon": {"color": "spectrum", "opacity": 0.75}},
+                             "cartoon": {"color": "spectrum", "opacity": 0.4}},
                         )
                 except Exception:
                     pass

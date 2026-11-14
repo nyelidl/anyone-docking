@@ -4190,6 +4190,7 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
         _rec_path = receptor_pdb
         if _rec_path and os.path.exists(_rec_path):
             v3.addModel(open(_rec_path).read(), "pdb")
+            # Per-residue cartoon opacity splits can break 3Dmol's spline renderer.
             v3.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.4}})
             try:
                 from prody import parsePDB as _pPDB
@@ -4206,7 +4207,7 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
                     v3.setStyle(
                         {"model": mi, "resi": _resi_list},
                         {"stick": {"colorscheme": "whiteCarbon", "radius": 0.18},
-                         "cartoon": {"color": "spectrum", "opacity": 0.75}},
+                         "cartoon": {"color": "spectrum", "opacity": 0.4}},
                     )
             except Exception:
                 pass
@@ -4223,7 +4224,7 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
                                 {"model": 0, "chain": "" if _chain == "_" else _chain,
                                  "resi": int(_match[1]), "icode": _match[2] or ["", " "]},
                                 {"stick": {"color": "#FFD600", "radius": 0.25},
-                                 "cartoon": {"color": "spectrum", "opacity": 0.75}},
+                                 "cartoon": {"color": "spectrum", "opacity": 0.4}},
                             )
             mi += 1
 
