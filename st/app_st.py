@@ -1732,16 +1732,72 @@ _OBABEL_OK, _OBABEL_VER   = _cached_obabel()
 # ══════════════════════════════════════════════════════════════════════════════
 
 def show3d(view, height=480):
-    try:
-        from stmol import showmol
-        showmol(view, height=height)
-    except ImportError:
-        raw  = view._make_html()
-        resp = _re.sub(r'(width\s*[:=]\s*)["\']?\d+px?["\']?', r'\g<1>100%', raw)
-        components.html(
-            f'<div style="width:100%;overflow:hidden">{resp}</div>',
-            height=height, scrolling=False,
-        )
+    """Render a responsive viewer and resize after its expander becomes visible."""
+    height = int(height)
+    raw = view._make_html()
+    bundle_path = Path(__file__).with_name("3Dmol-min.js")
+    if not bundle_path.is_file():
+        st.error("The 3D renderer file is missing. Deploy 3Dmol-min.js alongside app.py.")
+        return
+    library = bundle_path.read_text(encoding="utf-8").replace("</script", "<\\/script")
+    # Load the bundled library in the iframe before py3Dmol creates its viewer.
+    raw, replaced = _re.subn(
+        r"if\s*\(typeof \$3Dmolpromise === 'undefined'\)\s*\{.*?\n\}",
+        "var $3Dmolpromise = Promise.resolve();", raw, count=1, flags=_re.S,
+    )
+    if replaced != 1:
+        st.error("The installed py3Dmol HTML format is unsupported. Update the app and py3Dmol together.")
+        return
+    raw = raw.replace("$3Dmolpromise.then(function() {",
+                      "$3Dmolpromise = $3Dmolpromise.then(function() {")
+    raw = "<script>" + library + "</script>" + raw
+    layout = f'''<style>
+html, body {{ margin:0; width:100%; height:{height}px; overflow:hidden; }}
+div[id^="3dmolviewer_"] {{ width:100%!important; height:{height}px!important; }}
+#acd-viewer-error {{ position:absolute; inset:12px; padding:12px; background:#fff4e5;
+    color:#663c00; font:14px sans-serif; z-index:10; }}
+</style>'''
+    lifecycle = '''<script>
+(function () {
+    const container = document.querySelector('div[id^="3dmolviewer_"]');
+    if (!container) return;
+    const viewerName = container.id.replace('3dmolviewer_', 'viewer_');
+    let ready = false;
+    function showError(error) {
+        if (ready || document.getElementById('acd-viewer-error')) return;
+        const notice = document.createElement('div');
+        notice.id = 'acd-viewer-error';
+        notice.setAttribute('role', 'alert');
+        notice.textContent = error && error.message
+            ? '3D viewer initialization failed: ' + error.message
+            : '3D viewer initialization has not completed. Reopen this panel or reload the app.';
+        document.body.appendChild(notice);
+    }
+    function resizeViewer() {
+        const viewer = window[viewerName];
+        if (!viewer || container.clientWidth === 0) return;
+        try {
+            viewer.resize();
+            viewer.render();
+            ready = true;
+            const notice = document.getElementById('acd-viewer-error');
+            if (notice) notice.remove();
+        } catch (error) {
+            console.error('ACD 3D viewer:', error);
+            showError();
+        }
+    }
+    new ResizeObserver(resizeViewer).observe(container);
+    window.addEventListener('resize', resizeViewer);
+    if (window.$3Dmolpromise) {
+        window.$3Dmolpromise.then(function () {
+            requestAnimationFrame(resizeViewer);
+        }).catch(showError);
+    }
+    setTimeout(function () { resizeViewer(); showError(); }, 15000);
+})();
+</script>'''
+    components.html(layout + raw + lifecycle, height=height, scrolling=False)
 
 def _add_box_to_view(view, cx, cy, cz, sx, sy, sz):
     try:
@@ -5344,7 +5400,7 @@ with tab_basic:
     cd1, cd2 = st.columns([1.5, 1])
     with cd1:
         exh = st.slider(
-            "Exhaustiveness", 4, 64, 16, 2, key="exh_slider",
+            "Exhaustiveness", 4, 64, 8, 2, key="exh_slider",
             help=(
                 "Search thoroughness — higher = more reliable, slower.\n\n"
                 "📖 Controls number of Monte Carlo steps Vina performs.\n"
@@ -5396,13 +5452,13 @@ with tab_basic:
             )
         _dock_seed = vina_seed if vina_seed != 0 else None
     with cd2:
-        est = max(1, exh // 8)
         st.markdown(
             f'<div style="background:var(--bg-subtle);border:1px solid var(--border);'
             f'border-radius:8px;padding:16px;">'
             f'<div style="color:var(--text-muted);font-size:0.8rem">ESTIMATED TIME</div>'
             f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:2rem;'
-            f'color:var(--warn)">Typically 2–6 min; actual runtime depends on system size, sampling parameters, and current server load.</div>'
+            f'color:var(--warn)">Typically 2–6 min</div>'
+            f'<div style="color:var(--text-muted);font-size:0.8rem;margin-top:6px;">Noted: actual runtime depends on system size, sampling parameters, and current server load.</div>'
             f'<div style="color:var(--text-muted);font-size:0.8rem">'
             f'exhaustiveness = {exh}</div>'
             f'</div>',
