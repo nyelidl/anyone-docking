@@ -4190,6 +4190,7 @@ def _render_receptor_setup(receptor_pdb, box_pdb, ligand_pdb, center, size):
         _rec_path = receptor_pdb
         if _rec_path and os.path.exists(_rec_path):
             v3.addModel(open(_rec_path).read(), "pdb")
+            # Per-residue cartoon opacity splits can break 3Dmol's spline renderer.
             v3.setStyle({"model": mi}, {"cartoon": {"color": "spectrum", "opacity": 0.4}})
             try:
                 from prody import parsePDB as _pPDB
@@ -5018,7 +5019,12 @@ def run_vina(*args, **kwargs):
 _raw_reporting_prepare = prepare_ligand
 def prepare_ligand(*args, **kwargs):
     kwargs.setdefault("receptor_path", st.session_state.get("receptor_pdbqt") or st.session_state.get("b_receptor_pdbqt"))
-    result = _raw_reporting_prepare(*args, **kwargs)
+    try:
+        result = _raw_reporting_prepare(*args, **kwargs)
+    except Exception as exc:
+        # Display the preparation error through the existing UI; never change engines.
+        return {"success": False, "error": str(exc), "log": [str(exc)],
+                "protonation_degraded": False}
     if result.get("success"):
         st.session_state.setdefault("prepared_reporting_smiles", {})[str(result.get("pdbqt"))] = result.get("prot_smiles")
     for candidate in result.get("metal_microstate_candidates", []):
@@ -7106,7 +7112,8 @@ with tab_redock:
     _redock_dir = WORKDIR / "redock_mode"
     _redock_dir.mkdir(exist_ok=True)
     _shared_redock_status(st)
-    docking_controls(st, _redock_core, _redock_dir, VINA_PATH, _render_pose_structure, show_interactions=_poseview_ui)
+    docking_controls(st, _redock_core, _redock_dir, VINA_PATH, _render_pose_structure,
+                     show_interactions=_poseview_ui)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
