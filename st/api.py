@@ -805,6 +805,8 @@ def _ultra_compact_from_meta(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any
             "atom_mapping": r.get("atom_mapping"),
             "protonation_mode_used": r.get("protonation_mode_used", ""),
             "protonation_fallback": r.get("protonation_fallback", ""),
+            "protonation_degraded": r.get("protonation_degraded", False),
+            "protonation_backend": r.get("protonation_backend", ""),
             **{key: r.get(key, [] if key == "interactions" else "") for key in pose_access.COMPACT_FIELDS},
             "selected_pose_rank": r.get("selected_pose_rank", None),
             "pose_selection_method": r.get("pose_selection_method", ""),
@@ -974,7 +976,7 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
 
                     if (
                         not lig.file_name
-                        and req.protonation_mode != "neutral"
+                        and req.protonation_mode == "dimorphite"
                         and _looks_like_protonation_valence_error(prep_error + "\n" + prep_log)
                     ):
                         all_logs.append(
@@ -1103,6 +1105,8 @@ def _run_docking_job(job_id: str, req: DockRequest) -> None:
                     pkanet_ranked_csv=prep.get("pkanet_ranked_csv", ""),
                     pkanet_decision_log=prep.get("pkanet_decision_log", ""),
                     pkanet_ambiguous=prep.get("pkanet_ambiguous", False),
+                    protonation_degraded=prep.get("protonation_degraded", False) or bool(row.get("protonation_fallback")),
+                    protonation_backend=prep.get("protonation_backend", "not_applied" if lig.file_name else req.protonation_mode),
                     protonation_mode_used=(
                         "not_applied" if lig.file_name else
                         "neutral" if row.get("protonation_fallback") == "neutral" else req.protonation_mode
@@ -1258,6 +1262,8 @@ def _compact_job_response(job_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             "atom_mapping": r.get("atom_mapping"),
             "protonation_mode_used": r.get("protonation_mode_used", ""),
             "protonation_fallback": r.get("protonation_fallback", ""),
+            "protonation_degraded": r.get("protonation_degraded", False),
+            "protonation_backend": r.get("protonation_backend", ""),
             **{key: r.get(key, [] if key == "interactions" else "") for key in pose_access.COMPACT_FIELDS},
             "selected_pose_rank": r.get("selected_pose_rank", None),
             "pose_selection_method": r.get("pose_selection_method", ""),

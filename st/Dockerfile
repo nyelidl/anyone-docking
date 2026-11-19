@@ -10,10 +10,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Bundled updated CLI wheel; upload this file alongside the Dockerfile.
-COPY anyonecandock-1.4.2-py3-none-any.whl /opt/anyonecandock-1.4.2-py3-none-any.whl
+COPY anyonecandock-1.4.3-py3-none-any.whl /opt/anyonecandock-1.4.3-py3-none-any.whl
 COPY requirements-api.txt /app/requirements-api.txt
 RUN python -m pip install --upgrade pip \
- && python -m pip install "/opt/anyonecandock-1.4.2-py3-none-any.whl[diagram]" -r /app/requirements-api.txt
+ && python -m pip install "/opt/anyonecandock-1.4.3-py3-none-any.whl[diagram]" -r /app/requirements-api.txt
 
 COPY api.py mobile_preparation.py pose_access.py job_retention.py viewer3d.html /app/
 # JOBS and the quota lock are process-local: run one worker.
