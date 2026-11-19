@@ -4866,7 +4866,12 @@ def run_vina(*args, **kwargs):
 _raw_reporting_prepare = prepare_ligand
 def prepare_ligand(*args, **kwargs):
     kwargs.setdefault("receptor_path", st.session_state.get("receptor_pdbqt") or st.session_state.get("b_receptor_pdbqt"))
-    result = _raw_reporting_prepare(*args, **kwargs)
+    try:
+        result = _raw_reporting_prepare(*args, **kwargs)
+    except Exception as exc:
+        # Display the preparation error through the existing UI; never change engines.
+        return {"success": False, "error": str(exc), "log": [str(exc)],
+                "protonation_degraded": False}
     if result.get("success"):
         st.session_state.setdefault("prepared_reporting_smiles", {})[str(result.get("pdbqt"))] = result.get("prot_smiles")
     for candidate in result.get("metal_microstate_candidates", []):

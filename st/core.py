@@ -2545,18 +2545,31 @@ def _apply_ionizable_site_correction(original_smiles: str, current_smiles: str,
 
 def _load_local_pkanet_module(log=None):
     """
-    Force-load pKaNET.py from the same folder as core.py.
-    This avoids importing an old/cached/wrong pKaNET module from sys.path.
+    Load the adjacent pkanet.py (legacy pKaNET.py only if unambiguous).
+    Reject distinct case-variant files and stale molecular-identity APIs.
+    Reload locally rather than using an engine cached on sys.path.
     """
     import importlib.util
     import sys
     import hashlib
     from pathlib import Path
 
-    pkanet_path = Path(__file__).resolve().with_name("pKaNET.py")
-
-    if not pkanet_path.exists():
-        raise FileNotFoundError(f"pKaNET.py not found next to core.py: {pkanet_path}")
+    core_dir = Path(__file__).resolve().parent
+    candidates = [core_dir / name for name in ("pkanet.py", "pKaNET.py")
+                  if (core_dir / name).exists()]
+    if not candidates:
+        raise FileNotFoundError(f"pKaNET.py/pkanet.py not found next to core.py: {core_dir}")
+    hashes = [hashlib.md5(path.read_bytes()).hexdigest() for path in candidates]
+    if len(candidates) == 2 and (
+        not candidates[0].samefile(candidates[1]) or hashes[0] != hashes[1]
+    ):
+        raise RuntimeError(
+            "Conflicting pKaNET engine files: "
+            + "; ".join(f"{path} (md5 {digest})" for path, digest in zip(candidates, hashes))
+            + ". Keep only one engine file, preferably the current pkanet.py."
+        )
+    pkanet_path = candidates[0]
+    file_hash = hashes[0]
 
     module_name = "pKaNET_local_ACD"
 
@@ -2566,12 +2579,23 @@ def _load_local_pkanet_module(log=None):
 
     spec = importlib.util.spec_from_file_location(module_name, str(pkanet_path))
     if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load pKaNET.py from: {pkanet_path}")
+        raise ImportError(f"Cannot load pKaNET module from: {pkanet_path}")
 
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    file_hash = hashlib.md5(pkanet_path.read_bytes()).hexdigest()[:12]
+    if not callable(getattr(mod, "_same_heavy_bond_graph", None)):
+        raise RuntimeError(
+            f"Stale pKaNET build loaded from {pkanet_path} (md5 {file_hash}): "
+            "missing molecular-identity API required by core.py"
+        )
+    required = ("standardize_smiles", "pubchem_lookup", "generate_ranked_microstates")
+    missing = [name for name in required if not callable(getattr(mod, name, None))]
+    if missing:
+        raise RuntimeError(
+            f"Invalid pKaNET build loaded from {pkanet_path} (md5 {file_hash}): "
+            f"missing required API: {', '.join(missing)}"
+        )
 
     if log is not None:
         log.append(f"✓ pKaNET loaded from: {pkanet_path.name}  (md5: {file_hash})")
@@ -2657,7 +2681,7 @@ def protonate_pkanet(
     If return_details=True, returns (selected_smiles, charge, log_list, details_dict).
 
     Important:
-    - This function force-loads ./pKaNET.py from the same folder as core.py.
+    - This function loads the validated adjacent pkanet.py (legacy name if unambiguous).
     - It does NOT silently fall back to Dimorphite-DL when pKaNET mode is selected.
       If pKaNET fails, the app should stop and show the error/log.
     """
@@ -2673,12 +2697,13 @@ def protonate_pkanet(
         _pkanet_pubchem = pk.pubchem_lookup
         _pkanet_rank = pk.generate_ranked_microstates
 
-        log.append("✓ pKaNET imported from local pKaNET.py")
+        log.append("✓ Validated local pKaNET engine imported")
     except Exception as e:
         log.append(f"❌ pKaNET import failed: {e}")
+        if isinstance(e, RuntimeError):
+            raise
         raise RuntimeError(
-            "pKaNET mode was selected, but local pKaNET.py could not be loaded. "
-            "Please check that pKaNET.py is in the same folder as core.py."
+            f"pKaNET mode was selected, but the adjacent engine could not be loaded: {e}"
         ) from e
 
     # ── Stage 0: optional stereochemistry resolution ────────────────────────
@@ -2909,6 +2934,8 @@ def prepare_ligand(
     pkanet_manual_rank: int | None = None,
     pkanet_stereo_choice: str = "keep_input",
     conformer_seed: int | None = None,
+    *,
+    allow_dimorphite_fallback: bool = False,
 ) -> dict:
     """
     Ligand preparation — pKaNET Cloud is the default protonation mode.
@@ -2920,6 +2947,8 @@ def prepare_ligand(
 
     Charge reporting is always based on RDKit formal charge of the final SMILES
     actually used for 3D building and docking.
+    pKaNET errors propagate unless allow_dimorphite_fallback is explicitly True.
+    An opted-in fallback is marked degraded in the result and microstate CSV.
     """
     _rdkit_six_patch()
     from rdkit import Chem
@@ -2929,6 +2958,9 @@ def prepare_ligand(
     log       = []
     out_pdbqt = str(wdir / f"{name}.pdbqt")
     out_sdf   = str(wdir / f"{name}_3d.sdf")
+    pkanet_error = None
+    protonation_degraded = False
+    protonation_backend = mode or "dimorphite"
 
     try:
         raw = smiles.strip()
@@ -2962,7 +2994,8 @@ def prepare_ligand(
                     import csv as _csv
                     safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(name)) or "ligand"
                     pkanet_ranked_csv = str(wdir / f"{safe_name}_pkanet_ranked_microstates.csv")
-                    rows = pkanet_details.get("ranked_microstates", []) or []
+                    rows = [dict(row, protonation_degraded=False, protonation_backend="pkanet")
+                            for row in (pkanet_details.get("ranked_microstates", []) or [])]
                     if rows:
                         preferred = [
                             "microstate_rank", "recommended_default", "recommendation", "selection_score",
@@ -2971,6 +3004,7 @@ def prepare_ligand(
                             "flag_heuristic_only", "flag_polyphenol_like", "flag_coumarin_like", "flag_flavonoid_like",
                             "flag_possible_overdeprotonation", "flag_borderline_pka", "flag_tautomer_rich",
                             "recommendation_reason",
+                            "protonation_degraded", "protonation_backend",
                         ]
                         extra = sorted({k for r in rows for k in r.keys()} - set(preferred))
                         fieldnames = preferred + extra
@@ -2987,7 +3021,13 @@ def prepare_ligand(
                 log.extend(pka_log)
                 log.append("✓ pKaNET Cloud protonation applied")
             except Exception as _pke:
+                if not allow_dimorphite_fallback:
+                    pkanet_error = _pke
+                    raise
                 log.append(f"⚠ pKaNET failed ({_pke}) — falling back to Dimorphite-DL")
+                protonation_degraded = True
+                protonation_backend = "dimorphite_fallback"
+                actual_mode = "dimorphite"
                 try:
                     from dimorphite_dl import protonate_smiles
                     _win = ph_window * 0.5
@@ -3004,14 +3044,38 @@ def prepare_ligand(
                         def _abs_charge(s):
                             m = _Chem.MolFromSmiles(s)
                             return abs(int(_Chem.GetFormalCharge(m))) if m else 99
-                        prot = min(_vs_list, key=_abs_charge)
+                        prot = min(_vs_list, key=lambda s: (_abs_charge(s), s))
+                        log.append(
+                            "WARNING: Dimorphite fallback candidate was chosen by a |charge| "
+                            "heuristic, not pKa-derived ranking; ionised states may be discarded. "
+                            "Ionizable-site correction is applied next, but this is not pKaNET."
+                        )
                         log.append(
                             f"✓ Dimorphite-DL fallback pH {ph:.1f} "
                             f"(picked charge {_abs_charge(prot):+d} from {len(_vs_list)} variants)"
                         )
+                    else:
+                        raise RuntimeError("Dimorphite-DL fallback returned no protonation candidates")
                     prot = _apply_ionizable_site_correction(raw, prot, ph, log)
                 except Exception as e2:
-                    log.append(f"⚠ Dimorphite-DL fallback skipped: {e2}")
+                    raise RuntimeError(f"Opted-in Dimorphite-DL fallback failed: {e2}") from e2
+
+                import csv as _csv
+                safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(name)) or "ligand"
+                pkanet_ranked_csv = str(wdir / f"{safe_name}_pkanet_ranked_microstates.csv")
+                fallback_row = {
+                    "microstate_smiles": prot,
+                    "net_charge": int(Chem.GetFormalCharge(Chem.MolFromSmiles(prot))),
+                    "protonation_degraded": True,
+                    "protonation_backend": protonation_backend,
+                    "warning": "Fallback |charge| heuristic, not pKaNET/pKa-derived ranking",
+                }
+                with open(pkanet_ranked_csv, "w", newline="", encoding="utf-8") as fh:
+                    writer = _csv.DictWriter(fh, fieldnames=list(fallback_row))
+                    writer.writeheader()
+                    writer.writerow(fallback_row)
+                pkanet_decision_log = str(wdir / f"{safe_name}_pkanet_decision_log.txt")
+                Path(pkanet_decision_log).write_text("\n".join(log), encoding="utf-8")
 
         else:
             # dimorphite (legacy compatibility)
@@ -3089,8 +3153,8 @@ def prepare_ligand(
         except Exception as e_meeko:
             log.append(f"⚠ Meeko failed ({e_meeko}), trying OpenBabel…")
             subprocess.run(
-                f'obabel "{out_sdf}" -O "{out_pdbqt}" -xh 2>/dev/null',
-                shell=True, timeout=30,
+                ["obabel", out_sdf, "-O", out_pdbqt, "-xh"],
+                capture_output=True, timeout=30,
             )
             if not Path(out_pdbqt).exists() or Path(out_pdbqt).stat().st_size < 10:
                 raise ValueError(f"Both Meeko and OpenBabel failed: {e_meeko}")
@@ -3109,6 +3173,8 @@ def prepare_ligand(
             "charged_atoms":     charge_info["charged_atoms"],
             "is_zwitterion":     charge_info["is_zwitterion"],
             "protonation_mode":  actual_mode,
+            "protonation_degraded": protonation_degraded,
+            "protonation_backend": protonation_backend,
             "pkanet_selection_mode": pkanet_details.get("selection_mode", pkanet_selection_mode),
             "pkanet_selected_rank": pkanet_details.get("selected_rank"),
             "pkanet_selected_microstate": pkanet_details.get("selected_microstate", {}),
@@ -3122,8 +3188,12 @@ def prepare_ligand(
         }
 
     except Exception as e:
+        if e is pkanet_error:
+            raise
         log.append(f"ERROR: {e}")
-        return {"success": False, "error": str(e), "log": log}
+        return {"success": False, "error": str(e), "log": log,
+                "protonation_degraded": protonation_degraded,
+                "protonation_backend": protonation_backend}
 
 def prepare_ligand_from_file(file_path: str, name: str, wdir,
                              conformer_seed: int | None = None) -> dict:
